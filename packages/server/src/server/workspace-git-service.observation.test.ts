@@ -1180,7 +1180,7 @@ describe("WorkspaceGitService checkout observation", () => {
     service.dispose();
   });
 
-  test("watcher recovery stops after three unstable subscriptions while polling continues", async () => {
+  test("watcher recovery remains capped when recovered subscriptions emit events before failing", async () => {
     const watcher = createWatcherHarness();
     const getCheckoutStatus = vi.fn(async (cwd: string) => createCheckoutStatus(cwd));
     const service = createService(watcher, {
@@ -1199,6 +1199,9 @@ describe("WorkspaceGitService checkout observation", () => {
     await vi.waitFor(() => {
       expect(getWatcherRecordsForDirectory(watcher, REPO_CWD)).toHaveLength(2);
     });
+    getWatcherRecordsForDirectory(watcher, REPO_CWD)[1]?.callback(null, [
+      { path: path.join(REPO_CWD, "recovered-1.txt"), type: "update" },
+    ]);
     getWatcherRecordsForDirectory(watcher, REPO_CWD)[1]?.callback(
       new Error("recovered watcher stopped"),
       [],
@@ -1207,6 +1210,9 @@ describe("WorkspaceGitService checkout observation", () => {
     await vi.waitFor(() => {
       expect(getWatcherRecordsForDirectory(watcher, REPO_CWD)).toHaveLength(3);
     });
+    getWatcherRecordsForDirectory(watcher, REPO_CWD)[2]?.callback(null, [
+      { path: path.join(REPO_CWD, "recovered-2.txt"), type: "update" },
+    ]);
     getWatcherRecordsForDirectory(watcher, REPO_CWD)[2]?.callback(
       new Error("recovered watcher stopped again"),
       [],
@@ -1215,6 +1221,9 @@ describe("WorkspaceGitService checkout observation", () => {
     await vi.waitFor(() => {
       expect(getWatcherSubscribeCallCount(watcher, REPO_CWD)).toBe(4);
     });
+    getWatcherRecordsForDirectory(watcher, REPO_CWD)[3]?.callback(null, [
+      { path: path.join(REPO_CWD, "recovered-3.txt"), type: "update" },
+    ]);
     getWatcherRecordsForDirectory(watcher, REPO_CWD)[3]?.callback(
       new Error("last recovered watcher stopped"),
       [],
@@ -1223,6 +1232,42 @@ describe("WorkspaceGitService checkout observation", () => {
     const statusCallsAtCap = getCheckoutStatus.mock.calls.length;
     await vi.advanceTimersByTimeAsync(300_000);
     expect(getWatcherSubscribeCallCount(watcher, REPO_CWD)).toBe(4);
+    expect(getCheckoutStatus.mock.calls.length).toBeGreaterThan(statusCallsAtCap);
+
+    subscription.unsubscribe();
+    service.dispose();
+  });
+
+  test("repository watcher recovery remains capped after recovered subscriptions emit events", async () => {
+    const watcher = createWatcherHarness();
+    const getCheckoutStatus = vi.fn(async (cwd: string) => createCheckoutStatus(cwd));
+    const service = createService(watcher, {
+      getCheckoutStatus,
+      getWorkspaceGitSelfHealPhaseMs: () => 1_000_000,
+    });
+    const subscription = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+
+    await vi.waitFor(() => {
+      expect(service.getMetrics().workspaceObservationSetupInFlightCount).toBe(0);
+    });
+    getWatcherRecordsForDirectory(watcher, GIT_DIR)[0]?.callback(
+      new Error("repository watcher stopped"),
+      [],
+    );
+
+    for (const [recoveryIndex, delayMs] of [30_000, 60_000, 120_000].entries()) {
+      await vi.advanceTimersByTimeAsync(delayMs);
+      await vi.waitFor(() => {
+        expect(getWatcherRecordsForDirectory(watcher, GIT_DIR)).toHaveLength(recoveryIndex + 2);
+      });
+      const recoveredWatcher = getWatcherRecordsForDirectory(watcher, GIT_DIR)[recoveryIndex + 1];
+      recoveredWatcher?.callback(null, [{ path: path.join(GIT_DIR, "HEAD"), type: "update" }]);
+      recoveredWatcher?.callback(new Error("recovered repository watcher stopped"), []);
+    }
+
+    const statusCallsAtCap = getCheckoutStatus.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(getWatcherSubscribeCallCount(watcher, GIT_DIR)).toBe(4);
     expect(getCheckoutStatus.mock.calls.length).toBeGreaterThan(statusCallsAtCap);
 
     subscription.unsubscribe();

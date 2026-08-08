@@ -1221,7 +1221,6 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
           if (watcherErrored) {
             return;
           }
-          target.recovery.attemptCount = 0;
           if (!this.hasRelevantWorkingTreeEvent(target, events)) {
             return;
           }
@@ -1630,7 +1629,6 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
           if (watcherErrored) {
             return;
           }
-          target.recovery.attemptCount = 0;
           const relevantEvents = events.filter(
             (event) =>
               !matchesRepoGitRoot(event.path) &&
