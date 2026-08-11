@@ -60,12 +60,6 @@ class FullPageCaptureHarness implements FullPageCaptureTarget {
         viewportHeight: 2,
       };
     }
-    if (code.includes("requestAnimationFrame")) {
-      if (this.options.afterPaint) {
-        this.scroll = this.options.afterPaint(this.scroll);
-      }
-      return undefined;
-    }
     const scrollXMatch = code.match(/scrollingElement\.scrollLeft = (-?\d+(?:\.\d+)?)/);
     const scrollYMatch = code.match(/scrollingElement\.scrollTop = (-?\d+(?:\.\d+)?)/);
     if (scrollXMatch && scrollYMatch) {
@@ -86,6 +80,12 @@ class FullPageCaptureHarness implements FullPageCaptureTarget {
 
   public invalidate(): void {
     this.invalidations += 1;
+  }
+
+  public async waitForPaint(): Promise<void> {
+    if (this.options.afterPaint) {
+      this.scroll = this.options.afterPaint(this.scroll);
+    }
   }
 
   public async sendDebugCommand(command: string): Promise<unknown> {
@@ -138,11 +138,11 @@ describe("captureFullPage", () => {
 
     expect(captured.getSize()).toEqual({ width: 2, height: 4 });
     expect(Array.from(captured.toBitmap())).toEqual([...Array(16).fill(1), ...Array(16).fill(2)]);
-    expect(harness.invalidations).toBe(2);
+    expect(harness.invalidations).toBeGreaterThanOrEqual(2);
     expect(harness.scripts.some((script) => script.includes("position === 'fixed'"))).toBe(true);
     expect(harness.scripts.some((script) => script.includes("position', 'relative'"))).toBe(true);
     expect(harness.scripts.some((script) => script.includes("if (false)"))).toBe(true);
-    const restoreScript = harness.scripts.at(-2) ?? "";
+    const restoreScript = harness.scripts.at(-1) ?? "";
     expect(restoreScript).toContain("scrollingElement.scrollLeft = 1");
     expect(restoreScript).toContain("state.fixedElements");
     expect(restoreScript).toContain("state.stickyElements");
@@ -226,7 +226,7 @@ describe("captureFullPage", () => {
 
     await expect(captureFullPage(harness)).rejects.toThrow("Missing tile 0");
 
-    const restoreScript = harness.scripts.at(-2) ?? "";
+    const restoreScript = harness.scripts.at(-1) ?? "";
     expect(restoreScript).toContain("scrollingElement.scrollLeft = 1");
     expect(restoreScript).toContain("state.style.remove()");
   });

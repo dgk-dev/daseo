@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { z, type ZodType } from "zod";
 
 export interface FullPageCaptureImage {
@@ -10,6 +11,7 @@ export interface FullPageCaptureImage {
 export interface FullPageCaptureTarget {
   executeJavaScript(code: string): Promise<unknown>;
   invalidate(): void;
+  waitForPaint?(signal?: AbortSignal): Promise<void>;
   sendDebugCommand(command: string, params?: Record<string, unknown>): Promise<unknown>;
   createImageFromPng(dataBase64: string): FullPageCaptureImage;
   createImageFromBitmap(
@@ -209,16 +211,17 @@ async function waitForGuestPaint(
   signal: AbortSignal | undefined,
 ): Promise<void> {
   throwIfAborted(signal);
-  await target.executeJavaScript(`new Promise((resolve) => {
-    let resolved = false;
-    const finish = () => {
-      if (resolved) return;
-      resolved = true;
-      resolve();
-    };
-    requestAnimationFrame(() => requestAnimationFrame(finish));
-    setTimeout(finish, 100);
-  })`);
+  target.invalidate();
+  try {
+    if (target.waitForPaint) {
+      await target.waitForPaint(signal);
+    } else {
+      await delay(100, undefined, signal ? { signal } : undefined);
+    }
+  } catch (error) {
+    throwIfAborted(signal);
+    throw error;
+  }
   throwIfAborted(signal);
 }
 
