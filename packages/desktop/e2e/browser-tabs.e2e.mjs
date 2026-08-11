@@ -200,6 +200,7 @@ async function startTargetPage() {
         <head><title>Desktop browser target</title></head>
         <body>
           <button id="bridge-target" onclick="this.textContent = 'Clicked'">Bridge target</button>
+          <button id="selector-target" onclick="globalThis.__selectorTargetActivated = true">Selector target</button>
           <label for="typing-target">Typing target</label>
           <input id="typing-target" />
         </body>
@@ -514,6 +515,26 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId 
 
   await selectDeviceSize(page, "Responsive");
   const responsiveViewport = await readViewport(client, browserId);
+
+  await originalDeck.getByRole("button", { name: "Annotate element" }).click();
+  await clickGuestElement(page, client, browserId, "#selector-target");
+  const annotationInput = originalDeck.getByRole("textbox", {
+    name: "Message to the agent about this element…",
+  });
+  await annotationInput.waitFor({ state: "visible", timeout: 5_000 });
+  const selectedButtonLabel = originalDeck.getByText("button · Selector target", { exact: true });
+  if (!(await selectedButtonLabel.isVisible())) {
+    failures.push("element annotation selects the interactive control under the pointer");
+  }
+  const selectorTargetActivation = await callBrowserTool(client, "browser_evaluate", {
+    browserId,
+    function: "() => Boolean(globalThis.__selectorTargetActivated)",
+  });
+  if (JSON.parse(selectorTargetActivation.resultJson) !== false) {
+    failures.push("element annotation suppresses the selected control action");
+  }
+  await page.keyboard.press("Escape");
+  await annotationInput.waitFor({ state: "hidden", timeout: 5_000 });
 
   await originalDeck.getByTestId(`workspace-tab-agent_${callerAgentId}`).click();
   await page.waitForTimeout(500);
