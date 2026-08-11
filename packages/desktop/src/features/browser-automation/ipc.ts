@@ -133,24 +133,27 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
     goForward: () => contents.goForward(),
     reload: () => contents.reload(),
     capturePage: (captureOptions) => contents.capturePage(undefined, captureOptions),
-    captureFullPage: () =>
+    captureFullPage: (options) =>
       cdpQueue.run(async () => {
         if (!contents.debugger.isAttached()) {
           contents.debugger.attach("1.3");
         }
-        return captureFullPageImage({
-          executeJavaScript: (code) => contents.executeJavaScript(code),
-          invalidate: () => contents.invalidate(),
-          sendDebugCommand: (command, params) =>
-            contents.debugger.sendCommand(command, params ?? {}),
-          createImageFromPng: (dataBase64) =>
-            nativeImage.createFromBuffer(Buffer.from(dataBase64, "base64")),
-          createImageFromBitmap: (bitmap, size) =>
-            nativeImage.createFromBitmap(Buffer.from(bitmap), {
-              ...size,
-              scaleFactor: 1,
-            }),
-        });
+        return captureFullPageImage(
+          {
+            executeJavaScript: (code) => contents.executeJavaScript(code),
+            invalidate: () => contents.invalidate(),
+            sendDebugCommand: (command, params) =>
+              contents.debugger.sendCommand(command, params ?? {}),
+            createImageFromPng: (dataBase64) =>
+              nativeImage.createFromBuffer(Buffer.from(dataBase64, "base64")),
+            createImageFromBitmap: (bitmap, size) =>
+              nativeImage.createFromBitmap(Buffer.from(bitmap), {
+                ...size,
+                scaleFactor: 1,
+              }),
+          },
+          options,
+        );
       }),
     invalidate: () => contents.invalidate(),
     sendInputEvent: (event) => contents.sendInputEvent(event),

@@ -7,6 +7,7 @@ import type {
   BrowserAutomationDialogEvent,
   BrowserAutomationExecuteRequest,
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
+import { FullPageCaptureUnsupportedError } from "./full-page-capture.js";
 import { BrowserSnapshotEngine } from "./snapshot-engine.js";
 import type { BrowserRegistry, TabContents, TabImage } from "./service.js";
 import { executeAutomationCommand } from "./service.js";
@@ -72,6 +73,9 @@ class FakeTab implements TabContents {
   public fullPageScreenshotThrows = false;
   public fullPageScreenshotErrorMessage = "UnknownVizError";
   public fullPageCaptureFailuresBeforeSuccess = 0;
+  public fullPageCaptureWaitsForAbort = false;
+  public fullPageCaptureAborted = false;
+  public fullPageCaptureError: Error | null = null;
   public layoutMetrics = {
     cssLayoutViewport: { clientWidth: 390, clientHeight: 844 },
     cssContentSize: { width: 390, height: 1200 },
@@ -183,8 +187,23 @@ class FakeTab implements TabContents {
     return new FakeImage();
   }
 
-  public async captureFullPage(): Promise<TabImage> {
+  public async captureFullPage(options?: { signal?: AbortSignal }): Promise<TabImage> {
     this.actions.push("capture-full-page");
+    if (this.fullPageCaptureWaitsForAbort) {
+      return new Promise<TabImage>((_resolve, reject) => {
+        options?.signal?.addEventListener(
+          "abort",
+          () => {
+            this.fullPageCaptureAborted = true;
+            reject(options.signal?.reason);
+          },
+          { once: true },
+        );
+      });
+    }
+    if (this.fullPageCaptureError) {
+      throw this.fullPageCaptureError;
+    }
     if (this.fullPageCaptureFailuresBeforeSuccess > 0) {
       this.fullPageCaptureFailuresBeforeSuccess -= 1;
       throw new Error(this.fullPageScreenshotErrorMessage);
@@ -1855,6 +1874,55 @@ describe("executeAutomationCommand", () => {
       }),
     ).rejects.toThrow("Debugger detached");
     expect(browser.tab.actions).toEqual(["invalidate", "capture-full-page"]);
+  });
+
+  test("screenshot with fullPage returns an explicit unsupported-page failure", async () => {
+    const browser = new BrowserAutomationHarness();
+    browser.tab.fullPageCaptureError = new FullPageCaptureUnsupportedError(
+      "The page did not remain at a stable scroll position for full-page capture.",
+    );
+
+    await expect(
+      browser.execute({
+        command: "screenshot",
+        args: { browserId: BROWSER_A, fullPage: true },
+      }),
+    ).resolves.toEqual({
+      requestId: "req-screenshot",
+      ok: false,
+      error: {
+        code: "browser_unsupported",
+        message: "The page did not remain at a stable scroll position for full-page capture.",
+        retryable: false,
+      },
+    });
+  });
+
+  test("screenshot with fullPage aborts work after its capture budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const browser = new BrowserAutomationHarness();
+      browser.tab.fullPageCaptureWaitsForAbort = true;
+
+      const pending = browser.execute({
+        command: "screenshot",
+        args: { browserId: BROWSER_A, fullPage: true },
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      await expect(pending).resolves.toEqual({
+        requestId: "req-screenshot",
+        ok: false,
+        error: {
+          code: "browser_timeout",
+          message: "Full-page screenshot exceeded the 30-second capture budget.",
+          retryable: true,
+        },
+      });
+      expect(browser.tab.fullPageCaptureAborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("upload resolves workspace files before setting them on the file input", async () => {

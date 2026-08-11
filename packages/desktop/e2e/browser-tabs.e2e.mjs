@@ -201,14 +201,28 @@ async function startTargetPage() {
           <title>Desktop browser target</title>
           <style>
             html, body { min-height: 1600px; margin: 0; background: #111; }
-            #full-page-marker { position: absolute; left: 40px; top: 1370px; width: 200px; height: 100px; background: #00ff00; }
+            #fixed-capture-header { position: fixed; z-index: 2; pointer-events: none; left: 0; top: 0; width: 100%; height: 30px; background: #f01414; }
+            #sticky-capture-label { position: sticky; top: 0; width: 180px; height: 30px; margin-top: 100px; background: #ffff00; }
+            #full-page-marker { position: absolute; left: 40px; top: 1870px; width: 200px; height: 100px; background: #00ff00; }
           </style>
         </head>
         <body>
+          <div id="fixed-capture-header"></div>
           <button id="bridge-target" onclick="this.textContent = 'Clicked'">Bridge target</button>
           <label for="typing-target">Typing target</label>
           <input id="typing-target" />
-          <div id="full-page-marker"></div>
+          <div id="sticky-capture-label"></div>
+          <script>
+            let expanded = false;
+            addEventListener('scroll', () => {
+              if (expanded || scrollY <= 0) return;
+              expanded = true;
+              document.body.style.minHeight = '2000px';
+              const marker = document.createElement('div');
+              marker.id = 'full-page-marker';
+              document.body.appendChild(marker);
+            }, { passive: true });
+          </script>
         </body>
       </html>`);
   });
@@ -237,14 +251,6 @@ function mcpPayload(result, command) {
 
 async function callBrowserTool(client, name, args = {}) {
   return mcpPayload(await client.callTool({ name, args }), name);
-}
-
-async function callBrowserScreenshot(client, args) {
-  const response = await client.callTool({ name: "browser_screenshot", args });
-  const result = mcpPayload(response, "browser_screenshot");
-  const image = response.content.find((entry) => entry.type === "image");
-  assert(image?.data, `browser_screenshot returned no image content: ${JSON.stringify(response)}`);
-  return { ...result, dataBase64: image.data };
 }
 
 async function createCallerAgent(daemonPort) {
@@ -366,6 +372,14 @@ async function readScreenshotPixel(page, input) {
   }, input);
 }
 
+async function callBrowserScreenshot(client, args) {
+  const response = await client.callTool({ name: "browser_screenshot", args });
+  const result = mcpPayload(response, "browser_screenshot");
+  const image = response.content.find((entry) => entry.type === "image");
+  assert(image?.data, `browser_screenshot returned no image content: ${JSON.stringify(response)}`);
+  return { ...result, dataBase64: image.data };
+}
+
 async function verifyFullPageScreenshot(page, client, browserId) {
   const constraints = await callBrowserTool(client, "browser_evaluate", {
     browserId,
@@ -389,11 +403,11 @@ async function verifyFullPageScreenshot(page, client, browserId) {
     `Full-page scroll constraints were not installed: ${constraints.resultJson}`,
   );
   const screenshot = await callBrowserScreenshot(client, { browserId, fullPage: true });
-  const scale = screenshot.height / 1600;
+  const scale = screenshot.height / 2000;
   const markerPixel = await readScreenshotPixel(page, {
     dataBase64: screenshot.dataBase64,
     x: Math.round(100 * scale),
-    y: Math.round(1400 * scale),
+    y: Math.round(1900 * scale),
   });
   assert(
     markerPixel.width === screenshot.width && markerPixel.height === screenshot.height,
@@ -402,7 +416,25 @@ async function verifyFullPageScreenshot(page, client, browserId) {
   const [red, green, blue, alpha] = markerPixel.rgba;
   assert(
     red < 80 && green > 200 && blue < 100 && alpha === 255,
-    `Full-page screenshot did not include the bottom marker: ${JSON.stringify(markerPixel)}`,
+    `Full-page screenshot did not include the dynamically added bottom marker: ${JSON.stringify(markerPixel)}`,
+  );
+  const fixedAtTop = await readScreenshotPixel(page, {
+    dataBase64: screenshot.dataBase64,
+    x: Math.round(350 * scale),
+    y: Math.round(15 * scale),
+  });
+  const fixedBelowFold = await readScreenshotPixel(page, {
+    dataBase64: screenshot.dataBase64,
+    x: Math.round(350 * scale),
+    y: Math.round(682 * scale),
+  });
+  assert(
+    fixedAtTop.rgba[0] > 200 && fixedAtTop.rgba[1] < 80 && fixedAtTop.rgba[2] < 80,
+    `Full-page screenshot lost the fixed header at the page top: ${JSON.stringify(fixedAtTop)}`,
+  );
+  assert(
+    !(fixedBelowFold.rgba[0] > 200 && fixedBelowFold.rgba[1] < 80 && fixedBelowFold.rgba[2] < 80),
+    `Full-page screenshot repeated the fixed header below the fold: ${JSON.stringify(fixedBelowFold)}`,
   );
   const restoredScroll = await callBrowserTool(client, "browser_evaluate", {
     browserId,
@@ -411,6 +443,19 @@ async function verifyFullPageScreenshot(page, client, browserId) {
   assert(
     restoredScroll.resultJson === '{"x":0,"y":0}',
     `Full-page screenshot did not restore page scroll: ${restoredScroll.resultJson}`,
+  );
+  const restoredStyles = await callBrowserTool(client, "browser_evaluate", {
+    browserId,
+    function: `() => ({
+      fixedVisibility: getComputedStyle(document.querySelector("#fixed-capture-header")).visibility,
+      stickyPosition: getComputedStyle(document.querySelector("#sticky-capture-label")).position,
+      captureStateCount: Object.keys(globalThis).filter((key) => key.startsWith("__paseoFullPageCapture_")).length
+    })`,
+  });
+  assert(
+    restoredStyles.resultJson ===
+      '{"fixedVisibility":"visible","stickyPosition":"sticky","captureStateCount":0}',
+    `Full-page screenshot did not restore temporary page styles: ${restoredStyles.resultJson}`,
   );
   const cleanup = await callBrowserTool(client, "browser_evaluate", {
     browserId,

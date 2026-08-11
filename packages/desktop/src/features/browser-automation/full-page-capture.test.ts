@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   captureFullPage,
+  FullPageCaptureUnsupportedError,
   type FullPageCaptureImage,
   type FullPageCaptureTarget,
 } from "./full-page-capture.js";
@@ -30,6 +31,13 @@ class FakeImage implements FullPageCaptureImage {
   }
 }
 
+interface HarnessOptions {
+  contentSizes: { width: number; height: number }[];
+  tiles: FullPageCaptureImage[];
+  scrollPosition?: (x: number, y: number) => { x: number; y: number };
+  afterPaint?: (position: { x: number; y: number }) => { x: number; y: number };
+}
+
 class FullPageCaptureHarness implements FullPageCaptureTarget {
   public readonly scripts: string[] = [];
   public readonly debugCommands: string[] = [];
@@ -37,15 +45,10 @@ class FullPageCaptureHarness implements FullPageCaptureTarget {
   public outputBitmap: Uint8Array | null = null;
   public outputSize: { width: number; height: number } | null = null;
   private captureIndex = 0;
+  private metricsIndex = 0;
+  private scroll = { x: 1, y: 1 };
 
-  public constructor(
-    private readonly contentSize: { width: number; height: number },
-    private readonly tiles: FullPageCaptureImage[],
-    private readonly scrollPosition: (x: number, y: number) => { x: number; y: number } = (
-      x,
-      y,
-    ) => ({ x, y }),
-  ) {}
+  public constructor(private readonly options: HarnessOptions) {}
 
   public async executeJavaScript(code: string): Promise<unknown> {
     this.scripts.push(code);
@@ -57,10 +60,26 @@ class FullPageCaptureHarness implements FullPageCaptureTarget {
         viewportHeight: 2,
       };
     }
+    if (code.includes("requestAnimationFrame")) {
+      if (this.options.afterPaint) {
+        this.scroll = this.options.afterPaint(this.scroll);
+      }
+      return undefined;
+    }
     const scrollXMatch = code.match(/scrollingElement\.scrollLeft = (-?\d+(?:\.\d+)?)/);
     const scrollYMatch = code.match(/scrollingElement\.scrollTop = (-?\d+(?:\.\d+)?)/);
-    if (scrollXMatch && scrollYMatch && code.includes("return { x: scrollingElement.scrollLeft")) {
-      return this.scrollPosition(Number(scrollXMatch[1]), Number(scrollYMatch[1]));
+    if (scrollXMatch && scrollYMatch) {
+      const requested = {
+        x: Number(scrollXMatch[1]),
+        y: Number(scrollYMatch[1]),
+      };
+      this.scroll = this.options.scrollPosition
+        ? this.options.scrollPosition(requested.x, requested.y)
+        : requested;
+      return undefined;
+    }
+    if (code.includes("return { x: scrollingElement.scrollLeft")) {
+      return this.scroll;
     }
     return undefined;
   }
@@ -72,7 +91,9 @@ class FullPageCaptureHarness implements FullPageCaptureTarget {
   public async sendDebugCommand(command: string): Promise<unknown> {
     this.debugCommands.push(command);
     if (command === "Page.getLayoutMetrics") {
-      return { cssContentSize: this.contentSize };
+      const index = Math.min(this.metricsIndex, this.options.contentSizes.length - 1);
+      this.metricsIndex += 1;
+      return { cssContentSize: this.options.contentSizes[index] };
     }
     if (command === "Page.captureScreenshot") {
       return { data: `tile-${this.captureIndex++}` };
@@ -82,7 +103,7 @@ class FullPageCaptureHarness implements FullPageCaptureTarget {
 
   public createImageFromPng(dataBase64: string): FullPageCaptureImage {
     const index = Number(dataBase64.replace("tile-", ""));
-    const tile = this.tiles[index];
+    const tile = this.options.tiles[index];
     if (!tile) {
       throw new Error(`Missing tile ${index}`);
     }
@@ -99,63 +120,114 @@ class FullPageCaptureHarness implements FullPageCaptureTarget {
   }
 }
 
+function image(width: number, height: number, value: number): FakeImage {
+  return new FakeImage(solidBitmap(width, height, value), { width, height });
+}
+
 describe("captureFullPage", () => {
-  test("stitches successive viewport rows and restores the page scroll state", async () => {
-    const top = new FakeImage(solidBitmap(2, 2, 1), { width: 2, height: 2 });
-    const bottom = new FakeImage(solidBitmap(2, 2, 2), { width: 2, height: 2 });
-    const harness = new FullPageCaptureHarness({ width: 2, height: 4 }, [top, bottom]);
+  test("stitches successive viewport rows and restores temporary page state", async () => {
+    const harness = new FullPageCaptureHarness({
+      contentSizes: [
+        { width: 2, height: 4 },
+        { width: 2, height: 4 },
+      ],
+      tiles: [image(2, 2, 1), image(2, 2, 2)],
+    });
 
-    const image = await captureFullPage(harness);
+    const captured = await captureFullPage(harness);
 
-    expect(image.getSize()).toEqual({ width: 2, height: 4 });
-    expect(Array.from(image.toBitmap())).toEqual([...Array(16).fill(1), ...Array(16).fill(2)]);
-    expect(harness.debugCommands).toEqual([
-      "Page.getLayoutMetrics",
-      "Page.captureScreenshot",
-      "Page.captureScreenshot",
-    ]);
+    expect(captured.getSize()).toEqual({ width: 2, height: 4 });
+    expect(Array.from(captured.toBitmap())).toEqual([...Array(16).fill(1), ...Array(16).fill(2)]);
     expect(harness.invalidations).toBe(2);
-    const preparationScript = harness.scripts[1] ?? "";
-    expect(preparationScript).toContain("scroll-snap-type: none !important");
-    expect(preparationScript).toContain("overflow: auto !important");
-    const captureScrollScript = harness.scripts.find((script) =>
-      script.includes("return { x: scrollingElement.scrollLeft"),
-    );
-    expect(captureScrollScript).toContain("scrollingElement.scrollTop = 0");
-    expect(captureScrollScript).not.toContain("scrollTo(");
+    expect(harness.scripts.some((script) => script.includes("position === 'fixed'"))).toBe(true);
+    expect(harness.scripts.some((script) => script.includes("position', 'relative'"))).toBe(true);
+    expect(harness.scripts.some((script) => script.includes("if (false)"))).toBe(true);
     const restoreScript = harness.scripts.at(-2) ?? "";
     expect(restoreScript).toContain("scrollingElement.scrollLeft = 1");
-    expect(restoreScript).toContain("scrollingElement.scrollTop = 1");
-    expect(restoreScript.indexOf("scrollingElement.scrollTop = 1")).toBeLessThan(
-      restoreScript.indexOf("?.remove()"),
-    );
+    expect(restoreScript).toContain("state.fixedElements");
+    expect(restoreScript).toContain("state.stickyElements");
+    expect(restoreScript).toContain("state.style.remove()");
   });
 
   test("crops the final tile when the browser clamps its scroll position", async () => {
-    const first = new FakeImage(solidBitmap(2, 2, 1), { width: 2, height: 2 });
-    const second = new FakeImage(solidBitmap(2, 2, 2), { width: 2, height: 2 });
     const finalBitmap = new Uint8Array([...Array(8).fill(3), ...Array(8).fill(4)]);
-    const final = new FakeImage(finalBitmap, { width: 2, height: 2 });
-    const harness = new FullPageCaptureHarness(
-      { width: 2, height: 5 },
-      [first, second, final],
-      (x, y) => ({ x, y: Math.min(y, 3) }),
+    const harness = new FullPageCaptureHarness({
+      contentSizes: [
+        { width: 2, height: 5 },
+        { width: 2, height: 5 },
+      ],
+      tiles: [image(2, 2, 1), image(2, 2, 2), new FakeImage(finalBitmap, { width: 2, height: 2 })],
+      scrollPosition: (x, y) => ({ x, y: Math.min(y, 3) }),
+    });
+
+    const captured = await captureFullPage(harness);
+
+    expect(captured.getSize()).toEqual({ width: 2, height: 5 });
+    expect(Array.from(captured.toBitmap().slice(-8))).toEqual(Array(8).fill(4));
+  });
+
+  test("rejects a page that asynchronously redirects the requested scroll", async () => {
+    const harness = new FullPageCaptureHarness({
+      contentSizes: [{ width: 2, height: 4 }],
+      tiles: [image(2, 2, 1)],
+      afterPaint: (position) => ({ x: position.x, y: position.y > 0 ? 0 : position.y }),
+    });
+
+    await expect(captureFullPage(harness)).rejects.toThrow(
+      "stable scroll position for full-page capture",
     );
 
-    const image = await captureFullPage(harness);
+    expect(
+      harness.debugCommands.filter((command) => command === "Page.captureScreenshot"),
+    ).toHaveLength(1);
+  });
 
-    expect(image.getSize()).toEqual({ width: 2, height: 5 });
-    expect(Array.from(image.toBitmap().slice(-8))).toEqual(Array(8).fill(4));
+  test("recaptures when scrolling expands the document", async () => {
+    const harness = new FullPageCaptureHarness({
+      contentSizes: [
+        { width: 2, height: 4 },
+        { width: 2, height: 6 },
+        { width: 2, height: 6 },
+      ],
+      tiles: [image(2, 2, 1), image(2, 2, 2), image(2, 2, 3), image(2, 2, 4), image(2, 2, 5)],
+    });
+
+    const captured = await captureFullPage(harness);
+
+    expect(captured.getSize()).toEqual({ width: 2, height: 6 });
+    expect(Array.from(captured.toBitmap())).toEqual([
+      ...Array(16).fill(3),
+      ...Array(16).fill(4),
+      ...Array(16).fill(5),
+    ]);
+  });
+
+  test("rejects captures that exceed tile or bitmap limits", async () => {
+    const tooManyTiles = new FullPageCaptureHarness({
+      contentSizes: [{ width: 2, height: 258 }],
+      tiles: [],
+    });
+    await expect(captureFullPage(tooManyTiles)).rejects.toBeInstanceOf(
+      FullPageCaptureUnsupportedError,
+    );
+
+    const oversizedBitmap = new FullPageCaptureHarness({
+      contentSizes: [{ width: 2, height: 2 }],
+      tiles: [new FakeImage(new Uint8Array(), { width: 10_000, height: 10_000 })],
+    });
+    await expect(captureFullPage(oversizedBitmap)).rejects.toThrow("maximum is 128 MiB");
   });
 
   test("restores the page after a tile capture fails", async () => {
-    const harness = new FullPageCaptureHarness({ width: 2, height: 2 }, []);
+    const harness = new FullPageCaptureHarness({
+      contentSizes: [{ width: 2, height: 2 }],
+      tiles: [],
+    });
 
     await expect(captureFullPage(harness)).rejects.toThrow("Missing tile 0");
 
     const restoreScript = harness.scripts.at(-2) ?? "";
     expect(restoreScript).toContain("scrollingElement.scrollLeft = 1");
-    expect(restoreScript).toContain("scrollingElement.scrollTop = 1");
-    expect(restoreScript).toContain("?.remove()");
+    expect(restoreScript).toContain("state.style.remove()");
   });
 });

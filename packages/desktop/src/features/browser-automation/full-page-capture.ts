@@ -18,6 +18,10 @@ export interface FullPageCaptureTarget {
   ): FullPageCaptureImage;
 }
 
+export interface FullPageCaptureOptions {
+  signal?: AbortSignal;
+}
+
 const FiniteNumberSchema = z.number().finite();
 const PositiveDimensionSchema = FiniteNumberSchema.positive().transform(Math.ceil);
 const PageCaptureStateSchema = z.object({
@@ -48,10 +52,29 @@ interface PixelScale {
   y: number;
 }
 
+interface CapturedBitmap {
+  bitmap: Uint8Array;
+  size: { width: number; height: number };
+  content: PageContentSize;
+}
+
+const MAX_FULL_PAGE_BITMAP_BYTES = 128 * 1024 * 1024;
+const MAX_FULL_PAGE_TILES = 128;
+const MAX_LAYOUT_PASSES = 3;
+const MAX_TILE_SCROLL_ATTEMPTS = 3;
+const SCROLL_EPSILON = 1;
+
 export class FullPageCaptureError extends Error {
   public constructor(message: string) {
     super(message);
     this.name = "FullPageCaptureError";
+  }
+}
+
+export class FullPageCaptureUnsupportedError extends FullPageCaptureError {
+  public constructor(message: string) {
+    super(message);
+    this.name = "FullPageCaptureUnsupportedError";
   }
 }
 
@@ -84,12 +107,56 @@ function readScreenshotData(value: unknown): string {
   return parseBoundary(ScreenshotResultSchema, value, "Page.captureScreenshot").data;
 }
 
-function tileOrigins(total: number, viewport: number): number[] {
-  const origins: number[] = [];
-  for (let origin = 0; origin < total; origin += viewport) {
-    origins.push(origin);
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) {
+    return;
   }
-  return origins;
+  if (signal.reason instanceof Error) {
+    throw signal.reason;
+  }
+  throw new FullPageCaptureError("Full-page capture was aborted");
+}
+
+function tileOrigins(
+  content: PageContentSize,
+  viewport: { width: number; height: number },
+): { x: number[]; y: number[] } {
+  const columns = Math.ceil(content.width / viewport.width);
+  const rows = Math.ceil(content.height / viewport.height);
+  const tileCount = columns * rows;
+  if (!Number.isSafeInteger(tileCount) || tileCount > MAX_FULL_PAGE_TILES) {
+    throw new FullPageCaptureUnsupportedError(
+      `Full-page screenshot requires ${tileCount} tiles; the maximum is ${MAX_FULL_PAGE_TILES}.`,
+    );
+  }
+  return {
+    x: Array.from({ length: columns }, (_, index) => index * viewport.width),
+    y: Array.from({ length: rows }, (_, index) => index * viewport.height),
+  };
+}
+
+function createOutputBitmap(
+  content: PageContentSize,
+  scale: PixelScale,
+): {
+  bitmap: Uint8Array;
+  size: { width: number; height: number };
+} {
+  const size = {
+    width: Math.round(content.width * scale.x),
+    height: Math.round(content.height * scale.y),
+  };
+  const byteLength = size.width * size.height * 4;
+  if (
+    !Number.isSafeInteger(byteLength) ||
+    byteLength <= 0 ||
+    byteLength > MAX_FULL_PAGE_BITMAP_BYTES
+  ) {
+    throw new FullPageCaptureUnsupportedError(
+      `Full-page screenshot bitmap requires ${Math.ceil(byteLength / 1024 / 1024)} MiB; the maximum is ${MAX_FULL_PAGE_BITMAP_BYTES / 1024 / 1024} MiB.`,
+    );
+  }
+  return { bitmap: new Uint8Array(byteLength), size };
 }
 
 function copyTile(input: {
@@ -121,7 +188,9 @@ function copyTile(input: {
     sourceLeft + copyWidth > tileSize.width ||
     sourceTop + copyHeight > tileSize.height
   ) {
-    throw new FullPageCaptureError("Full-page tile does not cover its target region");
+    throw new FullPageCaptureUnsupportedError(
+      "The page prevented the requested full-page scroll position.",
+    );
   }
 
   const bitmap = input.tile.toBitmap();
@@ -135,7 +204,11 @@ function copyTile(input: {
   }
 }
 
-async function waitForGuestPaint(target: FullPageCaptureTarget): Promise<void> {
+async function waitForGuestPaint(
+  target: FullPageCaptureTarget,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  throwIfAborted(signal);
   await target.executeJavaScript(`new Promise((resolve) => {
     let resolved = false;
     const finish = () => {
@@ -146,50 +219,152 @@ async function waitForGuestPaint(target: FullPageCaptureTarget): Promise<void> {
     requestAnimationFrame(() => requestAnimationFrame(finish));
     setTimeout(finish, 100);
   })`);
+  throwIfAborted(signal);
 }
 
-async function scrollGuest(
+async function setGuestScroll(
   target: FullPageCaptureTarget,
   position: { x: number; y: number },
-): Promise<{ x: number; y: number }> {
+): Promise<void> {
+  await target.executeJavaScript(`(() => {
+    const scrollingElement = document.scrollingElement ?? document.documentElement;
+    scrollingElement.scrollLeft = ${position.x};
+    scrollingElement.scrollTop = ${position.y};
+  })()`);
+}
+
+async function readGuestScroll(target: FullPageCaptureTarget): Promise<{ x: number; y: number }> {
   return readScrollPosition(
     await target.executeJavaScript(`(() => {
       const scrollingElement = document.scrollingElement ?? document.documentElement;
-      scrollingElement.scrollLeft = ${position.x};
-      scrollingElement.scrollTop = ${position.y};
       return { x: scrollingElement.scrollLeft, y: scrollingElement.scrollTop };
     })()`),
   );
 }
 
-async function captureTiles(
+async function setFixedElementsVisible(
   target: FullPageCaptureTarget,
-  viewport: { width: number; height: number },
-): Promise<{ bitmap: Uint8Array; size: { width: number; height: number } }> {
-  const content = readContentSize(await target.sendDebugCommand("Page.getLayoutMetrics"));
-  const targetXs = tileOrigins(content.width, viewport.width);
-  const targetYs = tileOrigins(content.height, viewport.height);
+  captureToken: string,
+  visible: boolean,
+): Promise<void> {
+  await target.executeJavaScript(`(() => {
+    const state = globalThis[${JSON.stringify(captureToken)}];
+    if (!state) return;
+    for (const entry of state.fixedElements) {
+      if (!entry.element.isConnected) continue;
+      if (${visible}) {
+        if (entry.visibility.value) {
+          entry.element.style.setProperty('visibility', entry.visibility.value, entry.visibility.priority);
+        } else {
+          entry.element.style.removeProperty('visibility');
+        }
+      } else {
+        entry.element.style.setProperty('visibility', 'hidden', 'important');
+      }
+    }
+  })()`);
+}
+
+function scrollCoversTarget(input: {
+  actual: { x: number; y: number };
+  target: { x: number; y: number };
+  viewport: { width: number; height: number };
+  content: PageContentSize;
+}): boolean {
+  const targetRight = Math.min(input.target.x + input.viewport.width, input.content.width);
+  const targetBottom = Math.min(input.target.y + input.viewport.height, input.content.height);
+  return (
+    input.actual.x <= input.target.x + SCROLL_EPSILON &&
+    input.actual.y <= input.target.y + SCROLL_EPSILON &&
+    input.actual.x + input.viewport.width >= targetRight - SCROLL_EPSILON &&
+    input.actual.y + input.viewport.height >= targetBottom - SCROLL_EPSILON
+  );
+}
+
+function sameScrollPosition(
+  first: { x: number; y: number },
+  second: { x: number; y: number },
+): boolean {
+  return (
+    Math.abs(first.x - second.x) <= SCROLL_EPSILON && Math.abs(first.y - second.y) <= SCROLL_EPSILON
+  );
+}
+
+async function captureViewportTile(input: {
+  target: FullPageCaptureTarget;
+  captureToken: string;
+  content: PageContentSize;
+  viewport: { width: number; height: number };
+  position: { x: number; y: number };
+  signal?: AbortSignal;
+}): Promise<{ image: FullPageCaptureImage; actualScroll: { x: number; y: number } }> {
+  for (let attempt = 0; attempt < MAX_TILE_SCROLL_ATTEMPTS; attempt += 1) {
+    throwIfAborted(input.signal);
+    await setFixedElementsVisible(
+      input.target,
+      input.captureToken,
+      input.position.x === 0 && input.position.y === 0,
+    );
+    await setGuestScroll(input.target, input.position);
+    await waitForGuestPaint(input.target, input.signal);
+    const actualScroll = await readGuestScroll(input.target);
+    if (
+      !scrollCoversTarget({
+        actual: actualScroll,
+        target: input.position,
+        viewport: input.viewport,
+        content: input.content,
+      })
+    ) {
+      continue;
+    }
+
+    input.target.invalidate();
+    const dataBase64 = readScreenshotData(
+      await input.target.sendDebugCommand("Page.captureScreenshot", {
+        format: "png",
+        captureBeyondViewport: false,
+      }),
+    );
+    throwIfAborted(input.signal);
+    const scrollAfterCapture = await readGuestScroll(input.target);
+    if (!sameScrollPosition(actualScroll, scrollAfterCapture)) {
+      continue;
+    }
+    return {
+      image: input.target.createImageFromPng(dataBase64),
+      actualScroll,
+    };
+  }
+
+  throw new FullPageCaptureUnsupportedError(
+    "The page did not remain at a stable scroll position for full-page capture.",
+  );
+}
+
+async function captureTiles(input: {
+  target: FullPageCaptureTarget;
+  captureToken: string;
+  content: PageContentSize;
+  viewport: { width: number; height: number };
+  signal?: AbortSignal;
+}): Promise<CapturedBitmap> {
+  const origins = tileOrigins(input.content, input.viewport);
   let output: Uint8Array | null = null;
   let outputSize = { width: 0, height: 0 };
   let scale: PixelScale | null = null;
 
-  for (const y of targetYs) {
-    for (const x of targetXs) {
-      const actualScroll = await scrollGuest(target, { x, y });
-      await waitForGuestPaint(target);
-      target.invalidate();
-      const dataBase64 = readScreenshotData(
-        await target.sendDebugCommand("Page.captureScreenshot", {
-          format: "png",
-          captureBeyondViewport: false,
-        }),
-      );
-      const tile = target.createImageFromPng(dataBase64);
-      const tileSize = tile.getSize();
+  for (const y of origins.y) {
+    for (const x of origins.x) {
+      const tileCapture = await captureViewportTile({
+        ...input,
+        position: { x, y },
+      });
+      const tileSize = tileCapture.image.getSize();
       if (!scale) {
         scale = {
-          x: tileSize.width / viewport.width,
-          y: tileSize.height / viewport.height,
+          x: tileSize.width / input.viewport.width,
+          y: tileSize.height / input.viewport.height,
         };
         if (
           !Number.isFinite(scale.x) ||
@@ -200,29 +375,27 @@ async function captureTiles(
         ) {
           throw new FullPageCaptureError("Full-page tile returned an invalid pixel scale");
         }
-        outputSize = {
-          width: Math.round(content.width * scale.x),
-          height: Math.round(content.height * scale.y),
-        };
-        output = new Uint8Array(outputSize.width * outputSize.height * 4);
+        const created = createOutputBitmap(input.content, scale);
+        output = created.bitmap;
+        outputSize = created.size;
       }
       if (!output || !scale) {
         throw new FullPageCaptureError("Full-page capture did not initialize its bitmap");
       }
       if (
-        tileSize.width !== Math.round(viewport.width * scale.x) ||
-        tileSize.height !== Math.round(viewport.height * scale.y)
+        tileSize.width !== Math.round(input.viewport.width * scale.x) ||
+        tileSize.height !== Math.round(input.viewport.height * scale.y)
       ) {
         throw new FullPageCaptureError("Full-page tile dimensions changed during capture");
       }
       copyTile({
         output,
         outputWidth: outputSize.width,
-        content,
-        viewport,
+        content: input.content,
+        viewport: input.viewport,
         target: { x, y },
-        actualScroll,
-        tile,
+        actualScroll: tileCapture.actualScroll,
+        tile: tileCapture.image,
         scale,
       });
     }
@@ -231,11 +404,40 @@ async function captureTiles(
   if (!output) {
     throw new FullPageCaptureError("Full-page capture produced no tiles");
   }
-  return { bitmap: output, size: outputSize };
+  return { bitmap: output, size: outputSize, content: input.content };
+}
+
+function sameContentSize(first: PageContentSize, second: PageContentSize): boolean {
+  return first.width === second.width && first.height === second.height;
+}
+
+async function captureStableLayout(input: {
+  target: FullPageCaptureTarget;
+  captureToken: string;
+  viewport: { width: number; height: number };
+  signal?: AbortSignal;
+}): Promise<CapturedBitmap> {
+  let content = readContentSize(await input.target.sendDebugCommand("Page.getLayoutMetrics"));
+  for (let pass = 0; pass < MAX_LAYOUT_PASSES; pass += 1) {
+    throwIfAborted(input.signal);
+    const capture = await captureTiles({ ...input, content });
+    await waitForGuestPaint(input.target, input.signal);
+    const nextContent = readContentSize(
+      await input.target.sendDebugCommand("Page.getLayoutMetrics"),
+    );
+    if (sameContentSize(content, nextContent)) {
+      return capture;
+    }
+    content = nextContent;
+  }
+  throw new FullPageCaptureUnsupportedError(
+    "The page layout kept changing during full-page capture.",
+  );
 }
 
 export async function captureFullPage(
   target: FullPageCaptureTarget,
+  options: FullPageCaptureOptions = {},
 ): Promise<FullPageCaptureImage> {
   const captureToken = `__paseoFullPageCapture_${randomUUID().replaceAll("-", "")}`;
   const originalState = readPageCaptureState(
@@ -246,8 +448,11 @@ export async function captureFullPage(
       viewportHeight: innerHeight
     })`),
   );
+  let image: FullPageCaptureImage | undefined;
+  let captureError: unknown;
 
   try {
+    throwIfAborted(options.signal);
     await target.executeJavaScript(`(() => {
       const style = document.createElement('style');
       style.textContent = [
@@ -256,26 +461,91 @@ export async function captureFullPage(
         '::-webkit-scrollbar { display: none !important; }'
       ].join(' ');
       document.documentElement.appendChild(style);
-      globalThis[${JSON.stringify(captureToken)}] = style;
-    })()`);
-    await waitForGuestPaint(target);
-
-    const capture = await captureTiles(target, {
-      width: originalState.viewportWidth,
-      height: originalState.viewportHeight,
-    });
-    return target.createImageFromBitmap(capture.bitmap, capture.size);
-  } finally {
-    await target.executeJavaScript(`(() => {
-      const scrollingElement = document.scrollingElement ?? document.documentElement;
-      try {
-        scrollingElement.scrollLeft = ${originalState.scrollX};
-        scrollingElement.scrollTop = ${originalState.scrollY};
-      } finally {
-        globalThis[${JSON.stringify(captureToken)}]?.remove();
-        delete globalThis[${JSON.stringify(captureToken)}];
+      const state = { style, fixedElements: [], stickyElements: [] };
+      globalThis[${JSON.stringify(captureToken)}] = state;
+      const rememberProperty = (element, property) => ({
+        property,
+        value: element.style.getPropertyValue(property),
+        priority: element.style.getPropertyPriority(property)
+      });
+      for (const element of document.querySelectorAll('*')) {
+        const position = getComputedStyle(element).position;
+        if (position === 'fixed') {
+          state.fixedElements.push({
+            element,
+            visibility: rememberProperty(element, 'visibility')
+          });
+        } else if (position === 'sticky' || position === '-webkit-sticky') {
+          const properties = ['position', 'top', 'right', 'bottom', 'left'].map((property) =>
+            rememberProperty(element, property)
+          );
+          state.stickyElements.push({ element, properties });
+          element.style.setProperty('position', 'relative', 'important');
+          element.style.setProperty('top', 'auto', 'important');
+          element.style.setProperty('right', 'auto', 'important');
+          element.style.setProperty('bottom', 'auto', 'important');
+          element.style.setProperty('left', 'auto', 'important');
+        }
       }
     })()`);
-    await waitForGuestPaint(target);
+    await waitForGuestPaint(target, options.signal);
+
+    const capture = await captureStableLayout({
+      target,
+      captureToken,
+      viewport: {
+        width: originalState.viewportWidth,
+        height: originalState.viewportHeight,
+      },
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    throwIfAborted(options.signal);
+    image = target.createImageFromBitmap(capture.bitmap, capture.size);
+  } catch (error) {
+    captureError = error;
   }
+
+  let cleanupError: unknown;
+  try {
+    await target.executeJavaScript(`(() => {
+        const state = globalThis[${JSON.stringify(captureToken)}];
+        if (!state) return false;
+        const restoreProperty = (element, snapshot) => {
+          if (!element.isConnected) return;
+          if (snapshot.value) {
+            element.style.setProperty(snapshot.property, snapshot.value, snapshot.priority);
+          } else {
+            element.style.removeProperty(snapshot.property);
+          }
+        };
+        const scrollingElement = document.scrollingElement ?? document.documentElement;
+        scrollingElement.scrollLeft = ${originalState.scrollX};
+        scrollingElement.scrollTop = ${originalState.scrollY};
+        for (const entry of state.fixedElements) {
+          restoreProperty(entry.element, entry.visibility);
+        }
+        for (const entry of state.stickyElements) {
+          for (const property of entry.properties) restoreProperty(entry.element, property);
+        }
+        state.style.remove();
+        delete globalThis[${JSON.stringify(captureToken)}];
+        return true;
+      })()`);
+    if (!options.signal?.aborted) {
+      await waitForGuestPaint(target, options.signal);
+    }
+  } catch (error) {
+    cleanupError = error;
+  }
+
+  if (captureError) {
+    throw captureError;
+  }
+  if (cleanupError) {
+    throw cleanupError;
+  }
+  if (!image) {
+    throw new FullPageCaptureError("Full-page capture returned no image");
+  }
+  return image;
 }

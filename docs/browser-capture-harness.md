@@ -95,11 +95,15 @@ plane stays below the overlay plane regardless of body insertion order; menus ke
 layering inside `overlay-root`. Activating a presented browser also focuses its registered guest
 `WebContents` in main so macOS assigns keyboard first-responder ownership to the page.
 
-There is no renderer prep/restore handshake. Main disables guest background throttling
-once when the webview attaches, then screenshot capture uses the shared serialized queue,
-invalidates before each attempt, and retries known first-frame failures within the
-5-second capture budget. Viewport screenshots use `capturePage({ stayHidden:false })`.
+There is no host-renderer parking handshake. Main disables guest background throttling once
+when the webview attaches, then screenshot capture uses the shared serialized queue, invalidates
+before each attempt, and retries known first-frame failures. Viewport screenshots retain the
+5-second budget and use `capturePage({ stayHidden:false })`.
+
 Electron guest `captureBeyondViewport` repeats the current compositor viewport below the fold,
-so full-page capture scrolls the guest, captures each painted viewport through CDP, stitches the
-bitmap tiles, and restores the original scroll position. The harness checks the distinct bottom
-marker so a correctly sized repeated viewport cannot pass.
+so full-page capture uses a bounded 30-second scroll-and-stitch path. It verifies the scroll before
+and after every CDP tile, retries changing layouts up to three passes, renders fixed elements only
+in the first viewport, temporarily removes sticky positioning, and restores page state afterward.
+Captures are capped at 128 tiles and a 128 MiB raw bitmap; timeout aborts the active capture instead
+of leaving work in the CDP queue. The harness checks the distinct bottom marker so a correctly
+sized repeated viewport cannot pass.

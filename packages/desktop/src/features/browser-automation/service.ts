@@ -10,6 +10,7 @@ import type {
   BrowserAutomationNetworkLogEntry,
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import { waitForActionableTarget, type ActionabilityResult } from "./actionability.js";
+import { FullPageCaptureUnsupportedError } from "./full-page-capture.js";
 import { BrowserSnapshotEngine } from "./snapshot-engine.js";
 import {
   dispatchTrustedClick,
@@ -36,7 +37,7 @@ export interface TabContents {
   goForward(): void;
   reload(): void;
   capturePage(options?: TabCapturePageOptions): Promise<TabImage>;
-  captureFullPage?(): Promise<TabImage>;
+  captureFullPage?(options?: { signal?: AbortSignal }): Promise<TabImage>;
   invalidate(): void;
   sendInputEvent(event: IsolatedKeyboardInputEvent): void;
   getConsoleMessages?(): BrowserAutomationConsoleLogEntry[];
@@ -70,6 +71,7 @@ const defaultSnapshotEngine = new BrowserSnapshotEngine();
 const DEFAULT_WAIT_TIMEOUT_MS = 5_000;
 const WAIT_POLL_INTERVAL_MS = 25;
 const PIXEL_CAPTURE_TIMEOUT_MS = 5_000;
+const FULL_PAGE_CAPTURE_TIMEOUT_MS = 30_000;
 const PIXEL_CAPTURE_RETRY_INTERVAL_MS = 200;
 const SCREENSHOT_NO_FRAME_MESSAGE = "The tab has not painted yet. Retry the screenshot.";
 const ALLOWED_PAGE_URL_PROTOCOLS = new Set(["http:", "https:"]);
@@ -105,6 +107,13 @@ class ScreenshotNoFrameError extends Error {
   }
 }
 
+class ScreenshotCaptureTimeoutError extends Error {
+  public constructor() {
+    super("Full-page screenshot exceeded the 30-second capture budget.");
+    this.name = "ScreenshotCaptureTimeoutError";
+  }
+}
+
 function isScreenshotNoFrameError(error: unknown): error is ScreenshotNoFrameError {
   return error instanceof ScreenshotNoFrameError;
 }
@@ -116,22 +125,33 @@ function screenshotNoFrameFailure(
   return fail(requestId, "screenshot_no_frame", error.message, true);
 }
 
-async function withPixelCaptureTimeout<T>(
-  capture: Promise<T>,
-  timeoutMs = PIXEL_CAPTURE_TIMEOUT_MS,
-): Promise<T> {
-  if (timeoutMs <= 0) {
-    throw new ScreenshotNoFrameError();
+interface PixelCaptureOptions {
+  timeoutMs?: number;
+  createTimeoutError?: () => Error;
+}
+
+async function withPixelCaptureTimeout<T>(input: {
+  capture: Promise<T>;
+  timeoutMs: number;
+  abort: (reason: Error) => void;
+  createTimeoutError: () => Error;
+}): Promise<T> {
+  if (input.timeoutMs <= 0) {
+    const error = input.createTimeoutError();
+    input.abort(error);
+    throw error;
   }
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => {
-      reject(new ScreenshotNoFrameError());
-    }, timeoutMs);
+      const error = input.createTimeoutError();
+      input.abort(error);
+      reject(error);
+    }, input.timeoutMs);
   });
 
   try {
-    return await Promise.race([capture, timeout]);
+    return await Promise.race([input.capture, timeout]);
   } finally {
     if (timeoutId) {
       clearTimeout(timeoutId);
@@ -161,15 +181,24 @@ async function runSerializedPixelCapture<T>(capture: () => Promise<T>): Promise<
 
 async function capturePixelFrameWithRetry<T>(
   contents: TabContents,
-  capture: () => Promise<T>,
+  capture: (signal: AbortSignal) => Promise<T>,
+  options: PixelCaptureOptions = {},
 ): Promise<T> {
-  const deadline = Date.now() + PIXEL_CAPTURE_TIMEOUT_MS;
+  const timeoutMs = options.timeoutMs ?? PIXEL_CAPTURE_TIMEOUT_MS;
+  const createTimeoutError = options.createTimeoutError ?? (() => new ScreenshotNoFrameError());
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    const controller = new AbortController();
     try {
       contents.invalidate();
-      return await withPixelCaptureTimeout(capture(), deadline - Date.now());
+      return await withPixelCaptureTimeout({
+        capture: capture(controller.signal),
+        timeoutMs: deadline - Date.now(),
+        abort: (reason) => controller.abort(reason),
+        createTimeoutError,
+      });
     } catch (error) {
-      if (isScreenshotNoFrameError(error)) {
+      if (isScreenshotNoFrameError(error) || error instanceof ScreenshotCaptureTimeoutError) {
         throw error;
       }
       if (!isKnownNoFrameCaptureError(error)) {
@@ -178,7 +207,7 @@ async function capturePixelFrameWithRetry<T>(
       await delay(Math.min(PIXEL_CAPTURE_RETRY_INTERVAL_MS, Math.max(0, deadline - Date.now())));
     }
   }
-  throw new ScreenshotNoFrameError();
+  throw createTimeoutError();
 }
 
 function isKnownNoFrameCaptureError(error: unknown): boolean {
@@ -192,9 +221,10 @@ function isKnownNoFrameCaptureError(error: unknown): boolean {
 
 async function runPaintedPixelCapture<T>(
   contents: TabContents,
-  capture: () => Promise<T>,
+  capture: (signal: AbortSignal) => Promise<T>,
+  options?: PixelCaptureOptions,
 ): Promise<T> {
-  return runSerializedPixelCapture(() => capturePixelFrameWithRetry(contents, capture));
+  return runSerializedPixelCapture(() => capturePixelFrameWithRetry(contents, capture, options));
 }
 
 async function capturePaintedViewport(contents: TabContents): Promise<TabImage> {
@@ -1253,10 +1283,23 @@ async function executeFullPageScreenshot(
     }
     let image: TabImage;
     try {
-      image = await runPaintedPixelCapture(target.contents, captureFullPage);
+      image = await runPaintedPixelCapture(
+        target.contents,
+        (signal) => captureFullPage({ signal }),
+        {
+          timeoutMs: FULL_PAGE_CAPTURE_TIMEOUT_MS,
+          createTimeoutError: () => new ScreenshotCaptureTimeoutError(),
+        },
+      );
     } catch (error) {
       if (isScreenshotNoFrameError(error)) {
         return screenshotNoFrameFailure(requestId, error);
+      }
+      if (error instanceof ScreenshotCaptureTimeoutError) {
+        return fail(requestId, "browser_timeout", error.message, true);
+      }
+      if (error instanceof FullPageCaptureUnsupportedError) {
+        return fail(requestId, "browser_unsupported", error.message);
       }
       throw error;
     }
