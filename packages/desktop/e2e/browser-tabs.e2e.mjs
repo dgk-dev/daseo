@@ -232,6 +232,21 @@ async function callBrowserTool(client, name, args = {}) {
   return mcpPayload(await client.callTool({ name, args }), name);
 }
 
+async function waitForGuestSelector(client, browserId) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const evaluated = await callBrowserTool(client, "browser_evaluate", {
+      browserId,
+      function: "() => Boolean(globalThis.__paseoSelector)",
+    });
+    if (JSON.parse(evaluated.resultJson) === true) {
+      return true;
+    }
+    await delay(50);
+  }
+  return false;
+}
+
 async function createCallerAgent(daemonPort) {
   const transport = new StreamableHTTPClientTransport(
     new URL(`http://127.0.0.1:${daemonPort}/mcp/agents`),
@@ -693,26 +708,18 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId,
 
   const annotateButton = originalDeck.getByRole("button", { name: "Annotate element" });
   await annotateButton.click();
-  await page.waitForTimeout(250);
+  const annotateSelectorActive = await waitForGuestSelector(client, browserId);
   await page.screenshot({ path: path.join(artifactDir, "local-page-annotate-selector.png") });
-  const annotateSelectorResult = await callBrowserTool(client, "browser_evaluate", {
-    browserId,
-    function: "() => Boolean(globalThis.__paseoSelector)",
-  });
-  if (JSON.parse(annotateSelectorResult.resultJson) !== true) {
+  if (!annotateSelectorActive) {
     failures.push("loaded local browser remains ready for element annotation");
   }
 
   await originalDeck.getByRole("button", { name: "Cancel element selector" }).click();
   const screenshotButton = originalDeck.getByRole("button", { name: "Screenshot element" });
   await screenshotButton.click();
-  await page.waitForTimeout(250);
+  const screenshotSelectorActive = await waitForGuestSelector(client, browserId);
   await page.screenshot({ path: path.join(artifactDir, "local-page-screenshot-selector.png") });
-  const screenshotSelectorResult = await callBrowserTool(client, "browser_evaluate", {
-    browserId,
-    function: "() => Boolean(globalThis.__paseoSelector)",
-  });
-  if (JSON.parse(screenshotSelectorResult.resultJson) !== true) {
+  if (!screenshotSelectorActive) {
     failures.push("loaded local browser remains ready for element screenshots");
   }
   await originalDeck.getByRole("button", { name: "Cancel element selector" }).click();
