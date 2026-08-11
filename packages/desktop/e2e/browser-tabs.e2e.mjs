@@ -197,11 +197,18 @@ async function startTargetPage() {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(`<!doctype html>
       <html>
-        <head><title>Desktop browser target</title></head>
+        <head>
+          <title>Desktop browser target</title>
+          <style>
+            html, body { min-height: 1600px; margin: 0; background: #111; }
+            #full-page-marker { position: absolute; left: 40px; top: 1370px; width: 200px; height: 100px; background: #00ff00; }
+          </style>
+        </head>
         <body>
           <button id="bridge-target" onclick="this.textContent = 'Clicked'">Bridge target</button>
           <label for="typing-target">Typing target</label>
           <input id="typing-target" />
+          <div id="full-page-marker"></div>
         </body>
       </html>`);
   });
@@ -230,6 +237,14 @@ function mcpPayload(result, command) {
 
 async function callBrowserTool(client, name, args = {}) {
   return mcpPayload(await client.callTool({ name, args }), name);
+}
+
+async function callBrowserScreenshot(client, args) {
+  const response = await client.callTool({ name: "browser_screenshot", args });
+  const result = mcpPayload(response, "browser_screenshot");
+  const image = response.content.find((entry) => entry.type === "image");
+  assert(image?.data, `browser_screenshot returned no image content: ${JSON.stringify(response)}`);
+  return { ...result, dataBase64: image.data };
 }
 
 async function createCallerAgent(daemonPort) {
@@ -324,6 +339,60 @@ async function readViewport(client, browserId) {
     function: "() => ({ width: window.innerWidth, height: window.innerHeight })",
   });
   return JSON.parse(evaluated.resultJson);
+}
+
+async function readScreenshotPixel(page, input) {
+  return await page.evaluate(async ({ dataBase64, x, y }) => {
+    const image = new Image();
+    const loaded = new Promise((resolve, reject) => {
+      image.addEventListener("load", resolve, { once: true });
+      image.addEventListener("error", () => reject(new Error("Screenshot PNG did not decode")), {
+        once: true,
+      });
+    });
+    image.src = `data:image/png;base64,${dataBase64}`;
+    await loaded;
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) throw new Error("Screenshot canvas context was unavailable");
+    context.drawImage(image, 0, 0);
+    return {
+      width: image.naturalWidth,
+      height: image.naturalHeight,
+      rgba: Array.from(context.getImageData(x, y, 1, 1).data),
+    };
+  }, input);
+}
+
+async function collectFullPageScreenshotFailures(page, client, browserId) {
+  const failures = [];
+  const screenshot = await callBrowserScreenshot(client, { browserId, fullPage: true });
+  const scale = screenshot.height / 1600;
+  const markerPixel = await readScreenshotPixel(page, {
+    dataBase64: screenshot.dataBase64,
+    x: Math.round(100 * scale),
+    y: Math.round(1400 * scale),
+  });
+  assert(
+    markerPixel.width === screenshot.width && markerPixel.height === screenshot.height,
+    `Full-page screenshot metadata did not match its PNG: ${JSON.stringify(markerPixel)}`,
+  );
+  const [red, green, blue, alpha] = markerPixel.rgba;
+  if (red >= 80 || green <= 200 || blue >= 100 || alpha !== 255) {
+    failures.push(
+      `full-page screenshot includes the bottom marker: ${JSON.stringify(markerPixel)}`,
+    );
+  }
+  const restoredScroll = await callBrowserTool(client, "browser_evaluate", {
+    browserId,
+    function: "() => ({ x: scrollX, y: scrollY })",
+  });
+  if (restoredScroll.resultJson !== '{"x":0,"y":0}') {
+    failures.push(`full-page screenshot restores page scroll: ${restoredScroll.resultJson}`);
+  }
+  return failures;
 }
 
 async function clickGuestElement(page, client, browserId, selector) {
@@ -455,6 +524,8 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId 
     text: "Bridge target",
     timeoutMs: 5_000,
   });
+  failures.push(...(await collectFullPageScreenshotFailures(page, client, browserId)));
+
   const requestedViewport = { width: 640, height: 480 };
   await callBrowserTool(client, "browser_resize", { browserId, ...requestedViewport });
   recordViewportMismatch(

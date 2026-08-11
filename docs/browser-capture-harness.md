@@ -10,8 +10,8 @@ It validates the compositor behavior that unit tests cannot see:
   stacking changes;
 - a newly attached resident webview whose first useful frame is delayed can be captured
   by retrying until the frame appears;
-- both viewport `capturePage` and full-page CDP screenshots return real pixels from
-  the permanent production parking state;
+- both viewport `capturePage` and the compiled production full-page capture return real pixels
+  from the permanent production parking state, including the fixture's bottom marker;
 - guest background throttling can be disabled once at attach without per-capture
   renderer coordination;
 - the real-Electron host-composer sentinel proves guest Enter cannot submit a focused
@@ -30,11 +30,10 @@ Run it with the repo Electron:
 npm run capture-harness --workspace=@getpaseo/desktop
 ```
 
-Build the desktop main process before the automation group so its production guest
-preload is available:
+The command builds the desktop main process first so the harness exercises the compiled
+production full-page capture, keyboard boundary, and guest preload. Run the automation group with:
 
 ```bash
-npm run build:main --workspace=@getpaseo/desktop
 PASEO_CAPTURE_HARNESS_GROUP=automation npm run capture-harness --workspace=@getpaseo/desktop
 ```
 
@@ -99,5 +98,8 @@ layering inside `overlay-root`. Activating a presented browser also focuses its 
 There is no renderer prep/restore handshake. Main disables guest background throttling
 once when the webview attaches, then screenshot capture uses the shared serialized queue,
 invalidates before each attempt, and retries known first-frame failures within the
-5-second capture budget. Viewport screenshots use `capturePage({ stayHidden:false })`;
-full-page screenshots use the existing CDP path with layout metrics and screenshot clip.
+5-second capture budget. Viewport screenshots use `capturePage({ stayHidden:false })`.
+Electron guest `captureBeyondViewport` repeats the current compositor viewport below the fold,
+so full-page capture scrolls the guest, captures each painted viewport through CDP, stitches the
+bitmap tiles, and restores the original scroll position. The harness checks the distinct bottom
+marker so a correctly sized repeated viewport cannot pass.

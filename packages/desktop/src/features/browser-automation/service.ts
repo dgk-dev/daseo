@@ -36,6 +36,7 @@ export interface TabContents {
   goForward(): void;
   reload(): void;
   capturePage(options?: TabCapturePageOptions): Promise<TabImage>;
+  captureFullPage?(): Promise<TabImage>;
   invalidate(): void;
   sendInputEvent(event: IsolatedKeyboardInputEvent): void;
   getConsoleMessages?(): BrowserAutomationConsoleLogEntry[];
@@ -1220,29 +1221,6 @@ async function executeScreenshot(
   });
 }
 
-interface CdpLayoutMetrics {
-  cssLayoutViewport?: {
-    clientWidth?: number;
-    clientHeight?: number;
-  };
-  layoutViewport?: {
-    clientWidth?: number;
-    clientHeight?: number;
-  };
-  cssContentSize?: {
-    width?: number;
-    height?: number;
-  };
-  contentSize?: {
-    width?: number;
-    height?: number;
-  };
-}
-
-interface CdpCaptureScreenshotResult {
-  data?: string;
-}
-
 interface CdpRuntimeEvaluateResult {
   result?: {
     objectId?: string;
@@ -1258,26 +1236,6 @@ interface CdpDescribeNodeResult {
   };
 }
 
-async function getCdpLayoutMetrics(contents: TabContents): Promise<{
-  viewportWidth: number;
-  viewportHeight: number;
-  contentWidth: number;
-  contentHeight: number;
-}> {
-  if (!contents.sendDebugCommand) {
-    return { viewportWidth: 0, viewportHeight: 0, contentWidth: 0, contentHeight: 0 };
-  }
-  const metrics = (await contents.sendDebugCommand("Page.getLayoutMetrics")) as CdpLayoutMetrics;
-  const viewport = metrics.cssLayoutViewport ?? metrics.layoutViewport;
-  const contentSize = metrics.cssContentSize ?? metrics.contentSize;
-  return {
-    viewportWidth: Math.ceil(viewport?.clientWidth ?? 0),
-    viewportHeight: Math.ceil(viewport?.clientHeight ?? 0),
-    contentWidth: Math.ceil(contentSize?.width ?? 0),
-    contentHeight: Math.ceil(contentSize?.height ?? 0),
-  };
-}
-
 async function executeFullPageScreenshot(
   requestId: string,
   workspaceId: string | undefined,
@@ -1289,33 +1247,24 @@ async function executeFullPageScreenshot(
     return target;
   }
   return withDialogCapture(target.contents, async () => {
-    if (!target.contents.sendDebugCommand) {
+    const captureFullPage = target.contents.captureFullPage?.bind(target.contents);
+    if (!captureFullPage) {
       return fail(requestId, "browser_unsupported", "browser_screenshot fullPage requires CDP");
     }
-    const sendDebugCommand = target.contents.sendDebugCommand.bind(target.contents);
-    let screenshot: CdpCaptureScreenshotResult;
-    let width = 0;
-    let height = 0;
+    let image: TabImage;
     try {
-      screenshot = await runPaintedPixelCapture(target.contents, async () => {
-        const metrics = await getCdpLayoutMetrics(target.contents);
-        width = metrics.contentWidth;
-        height = metrics.contentHeight;
-        return (await sendDebugCommand("Page.captureScreenshot", {
-          format: "png",
-          captureBeyondViewport: true,
-          clip: { x: 0, y: 0, width, height, scale: 1 },
-        })) as CdpCaptureScreenshotResult;
-      });
+      image = await runPaintedPixelCapture(target.contents, captureFullPage);
     } catch (error) {
       if (isScreenshotNoFrameError(error)) {
         return screenshotNoFrameFailure(requestId, error);
       }
       throw error;
     }
-    if (!screenshot.data) {
+    const png = image.toPNG();
+    if (png.length === 0) {
       return fail(requestId, "browser_unsupported", "browser_screenshot fullPage returned no data");
     }
+    const size = image.getSize();
     return {
       requestId,
       ok: true,
@@ -1323,9 +1272,9 @@ async function executeFullPageScreenshot(
         command: "screenshot",
         browserId: target.browserId,
         mimeType: "image/png",
-        dataBase64: screenshot.data,
-        width,
-        height,
+        dataBase64: Buffer.from(png).toString("base64"),
+        width: size.width,
+        height: size.height,
       },
     };
   });

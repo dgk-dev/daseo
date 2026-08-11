@@ -76,7 +76,7 @@ class FakeTab implements TabContents {
     cssLayoutViewport: { clientWidth: 390, clientHeight: 844 },
     cssContentSize: { width: 390, height: 1200 },
   };
-  public fullPageScreenshotData = "fullPagePng";
+  public fullPageScreenshotData = "ZnVsbFBhZ2VQbmc=";
   public documentNodeId = 1;
   public queriedNodeId = 2;
   public canNavigateBack = true;
@@ -181,6 +181,21 @@ class FakeTab implements TabContents {
       });
     }
     return new FakeImage();
+  }
+
+  public async captureFullPage(): Promise<TabImage> {
+    this.actions.push("capture-full-page");
+    if (this.fullPageCaptureFailuresBeforeSuccess > 0) {
+      this.fullPageCaptureFailuresBeforeSuccess -= 1;
+      throw new Error(this.fullPageScreenshotErrorMessage);
+    }
+    if (this.fullPageScreenshotThrows) {
+      throw new Error(this.fullPageScreenshotErrorMessage);
+    }
+    return new FakeImage(Buffer.from(this.fullPageScreenshotData, "base64"), {
+      width: 390,
+      height: 1200,
+    });
   }
 
   public invalidate(): void {
@@ -1749,7 +1764,7 @@ describe("executeAutomationCommand", () => {
     expect(secondTab.actions).toEqual(["invalidate", "capture"]);
   });
 
-  test("screenshot with fullPage captures the page content area through CDP", async () => {
+  test("screenshot with fullPage returns the captured page image", async () => {
     const browser = new BrowserAutomationHarness();
 
     const result = await browser.execute({
@@ -1764,30 +1779,15 @@ describe("executeAutomationCommand", () => {
         command: "screenshot",
         browserId: BROWSER_A,
         mimeType: "image/png",
-        dataBase64: "fullPagePng",
+        dataBase64: "ZnVsbFBhZ2VQbmc=",
         width: 390,
         height: 1200,
       },
     });
-    expect(browser.tab.debugCommands).toEqual([
-      { command: "Page.getLayoutMetrics" },
-      {
-        command: "Page.captureScreenshot",
-        params: {
-          format: "png",
-          captureBeyondViewport: true,
-          clip: { x: 0, y: 0, width: 390, height: 1200, scale: 1 },
-        },
-      },
-    ]);
-    expect(browser.tab.actions).toEqual([
-      "invalidate",
-      "debug:Page.getLayoutMetrics",
-      "debug:Page.captureScreenshot",
-    ]);
+    expect(browser.tab.actions).toEqual(["invalidate", "capture-full-page"]);
   });
 
-  test("screenshot with fullPage returns unsupported when CDP returns no image", async () => {
+  test("screenshot with fullPage returns unsupported when capture returns no image", async () => {
     const browser = new BrowserAutomationHarness();
     browser.tab.fullPageScreenshotData = "";
 
@@ -1805,14 +1805,10 @@ describe("executeAutomationCommand", () => {
         retryable: false,
       },
     });
-    expect(browser.tab.actions).toEqual([
-      "invalidate",
-      "debug:Page.getLayoutMetrics",
-      "debug:Page.captureScreenshot",
-    ]);
+    expect(browser.tab.actions).toEqual(["invalidate", "capture-full-page"]);
   });
 
-  test("screenshot with fullPage retries UnknownVizError until the first CDP frame appears", async () => {
+  test("screenshot with fullPage retries UnknownVizError until the first frame appears", async () => {
     vi.useFakeTimers();
     try {
       const browser = new BrowserAutomationHarness();
@@ -1831,25 +1827,23 @@ describe("executeAutomationCommand", () => {
           command: "screenshot",
           browserId: BROWSER_A,
           mimeType: "image/png",
-          dataBase64: "fullPagePng",
+          dataBase64: "ZnVsbFBhZ2VQbmc=",
           width: 390,
           height: 1200,
         },
       });
       expect(browser.tab.actions).toEqual([
         "invalidate",
-        "debug:Page.getLayoutMetrics",
-        "debug:Page.captureScreenshot",
+        "capture-full-page",
         "invalidate",
-        "debug:Page.getLayoutMetrics",
-        "debug:Page.captureScreenshot",
+        "capture-full-page",
       ]);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  test("screenshot with fullPage surfaces ordinary CDP capture errors", async () => {
+  test("screenshot with fullPage surfaces ordinary capture errors", async () => {
     const browser = new BrowserAutomationHarness();
     browser.tab.fullPageScreenshotThrows = true;
     browser.tab.fullPageScreenshotErrorMessage = "Debugger detached";
@@ -1860,11 +1854,7 @@ describe("executeAutomationCommand", () => {
         args: { browserId: BROWSER_A, fullPage: true },
       }),
     ).rejects.toThrow("Debugger detached");
-    expect(browser.tab.actions).toEqual([
-      "invalidate",
-      "debug:Page.getLayoutMetrics",
-      "debug:Page.captureScreenshot",
-    ]);
+    expect(browser.tab.actions).toEqual(["invalidate", "capture-full-page"]);
   });
 
   test("upload resolves workspace files before setting them on the file input", async () => {
