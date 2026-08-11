@@ -523,9 +523,7 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId 
   });
   await annotationInput.waitFor({ state: "visible", timeout: 5_000 });
   const selectedButtonLabel = originalDeck.getByText("button · Selector target", { exact: true });
-  if (!(await selectedButtonLabel.isVisible())) {
-    failures.push("element annotation selects the interactive control under the pointer");
-  }
+  await selectedButtonLabel.waitFor({ state: "visible", timeout: 5_000 });
   const selectorTargetActivation = await callBrowserTool(client, "browser_evaluate", {
     browserId,
     function: "() => Boolean(globalThis.__selectorTargetActivated)",
