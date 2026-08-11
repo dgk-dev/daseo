@@ -115,10 +115,11 @@ describe("captureFullPage", () => {
       "Page.captureScreenshot",
     ]);
     expect(harness.invalidations).toBe(2);
-    expect(harness.scripts.at(-2)).toContain(
-      'document.documentElement.style.scrollBehavior = "smooth"',
+    const restoreScript = harness.scripts.at(-2) ?? "";
+    expect(restoreScript).toContain('document.documentElement.style.scrollBehavior = "smooth"');
+    expect(restoreScript.indexOf("scrollTo(1, 1)")).toBeLessThan(
+      restoreScript.indexOf('style.scrollBehavior = "smooth"'),
     );
-    expect(harness.scripts.at(-2)).toContain("scrollTo(1, 1)");
   });
 
   test("crops the final tile when the browser clamps its scroll position", async () => {
@@ -136,5 +137,15 @@ describe("captureFullPage", () => {
 
     expect(image.getSize()).toEqual({ width: 2, height: 5 });
     expect(Array.from(image.toBitmap().slice(-8))).toEqual(Array(8).fill(4));
+  });
+
+  test("restores the page after a tile capture fails", async () => {
+    const harness = new FullPageCaptureHarness({ width: 2, height: 2 }, []);
+
+    await expect(captureFullPage(harness)).rejects.toThrow("Missing tile 0");
+
+    const restoreScript = harness.scripts.at(-2) ?? "";
+    expect(restoreScript).toContain("scrollTo(1, 1)");
+    expect(restoreScript).toContain('document.documentElement.style.scrollBehavior = "smooth"');
   });
 });

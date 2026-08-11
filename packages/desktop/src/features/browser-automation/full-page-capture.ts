@@ -271,8 +271,8 @@ export async function captureFullPage(
     await target.executeJavaScript(`
       globalThis[${JSON.stringify(captureToken)}]?.remove();
       delete globalThis[${JSON.stringify(captureToken)}];
-      document.documentElement.style.scrollBehavior = ${JSON.stringify(originalState.scrollBehavior)};
       scrollTo(${originalState.scrollX}, ${originalState.scrollY});
+      document.documentElement.style.scrollBehavior = ${JSON.stringify(originalState.scrollBehavior)};
     `);
     await waitForGuestPaint(target);
   }
