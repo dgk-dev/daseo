@@ -1434,10 +1434,19 @@ export function BrowserPane({
         }
         function rememberDisabledTarget(e) {
           blockEvent(e);
+          if (typeof e.button === 'number' && e.button !== 0) return;
           var target = e.target;
           if (target && typeof target.matches === 'function' && target.matches(':disabled')) {
             disabledTarget = target;
           }
+        }
+        function cancelDisabledTarget(e) {
+          blockEvent(e);
+          if (disabledCompletionTimer !== null) {
+            window.clearTimeout(disabledCompletionTimer);
+            disabledCompletionTimer = null;
+          }
+          disabledTarget = null;
         }
         function completeDisabledTarget(e) {
           blockEvent(e);
@@ -1462,8 +1471,10 @@ export function BrowserPane({
           window.removeEventListener('mouseup', completeDisabledTarget, true);
           window.removeEventListener('pointerdown', rememberDisabledTarget, true);
           window.removeEventListener('pointerup', completeDisabledTarget, true);
+          window.removeEventListener('pointercancel', cancelDisabledTarget, true);
           window.removeEventListener('touchstart', rememberDisabledTarget, true);
           window.removeEventListener('touchend', completeDisabledTarget, true);
+          window.removeEventListener('touchcancel', cancelDisabledTarget, true);
           window.removeEventListener('focus', blockEvent, true);
           window.removeEventListener('submit', blockEvent, true);
           if (disabledCompletionTimer !== null) {
@@ -1484,8 +1495,10 @@ export function BrowserPane({
         window.addEventListener('mouseup', completeDisabledTarget, true);
         window.addEventListener('pointerdown', rememberDisabledTarget, true);
         window.addEventListener('pointerup', completeDisabledTarget, true);
+        window.addEventListener('pointercancel', cancelDisabledTarget, true);
         window.addEventListener('touchstart', rememberDisabledTarget, true);
         window.addEventListener('touchend', completeDisabledTarget, true);
+        window.addEventListener('touchcancel', cancelDisabledTarget, true);
         window.addEventListener('focus', blockEvent, true);
         window.addEventListener('submit', blockEvent, true);
         window.__paseoSelector = { destroy: destroy };
