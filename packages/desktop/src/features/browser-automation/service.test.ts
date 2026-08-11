@@ -42,6 +42,7 @@ class FakeTab implements TabContents {
   public readonly inputEvents: IsolatedKeyboardInputEvent[] = [];
   private readonly captureStartWaiters: Array<() => void> = [];
   private readonly deferredCaptures: Array<(image: TabImage) => void> = [];
+  private finishFullPageAbort: (() => void) | null = null;
 
   public destroyed = false;
   public bodyText = "";
@@ -74,6 +75,7 @@ class FakeTab implements TabContents {
   public fullPageScreenshotErrorMessage = "UnknownVizError";
   public fullPageCaptureFailuresBeforeSuccess = 0;
   public fullPageCaptureWaitsForAbort = false;
+  public fullPageAbortCleanupDeferred = false;
   public fullPageCaptureAborted = false;
   public fullPageCaptureError: Error | null = null;
   public layoutMetrics = {
@@ -195,7 +197,12 @@ class FakeTab implements TabContents {
           "abort",
           () => {
             this.fullPageCaptureAborted = true;
-            reject(options.signal?.reason);
+            const finish = () => reject(options.signal?.reason);
+            if (this.fullPageAbortCleanupDeferred) {
+              this.finishFullPageAbort = finish;
+            } else {
+              finish();
+            }
           },
           { once: true },
         );
@@ -274,6 +281,15 @@ class FakeTab implements TabContents {
         }
       });
     });
+  }
+
+  public finishFullPageAbortCleanup(): void {
+    const finish = this.finishFullPageAbort;
+    if (!finish) {
+      throw new Error("No full-page abort cleanup is waiting");
+    }
+    this.finishFullPageAbort = null;
+    finish();
   }
 
   public finishNextCapture(): void {
@@ -1903,13 +1919,22 @@ describe("executeAutomationCommand", () => {
     try {
       const browser = new BrowserAutomationHarness();
       browser.tab.fullPageCaptureWaitsForAbort = true;
+      browser.tab.fullPageAbortCleanupDeferred = true;
 
       const pending = browser.execute({
         command: "screenshot",
         args: { browserId: BROWSER_A, fullPage: true },
       });
+      let settled = false;
+      void pending.then(() => {
+        settled = true;
+        return undefined;
+      });
       await vi.advanceTimersByTimeAsync(30_000);
 
+      expect(browser.tab.fullPageCaptureAborted).toBe(true);
+      expect(settled).toBe(false);
+      browser.tab.finishFullPageAbortCleanup();
       await expect(pending).resolves.toEqual({
         requestId: "req-screenshot",
         ok: false,

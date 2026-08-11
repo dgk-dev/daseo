@@ -128,6 +128,7 @@ function screenshotNoFrameFailure(
 interface PixelCaptureOptions {
   timeoutMs?: number;
   createTimeoutError?: () => Error;
+  waitForCaptureAfterTimeout?: boolean;
 }
 
 async function withPixelCaptureTimeout<T>(input: {
@@ -135,6 +136,7 @@ async function withPixelCaptureTimeout<T>(input: {
   timeoutMs: number;
   abort: (reason: Error) => void;
   createTimeoutError: () => Error;
+  waitForCaptureAfterTimeout: boolean;
 }): Promise<T> {
   if (input.timeoutMs <= 0) {
     const error = input.createTimeoutError();
@@ -142,16 +144,22 @@ async function withPixelCaptureTimeout<T>(input: {
     throw error;
   }
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let timeoutError: Error | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => {
-      const error = input.createTimeoutError();
-      input.abort(error);
-      reject(error);
+      timeoutError = input.createTimeoutError();
+      input.abort(timeoutError);
+      reject(timeoutError);
     }, input.timeoutMs);
   });
 
   try {
     return await Promise.race([input.capture, timeout]);
+  } catch (error) {
+    if (error === timeoutError && input.waitForCaptureAfterTimeout) {
+      await input.capture.catch(() => undefined);
+    }
+    throw error;
   } finally {
     if (timeoutId) {
       clearTimeout(timeoutId);
@@ -196,6 +204,7 @@ async function capturePixelFrameWithRetry<T>(
         timeoutMs: deadline - Date.now(),
         abort: (reason) => controller.abort(reason),
         createTimeoutError,
+        waitForCaptureAfterTimeout: options.waitForCaptureAfterTimeout ?? false,
       });
     } catch (error) {
       if (isScreenshotNoFrameError(error) || error instanceof ScreenshotCaptureTimeoutError) {
@@ -1289,6 +1298,7 @@ async function executeFullPageScreenshot(
         {
           timeoutMs: FULL_PAGE_CAPTURE_TIMEOUT_MS,
           createTimeoutError: () => new ScreenshotCaptureTimeoutError(),
+          waitForCaptureAfterTimeout: true,
         },
       );
     } catch (error) {
