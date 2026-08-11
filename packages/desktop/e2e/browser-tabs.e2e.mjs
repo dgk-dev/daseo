@@ -384,7 +384,7 @@ function recordViewportMismatch(failures, label, actual, expected) {
   );
 }
 
-async function runRegression({ page, client, serverId, targetUrl, callerAgentId }) {
+async function runRegression({ page, client, serverId, targetUrl, callerAgentId, artifactDir }) {
   const failures = [];
   const originalWorkspaceId = workspaceIds[0];
   const originalWorkspaceRow = page.getByTestId(
@@ -673,15 +673,49 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId 
     responsiveViewport,
   );
 
-  await originalDeck.getByRole("button", { name: "Annotate element" }).click();
+  const readyStateResult = await callBrowserTool(client, "browser_evaluate", {
+    browserId,
+    function: "() => document.readyState",
+  });
+  assert(
+    JSON.parse(readyStateResult.resultJson) === "complete",
+    "Local browser document did not finish loading",
+  );
+  // Reproduce the report's mismatch: the guest is complete, but the pane's
+  // last loading signal says it is not ready.
+  await page.evaluate((id) => {
+    const webview = document.querySelector(`[data-paseo-browser-id="${id}"]`);
+    if (!(webview instanceof HTMLElement)) {
+      throw new Error(`Browser webview ${id} was unavailable`);
+    }
+    webview.dispatchEvent(new Event("did-start-loading"));
+  }, browserId);
+
+  const annotateButton = originalDeck.getByRole("button", { name: "Annotate element" });
+  await annotateButton.click();
   await page.waitForTimeout(250);
-  const selectorResult = await callBrowserTool(client, "browser_evaluate", {
+  await page.screenshot({ path: path.join(artifactDir, "local-page-annotate-selector.png") });
+  const annotateSelectorResult = await callBrowserTool(client, "browser_evaluate", {
     browserId,
     function: "() => Boolean(globalThis.__paseoSelector)",
   });
-  if (JSON.parse(selectorResult.resultJson) !== true) {
-    failures.push("reused loaded browser remains ready for element annotation after remount");
+  if (JSON.parse(annotateSelectorResult.resultJson) !== true) {
+    failures.push("loaded local browser remains ready for element annotation");
   }
+
+  await originalDeck.getByRole("button", { name: "Cancel element selector" }).click();
+  const screenshotButton = originalDeck.getByRole("button", { name: "Screenshot element" });
+  await screenshotButton.click();
+  await page.waitForTimeout(250);
+  await page.screenshot({ path: path.join(artifactDir, "local-page-screenshot-selector.png") });
+  const screenshotSelectorResult = await callBrowserTool(client, "browser_evaluate", {
+    browserId,
+    function: "() => Boolean(globalThis.__paseoSelector)",
+  });
+  if (JSON.parse(screenshotSelectorResult.resultJson) !== true) {
+    failures.push("loaded local browser remains ready for element screenshots");
+  }
+  await originalDeck.getByRole("button", { name: "Cancel element selector" }).click();
 
   if (failures.length > 0) {
     throw new Error(`Browser viewport regressions:\n- ${failures.join("\n- ")}`);
@@ -698,6 +732,7 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId 
     list: "passed",
     snapshot: "passed",
     click: "passed",
+    localPageSelectors: "passed",
   };
 }
 
@@ -796,10 +831,11 @@ async function main() {
       serverId: status.serverId,
       targetUrl: target.url,
       callerAgentId,
+      artifactDir,
     });
     writeJson(path.join(artifactDir, "result.json"), report);
     console.log(
-      `Browser desktop browser E2E passed: WebContents ${report.originalWebContentsId} remained ${report.finalWebContentsId}; viewport, inactive capture, focus continuity, list, snapshot, click passed.`,
+      `Browser desktop browser E2E passed: WebContents ${report.originalWebContentsId} remained ${report.finalWebContentsId}; viewport, inactive capture, focus continuity, list, snapshot, click, local-page selectors passed.`,
     );
   } catch (error) {
     console.error(`Browser desktop browser E2E failed. Artifacts: ${artifactDir}`);

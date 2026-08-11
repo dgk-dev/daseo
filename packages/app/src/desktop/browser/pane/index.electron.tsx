@@ -1233,7 +1233,8 @@ export function BrowserPane({
   const startElementSelector = useCallback(
     (mode: "annotate" | "screenshot") => {
       const webview = webviewRef.current;
-      if (!webview || !domReadyRef.current) return;
+      if (!webview) return;
+      // The cached load signal can lag a completed guest document; executeJavaScript is the readiness boundary.
       // Annotate needs a workspace scope to attach to; screenshot only copies.
       if (mode === "annotate" && !workspaceAttachmentScopeKey) return;
       selectorModeRef.current = mode;
@@ -1470,7 +1471,7 @@ export function BrowserPane({
             window.setTimeout(() => {
               window.clearInterval(poll);
               setSelectorMode(null);
-              if (webviewRef.current !== webview || !domReadyRef.current) {
+              if (webviewRef.current !== webview) {
                 return;
               }
               destroyWebviewSelector(webview);
@@ -1490,7 +1491,7 @@ export function BrowserPane({
   const cancelElementSelector = useCallback(() => {
     const webview = webviewRef.current;
     setSelectorMode(null);
-    if (webview && domReadyRef.current) {
+    if (webview) {
       try {
         clearWebviewSelector(webview);
       } catch {}
