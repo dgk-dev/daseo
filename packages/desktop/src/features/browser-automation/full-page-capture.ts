@@ -539,9 +539,7 @@ export async function captureFullPage(
         delete globalThis[${JSON.stringify(captureToken)}];
         return true;
       })()`);
-    if (!options.signal?.aborted) {
-      await waitForGuestPaint(target, options.signal);
-    }
+    await waitForGuestPaint(target, undefined);
   } catch (error) {
     cleanupError = error;
     cleanupFailed = true;
