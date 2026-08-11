@@ -305,6 +305,7 @@ async function captureViewportTile(input: {
       input.captureToken,
       input.position.x === 0 && input.position.y === 0,
     );
+    throwIfAborted(input.signal);
     await setGuestScroll(input.target, input.position);
     await waitForGuestPaint(input.target, input.signal);
     const actualScroll = await readGuestScroll(input.target);
@@ -439,6 +440,7 @@ export async function captureFullPage(
   target: FullPageCaptureTarget,
   options: FullPageCaptureOptions = {},
 ): Promise<FullPageCaptureImage> {
+  throwIfAborted(options.signal);
   const captureToken = `__paseoFullPageCapture_${randomUUID().replaceAll("-", "")}`;
   const originalState = readPageCaptureState(
     await target.executeJavaScript(`({
@@ -450,6 +452,7 @@ export async function captureFullPage(
   );
   let image: FullPageCaptureImage | undefined;
   let captureError: unknown;
+  let captureFailed = false;
 
   try {
     throwIfAborted(options.signal);
@@ -503,9 +506,11 @@ export async function captureFullPage(
     image = target.createImageFromBitmap(capture.bitmap, capture.size);
   } catch (error) {
     captureError = error;
+    captureFailed = true;
   }
 
   let cleanupError: unknown;
+  let cleanupFailed = false;
   try {
     await target.executeJavaScript(`(() => {
         const state = globalThis[${JSON.stringify(captureToken)}];
@@ -536,12 +541,13 @@ export async function captureFullPage(
     }
   } catch (error) {
     cleanupError = error;
+    cleanupFailed = true;
   }
 
-  if (captureError) {
+  if (captureFailed) {
     throw captureError;
   }
-  if (cleanupError) {
+  if (cleanupFailed) {
     throw cleanupError;
   }
   if (!image) {
