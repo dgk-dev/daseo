@@ -1265,6 +1265,8 @@ export function BrowserPane({
         hoverLabel.style.display = 'none';
         document.documentElement.appendChild(hoverLabel);
         var last = null;
+        var disabledTarget = null;
+        var disabledCompletionTimer = null;
         function escapeHtml(value) {
           return String(value).replace(/[&<>"]/g, function(ch) {
             return ch === '&' ? '&amp;' : ch === '<' ? '&lt;' : ch === '>' ? '&gt;' : '&quot;';
@@ -1393,6 +1395,11 @@ export function BrowserPane({
           e.preventDefault();
           e.stopPropagation();
           e.stopImmediatePropagation();
+          if (disabledCompletionTimer !== null) {
+            window.clearTimeout(disabledCompletionTimer);
+            disabledCompletionTimer = null;
+          }
+          disabledTarget = null;
           var el = e.target;
           if (last) last.classList.remove('__paseo-hover');
           hoverLabel.style.display = 'none';
@@ -1425,18 +1432,45 @@ export function BrowserPane({
           e.stopPropagation();
           e.stopImmediatePropagation();
         }
+        function rememberDisabledTarget(e) {
+          blockEvent(e);
+          var target = e.target;
+          if (target && typeof target.matches === 'function' && target.matches(':disabled')) {
+            disabledTarget = target;
+          }
+        }
+        function completeDisabledTarget(e) {
+          blockEvent(e);
+          if (!disabledTarget || disabledCompletionTimer !== null) return;
+          var target = disabledTarget;
+          disabledCompletionTimer = window.setTimeout(function() {
+            disabledCompletionTimer = null;
+            if (!window.__paseoSelector || disabledTarget !== target) return;
+            onClick({
+              target: target,
+              preventDefault: function() {},
+              stopPropagation: function() {},
+              stopImmediatePropagation: function() {}
+            });
+          }, 0);
+        }
         function destroy() {
           document.removeEventListener('mousemove', onMove, true);
-          document.removeEventListener('click', onClick, true);
-          document.removeEventListener('keydown', onKey, true);
-          document.removeEventListener('mousedown', blockEvent, true);
-          document.removeEventListener('mouseup', blockEvent, true);
-          document.removeEventListener('pointerdown', blockEvent, true);
-          document.removeEventListener('pointerup', blockEvent, true);
-          document.removeEventListener('touchstart', blockEvent, true);
-          document.removeEventListener('touchend', blockEvent, true);
-          document.removeEventListener('focus', blockEvent, true);
-          document.removeEventListener('submit', blockEvent, true);
+          window.removeEventListener('click', onClick, true);
+          window.removeEventListener('keydown', onKey, true);
+          window.removeEventListener('mousedown', rememberDisabledTarget, true);
+          window.removeEventListener('mouseup', completeDisabledTarget, true);
+          window.removeEventListener('pointerdown', rememberDisabledTarget, true);
+          window.removeEventListener('pointerup', completeDisabledTarget, true);
+          window.removeEventListener('touchstart', rememberDisabledTarget, true);
+          window.removeEventListener('touchend', completeDisabledTarget, true);
+          window.removeEventListener('focus', blockEvent, true);
+          window.removeEventListener('submit', blockEvent, true);
+          if (disabledCompletionTimer !== null) {
+            window.clearTimeout(disabledCompletionTimer);
+            disabledCompletionTimer = null;
+          }
+          disabledTarget = null;
           document.documentElement.classList.remove('__paseo-select-mode');
           if (last) last.classList.remove('__paseo-hover');
           if (hoverLabel.parentNode) hoverLabel.parentNode.removeChild(hoverLabel);
@@ -1444,16 +1478,16 @@ export function BrowserPane({
           window.__paseoSelector = null;
         }
         document.addEventListener('mousemove', onMove, true);
-        document.addEventListener('click', onClick, true);
-        document.addEventListener('keydown', onKey, true);
-        document.addEventListener('mousedown', blockEvent, true);
-        document.addEventListener('mouseup', blockEvent, true);
-        document.addEventListener('pointerdown', blockEvent, true);
-        document.addEventListener('pointerup', blockEvent, true);
-        document.addEventListener('touchstart', blockEvent, true);
-        document.addEventListener('touchend', blockEvent, true);
-        document.addEventListener('focus', blockEvent, true);
-        document.addEventListener('submit', blockEvent, true);
+        window.addEventListener('click', onClick, true);
+        window.addEventListener('keydown', onKey, true);
+        window.addEventListener('mousedown', rememberDisabledTarget, true);
+        window.addEventListener('mouseup', completeDisabledTarget, true);
+        window.addEventListener('pointerdown', rememberDisabledTarget, true);
+        window.addEventListener('pointerup', completeDisabledTarget, true);
+        window.addEventListener('touchstart', rememberDisabledTarget, true);
+        window.addEventListener('touchend', completeDisabledTarget, true);
+        window.addEventListener('focus', blockEvent, true);
+        window.addEventListener('submit', blockEvent, true);
         window.__paseoSelector = { destroy: destroy };
       })()
     `;

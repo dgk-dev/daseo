@@ -199,8 +199,16 @@ async function startTargetPage() {
       <html>
         <head><title>Desktop browser target</title></head>
         <body>
+          <script>
+            globalThis.__selectorCaptureArmed = false;
+            globalThis.__selectorCaptureActivated = false;
+            document.addEventListener('click', () => {
+              if (globalThis.__selectorCaptureArmed) globalThis.__selectorCaptureActivated = true;
+            }, true);
+          </script>
           <button id="bridge-target" onclick="this.textContent = 'Clicked'">Bridge target</button>
           <button id="selector-target" onclick="globalThis.__selectorTargetActivated = true">Selector target</button>
+          <button id="disabled-selector-target" disabled onclick="globalThis.__disabledSelectorTargetActivated = true">Disabled selector target</button>
           <label for="typing-target">Typing target</label>
           <input id="typing-target" />
         </body>
@@ -350,6 +358,21 @@ async function clickGuestElement(page, client, browserId, selector) {
     webviewRect.x + elementRect.x + elementRect.width / 2,
     webviewRect.y + elementRect.y + elementRect.height / 2,
   );
+}
+
+async function waitForSelectorInstallation(client, browserId) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const evaluated = await callBrowserTool(client, "browser_evaluate", {
+      browserId,
+      function: "() => Boolean(globalThis.__paseoSelector)",
+    });
+    if (JSON.parse(evaluated.resultJson) === true) {
+      return;
+    }
+    await delay(50);
+  }
+  throw new Error("Element selector did not install in the guest within 5000ms");
 }
 
 async function selectDeviceSize(page, label) {
@@ -516,21 +539,60 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId 
   await selectDeviceSize(page, "Responsive");
   const responsiveViewport = await readViewport(client, browserId);
 
-  await originalDeck.getByRole("button", { name: "Annotate element" }).click();
-  await clickGuestElement(page, client, browserId, "#selector-target");
+  await callBrowserTool(client, "browser_evaluate", {
+    browserId,
+    function: `() => {
+      globalThis.__selectorCaptureArmed = true;
+      globalThis.__selectorCaptureActivated = false;
+      globalThis.__selectorTargetActivated = false;
+      globalThis.__disabledSelectorTargetActivated = false;
+      return true;
+    }`,
+  });
+  const annotateButton = originalDeck.getByRole("button", { name: "Annotate element" });
   const annotationInput = originalDeck.getByRole("textbox", {
     name: "Message to the agent about this element…",
   });
+
+  await annotateButton.click();
+  await waitForSelectorInstallation(client, browserId);
+  await clickGuestElement(page, client, browserId, "#selector-target");
   await annotationInput.waitFor({ state: "visible", timeout: 5_000 });
-  const selectedButtonLabel = originalDeck.getByText("button · Selector target", { exact: true });
-  await selectedButtonLabel.waitFor({ state: "visible", timeout: 5_000 });
-  const selectorTargetActivation = await callBrowserTool(client, "browser_evaluate", {
+  await originalDeck
+    .getByText("button · Selector target", { exact: true })
+    .waitFor({ state: "visible", timeout: 5_000 });
+  const enabledSelectionEffects = await callBrowserTool(client, "browser_evaluate", {
     browserId,
-    function: "() => Boolean(globalThis.__selectorTargetActivated)",
+    function: `() => ({
+      target: Boolean(globalThis.__selectorTargetActivated),
+      capture: Boolean(globalThis.__selectorCaptureActivated)
+    })`,
   });
-  if (JSON.parse(selectorTargetActivation.resultJson) !== false) {
-    failures.push("element annotation suppresses the selected control action");
-  }
+  assert(
+    enabledSelectionEffects.resultJson === '{"target":false,"capture":false}',
+    `Enabled control selection leaked page actions: ${enabledSelectionEffects.resultJson}`,
+  );
+  await page.keyboard.press("Escape");
+  await annotationInput.waitFor({ state: "hidden", timeout: 5_000 });
+
+  await annotateButton.click();
+  await waitForSelectorInstallation(client, browserId);
+  await clickGuestElement(page, client, browserId, "#disabled-selector-target");
+  await annotationInput.waitFor({ state: "visible", timeout: 5_000 });
+  await originalDeck
+    .getByText("button · Disabled selector target", { exact: true })
+    .waitFor({ state: "visible", timeout: 5_000 });
+  const disabledSelectionEffects = await callBrowserTool(client, "browser_evaluate", {
+    browserId,
+    function: `() => ({
+      target: Boolean(globalThis.__disabledSelectorTargetActivated),
+      capture: Boolean(globalThis.__selectorCaptureActivated)
+    })`,
+  });
+  assert(
+    disabledSelectionEffects.resultJson === '{"target":false,"capture":false}',
+    `Disabled control selection leaked page actions: ${disabledSelectionEffects.resultJson}`,
+  );
   await page.keyboard.press("Escape");
   await annotationInput.waitFor({ state: "hidden", timeout: 5_000 });
 
