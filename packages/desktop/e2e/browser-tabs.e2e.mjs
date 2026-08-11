@@ -199,16 +199,7 @@ async function startTargetPage() {
       <html>
         <head><title>Desktop browser target</title></head>
         <body>
-          <script>
-            globalThis.__selectorCaptureArmed = false;
-            globalThis.__selectorCaptureActivated = false;
-            document.addEventListener('click', () => {
-              if (globalThis.__selectorCaptureArmed) globalThis.__selectorCaptureActivated = true;
-            }, true);
-          </script>
           <button id="bridge-target" onclick="this.textContent = 'Clicked'">Bridge target</button>
-          <button id="selector-target" onclick="globalThis.__selectorTargetActivated = true">Selector target</button>
-          <button id="disabled-selector-target" disabled onclick="globalThis.__disabledSelectorTargetActivated = true">Disabled selector target</button>
           <label for="typing-target">Typing target</label>
           <input id="typing-target" />
         </body>
@@ -542,10 +533,25 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId 
   await callBrowserTool(client, "browser_evaluate", {
     browserId,
     function: `() => {
+      const enabled = document.createElement("button");
+      enabled.id = "selector-target";
+      enabled.textContent = "Selector target";
+      enabled.addEventListener("click", () => { globalThis.__selectorTargetActivated = true; });
+      const disabled = document.createElement("button");
+      disabled.id = "disabled-selector-target";
+      disabled.disabled = true;
+      disabled.textContent = "Disabled selector target";
+      disabled.addEventListener("click", () => {
+        globalThis.__disabledSelectorTargetActivated = true;
+      });
+      document.body.append(enabled, disabled);
       globalThis.__selectorCaptureArmed = true;
       globalThis.__selectorCaptureActivated = false;
       globalThis.__selectorTargetActivated = false;
       globalThis.__disabledSelectorTargetActivated = false;
+      document.addEventListener("click", () => {
+        if (globalThis.__selectorCaptureArmed) globalThis.__selectorCaptureActivated = true;
+      }, true);
       return true;
     }`,
   });
