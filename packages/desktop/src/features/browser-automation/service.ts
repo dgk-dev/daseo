@@ -141,6 +141,9 @@ async function withPixelCaptureTimeout<T>(input: {
   if (input.timeoutMs <= 0) {
     const error = input.createTimeoutError();
     input.abort(error);
+    if (input.waitForCaptureAfterTimeout) {
+      await input.capture.catch(() => undefined);
+    }
     throw error;
   }
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
