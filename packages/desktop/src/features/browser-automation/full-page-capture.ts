@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { z, type ZodType } from "zod";
 
 export interface FullPageCaptureImage {
   getSize(): { width: number; height: number };
@@ -17,18 +18,30 @@ export interface FullPageCaptureTarget {
   ): FullPageCaptureImage;
 }
 
-interface PageCaptureState {
-  scrollX: number;
-  scrollY: number;
-  scrollBehavior: string;
-  viewportWidth: number;
-  viewportHeight: number;
-}
+const FiniteNumberSchema = z.number().finite();
+const PositiveDimensionSchema = FiniteNumberSchema.positive().transform(Math.ceil);
+const PageCaptureStateSchema = z.object({
+  scrollX: FiniteNumberSchema,
+  scrollY: FiniteNumberSchema,
+  viewportWidth: PositiveDimensionSchema,
+  viewportHeight: PositiveDimensionSchema,
+});
+const ScrollPositionSchema = z.object({
+  x: FiniteNumberSchema,
+  y: FiniteNumberSchema,
+});
+const PageContentSizeSchema = z.object({
+  width: PositiveDimensionSchema,
+  height: PositiveDimensionSchema,
+});
+const LayoutMetricsSchema = z.object({
+  cssContentSize: PageContentSizeSchema.optional(),
+  contentSize: PageContentSizeSchema.optional(),
+});
+const ScreenshotResultSchema = z.object({ data: z.string().min(1) });
 
-interface PageContentSize {
-  width: number;
-  height: number;
-}
+type PageCaptureState = z.output<typeof PageCaptureStateSchema>;
+type PageContentSize = z.output<typeof PageContentSizeSchema>;
 
 interface PixelScale {
   x: number;
@@ -42,62 +55,33 @@ export class FullPageCaptureError extends Error {
   }
 }
 
-function readRecord(value: unknown, label: string): Record<string, unknown> {
-  if (!value || typeof value !== "object") {
+function parseBoundary<T>(schema: ZodType<T>, value: unknown, label: string): T {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) {
     throw new FullPageCaptureError(`${label} returned invalid data`);
   }
-  return value as Record<string, unknown>;
-}
-
-function readFiniteNumber(value: unknown, label: string): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new FullPageCaptureError(`${label} returned an invalid number`);
-  }
-  return value;
-}
-
-function readPositiveDimension(value: unknown, label: string): number {
-  const dimension = Math.ceil(readFiniteNumber(value, label));
-  if (dimension <= 0) {
-    throw new FullPageCaptureError(`${label} returned a non-positive dimension`);
-  }
-  return dimension;
+  return parsed.data;
 }
 
 function readPageCaptureState(value: unknown): PageCaptureState {
-  const state = readRecord(value, "Browser page state");
-  return {
-    scrollX: readFiniteNumber(state.scrollX, "Browser scrollX"),
-    scrollY: readFiniteNumber(state.scrollY, "Browser scrollY"),
-    scrollBehavior: typeof state.scrollBehavior === "string" ? state.scrollBehavior : "",
-    viewportWidth: readPositiveDimension(state.viewportWidth, "Browser viewport width"),
-    viewportHeight: readPositiveDimension(state.viewportHeight, "Browser viewport height"),
-  };
+  return parseBoundary(PageCaptureStateSchema, value, "Browser page state");
 }
 
 function readScrollPosition(value: unknown): { x: number; y: number } {
-  const position = readRecord(value, "Browser scroll position");
-  return {
-    x: readFiniteNumber(position.x, "Browser scroll x"),
-    y: readFiniteNumber(position.y, "Browser scroll y"),
-  };
+  return parseBoundary(ScrollPositionSchema, value, "Browser scroll position");
 }
 
 function readContentSize(value: unknown): PageContentSize {
-  const metrics = readRecord(value, "Page.getLayoutMetrics");
-  const content = readRecord(metrics.cssContentSize ?? metrics.contentSize, "Page content size");
-  return {
-    width: readPositiveDimension(content.width, "Page content width"),
-    height: readPositiveDimension(content.height, "Page content height"),
-  };
+  const metrics = parseBoundary(LayoutMetricsSchema, value, "Page.getLayoutMetrics");
+  const content = metrics.cssContentSize ?? metrics.contentSize;
+  if (!content) {
+    throw new FullPageCaptureError("Page.getLayoutMetrics returned no content size");
+  }
+  return content;
 }
 
 function readScreenshotData(value: unknown): string {
-  const screenshot = readRecord(value, "Page.captureScreenshot");
-  if (typeof screenshot.data !== "string" || screenshot.data.length === 0) {
-    throw new FullPageCaptureError("Page.captureScreenshot returned no data");
-  }
-  return screenshot.data;
+  return parseBoundary(ScreenshotResultSchema, value, "Page.captureScreenshot").data;
 }
 
 function tileOrigins(total: number, viewport: number): number[] {
@@ -164,6 +148,20 @@ async function waitForGuestPaint(target: FullPageCaptureTarget): Promise<void> {
   })`);
 }
 
+async function scrollGuest(
+  target: FullPageCaptureTarget,
+  position: { x: number; y: number },
+): Promise<{ x: number; y: number }> {
+  return readScrollPosition(
+    await target.executeJavaScript(`(() => {
+      const scrollingElement = document.scrollingElement ?? document.documentElement;
+      scrollingElement.scrollLeft = ${position.x};
+      scrollingElement.scrollTop = ${position.y};
+      return { x: scrollingElement.scrollLeft, y: scrollingElement.scrollTop };
+    })()`),
+  );
+}
+
 async function captureTiles(
   target: FullPageCaptureTarget,
   viewport: { width: number; height: number },
@@ -177,9 +175,7 @@ async function captureTiles(
 
   for (const y of targetYs) {
     for (const x of targetXs) {
-      const actualScroll = readScrollPosition(
-        await target.executeJavaScript(`scrollTo(${x}, ${y}); ({ x: scrollX, y: scrollY })`),
-      );
+      const actualScroll = await scrollGuest(target, { x, y });
       await waitForGuestPaint(target);
       target.invalidate();
       const dataBase64 = readScreenshotData(
@@ -246,7 +242,6 @@ export async function captureFullPage(
     await target.executeJavaScript(`({
       scrollX,
       scrollY,
-      scrollBehavior: document.documentElement.style.scrollBehavior,
       viewportWidth: innerWidth,
       viewportHeight: innerHeight
     })`),
@@ -255,10 +250,13 @@ export async function captureFullPage(
   try {
     await target.executeJavaScript(`(() => {
       const style = document.createElement('style');
-      style.textContent = '::-webkit-scrollbar { display: none !important; }';
+      style.textContent = [
+        ':root { overflow: auto !important; overflow-anchor: none !important; scroll-behavior: auto !important; scroll-snap-type: none !important; }',
+        'body { overflow: visible !important; overflow-anchor: none !important; scroll-behavior: auto !important; scroll-snap-type: none !important; }',
+        '::-webkit-scrollbar { display: none !important; }'
+      ].join(' ');
       document.documentElement.appendChild(style);
       globalThis[${JSON.stringify(captureToken)}] = style;
-      document.documentElement.style.scrollBehavior = 'auto';
     })()`);
     await waitForGuestPaint(target);
 
@@ -268,12 +266,16 @@ export async function captureFullPage(
     });
     return target.createImageFromBitmap(capture.bitmap, capture.size);
   } finally {
-    await target.executeJavaScript(`
-      globalThis[${JSON.stringify(captureToken)}]?.remove();
-      delete globalThis[${JSON.stringify(captureToken)}];
-      scrollTo(${originalState.scrollX}, ${originalState.scrollY});
-      document.documentElement.style.scrollBehavior = ${JSON.stringify(originalState.scrollBehavior)};
-    `);
+    await target.executeJavaScript(`(() => {
+      const scrollingElement = document.scrollingElement ?? document.documentElement;
+      try {
+        scrollingElement.scrollLeft = ${originalState.scrollX};
+        scrollingElement.scrollTop = ${originalState.scrollY};
+      } finally {
+        globalThis[${JSON.stringify(captureToken)}]?.remove();
+        delete globalThis[${JSON.stringify(captureToken)}];
+      }
+    })()`);
     await waitForGuestPaint(target);
   }
 }

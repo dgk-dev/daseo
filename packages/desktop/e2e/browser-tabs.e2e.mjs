@@ -366,8 +366,28 @@ async function readScreenshotPixel(page, input) {
   }, input);
 }
 
-async function collectFullPageScreenshotFailures(page, client, browserId) {
-  const failures = [];
+async function verifyFullPageScreenshot(page, client, browserId) {
+  const constraints = await callBrowserTool(client, "browser_evaluate", {
+    browserId,
+    function: `() => {
+      document.documentElement.style.scrollSnapType = "y mandatory";
+      document.body.style.overflow = "hidden";
+      globalThis.__paseoOriginalScrollTo = globalThis.scrollTo;
+      globalThis.scrollTo = () => {
+        (document.scrollingElement ?? document.documentElement).scrollTop = 0;
+      };
+      return {
+        snapType: document.documentElement.style.scrollSnapType,
+        overflow: document.body.style.overflow,
+        scrollToOverridden: globalThis.scrollTo !== globalThis.__paseoOriginalScrollTo
+      };
+    }`,
+  });
+  assert(
+    constraints.resultJson ===
+      '{"snapType":"y mandatory","overflow":"hidden","scrollToOverridden":true}',
+    `Full-page scroll constraints were not installed: ${constraints.resultJson}`,
+  );
   const screenshot = await callBrowserScreenshot(client, { browserId, fullPage: true });
   const scale = screenshot.height / 1600;
   const markerPixel = await readScreenshotPixel(page, {
@@ -380,19 +400,29 @@ async function collectFullPageScreenshotFailures(page, client, browserId) {
     `Full-page screenshot metadata did not match its PNG: ${JSON.stringify(markerPixel)}`,
   );
   const [red, green, blue, alpha] = markerPixel.rgba;
-  if (red >= 80 || green <= 200 || blue >= 100 || alpha !== 255) {
-    failures.push(
-      `full-page screenshot includes the bottom marker: ${JSON.stringify(markerPixel)}`,
-    );
-  }
+  assert(
+    red < 80 && green > 200 && blue < 100 && alpha === 255,
+    `Full-page screenshot did not include the bottom marker: ${JSON.stringify(markerPixel)}`,
+  );
   const restoredScroll = await callBrowserTool(client, "browser_evaluate", {
     browserId,
     function: "() => ({ x: scrollX, y: scrollY })",
   });
-  if (restoredScroll.resultJson !== '{"x":0,"y":0}') {
-    failures.push(`full-page screenshot restores page scroll: ${restoredScroll.resultJson}`);
-  }
-  return failures;
+  assert(
+    restoredScroll.resultJson === '{"x":0,"y":0}',
+    `Full-page screenshot did not restore page scroll: ${restoredScroll.resultJson}`,
+  );
+  const cleanup = await callBrowserTool(client, "browser_evaluate", {
+    browserId,
+    function: `() => {
+      globalThis.scrollTo = globalThis.__paseoOriginalScrollTo;
+      delete globalThis.__paseoOriginalScrollTo;
+      document.documentElement.style.removeProperty("scroll-snap-type");
+      document.body.style.removeProperty("overflow");
+      return true;
+    }`,
+  });
+  assert(cleanup.resultJson === "true", "Full-page test constraints were not removed");
 }
 
 async function clickGuestElement(page, client, browserId, selector) {
@@ -524,7 +554,7 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId 
     text: "Bridge target",
     timeoutMs: 5_000,
   });
-  failures.push(...(await collectFullPageScreenshotFailures(page, client, browserId)));
+  await verifyFullPageScreenshot(page, client, browserId);
 
   const requestedViewport = { width: 640, height: 480 };
   await callBrowserTool(client, "browser_resize", { browserId, ...requestedViewport });

@@ -53,14 +53,14 @@ class FullPageCaptureHarness implements FullPageCaptureTarget {
       return {
         scrollX: 1,
         scrollY: 1,
-        scrollBehavior: "smooth",
         viewportWidth: 2,
         viewportHeight: 2,
       };
     }
-    const scrollMatch = code.match(/scrollTo\((\d+), (\d+)\)/);
-    if (scrollMatch && code.includes("({ x: scrollX, y: scrollY })")) {
-      return this.scrollPosition(Number(scrollMatch[1]), Number(scrollMatch[2]));
+    const scrollXMatch = code.match(/scrollingElement\.scrollLeft = (-?\d+(?:\.\d+)?)/);
+    const scrollYMatch = code.match(/scrollingElement\.scrollTop = (-?\d+(?:\.\d+)?)/);
+    if (scrollXMatch && scrollYMatch && code.includes("return { x: scrollingElement.scrollLeft")) {
+      return this.scrollPosition(Number(scrollXMatch[1]), Number(scrollYMatch[1]));
     }
     return undefined;
   }
@@ -115,10 +115,19 @@ describe("captureFullPage", () => {
       "Page.captureScreenshot",
     ]);
     expect(harness.invalidations).toBe(2);
+    const preparationScript = harness.scripts[1] ?? "";
+    expect(preparationScript).toContain("scroll-snap-type: none !important");
+    expect(preparationScript).toContain("overflow: auto !important");
+    const captureScrollScript = harness.scripts.find((script) =>
+      script.includes("return { x: scrollingElement.scrollLeft"),
+    );
+    expect(captureScrollScript).toContain("scrollingElement.scrollTop = 0");
+    expect(captureScrollScript).not.toContain("scrollTo(");
     const restoreScript = harness.scripts.at(-2) ?? "";
-    expect(restoreScript).toContain('document.documentElement.style.scrollBehavior = "smooth"');
-    expect(restoreScript.indexOf("scrollTo(1, 1)")).toBeLessThan(
-      restoreScript.indexOf('style.scrollBehavior = "smooth"'),
+    expect(restoreScript).toContain("scrollingElement.scrollLeft = 1");
+    expect(restoreScript).toContain("scrollingElement.scrollTop = 1");
+    expect(restoreScript.indexOf("scrollingElement.scrollTop = 1")).toBeLessThan(
+      restoreScript.indexOf("?.remove()"),
     );
   });
 
@@ -145,7 +154,8 @@ describe("captureFullPage", () => {
     await expect(captureFullPage(harness)).rejects.toThrow("Missing tile 0");
 
     const restoreScript = harness.scripts.at(-2) ?? "";
-    expect(restoreScript).toContain("scrollTo(1, 1)");
-    expect(restoreScript).toContain('document.documentElement.style.scrollBehavior = "smooth"');
+    expect(restoreScript).toContain("scrollingElement.scrollLeft = 1");
+    expect(restoreScript).toContain("scrollingElement.scrollTop = 1");
+    expect(restoreScript).toContain("?.remove()");
   });
 });
