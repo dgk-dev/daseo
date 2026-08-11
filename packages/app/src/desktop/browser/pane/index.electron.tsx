@@ -77,6 +77,7 @@ type ElectronWebview = HTMLElement & {
   stop?: () => void;
   loadURL?: (url: string) => Promise<void>;
   getURL?: () => string;
+  isLoading?: () => boolean;
   executeJavaScript?: (code: string) => Promise<unknown>;
   focus?: () => void;
   addEventListener: (type: string, listener: EventListenerOrEventListenerObject) => void;
@@ -93,6 +94,15 @@ type BrowserElementSelection = Omit<BrowserElementAttachment, "formatted" | "com
 
 interface BrowserElementAnnotation {
   comment: string;
+}
+
+interface ElementSelectorSession {
+  id: number;
+  mode: "annotate" | "screenshot";
+  token: string;
+  webview: ElectronWebview;
+  stopPolling?: () => void;
+  timeoutId?: number;
 }
 
 type DeviceSizeId =
@@ -315,18 +325,47 @@ function executeWebviewJavaScript(webview: ElectronWebview, code: string): Promi
 
 function ignoreWebviewJavaScriptError() {}
 
-function destroyWebviewSelector(webview: ElectronWebview): void {
+function destroyWebviewSelector(webview: ElectronWebview, sessionToken?: string): void {
+  const token = sessionToken ? JSON.stringify(sessionToken) : null;
+  const matchesSession = token
+    ? `window.__paseoSelector?.sessionToken === ${token}`
+    : "Boolean(window.__paseoSelector)";
   void executeWebviewJavaScript(
     webview,
-    "if(window.__paseoSelector) window.__paseoSelector.destroy();",
+    `if (${matchesSession}) window.__paseoSelector.destroy();`,
   ).catch(ignoreWebviewJavaScriptError);
 }
 
-function clearWebviewSelector(webview: ElectronWebview): void {
+function clearWebviewSelector(webview: ElectronWebview, sessionToken?: string): void {
+  const token = sessionToken ? JSON.stringify(sessionToken) : null;
+  const matchesSelector = token
+    ? `window.__paseoSelector?.sessionToken === ${token}`
+    : "Boolean(window.__paseoSelector)";
+  const matchesResult = token
+    ? `window.__paseoSelectorResult?.__paseoSessionToken === ${token}`
+    : "Boolean(window.__paseoSelectorResult)";
   void executeWebviewJavaScript(
     webview,
-    "if(window.__paseoSelector) window.__paseoSelector.destroy(); window.__paseoSelectorResult = null;",
+    `if (${matchesSelector}) window.__paseoSelector.destroy(); if (${matchesResult}) window.__paseoSelectorResult = null;`,
   ).catch(ignoreWebviewJavaScriptError);
+}
+
+function isSelectorInstallation(value: unknown, sessionToken: string): boolean {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  return (
+    Reflect.get(value, "installed") === true && Reflect.get(value, "sessionToken") === sessionToken
+  );
+}
+
+function stopElementSelectorSession(session: ElementSelectorSession): void {
+  session.stopPolling?.();
+  session.stopPolling = undefined;
+  if (session.timeoutId !== undefined) {
+    window.clearTimeout(session.timeoutId);
+    session.timeoutId = undefined;
+  }
 }
 
 interface BrowserAnnotationMarker {
@@ -439,34 +478,54 @@ function isDesktopBrowserShortcutEvent(payload: unknown): payload is DesktopBrow
 
 function startSelectorResultPolling(input: {
   webview: ElectronWebview;
-  onSelection: (selection: BrowserElementSelection) => void;
-  onDone: () => void;
-}): number {
-  const { webview, onSelection, onDone } = input;
-  const poll = window.setInterval(() => {
+  sessionToken: string;
+  onResult: (selection: BrowserElementSelection | null) => void;
+}): () => void {
+  const { webview, sessionToken, onResult } = input;
+  const token = JSON.stringify(sessionToken);
+  let stopped = false;
+  let timerId: number | undefined;
+
+  const schedule = () => {
+    if (!stopped) {
+      timerId = window.setTimeout(poll, 200);
+    }
+  };
+  const poll = () => {
     void (async () => {
       try {
         const raw = await executeWebviewJavaScript(
           webview,
-          "JSON.stringify(window.__paseoSelectorResult || null)",
+          `JSON.stringify(window.__paseoSelectorResult?.__paseoSessionToken === ${token} ? window.__paseoSelectorResult : null)`,
         );
         const result = typeof raw === "string" ? JSON.parse(raw) : null;
         if (!result) {
+          schedule();
           return;
         }
-        window.clearInterval(poll);
-        onDone();
-        await executeWebviewJavaScript(webview, "window.__paseoSelectorResult = null;");
-        if (!result.__cancelled) {
-          onSelection(result as BrowserElementSelection);
-        }
+        stopped = true;
+        await executeWebviewJavaScript(
+          webview,
+          `if (window.__paseoSelectorResult?.__paseoSessionToken === ${token}) window.__paseoSelectorResult = null;`,
+        ).catch(ignoreWebviewJavaScriptError);
+        const cancelled = result.__cancelled === true;
+        delete result.__cancelled;
+        delete result.__paseoSessionToken;
+        onResult(cancelled ? null : (result as BrowserElementSelection));
       } catch {
         // Keep polling; cross-origin/webview timing can make this transient.
+        schedule();
       }
     })();
-  }, 200);
+  };
 
-  return poll;
+  schedule();
+  return () => {
+    stopped = true;
+    if (timerId !== undefined) {
+      window.clearTimeout(timerId);
+    }
+  };
 }
 
 function ToolbarButton({
@@ -658,10 +717,9 @@ export function BrowserPane({
   const domReadyRef = useRef(false);
   const annotationMarkersRef = useRef<BrowserAnnotationMarker[]>([]);
   const [selectorMode, setSelectorMode] = useState<"annotate" | "screenshot" | null>(null);
+  const selectorSessionCounterRef = useRef(0);
+  const selectorSessionRef = useRef<ElementSelectorSession | null>(null);
   const selectorActive = selectorMode !== null;
-  // Which action the active selector performs on click: open the annotation card
-  // ("annotate") or copy a screenshot of the element to the clipboard ("screenshot").
-  const selectorModeRef = useRef<"annotate" | "screenshot">("annotate");
   const toast = useToast();
   const toastRef = useRef(toast);
   toastRef.current = toast;
@@ -809,6 +867,13 @@ export function BrowserPane({
 
     const handleStartLoading = () => {
       domReadyRef.current = false;
+      const selectorSession = selectorSessionRef.current;
+      if (selectorSession?.webview === webview) {
+        stopElementSelectorSession(selectorSession);
+        selectorSessionRef.current = null;
+        setSelectorMode(null);
+        destroyWebviewSelector(webview, selectorSession.token);
+      }
       updateBrowser(browserId, { isLoading: true, lastError: null });
       syncNavigationState({ syncUrl: false });
     };
@@ -939,6 +1004,12 @@ export function BrowserPane({
         releaseResidentBrowserWebview(browserIdRef.current, webview);
       } else {
         removeResidentBrowserWebview(browserIdRef.current);
+      }
+      const selectorSession = selectorSessionRef.current;
+      if (selectorSession?.webview === webview) {
+        stopElementSelectorSession(selectorSession);
+        selectorSessionRef.current = null;
+        destroyWebviewSelector(webview, selectorSession.token);
       }
       if (webviewRef.current === webview) {
         webviewRef.current = null;
@@ -1196,8 +1267,8 @@ export function BrowserPane({
   );
 
   const handleSelectorResult = useCallback(
-    (selection: BrowserElementSelection) => {
-      if (selectorModeRef.current === "screenshot") {
+    (selection: BrowserElementSelection, mode: "annotate" | "screenshot") => {
+      if (mode === "screenshot") {
         void screenshotElementToClipboard(selection);
         return;
       }
@@ -1230,21 +1301,59 @@ export function BrowserPane({
     setPendingSelection(null);
   }, []);
 
+  const finishElementSelectorSession = useCallback(
+    (session: ElementSelectorSession, guestCleanup: "clear" | "destroy" | null): boolean => {
+      stopElementSelectorSession(session);
+      if (selectorSessionRef.current?.id !== session.id) {
+        return false;
+      }
+      selectorSessionRef.current = null;
+      setSelectorMode(null);
+      if (webviewRef.current === session.webview) {
+        if (guestCleanup === "clear") {
+          clearWebviewSelector(session.webview, session.token);
+        } else if (guestCleanup === "destroy") {
+          destroyWebviewSelector(session.webview, session.token);
+        }
+      }
+      return true;
+    },
+    [],
+  );
+
   const startElementSelector = useCallback(
     (mode: "annotate" | "screenshot") => {
-      const webview = webviewRef.current;
-      if (!webview) return;
-      // The cached load signal can lag a completed guest document; executeJavaScript is the readiness boundary.
       // Annotate needs a workspace scope to attach to; screenshot only copies.
       if (mode === "annotate" && !workspaceAttachmentScopeKey) return;
-      selectorModeRef.current = mode;
+      const webview = webviewRef.current;
+      if (!webview?.isConnected || webview.isLoading?.()) return;
+
+      const previousSession = selectorSessionRef.current;
+      if (previousSession) {
+        finishElementSelectorSession(previousSession, "clear");
+      }
+      const id = selectorSessionCounterRef.current + 1;
+      selectorSessionCounterRef.current = id;
+      const session: ElementSelectorSession = {
+        id,
+        mode,
+        token: `${browserIdRef.current}:${id}:${crypto.randomUUID()}`,
+        webview,
+      };
+      selectorSessionRef.current = session;
       pendingScreenshotRef.current = undefined;
       setPendingSelection(null);
       setSelectorMode(mode);
 
+      const sessionToken = JSON.stringify(session.token);
       const js = `
       (function() {
+        var sessionToken = ${sessionToken};
+        if (document.readyState === 'loading' || !document.head || !document.documentElement) {
+          return { installed: false, reason: 'document-loading', sessionToken: sessionToken };
+        }
         if (window.__paseoSelector) { window.__paseoSelector.destroy(); }
+        window.__paseoSelectorResult = null;
         var overlay = null;
         var style = document.createElement('style');
         style.textContent = [
@@ -1411,6 +1520,7 @@ export function BrowserPane({
             url: location.href,
             outerHTML: el.outerHTML.substring(0, 2000),
             computedStyles: getRelevantStyles(el),
+            __paseoSessionToken: sessionToken,
             boundingRect: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) },
             reactSource: getReactSource(el),
             parentChain: getParentChain(el, 5),
@@ -1420,7 +1530,10 @@ export function BrowserPane({
           window.__paseoSelectorResult = result;
         }
         function onKey(e) {
-          if (e.key === 'Escape') { destroy(); window.__paseoSelectorResult = { __cancelled: true }; }
+          if (e.key === 'Escape') {
+            destroy();
+            window.__paseoSelectorResult = { __cancelled: true, __paseoSessionToken: sessionToken };
+          }
         }
         function blockEvent(e) {
           e.preventDefault();
@@ -1456,47 +1569,61 @@ export function BrowserPane({
         document.addEventListener('touchend', blockEvent, true);
         document.addEventListener('focus', blockEvent, true);
         document.addEventListener('submit', blockEvent, true);
-        window.__paseoSelector = { destroy: destroy };
+        window.__paseoSelector = { destroy: destroy, sessionToken: sessionToken };
+        return { installed: true, sessionToken: sessionToken };
       })()
     `;
 
-      try {
-        void executeWebviewJavaScript(webview, js)
-          .then(() => {
-            const poll = startSelectorResultPolling({
-              webview,
-              onSelection: handleSelectorResult,
-              onDone: () => setSelectorMode(null),
-            });
-            window.setTimeout(() => {
-              window.clearInterval(poll);
-              setSelectorMode(null);
-              if (webviewRef.current !== webview) {
+      void executeWebviewJavaScript(webview, js)
+        .then((installation) => {
+          const installed = isSelectorInstallation(installation, session.token);
+          if (selectorSessionRef.current?.id !== session.id) {
+            if (installed) {
+              destroyWebviewSelector(webview, session.token);
+            }
+            return undefined;
+          }
+          if (!installed) {
+            finishElementSelectorSession(session, null);
+            return undefined;
+          }
+          session.stopPolling = startSelectorResultPolling({
+            webview,
+            sessionToken: session.token,
+            onResult: (selection) => {
+              if (!finishElementSelectorSession(session, null) || !selection) {
                 return;
               }
-              destroyWebviewSelector(webview);
-            }, 30000);
-            return undefined;
-          })
-          .catch(() => {
-            setSelectorMode(null);
+              handleSelectorResult(selection, session.mode);
+            },
           });
-      } catch {
-        setSelectorMode(null);
-      }
+          session.timeoutId = window.setTimeout(() => {
+            finishElementSelectorSession(session, "destroy");
+          }, 30000);
+          return undefined;
+        })
+        .catch(() => {
+          if (finishElementSelectorSession(session, null)) {
+            destroyWebviewSelector(webview, session.token);
+          }
+          return undefined;
+        });
     },
-    [handleSelectorResult, workspaceAttachmentScopeKey],
+    [finishElementSelectorSession, handleSelectorResult, workspaceAttachmentScopeKey],
   );
 
   const cancelElementSelector = useCallback(() => {
-    const webview = webviewRef.current;
-    setSelectorMode(null);
-    if (webview) {
-      try {
-        clearWebviewSelector(webview);
-      } catch {}
+    const session = selectorSessionRef.current;
+    if (session) {
+      finishElementSelectorSession(session, "clear");
+      return;
     }
-  }, []);
+    setSelectorMode(null);
+    const webview = webviewRef.current;
+    if (webview) {
+      clearWebviewSelector(webview);
+    }
+  }, [finishElementSelectorSession]);
 
   const currentPageUrl = browser?.url ?? null;
   const annotationMarkers = useMemo<BrowserAnnotationMarker[]>(() => {

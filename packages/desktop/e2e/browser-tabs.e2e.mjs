@@ -193,17 +193,26 @@ async function waitForDesktopStatus(page) {
 }
 
 async function startTargetPage() {
-  const server = createServer((_request, response) => {
-    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(`<!doctype html>
-      <html>
-        <head><title>Desktop browser target</title></head>
-        <body>
-          <button id="bridge-target" onclick="this.textContent = 'Clicked'">Bridge target</button>
-          <label for="typing-target">Typing target</label>
-          <input id="typing-target" />
-        </body>
-      </html>`);
+  const server = createServer((request, response) => {
+    const slow = request.url === "/slow";
+    const send = () => {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(`<!doctype html>
+        <html>
+          <head><title>Desktop browser target</title></head>
+          <body>
+            <p>${slow ? "Slow target" : "Ready target"}</p>
+            <button id="bridge-target" onclick="this.textContent = 'Clicked'">Bridge target</button>
+            <label for="typing-target">Typing target</label>
+            <input id="typing-target" />
+          </body>
+        </html>`);
+    };
+    if (slow) {
+      setTimeout(send, 1_500);
+    } else {
+      send();
+    }
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -688,6 +697,34 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId,
     responsiveViewport,
   );
 
+  const annotateButton = originalDeck.getByRole("button", { name: "Annotate element" });
+  const browserUrlInput = originalDeck.getByRole("textbox", { name: "Browser URL" });
+  await browserUrlInput.fill(new URL("/slow", targetUrl).toString());
+  await browserUrlInput.press("Enter");
+  await page.waitForFunction(
+    (id) => {
+      const webview = document.querySelector(`[data-paseo-browser-id="${id}"]`);
+      return typeof webview?.isLoading === "function" && webview.isLoading();
+    },
+    browserId,
+    { timeout: 5_000 },
+  );
+  await annotateButton.click();
+  await page.waitForTimeout(100);
+  assert(
+    !(await originalDeck.getByRole("button", { name: "Cancel element selector" }).isVisible()),
+    "Element selector started inside a genuinely loading document",
+  );
+  await callBrowserTool(client, "browser_wait", {
+    browserId,
+    text: "Slow target",
+    timeoutMs: 5_000,
+  });
+  assert(
+    !(await waitForGuestSelector(client, browserId)),
+    "Selector injected during navigation survived in the loaded document",
+  );
+
   const readyStateResult = await callBrowserTool(client, "browser_evaluate", {
     browserId,
     function: "() => document.readyState",
@@ -706,7 +743,6 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId,
     webview.dispatchEvent(new Event("did-start-loading"));
   }, browserId);
 
-  const annotateButton = originalDeck.getByRole("button", { name: "Annotate element" });
   await annotateButton.click();
   const annotateSelectorActive = await waitForGuestSelector(client, browserId);
   await page.screenshot({ path: path.join(artifactDir, "local-page-annotate-selector.png") });
@@ -715,13 +751,22 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId,
   }
 
   await originalDeck.getByRole("button", { name: "Cancel element selector" }).click();
+  await delay(10_000);
   const screenshotButton = originalDeck.getByRole("button", { name: "Screenshot element" });
   await screenshotButton.click();
   const screenshotSelectorActive = await waitForGuestSelector(client, browserId);
-  await page.screenshot({ path: path.join(artifactDir, "local-page-screenshot-selector.png") });
   if (!screenshotSelectorActive) {
     failures.push("loaded local browser remains ready for element screenshots");
   }
+  await delay(20_500);
+  const selectorAfterPriorTimeout = await callBrowserTool(client, "browser_evaluate", {
+    browserId,
+    function: "() => Boolean(globalThis.__paseoSelector)",
+  });
+  if (JSON.parse(selectorAfterPriorTimeout.resultJson) !== true) {
+    failures.push("a previous selector timeout does not destroy the current selector session");
+  }
+  await page.screenshot({ path: path.join(artifactDir, "local-page-screenshot-selector.png") });
   await originalDeck.getByRole("button", { name: "Cancel element selector" }).click();
 
   if (failures.length > 0) {
