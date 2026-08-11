@@ -193,26 +193,17 @@ async function waitForDesktopStatus(page) {
 }
 
 async function startTargetPage() {
-  const server = createServer((request, response) => {
-    const slow = request.url === "/slow";
-    const send = () => {
-      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      response.end(`<!doctype html>
-        <html>
-          <head><title>Desktop browser target</title></head>
-          <body>
-            <p>${slow ? "Slow target" : "Ready target"}</p>
-            <button id="bridge-target" onclick="this.textContent = 'Clicked'">Bridge target</button>
-            <label for="typing-target">Typing target</label>
-            <input id="typing-target" />
-          </body>
-        </html>`);
-    };
-    if (slow) {
-      setTimeout(send, 1_500);
-    } else {
-      send();
-    }
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(`<!doctype html>
+      <html>
+        <head><title>Desktop browser target</title></head>
+        <body>
+          <button id="bridge-target" onclick="this.textContent = 'Clicked'">Bridge target</button>
+          <label for="typing-target">Typing target</label>
+          <input id="typing-target" />
+        </body>
+      </html>`);
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -698,32 +689,40 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId,
   );
 
   const annotateButton = originalDeck.getByRole("button", { name: "Annotate element" });
-  const browserUrlInput = originalDeck.getByRole("textbox", { name: "Browser URL" });
-  await browserUrlInput.fill(new URL("/slow", targetUrl).toString());
-  await browserUrlInput.press("Enter");
-  await page.waitForFunction(
-    (id) => {
-      const webview = document.querySelector(`[data-paseo-browser-id="${id}"]`);
-      return typeof webview?.isLoading === "function" && webview.isLoading();
-    },
-    browserId,
-    { timeout: 5_000 },
-  );
+  await page.evaluate((id) => {
+    const webview = document.querySelector(`[data-paseo-browser-id="${id}"]`);
+    if (!(webview instanceof HTMLElement)) throw new Error(`Browser webview ${id} was unavailable`);
+    globalThis.__paseoOriginalIsLoadingDescriptor = Object.getOwnPropertyDescriptor(
+      webview,
+      "isLoading",
+    );
+    Object.defineProperty(webview, "isLoading", {
+      configurable: true,
+      value: () => true,
+    });
+  }, browserId);
   await annotateButton.click();
   await page.waitForTimeout(100);
   assert(
     !(await originalDeck.getByRole("button", { name: "Cancel element selector" }).isVisible()),
-    "Element selector started inside a genuinely loading document",
+    "Element selector started while the guest reported a genuine load",
   );
-  await callBrowserTool(client, "browser_wait", {
+  const selectorDuringLoad = await callBrowserTool(client, "browser_evaluate", {
     browserId,
-    text: "Slow target",
-    timeoutMs: 5_000,
+    function: "() => Boolean(globalThis.__paseoSelector)",
   });
   assert(
-    !(await waitForGuestSelector(client, browserId)),
-    "Selector injected during navigation survived in the loaded document",
+    JSON.parse(selectorDuringLoad.resultJson) === false,
+    "Selector injected while the guest reported a genuine load",
   );
+  await page.evaluate((id) => {
+    const webview = document.querySelector(`[data-paseo-browser-id="${id}"]`);
+    if (!(webview instanceof HTMLElement)) throw new Error(`Browser webview ${id} was unavailable`);
+    const descriptor = globalThis.__paseoOriginalIsLoadingDescriptor;
+    if (descriptor) Object.defineProperty(webview, "isLoading", descriptor);
+    else delete webview.isLoading;
+    delete globalThis.__paseoOriginalIsLoadingDescriptor;
+  }, browserId);
 
   const readyStateResult = await callBrowserTool(client, "browser_evaluate", {
     browserId,
