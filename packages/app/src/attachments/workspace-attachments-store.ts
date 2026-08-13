@@ -1,7 +1,6 @@
 import { useMemo } from "react";
 import { create } from "zustand";
 import { useShallow } from "zustand/shallow";
-import { retainAttachmentForGarbageCollection } from "./gc-retention";
 import type { WorkspaceComposerAttachment } from "./types";
 
 const EMPTY_WORKSPACE_ATTACHMENTS: readonly WorkspaceComposerAttachment[] = [];
@@ -99,35 +98,6 @@ function getContextAttachmentKey(attachment: WorkspaceComposerAttachment): strin
   });
 }
 
-const retainedBrowserScreenshotReleases = new Map<string, () => void>();
-
-function syncRetainedBrowserScreenshots(
-  attachmentsByScope: Record<string, readonly WorkspaceComposerAttachment[]>,
-): void {
-  const referencedIds = new Set<string>();
-  for (const attachments of Object.values(attachmentsByScope)) {
-    for (const attachment of attachments) {
-      if (attachment.kind === "browser_element" && attachment.attachment.screenshot) {
-        referencedIds.add(attachment.attachment.screenshot.id);
-      }
-    }
-  }
-  for (const screenshotId of referencedIds) {
-    if (!retainedBrowserScreenshotReleases.has(screenshotId)) {
-      retainedBrowserScreenshotReleases.set(
-        screenshotId,
-        retainAttachmentForGarbageCollection(screenshotId),
-      );
-    }
-  }
-  for (const [screenshotId, release] of retainedBrowserScreenshotReleases) {
-    if (!referencedIds.has(screenshotId)) {
-      release();
-      retainedBrowserScreenshotReleases.delete(screenshotId);
-    }
-  }
-}
-
 export function appendWorkspaceAttachment(
   current: readonly WorkspaceComposerAttachment[],
   attachment: WorkspaceComposerAttachment,
@@ -157,15 +127,14 @@ export const useWorkspaceAttachmentsStore = create<WorkspaceAttachmentsStore>()(
         }
         const next = { ...state.attachmentsByScope };
         delete next[scopeKey];
-        syncRetainedBrowserScreenshots(next);
         return { attachmentsByScope: next };
       }
-      const next = {
-        ...state.attachmentsByScope,
-        [scopeKey]: attachments,
+      return {
+        attachmentsByScope: {
+          ...state.attachmentsByScope,
+          [scopeKey]: attachments,
+        },
       };
-      syncRetainedBrowserScreenshots(next);
-      return { attachmentsByScope: next };
     });
   },
   addWorkspaceAttachment: ({ scopeKey, attachment }) => {
@@ -175,12 +144,12 @@ export const useWorkspaceAttachmentsStore = create<WorkspaceAttachmentsStore>()(
       if (areWorkspaceAttachmentsEqual(current, attachments)) {
         return state;
       }
-      const next = {
-        ...state.attachmentsByScope,
-        [scopeKey]: attachments,
+      return {
+        attachmentsByScope: {
+          ...state.attachmentsByScope,
+          [scopeKey]: attachments,
+        },
       };
-      syncRetainedBrowserScreenshots(next);
-      return { attachmentsByScope: next };
     });
   },
   clearWorkspaceAttachments: ({ scopeKey }) => {
@@ -190,7 +159,6 @@ export const useWorkspaceAttachmentsStore = create<WorkspaceAttachmentsStore>()(
       }
       const next = { ...state.attachmentsByScope };
       delete next[scopeKey];
-      syncRetainedBrowserScreenshots(next);
       return { attachmentsByScope: next };
     });
   },
@@ -262,6 +230,5 @@ export function useWorkspaceAttachmentsForScopes(
 }
 
 export function resetWorkspaceAttachmentsStore(): void {
-  syncRetainedBrowserScreenshots({});
   useWorkspaceAttachmentsStore.setState({ attachmentsByScope: {} });
 }
