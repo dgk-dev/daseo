@@ -8,6 +8,7 @@ import {
   type ReactNode,
   createElement,
 } from "react";
+import { createPortal } from "react-dom";
 import { Pressable, Text, TextInput, View, type StyleProp, type ViewStyle } from "react-native";
 import {
   ArrowLeft,
@@ -1799,6 +1800,13 @@ export function BrowserPane({
     webviewClipRef.current = node instanceof HTMLElement ? node : null;
   }, []);
 
+  // The webview paints outside #root in a fixed resident surface. Portal the
+  // card beside it so local z-index and React event handling both stay intact.
+  const residentSurface = webviewRef.current?.parentElement;
+  const annotationPortalTarget = residentSurface?.hasAttribute("data-paseo-browser-surface")
+    ? residentSurface
+    : null;
+
   if (!isElectronRuntime()) {
     return (
       <View style={styles.unavailableState}>
@@ -1920,13 +1928,16 @@ export function BrowserPane({
           ref: setWebviewHostNode,
           style: webviewHostStyle,
         })}
-        {pendingSelection ? (
-          <BrowserElementAnnotationCard
-            selection={pendingSelection}
-            onSubmit={submitAnnotation}
-            onCancel={cancelAnnotation}
-          />
-        ) : null}
+        {pendingSelection && annotationPortalTarget
+          ? createPortal(
+              <BrowserElementAnnotationCard
+                selection={pendingSelection}
+                onSubmit={submitAnnotation}
+                onCancel={cancelAnnotation}
+              />,
+              annotationPortalTarget,
+            )
+          : null}
       </View>
     </View>
   );
