@@ -59,7 +59,6 @@ import {
 } from "@/desktop/browser/store";
 import {
   applyInactiveBrowserWebviewViewport,
-  isResidentBrowserWebviewReady,
   prepareBrowserWebview,
   presentBrowserWebview,
   rememberBrowserWebviewSize,
@@ -67,6 +66,11 @@ import {
   removeResidentBrowserWebview,
   takeResidentBrowserWebview,
 } from "../resident-webviews";
+import {
+  createElementSelectorController,
+  type BrowserElementSelection,
+  type ElementSelectorOutcome,
+} from "./element-selector.electron";
 
 type ElectronWebview = HTMLElement & {
   canGoBack?: () => boolean;
@@ -88,21 +92,8 @@ type WebTextInput = TextInput & {
   getNativeRef?: () => unknown;
 };
 
-type BrowserElementSelection = Omit<BrowserElementAttachment, "formatted" | "comment"> & {
-  attributes?: Record<string, string>;
-};
-
 interface BrowserElementAnnotation {
   comment: string;
-}
-
-interface ElementSelectorSession {
-  id: number;
-  mode: "annotate" | "screenshot";
-  token: string;
-  webview: ElectronWebview;
-  stopPolling?: () => void;
-  timeoutId?: number;
 }
 
 type DeviceSizeId =
@@ -325,49 +316,6 @@ function executeWebviewJavaScript(webview: ElectronWebview, code: string): Promi
 
 function ignoreWebviewJavaScriptError() {}
 
-function destroyWebviewSelector(webview: ElectronWebview, sessionToken?: string): void {
-  const token = sessionToken ? JSON.stringify(sessionToken) : null;
-  const matchesSession = token
-    ? `window.__paseoSelector?.sessionToken === ${token}`
-    : "Boolean(window.__paseoSelector)";
-  void executeWebviewJavaScript(
-    webview,
-    `if (${matchesSession}) window.__paseoSelector.destroy();`,
-  ).catch(ignoreWebviewJavaScriptError);
-}
-
-function clearWebviewSelector(webview: ElectronWebview, sessionToken?: string): void {
-  const token = sessionToken ? JSON.stringify(sessionToken) : null;
-  const matchesSelector = token
-    ? `window.__paseoSelector?.sessionToken === ${token}`
-    : "Boolean(window.__paseoSelector)";
-  const matchesResult = token
-    ? `window.__paseoSelectorResult?.__paseoSessionToken === ${token}`
-    : "Boolean(window.__paseoSelectorResult)";
-  void executeWebviewJavaScript(
-    webview,
-    `if (${matchesSelector}) window.__paseoSelector.destroy(); if (${matchesResult}) window.__paseoSelectorResult = null;`,
-  ).catch(ignoreWebviewJavaScriptError);
-}
-
-function isSelectorInstallation(value: unknown, sessionToken: string): boolean {
-  if (value === null || typeof value !== "object") {
-    return false;
-  }
-  return (
-    Reflect.get(value, "installed") === true && Reflect.get(value, "sessionToken") === sessionToken
-  );
-}
-
-function stopElementSelectorSession(session: ElementSelectorSession): void {
-  session.stopPolling?.();
-  session.stopPolling = undefined;
-  if (session.timeoutId !== undefined) {
-    window.clearTimeout(session.timeoutId);
-    session.timeoutId = undefined;
-  }
-}
-
 interface BrowserAnnotationMarker {
   index: number;
   selector: string;
@@ -474,58 +422,6 @@ function isDesktopBrowserShortcutEvent(payload: unknown): payload is DesktopBrow
   }
   const event = payload as Partial<DesktopBrowserShortcutEvent>;
   return event.action === "focus-url";
-}
-
-function startSelectorResultPolling(input: {
-  webview: ElectronWebview;
-  sessionToken: string;
-  onResult: (selection: BrowserElementSelection | null) => void;
-}): () => void {
-  const { webview, sessionToken, onResult } = input;
-  const token = JSON.stringify(sessionToken);
-  let stopped = false;
-  let timerId: number | undefined;
-
-  const schedule = () => {
-    if (!stopped) {
-      timerId = window.setTimeout(poll, 200);
-    }
-  };
-  const poll = () => {
-    void (async () => {
-      try {
-        const raw = await executeWebviewJavaScript(
-          webview,
-          `JSON.stringify(window.__paseoSelectorResult?.__paseoSessionToken === ${token} ? window.__paseoSelectorResult : null)`,
-        );
-        const result = typeof raw === "string" ? JSON.parse(raw) : null;
-        if (!result) {
-          schedule();
-          return;
-        }
-        stopped = true;
-        await executeWebviewJavaScript(
-          webview,
-          `if (window.__paseoSelectorResult?.__paseoSessionToken === ${token}) window.__paseoSelectorResult = null;`,
-        ).catch(ignoreWebviewJavaScriptError);
-        const cancelled = result.__cancelled === true;
-        delete result.__cancelled;
-        delete result.__paseoSessionToken;
-        onResult(cancelled ? null : (result as BrowserElementSelection));
-      } catch {
-        // Keep polling; cross-origin/webview timing can make this transient.
-        schedule();
-      }
-    })();
-  };
-
-  schedule();
-  return () => {
-    stopped = true;
-    if (timerId !== undefined) {
-      window.clearTimeout(timerId);
-    }
-  };
 }
 
 function ToolbarButton({
@@ -714,11 +610,14 @@ export function BrowserPane({
   const browserRef = useRef(browser);
   browserRef.current = browser;
   const pendingNavigationUrlRef = useRef<string | null>(null);
-  const domReadyRef = useRef(false);
   const annotationMarkersRef = useRef<BrowserAnnotationMarker[]>([]);
   const [selectorMode, setSelectorMode] = useState<"annotate" | "screenshot" | null>(null);
-  const selectorSessionCounterRef = useRef(0);
-  const selectorSessionRef = useRef<ElementSelectorSession | null>(null);
+  const selectorControllerRef = useRef<ReturnType<typeof createElementSelectorController> | null>(
+    null,
+  );
+  if (!selectorControllerRef.current) {
+    selectorControllerRef.current = createElementSelectorController();
+  }
   const selectorActive = selectorMode !== null;
   const toast = useToast();
   const toastRef = useRef(toast);
@@ -795,7 +694,7 @@ export function BrowserPane({
 
   const syncNavigationState = useCallback((input?: { syncUrl?: boolean }) => {
     const webview = webviewRef.current;
-    if (!webview || !domReadyRef.current) {
+    if (!webview) {
       return;
     }
 
@@ -834,7 +733,6 @@ export function BrowserPane({
     const residentWebview = takeResidentBrowserWebview(browserId) as ElectronWebview | null;
     const webview = residentWebview ?? (document.createElement("webview") as ElectronWebview);
     webviewRef.current = webview;
-    domReadyRef.current = isResidentBrowserWebviewReady(webview);
     if (!residentWebview) {
       prepareBrowserWebview(webview, {
         browserId,
@@ -866,14 +764,7 @@ export function BrowserPane({
           });
 
     const handleStartLoading = () => {
-      domReadyRef.current = false;
-      const selectorSession = selectorSessionRef.current;
-      if (selectorSession?.webview === webview) {
-        stopElementSelectorSession(selectorSession);
-        selectorSessionRef.current = null;
-        setSelectorMode(null);
-        destroyWebviewSelector(webview, selectorSession.token);
-      }
+      selectorControllerRef.current?.stopForWebview(webview);
       updateBrowser(browserId, { isLoading: true, lastError: null });
       syncNavigationState({ syncUrl: false });
     };
@@ -940,7 +831,6 @@ export function BrowserPane({
       });
     };
     const handleDomReady = () => {
-      domReadyRef.current = true;
       syncNavigationState();
       // The previous page's overlay is gone after a load; re-apply markers for
       // the freshly loaded document.
@@ -1005,16 +895,10 @@ export function BrowserPane({
       } else {
         removeResidentBrowserWebview(browserIdRef.current);
       }
-      const selectorSession = selectorSessionRef.current;
-      if (selectorSession?.webview === webview) {
-        stopElementSelectorSession(selectorSession);
-        selectorSessionRef.current = null;
-        destroyWebviewSelector(webview, selectorSession.token);
-      }
+      selectorControllerRef.current?.stopForWebview(webview);
       if (webviewRef.current === webview) {
         webviewRef.current = null;
       }
-      domReadyRef.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [browserId, onFocusPane]);
@@ -1301,329 +1185,63 @@ export function BrowserPane({
     setPendingSelection(null);
   }, []);
 
-  const finishElementSelectorSession = useCallback(
-    (session: ElementSelectorSession, guestCleanup: "clear" | "destroy" | null): boolean => {
-      stopElementSelectorSession(session);
-      if (selectorSessionRef.current?.id !== session.id) {
-        return false;
-      }
-      selectorSessionRef.current = null;
-      setSelectorMode(null);
-      if (webviewRef.current === session.webview) {
-        if (guestCleanup === "clear") {
-          clearWebviewSelector(session.webview, session.token);
-        } else if (guestCleanup === "destroy") {
-          destroyWebviewSelector(session.webview, session.token);
-        }
-      }
-      return true;
+  const showSelectorFailure = useCallback(
+    (reason: "loading" | "timeout" | "unavailable") => {
+      const message =
+        reason === "loading"
+          ? t("workspace.browser.controls.selectorLoading")
+          : t("workspace.browser.controls.selectorFailed");
+      toastRef.current?.error(message);
     },
-    [],
+    [t],
+  );
+
+  const handleElementSelectorOutcome = useCallback(
+    (outcome: ElementSelectorOutcome) => {
+      setSelectorMode(null);
+      if (outcome.type === "selected") {
+        handleSelectorResult(outcome.selection, outcome.mode);
+      } else if (outcome.type === "failed") {
+        showSelectorFailure(outcome.reason);
+      }
+    },
+    [handleSelectorResult, showSelectorFailure],
   );
 
   const startElementSelector = useCallback(
     (mode: "annotate" | "screenshot") => {
-      // Annotate needs a workspace scope to attach to; screenshot only copies.
-      if (mode === "annotate" && !workspaceAttachmentScopeKey) return;
-      const webview = webviewRef.current;
-      if (!webview?.isConnected || webview.isLoading?.()) return;
-
-      const previousSession = selectorSessionRef.current;
-      if (previousSession) {
-        finishElementSelectorSession(previousSession, "clear");
+      if (mode === "annotate" && !workspaceAttachmentScopeKey) {
+        showSelectorFailure("unavailable");
+        return;
       }
-      const id = selectorSessionCounterRef.current + 1;
-      selectorSessionCounterRef.current = id;
-      const session: ElementSelectorSession = {
-        id,
-        mode,
-        token: `${browserIdRef.current}:${id}:${crypto.randomUUID()}`,
+      const webview = webviewRef.current;
+      const controller = selectorControllerRef.current;
+      if (!webview || !controller) {
+        showSelectorFailure("unavailable");
+        return;
+      }
+
+      const startResult = controller.start({
         webview,
-      };
-      selectorSessionRef.current = session;
-      session.timeoutId = window.setTimeout(() => {
-        finishElementSelectorSession(session, "destroy");
-      }, 30000);
+        mode,
+        onFinish: handleElementSelectorOutcome,
+      });
+      if (startResult !== "started") {
+        showSelectorFailure(startResult);
+        return;
+      }
+
       pendingScreenshotRef.current = undefined;
       setPendingSelection(null);
       setSelectorMode(mode);
-
-      const sessionToken = JSON.stringify(session.token);
-      const js = `
-      (function() {
-        var sessionToken = ${sessionToken};
-        if (document.readyState === 'loading' || !document.head || !document.documentElement) {
-          return { installed: false, reason: 'document-loading', sessionToken: sessionToken };
-        }
-        if (window.__paseoSelector) { window.__paseoSelector.destroy(); }
-        window.__paseoSelectorResult = null;
-        var overlay = null;
-        var style = document.createElement('style');
-        style.textContent = [
-          '.__paseo-hover { outline: 2px solid #3b82f6 !important; outline-offset: 2px !important; cursor: crosshair !important; }',
-          '.__paseo-select-mode, .__paseo-select-mode * { cursor: crosshair !important; pointer-events: auto !important; user-select: none !important; }',
-          '.__paseo-select-mode *, .__paseo-select-mode *::before, .__paseo-select-mode *::after { animation: none !important; transition: none !important; }',
-          '.__paseo-select-mode a, .__paseo-select-mode button, .__paseo-select-mode input, .__paseo-select-mode select, .__paseo-select-mode textarea, .__paseo-select-mode [role="button"], .__paseo-select-mode [onclick] { pointer-events: none !important; }',
-          '.__paseo-select-mode iframe, .__paseo-select-mode video, .__paseo-select-mode audio { pointer-events: none !important; }',
-          '.__paseo-hover-label { position: fixed; z-index: 2147483647; pointer-events: none; max-width: 360px; padding: 4px 8px; border-radius: 6px; background: rgba(24,24,27,0.96); color: #fff; font: 500 11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; box-shadow: 0 2px 10px rgba(0,0,0,0.35); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
-          '.__paseo-hover-label .__paseo-tag { color: #93c5fd; }',
-          '.__paseo-hover-label .__paseo-id { color: #fca5a5; }',
-          '.__paseo-hover-label .__paseo-cls { color: #fcd34d; }',
-          '.__paseo-hover-label .__paseo-dim { color: #a1a1aa; margin-left: 6px; }',
-          '.__paseo-hover-label .__paseo-comp { color: #86efac; margin-left: 6px; }',
-        ].join('\\n');
-        document.head.appendChild(style);
-        document.documentElement.classList.add('__paseo-select-mode');
-        var hoverLabel = document.createElement('div');
-        hoverLabel.className = '__paseo-hover-label';
-        hoverLabel.style.display = 'none';
-        document.documentElement.appendChild(hoverLabel);
-        var last = null;
-        function escapeHtml(value) {
-          return String(value).replace(/[&<>"]/g, function(ch) {
-            return ch === '&' ? '&amp;' : ch === '<' ? '&lt;' : ch === '>' ? '&gt;' : '&quot;';
-          });
-        }
-        function describeElement(el) {
-          var tag = el.tagName ? el.tagName.toLowerCase() : 'node';
-          var parts = ['<span class="__paseo-tag">' + escapeHtml(tag) + '</span>'];
-          if (el.id) {
-            parts.push('<span class="__paseo-id">#' + escapeHtml(el.id) + '</span>');
-          }
-          if (el.classList && el.classList.length) {
-            var cls = Array.prototype.slice.call(el.classList, 0, 2)
-              .filter(function(c) { return c.indexOf('__paseo') !== 0; })
-              .map(function(c) { return '.' + escapeHtml(c); })
-              .join('');
-            if (cls) parts.push('<span class="__paseo-cls">' + cls + '</span>');
-          }
-          var comp = getReactSource(el);
-          if (comp && comp.componentName) {
-            parts.push('<span class="__paseo-comp">&lt;' + escapeHtml(comp.componentName) + '&gt;</span>');
-          }
-          var rect = el.getBoundingClientRect();
-          parts.push('<span class="__paseo-dim">' + Math.round(rect.width) + '×' + Math.round(rect.height) + '</span>');
-          return { html: parts.join(''), rect: rect };
-        }
-        function positionLabel(rect, e) {
-          var pad = 12;
-          var lw = hoverLabel.offsetWidth || 0;
-          var lh = hoverLabel.offsetHeight || 0;
-          var top = rect.top - lh - 6;
-          if (top < 4) top = rect.bottom + 6;
-          if (top + lh > window.innerHeight - 4) top = Math.max(4, e.clientY - lh - 6);
-          var left = rect.left;
-          if (left + lw > window.innerWidth - 4) left = Math.max(4, window.innerWidth - lw - 4);
-          if (left < 4) left = 4;
-          hoverLabel.style.top = Math.round(top) + 'px';
-          hoverLabel.style.left = Math.round(left) + 'px';
-        }
-        function onMove(e) {
-          e.preventDefault();
-          e.stopPropagation();
-          if (last) last.classList.remove('__paseo-hover');
-          var el = e.target;
-          el.classList.add('__paseo-hover');
-          last = el;
-          try {
-            var info = describeElement(el);
-            hoverLabel.innerHTML = info.html;
-            hoverLabel.style.display = 'block';
-            positionLabel(info.rect, e);
-          } catch (err) {
-            hoverLabel.style.display = 'none';
-          }
-        }
-        function buildSelector(el) {
-          if (el.id) return '#' + el.id;
-          var path = [];
-          while (el && el.nodeType === 1) {
-            var seg = el.tagName.toLowerCase();
-            if (el.id) { path.unshift('#' + el.id); break; }
-            var sib = el, nth = 1;
-            while (sib = sib.previousElementSibling) { if (sib.tagName === el.tagName) nth++; }
-            if (nth > 1) seg += ':nth-of-type(' + nth + ')';
-            path.unshift(seg);
-            el = el.parentElement;
-          }
-          return path.join(' > ');
-        }
-        function getReactSource(el) {
-          var keys = Object.keys(el);
-          for (var i = 0; i < keys.length; i++) {
-            if (keys[i].startsWith('__reactFiber$') || keys[i].startsWith('__reactInternalInstance$')) {
-              var fiber = el[keys[i]];
-              while (fiber) {
-                if (fiber._debugSource) {
-                  return {
-                    fileName: fiber._debugSource.fileName || null,
-                    lineNumber: fiber._debugSource.lineNumber || null,
-                    columnNumber: fiber._debugSource.columnNumber || null,
-                    componentName: (fiber.type && (typeof fiber.type === 'string' ? fiber.type : fiber.type.displayName || fiber.type.name)) || null
-                  };
-                }
-                if (fiber._debugOwner) { fiber = fiber._debugOwner; }
-                else if (fiber.return) { fiber = fiber.return; }
-                else break;
-              }
-            }
-          }
-          return null;
-        }
-        function getParentChain(el, depth) {
-          var chain = [];
-          var cur = el.parentElement;
-          for (var i = 0; i < (depth || 5) && cur; i++) {
-            var desc = cur.tagName.toLowerCase();
-            if (cur.id) desc += '#' + cur.id;
-            if (cur.className && typeof cur.className === 'string') { var cls = cur.className.trim().replace(/  +/g, ' ').split(' ').slice(0,2).join('.'); if (cls) desc += '.' + cls; }
-            chain.push(desc);
-            cur = cur.parentElement;
-          }
-          return chain;
-        }
-        function getChildSummary(el, max) {
-          var kids = [];
-          for (var i = 0; i < Math.min(el.children.length, max || 8); i++) {
-            var c = el.children[i];
-            var desc = c.tagName.toLowerCase();
-            if (c.id) desc += '#' + c.id;
-            kids.push(desc);
-          }
-          if (el.children.length > (max || 8)) kids.push('...(' + el.children.length + ' total)');
-          return kids;
-        }
-        function getRelevantStyles(el) {
-          var cs = window.getComputedStyle(el);
-          var pick = ['display','position','width','height','color','background-color','font-size','font-family','padding','margin','border','flex','grid-template-columns','gap','overflow','opacity','z-index'];
-          var out = {};
-          pick.forEach(function(p) {
-            var v = cs.getPropertyValue(p);
-            if (v && v !== 'none' && v !== 'normal' && v !== 'auto' && v !== '0px' && v !== 'rgba(0, 0, 0, 0)') out[p] = v;
-          });
-          return out;
-        }
-        function onClick(e) {
-          e.preventDefault();
-          e.stopPropagation();
-          e.stopImmediatePropagation();
-          var el = e.target;
-          if (last) last.classList.remove('__paseo-hover');
-          hoverLabel.style.display = 'none';
-          var attrs = {};
-          for (var i = 0; i < el.attributes.length; i++) {
-            attrs[el.attributes[i].name] = el.attributes[i].value;
-          }
-          var rect = el.getBoundingClientRect();
-          var result = {
-            tag: el.tagName.toLowerCase(),
-            text: (el.innerText || '').substring(0, 500),
-            selector: buildSelector(el),
-            attributes: attrs,
-            url: location.href,
-            outerHTML: el.outerHTML.substring(0, 2000),
-            computedStyles: getRelevantStyles(el),
-            __paseoSessionToken: sessionToken,
-            boundingRect: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) },
-            reactSource: getReactSource(el),
-            parentChain: getParentChain(el, 5),
-            children: getChildSummary(el, 8)
-          };
-          destroy();
-          window.__paseoSelectorResult = result;
-        }
-        function onKey(e) {
-          if (e.key === 'Escape') {
-            destroy();
-            window.__paseoSelectorResult = { __cancelled: true, __paseoSessionToken: sessionToken };
-          }
-        }
-        function blockEvent(e) {
-          e.preventDefault();
-          e.stopPropagation();
-          e.stopImmediatePropagation();
-        }
-        function destroy() {
-          document.removeEventListener('mousemove', onMove, true);
-          document.removeEventListener('click', onClick, true);
-          document.removeEventListener('keydown', onKey, true);
-          document.removeEventListener('mousedown', blockEvent, true);
-          document.removeEventListener('mouseup', blockEvent, true);
-          document.removeEventListener('pointerdown', blockEvent, true);
-          document.removeEventListener('pointerup', blockEvent, true);
-          document.removeEventListener('touchstart', blockEvent, true);
-          document.removeEventListener('touchend', blockEvent, true);
-          document.removeEventListener('focus', blockEvent, true);
-          document.removeEventListener('submit', blockEvent, true);
-          document.documentElement.classList.remove('__paseo-select-mode');
-          if (last) last.classList.remove('__paseo-hover');
-          if (hoverLabel.parentNode) hoverLabel.parentNode.removeChild(hoverLabel);
-          style.remove();
-          window.__paseoSelector = null;
-        }
-        document.addEventListener('mousemove', onMove, true);
-        document.addEventListener('click', onClick, true);
-        document.addEventListener('keydown', onKey, true);
-        document.addEventListener('mousedown', blockEvent, true);
-        document.addEventListener('mouseup', blockEvent, true);
-        document.addEventListener('pointerdown', blockEvent, true);
-        document.addEventListener('pointerup', blockEvent, true);
-        document.addEventListener('touchstart', blockEvent, true);
-        document.addEventListener('touchend', blockEvent, true);
-        document.addEventListener('focus', blockEvent, true);
-        document.addEventListener('submit', blockEvent, true);
-        window.__paseoSelector = { destroy: destroy, sessionToken: sessionToken };
-        return { installed: true, sessionToken: sessionToken };
-      })()
-    `;
-
-      void executeWebviewJavaScript(webview, js)
-        .then((installation) => {
-          const installed = isSelectorInstallation(installation, session.token);
-          if (selectorSessionRef.current?.id !== session.id) {
-            if (installed) {
-              destroyWebviewSelector(webview, session.token);
-            }
-            return undefined;
-          }
-          if (!installed) {
-            finishElementSelectorSession(session, null);
-            return undefined;
-          }
-          session.stopPolling = startSelectorResultPolling({
-            webview,
-            sessionToken: session.token,
-            onResult: (selection) => {
-              if (!finishElementSelectorSession(session, null) || !selection) {
-                return;
-              }
-              handleSelectorResult(selection, session.mode);
-            },
-          });
-          return undefined;
-        })
-        .catch(() => {
-          if (finishElementSelectorSession(session, null)) {
-            destroyWebviewSelector(webview, session.token);
-          }
-          return undefined;
-        });
     },
-    [finishElementSelectorSession, handleSelectorResult, workspaceAttachmentScopeKey],
+    [handleElementSelectorOutcome, showSelectorFailure, workspaceAttachmentScopeKey],
   );
 
   const cancelElementSelector = useCallback(() => {
-    const session = selectorSessionRef.current;
-    if (session) {
-      finishElementSelectorSession(session, "clear");
-      return;
-    }
+    selectorControllerRef.current?.cancel();
     setSelectorMode(null);
-    const webview = webviewRef.current;
-    if (webview) {
-      clearWebviewSelector(webview);
-    }
-  }, [finishElementSelectorSession]);
+  }, []);
 
   const currentPageUrl = browser?.url ?? null;
   const annotationMarkers = useMemo<BrowserAnnotationMarker[]>(() => {
@@ -1654,7 +1272,7 @@ export function BrowserPane({
       return;
     }
     const webview = webviewRef.current;
-    if (!webview || !domReadyRef.current) {
+    if (!webview) {
       return;
     }
     if (annotationMarkers.length === 0) {

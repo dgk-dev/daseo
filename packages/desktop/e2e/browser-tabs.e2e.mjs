@@ -715,6 +715,10 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId,
     JSON.parse(selectorDuringLoad.resultJson) === false,
     "Selector injected while the guest reported a genuine load",
   );
+  assert(
+    await page.getByText("Wait for the page to finish loading").isVisible(),
+    "Element selector loading failure was not visible",
+  );
   await page.evaluate((id) => {
     const webview = document.querySelector(`[data-paseo-browser-id="${id}"]`);
     if (!(webview instanceof HTMLElement)) throw new Error(`Browser webview ${id} was unavailable`);
