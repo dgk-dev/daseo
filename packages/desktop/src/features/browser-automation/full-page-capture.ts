@@ -519,7 +519,6 @@ export async function captureFullPage(
         const state = globalThis[${JSON.stringify(captureToken)}];
         if (!state) return false;
         const restoreProperty = (element, snapshot) => {
-          if (!element.isConnected) return;
           if (snapshot.value) {
             element.style.setProperty(snapshot.property, snapshot.value, snapshot.priority);
           } else {
