@@ -544,7 +544,12 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId 
       disabled.addEventListener("click", () => {
         globalThis.__disabledSelectorTargetActivated = true;
       });
-      document.body.append(enabled, disabled);
+      const decorativeOverlay = document.createElement("div");
+      decorativeOverlay.id = "selector-pointer-events-overlay";
+      decorativeOverlay.style.position = "fixed";
+      decorativeOverlay.style.inset = "0";
+      decorativeOverlay.style.pointerEvents = "none";
+      document.body.append(enabled, disabled, decorativeOverlay);
       globalThis.__selectorCaptureArmed = true;
       globalThis.__selectorCaptureActivated = false;
       globalThis.__selectorTargetActivated = false;
