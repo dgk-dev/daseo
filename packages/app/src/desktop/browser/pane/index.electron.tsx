@@ -8,6 +8,7 @@ import {
   type ReactNode,
   createElement,
 } from "react";
+import { createPortal } from "react-dom";
 import { Pressable, Text, TextInput, View, type StyleProp, type ViewStyle } from "react-native";
 import {
   ArrowLeft,
@@ -67,6 +68,12 @@ import {
   removeResidentBrowserWebview,
   takeResidentBrowserWebview,
 } from "../resident-webviews";
+import {
+  beginBrowserElementAnnotation,
+  settleBrowserElementAnnotationCapture,
+  type BrowserElementAnnotationDraft,
+  type BrowserElementSelection,
+} from "./annotation-draft";
 
 type ElectronWebview = HTMLElement & {
   canGoBack?: () => boolean;
@@ -86,10 +93,6 @@ type ElectronWebview = HTMLElement & {
 
 type WebTextInput = TextInput & {
   getNativeRef?: () => unknown;
-};
-
-type BrowserElementSelection = Omit<BrowserElementAttachment, "formatted" | "comment"> & {
-  attributes?: Record<string, string>;
 };
 
 interface BrowserElementAnnotation {
@@ -705,6 +708,7 @@ export function BrowserPane({
   const isPresentedRef = useRef(isPresented);
   isPresentedRef.current = isPresented;
   const webviewRef = useRef<ElectronWebview | null>(null);
+  const mountedRef = useRef(true);
   const webviewHostRef = useRef<HTMLDivElement | null>(null);
   const webviewClipRef = useRef<HTMLElement | null>(null);
   const urlInputRef = useRef<WebTextInput | null>(null);
@@ -723,19 +727,16 @@ export function BrowserPane({
   const toast = useToast();
   const toastRef = useRef(toast);
   toastRef.current = toast;
-  const [pendingSelection, setPendingSelection] = useState<BrowserElementSelection | null>(null);
-  // Screenshot is captured at selection time (overlay already torn down, no
-  // scroll drift) and reused when the annotation card is submitted.
-  const pendingScreenshotRef = useRef<AttachmentMetadata | undefined>(undefined);
+  const [annotationDraft, setAnnotationDraft] = useState<BrowserElementAnnotationDraft | null>(
+    null,
+  );
+  const annotationCaptureGenerationRef = useRef(0);
   const [draftUrl, setDraftUrl] = useState(browser?.url ?? "https://example.com");
   const workspaceAttachmentScopeKey = useMemo(
     () => buildBrowserAttachmentScopeKey({ cwd, serverId, workspaceId }),
     [cwd, serverId, workspaceId],
   );
   const workspaceAttachments = useWorkspaceAttachments(workspaceAttachmentScopeKey ?? "");
-  const setWorkspaceAttachments = useWorkspaceAttachmentsStore(
-    (state) => state.setWorkspaceAttachments,
-  );
   const titleStyle = useMemo(
     () => [styles.unavailableTitle, { color: theme.colors.foreground }],
     [theme.colors.foreground],
@@ -769,6 +770,13 @@ export function BrowserPane({
   );
   const browserErrorLabelsRef = useRef(browserErrorLabels);
   browserErrorLabelsRef.current = browserErrorLabels;
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      annotationCaptureGenerationRef.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     const nextUrl = browser?.url ?? "https://example.com";
@@ -1173,18 +1181,15 @@ export function BrowserPane({
       if (!workspaceAttachmentScopeKey) {
         return;
       }
-      setWorkspaceAttachments({
+      useWorkspaceAttachmentsStore.getState().addWorkspaceAttachment({
         scopeKey: workspaceAttachmentScopeKey,
-        attachments: [
-          ...workspaceAttachments,
-          {
-            kind: "browser_element",
-            attachment: buildBrowserElementAttachment(selection, annotation, screenshot),
-          },
-        ],
+        attachment: {
+          kind: "browser_element",
+          attachment: buildBrowserElementAttachment(selection, annotation, screenshot),
+        },
       });
     },
-    [setWorkspaceAttachments, workspaceAttachmentScopeKey, workspaceAttachments],
+    [workspaceAttachmentScopeKey],
   );
 
   const captureElementScreenshot = useCallback(
@@ -1272,10 +1277,17 @@ export function BrowserPane({
         void screenshotElementToClipboard(selection);
         return;
       }
-      pendingScreenshotRef.current = undefined;
-      setPendingSelection(selection);
+      const generation = annotationCaptureGenerationRef.current + 1;
+      const selectedBrowserId = browserIdRef.current;
+      annotationCaptureGenerationRef.current = generation;
+      setAnnotationDraft(beginBrowserElementAnnotation({ generation, selection }));
       void captureElementScreenshot(selection).then((screenshot) => {
-        pendingScreenshotRef.current = screenshot;
+        if (!mountedRef.current || browserIdRef.current !== selectedBrowserId) {
+          return undefined;
+        }
+        setAnnotationDraft((current) =>
+          settleBrowserElementAnnotationCapture(current, { generation, screenshot }),
+        );
         return undefined;
       });
     },
@@ -1284,21 +1296,19 @@ export function BrowserPane({
 
   const submitAnnotation = useCallback(
     (annotation: BrowserElementAnnotation) => {
-      const selection = pendingSelection;
-      const screenshot = pendingScreenshotRef.current;
-      pendingScreenshotRef.current = undefined;
-      setPendingSelection(null);
-      if (!selection) {
+      if (!annotationDraft || annotationDraft.captureStatus === "capturing") {
         return;
       }
-      addElementAttachment(selection, annotation, screenshot);
+      annotationCaptureGenerationRef.current += 1;
+      setAnnotationDraft(null);
+      addElementAttachment(annotationDraft.selection, annotation, annotationDraft.screenshot);
     },
-    [addElementAttachment, pendingSelection],
+    [addElementAttachment, annotationDraft],
   );
 
   const cancelAnnotation = useCallback(() => {
-    pendingScreenshotRef.current = undefined;
-    setPendingSelection(null);
+    annotationCaptureGenerationRef.current += 1;
+    setAnnotationDraft(null);
   }, []);
 
   const finishElementSelectorSession = useCallback(
@@ -1341,8 +1351,11 @@ export function BrowserPane({
         webview,
       };
       selectorSessionRef.current = session;
-      pendingScreenshotRef.current = undefined;
-      setPendingSelection(null);
+      session.timeoutId = window.setTimeout(() => {
+        finishElementSelectorSession(session, "destroy");
+      }, 30000);
+      annotationCaptureGenerationRef.current += 1;
+      setAnnotationDraft(null);
       setSelectorMode(mode);
 
       const sessionToken = JSON.stringify(session.token);
@@ -1358,9 +1371,8 @@ export function BrowserPane({
         var style = document.createElement('style');
         style.textContent = [
           '.__paseo-hover { outline: 2px solid #3b82f6 !important; outline-offset: 2px !important; cursor: crosshair !important; }',
-          '.__paseo-select-mode, .__paseo-select-mode * { cursor: crosshair !important; pointer-events: auto !important; user-select: none !important; }',
+          '.__paseo-select-mode, .__paseo-select-mode * { cursor: crosshair !important; user-select: none !important; }',
           '.__paseo-select-mode *, .__paseo-select-mode *::before, .__paseo-select-mode *::after { animation: none !important; transition: none !important; }',
-          '.__paseo-select-mode a, .__paseo-select-mode button, .__paseo-select-mode input, .__paseo-select-mode select, .__paseo-select-mode textarea, .__paseo-select-mode [role="button"], .__paseo-select-mode [onclick] { pointer-events: none !important; }',
           '.__paseo-select-mode iframe, .__paseo-select-mode video, .__paseo-select-mode audio { pointer-events: none !important; }',
           '.__paseo-hover-label { position: fixed; z-index: 2147483647; pointer-events: none; max-width: 360px; padding: 4px 8px; border-radius: 6px; background: rgba(24,24,27,0.96); color: #fff; font: 500 11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; box-shadow: 0 2px 10px rgba(0,0,0,0.35); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
           '.__paseo-hover-label .__paseo-tag { color: #93c5fd; }',
@@ -1376,6 +1388,8 @@ export function BrowserPane({
         hoverLabel.style.display = 'none';
         document.documentElement.appendChild(hoverLabel);
         var last = null;
+        var disabledTarget = null;
+        var disabledCompletionTimer = null;
         function escapeHtml(value) {
           return String(value).replace(/[&<>"]/g, function(ch) {
             return ch === '&' ? '&amp;' : ch === '<' ? '&lt;' : ch === '>' ? '&gt;' : '&quot;';
@@ -1504,6 +1518,11 @@ export function BrowserPane({
           e.preventDefault();
           e.stopPropagation();
           e.stopImmediatePropagation();
+          if (disabledCompletionTimer !== null) {
+            window.clearTimeout(disabledCompletionTimer);
+            disabledCompletionTimer = null;
+          }
+          disabledTarget = null;
           var el = e.target;
           if (last) last.classList.remove('__paseo-hover');
           hoverLabel.style.display = 'none';
@@ -1540,18 +1559,56 @@ export function BrowserPane({
           e.stopPropagation();
           e.stopImmediatePropagation();
         }
+        function rememberDisabledTarget(e) {
+          blockEvent(e);
+          if (typeof e.button === 'number' && e.button !== 0) return;
+          var target = e.target;
+          if (target && typeof target.matches === 'function' && target.matches(':disabled')) {
+            disabledTarget = target;
+          }
+        }
+        function cancelDisabledTarget(e) {
+          blockEvent(e);
+          if (disabledCompletionTimer !== null) {
+            window.clearTimeout(disabledCompletionTimer);
+            disabledCompletionTimer = null;
+          }
+          disabledTarget = null;
+        }
+        function completeDisabledTarget(e) {
+          blockEvent(e);
+          if (!disabledTarget || disabledCompletionTimer !== null) return;
+          var target = disabledTarget;
+          disabledCompletionTimer = window.setTimeout(function() {
+            disabledCompletionTimer = null;
+            if (!window.__paseoSelector || disabledTarget !== target) return;
+            onClick({
+              target: target,
+              preventDefault: function() {},
+              stopPropagation: function() {},
+              stopImmediatePropagation: function() {}
+            });
+          }, 0);
+        }
         function destroy() {
           document.removeEventListener('mousemove', onMove, true);
-          document.removeEventListener('click', onClick, true);
-          document.removeEventListener('keydown', onKey, true);
-          document.removeEventListener('mousedown', blockEvent, true);
-          document.removeEventListener('mouseup', blockEvent, true);
-          document.removeEventListener('pointerdown', blockEvent, true);
-          document.removeEventListener('pointerup', blockEvent, true);
-          document.removeEventListener('touchstart', blockEvent, true);
-          document.removeEventListener('touchend', blockEvent, true);
-          document.removeEventListener('focus', blockEvent, true);
-          document.removeEventListener('submit', blockEvent, true);
+          window.removeEventListener('click', onClick, true);
+          window.removeEventListener('keydown', onKey, true);
+          window.removeEventListener('mousedown', rememberDisabledTarget, true);
+          window.removeEventListener('mouseup', completeDisabledTarget, true);
+          window.removeEventListener('pointerdown', rememberDisabledTarget, true);
+          window.removeEventListener('pointerup', completeDisabledTarget, true);
+          window.removeEventListener('pointercancel', cancelDisabledTarget, true);
+          window.removeEventListener('touchstart', rememberDisabledTarget, true);
+          window.removeEventListener('touchend', completeDisabledTarget, true);
+          window.removeEventListener('touchcancel', cancelDisabledTarget, true);
+          window.removeEventListener('focus', blockEvent, true);
+          window.removeEventListener('submit', blockEvent, true);
+          if (disabledCompletionTimer !== null) {
+            window.clearTimeout(disabledCompletionTimer);
+            disabledCompletionTimer = null;
+          }
+          disabledTarget = null;
           document.documentElement.classList.remove('__paseo-select-mode');
           if (last) last.classList.remove('__paseo-hover');
           if (hoverLabel.parentNode) hoverLabel.parentNode.removeChild(hoverLabel);
@@ -1559,16 +1616,18 @@ export function BrowserPane({
           window.__paseoSelector = null;
         }
         document.addEventListener('mousemove', onMove, true);
-        document.addEventListener('click', onClick, true);
-        document.addEventListener('keydown', onKey, true);
-        document.addEventListener('mousedown', blockEvent, true);
-        document.addEventListener('mouseup', blockEvent, true);
-        document.addEventListener('pointerdown', blockEvent, true);
-        document.addEventListener('pointerup', blockEvent, true);
-        document.addEventListener('touchstart', blockEvent, true);
-        document.addEventListener('touchend', blockEvent, true);
-        document.addEventListener('focus', blockEvent, true);
-        document.addEventListener('submit', blockEvent, true);
+        window.addEventListener('click', onClick, true);
+        window.addEventListener('keydown', onKey, true);
+        window.addEventListener('mousedown', rememberDisabledTarget, true);
+        window.addEventListener('mouseup', completeDisabledTarget, true);
+        window.addEventListener('pointerdown', rememberDisabledTarget, true);
+        window.addEventListener('pointerup', completeDisabledTarget, true);
+        window.addEventListener('pointercancel', cancelDisabledTarget, true);
+        window.addEventListener('touchstart', rememberDisabledTarget, true);
+        window.addEventListener('touchend', completeDisabledTarget, true);
+        window.addEventListener('touchcancel', cancelDisabledTarget, true);
+        window.addEventListener('focus', blockEvent, true);
+        window.addEventListener('submit', blockEvent, true);
         window.__paseoSelector = { destroy: destroy, sessionToken: sessionToken };
         return { installed: true, sessionToken: sessionToken };
       })()
@@ -1597,9 +1656,6 @@ export function BrowserPane({
               handleSelectorResult(selection, session.mode);
             },
           });
-          session.timeoutId = window.setTimeout(() => {
-            finishElementSelectorSession(session, "destroy");
-          }, 30000);
           return undefined;
         })
         .catch(() => {
@@ -1799,6 +1855,13 @@ export function BrowserPane({
     webviewClipRef.current = node instanceof HTMLElement ? node : null;
   }, []);
 
+  // The webview paints outside #root in a fixed resident surface. Portal the
+  // card beside it so local z-index and React event handling both stay intact.
+  const residentSurface = webviewRef.current?.parentElement;
+  const annotationPortalTarget = residentSurface?.hasAttribute("data-paseo-browser-surface")
+    ? residentSurface
+    : null;
+
   if (!isElectronRuntime()) {
     return (
       <View style={styles.unavailableState}>
@@ -1920,13 +1983,17 @@ export function BrowserPane({
           ref: setWebviewHostNode,
           style: webviewHostStyle,
         })}
-        {pendingSelection ? (
-          <BrowserElementAnnotationCard
-            selection={pendingSelection}
-            onSubmit={submitAnnotation}
-            onCancel={cancelAnnotation}
-          />
-        ) : null}
+        {annotationDraft && annotationPortalTarget
+          ? createPortal(
+              <BrowserElementAnnotationCard
+                selection={annotationDraft.selection}
+                isCapturing={annotationDraft.captureStatus === "capturing"}
+                onSubmit={submitAnnotation}
+                onCancel={cancelAnnotation}
+              />,
+              annotationPortalTarget,
+            )
+          : null}
       </View>
     </View>
   );
@@ -1934,10 +2001,12 @@ export function BrowserPane({
 
 function BrowserElementAnnotationCard({
   selection,
+  isCapturing,
   onSubmit,
   onCancel,
 }: {
   selection: BrowserElementSelection;
+  isCapturing: boolean;
   onSubmit: (annotation: BrowserElementAnnotation) => void;
   onCancel: () => void;
 }) {
@@ -1947,8 +2016,10 @@ function BrowserElementAnnotationCard({
   commentRef.current = comment;
 
   const handleSubmit = useCallback(() => {
-    onSubmit({ comment: commentRef.current });
-  }, [onSubmit]);
+    if (!isCapturing) {
+      onSubmit({ comment: commentRef.current });
+    }
+  }, [isCapturing, onSubmit]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -2006,7 +2077,7 @@ function BrowserElementAnnotationCard({
           <Button variant="ghost" size="sm" onPress={onCancel}>
             {t("workspace.browser.annotate.cancel")}
           </Button>
-          <Button variant="default" size="sm" onPress={handleSubmit}>
+          <Button variant="default" size="sm" loading={isCapturing} onPress={handleSubmit}>
             {t("workspace.browser.annotate.submit")}
           </Button>
         </View>
