@@ -96,6 +96,13 @@ interface BrowserElementAnnotation {
   comment: string;
 }
 
+interface BrowserElementAnnotationDraft {
+  generation: number;
+  selection: BrowserElementSelection;
+  captureStatus: "capturing" | "ready";
+  screenshot?: AttachmentMetadata;
+}
+
 type DeviceSizeId =
   | "responsive"
   | "iphone-se"
@@ -647,6 +654,7 @@ export function BrowserPane({
   const isPresentedRef = useRef(isPresented);
   isPresentedRef.current = isPresented;
   const webviewRef = useRef<ElectronWebview | null>(null);
+  const mountedRef = useRef(true);
   const webviewHostRef = useRef<HTMLDivElement | null>(null);
   const webviewClipRef = useRef<HTMLElement | null>(null);
   const urlInputRef = useRef<WebTextInput | null>(null);
@@ -666,19 +674,16 @@ export function BrowserPane({
   const toast = useToast();
   const toastRef = useRef(toast);
   toastRef.current = toast;
-  const [pendingSelection, setPendingSelection] = useState<BrowserElementSelection | null>(null);
-  // Screenshot is captured at selection time (overlay already torn down, no
-  // scroll drift) and reused when the annotation card is submitted.
-  const pendingScreenshotRef = useRef<AttachmentMetadata | undefined>(undefined);
+  const [annotationDraft, setAnnotationDraft] = useState<BrowserElementAnnotationDraft | null>(
+    null,
+  );
+  const annotationCaptureGenerationRef = useRef(0);
   const [draftUrl, setDraftUrl] = useState(browser?.url ?? "https://example.com");
   const workspaceAttachmentScopeKey = useMemo(
     () => buildBrowserAttachmentScopeKey({ cwd, serverId, workspaceId }),
     [cwd, serverId, workspaceId],
   );
   const workspaceAttachments = useWorkspaceAttachments(workspaceAttachmentScopeKey ?? "");
-  const setWorkspaceAttachments = useWorkspaceAttachmentsStore(
-    (state) => state.setWorkspaceAttachments,
-  );
   const titleStyle = useMemo(
     () => [styles.unavailableTitle, { color: theme.colors.foreground }],
     [theme.colors.foreground],
@@ -712,6 +717,13 @@ export function BrowserPane({
   );
   const browserErrorLabelsRef = useRef(browserErrorLabels);
   browserErrorLabelsRef.current = browserErrorLabels;
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      annotationCaptureGenerationRef.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     const nextUrl = browser?.url ?? "https://example.com";
@@ -1103,18 +1115,15 @@ export function BrowserPane({
       if (!workspaceAttachmentScopeKey) {
         return;
       }
-      setWorkspaceAttachments({
+      useWorkspaceAttachmentsStore.getState().addWorkspaceAttachment({
         scopeKey: workspaceAttachmentScopeKey,
-        attachments: [
-          ...workspaceAttachments,
-          {
-            kind: "browser_element",
-            attachment: buildBrowserElementAttachment(selection, annotation, screenshot),
-          },
-        ],
+        attachment: {
+          kind: "browser_element",
+          attachment: buildBrowserElementAttachment(selection, annotation, screenshot),
+        },
       });
     },
-    [setWorkspaceAttachments, workspaceAttachmentScopeKey, workspaceAttachments],
+    [workspaceAttachmentScopeKey],
   );
 
   const captureElementScreenshot = useCallback(
@@ -1202,10 +1211,23 @@ export function BrowserPane({
         void screenshotElementToClipboard(selection);
         return;
       }
-      pendingScreenshotRef.current = undefined;
-      setPendingSelection(selection);
+      const generation = annotationCaptureGenerationRef.current + 1;
+      const selectedBrowserId = browserIdRef.current;
+      annotationCaptureGenerationRef.current = generation;
+      setAnnotationDraft({ generation, selection, captureStatus: "capturing" });
       void captureElementScreenshot(selection).then((screenshot) => {
-        pendingScreenshotRef.current = screenshot;
+        if (!mountedRef.current || browserIdRef.current !== selectedBrowserId) {
+          return undefined;
+        }
+        setAnnotationDraft((current) => {
+          if (!current || current.generation !== generation) {
+            return current;
+          }
+          if (screenshot) {
+            return { ...current, captureStatus: "ready", screenshot };
+          }
+          return { ...current, captureStatus: "ready" };
+        });
         return undefined;
       });
     },
@@ -1214,21 +1236,19 @@ export function BrowserPane({
 
   const submitAnnotation = useCallback(
     (annotation: BrowserElementAnnotation) => {
-      const selection = pendingSelection;
-      const screenshot = pendingScreenshotRef.current;
-      pendingScreenshotRef.current = undefined;
-      setPendingSelection(null);
-      if (!selection) {
+      if (!annotationDraft || annotationDraft.captureStatus === "capturing") {
         return;
       }
-      addElementAttachment(selection, annotation, screenshot);
+      annotationCaptureGenerationRef.current += 1;
+      setAnnotationDraft(null);
+      addElementAttachment(annotationDraft.selection, annotation, annotationDraft.screenshot);
     },
-    [addElementAttachment, pendingSelection],
+    [addElementAttachment, annotationDraft],
   );
 
   const cancelAnnotation = useCallback(() => {
-    pendingScreenshotRef.current = undefined;
-    setPendingSelection(null);
+    annotationCaptureGenerationRef.current += 1;
+    setAnnotationDraft(null);
   }, []);
 
   const startElementSelector = useCallback(
@@ -1238,8 +1258,8 @@ export function BrowserPane({
       // Annotate needs a workspace scope to attach to; screenshot only copies.
       if (mode === "annotate" && !workspaceAttachmentScopeKey) return;
       selectorModeRef.current = mode;
-      pendingScreenshotRef.current = undefined;
-      setPendingSelection(null);
+      annotationCaptureGenerationRef.current += 1;
+      setAnnotationDraft(null);
       setSelectorMode(mode);
 
       const js = `
@@ -1800,10 +1820,11 @@ export function BrowserPane({
           ref: setWebviewHostNode,
           style: webviewHostStyle,
         })}
-        {pendingSelection && annotationPortalTarget
+        {annotationDraft && annotationPortalTarget
           ? createPortal(
               <BrowserElementAnnotationCard
-                selection={pendingSelection}
+                selection={annotationDraft.selection}
+                isCapturing={annotationDraft.captureStatus === "capturing"}
                 onSubmit={submitAnnotation}
                 onCancel={cancelAnnotation}
               />,
@@ -1817,10 +1838,12 @@ export function BrowserPane({
 
 function BrowserElementAnnotationCard({
   selection,
+  isCapturing,
   onSubmit,
   onCancel,
 }: {
   selection: BrowserElementSelection;
+  isCapturing: boolean;
   onSubmit: (annotation: BrowserElementAnnotation) => void;
   onCancel: () => void;
 }) {
@@ -1830,8 +1853,10 @@ function BrowserElementAnnotationCard({
   commentRef.current = comment;
 
   const handleSubmit = useCallback(() => {
-    onSubmit({ comment: commentRef.current });
-  }, [onSubmit]);
+    if (!isCapturing) {
+      onSubmit({ comment: commentRef.current });
+    }
+  }, [isCapturing, onSubmit]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1889,7 +1914,7 @@ function BrowserElementAnnotationCard({
           <Button variant="ghost" size="sm" onPress={onCancel}>
             {t("workspace.browser.annotate.cancel")}
           </Button>
-          <Button variant="default" size="sm" onPress={handleSubmit}>
+          <Button variant="default" size="sm" loading={isCapturing} onPress={handleSubmit}>
             {t("workspace.browser.annotate.submit")}
           </Button>
         </View>

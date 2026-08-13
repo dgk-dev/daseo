@@ -713,7 +713,14 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId 
     `Browser surface covers the annotation input: ${JSON.stringify(annotationPresentation)}`,
   );
   await annotationInput.fill("Visible annotation");
-  await page.getByRole("button", { name: "Attach" }).click();
+  const attachButton = page.getByRole("button", { name: "Attach" });
+  await attachButton.waitFor({ state: "visible", timeout: 5_000 });
+  await page.waitForFunction(
+    (button) => button?.getAttribute("aria-busy") !== "true" && !button?.hasAttribute("disabled"),
+    await attachButton.elementHandle(),
+    { timeout: 5_000 },
+  );
+  await attachButton.click();
   await annotationInput.waitFor({ state: "detached", timeout: 5_000 });
 
   if (failures.length > 0) {
