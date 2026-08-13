@@ -240,11 +240,11 @@ async function waitForGuestSelector(client, browserId) {
       function: "() => Boolean(globalThis.__paseoSelector)",
     });
     if (JSON.parse(evaluated.resultJson) === true) {
-      return true;
+      return;
     }
     await delay(50);
   }
-  return false;
+  throw new Error("Element selector did not install in the guest within 5000ms");
 }
 
 async function createCallerAgent(daemonPort) {
@@ -742,12 +742,31 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId,
     webview.dispatchEvent(new Event("did-start-loading"));
   }, browserId);
 
+  await callBrowserTool(client, "browser_evaluate", {
+    browserId,
+    function: `() => {
+      globalThis.__paseoSelectorTargetActivated = false;
+      globalThis.__paseoSelectorCaptureActivated = false;
+      const target = document.querySelector("#bridge-target");
+      target.addEventListener("click", () => {
+        globalThis.__paseoSelectorTargetActivated = true;
+      });
+      document.addEventListener("click", () => {
+        globalThis.__paseoSelectorCaptureActivated = true;
+      }, true);
+      const overlay = document.createElement("div");
+      overlay.id = "selector-pointer-events-overlay";
+      overlay.style.position = "fixed";
+      overlay.style.inset = "0";
+      overlay.style.pointerEvents = "none";
+      document.body.appendChild(overlay);
+      return true;
+    }`,
+  });
+
   await annotateButton.click();
-  const annotateSelectorActive = await waitForGuestSelector(client, browserId);
+  await waitForGuestSelector(client, browserId);
   await page.screenshot({ path: path.join(artifactDir, "local-page-annotate-selector.png") });
-  if (!annotateSelectorActive) {
-    failures.push("loaded local browser remains ready for element annotation");
-  }
   await clickGuestElement(page, client, browserId, "#bridge-target");
   const annotationInput = page.getByRole("textbox", {
     name: "Message to the agent about this element…",
@@ -778,17 +797,32 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId,
     annotationPresentation.targetInsideInput,
     `Browser surface covers the annotation input: ${JSON.stringify(annotationPresentation)}`,
   );
+  const selectorSideEffects = await callBrowserTool(client, "browser_evaluate", {
+    browserId,
+    function: `() => ({
+      target: Boolean(globalThis.__paseoSelectorTargetActivated),
+      capture: Boolean(globalThis.__paseoSelectorCaptureActivated)
+    })`,
+  });
+  assert(
+    selectorSideEffects.resultJson === '{"target":false,"capture":false}',
+    `Element selector leaked page actions: ${selectorSideEffects.resultJson}`,
+  );
   await annotationInput.fill("Visible annotation");
-  await page.getByRole("button", { name: "Attach" }).click();
+  const attachButton = page.getByRole("button", { name: "Attach" });
+  await attachButton.waitFor({ state: "visible", timeout: 5_000 });
+  await page.waitForFunction(
+    (button) => button?.getAttribute("aria-busy") !== "true" && !button?.hasAttribute("disabled"),
+    await attachButton.elementHandle(),
+    { timeout: 5_000 },
+  );
+  await attachButton.click();
   await annotationInput.waitFor({ state: "detached", timeout: 5_000 });
 
   await delay(10_000);
   const screenshotButton = originalDeck.getByRole("button", { name: "Screenshot element" });
   await screenshotButton.click();
-  const screenshotSelectorActive = await waitForGuestSelector(client, browserId);
-  if (!screenshotSelectorActive) {
-    failures.push("loaded local browser remains ready for element screenshots");
-  }
+  await waitForGuestSelector(client, browserId);
   await delay(20_500);
   const selectorAfterPriorTimeout = await callBrowserTool(client, "browser_evaluate", {
     browserId,

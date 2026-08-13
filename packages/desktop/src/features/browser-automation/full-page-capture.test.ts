@@ -1,3 +1,4 @@
+import { runInNewContext } from "node:vm";
 import { describe, expect, test } from "vitest";
 import {
   captureFullPage,
@@ -120,6 +121,82 @@ class FullPageCaptureHarness implements FullPageCaptureTarget {
   }
 }
 
+class FakeStyleDeclaration {
+  private readonly priorities = new Map<string, string>();
+  private readonly values = new Map<string, string>();
+
+  public constructor(initial: Record<string, string>) {
+    for (const [property, value] of Object.entries(initial)) {
+      this.values.set(property, value);
+    }
+  }
+
+  public getPropertyValue(property: string): string {
+    return this.values.get(property) ?? "";
+  }
+
+  public getPropertyPriority(property: string): string {
+    return this.priorities.get(property) ?? "";
+  }
+
+  public setProperty(property: string, value: string, priority = ""): void {
+    this.values.set(property, value);
+    if (priority) {
+      this.priorities.set(property, priority);
+    } else {
+      this.priorities.delete(property);
+    }
+  }
+
+  public removeProperty(property: string): void {
+    this.values.delete(property);
+    this.priorities.delete(property);
+  }
+}
+
+class FakePageElement {
+  public isConnected = true;
+  public readonly style = new FakeStyleDeclaration({ position: "sticky", top: "12px" });
+}
+
+class ScriptedPageCaptureHarness extends FullPageCaptureHarness {
+  public readonly sticky = new FakePageElement();
+  private readonly scriptContext: Record<string, unknown>;
+
+  public constructor(options: HarnessOptions) {
+    super(options);
+    const scrollingElement = { scrollLeft: 0, scrollTop: 0 };
+    this.scriptContext = {
+      document: {
+        scrollingElement,
+        documentElement: {
+          scrollLeft: 0,
+          scrollTop: 0,
+          appendChild: () => undefined,
+        },
+        createElement: () => ({ textContent: "", remove: () => undefined }),
+        querySelectorAll: () => [this.sticky],
+      },
+      getComputedStyle: (element: unknown) => ({
+        position: element === this.sticky ? "sticky" : "static",
+      }),
+    };
+  }
+
+  public override async executeJavaScript(code: string): Promise<unknown> {
+    const scripted = await super.executeJavaScript(code);
+    const isPageStateRead = code.includes("viewportWidth: innerWidth");
+    const isScrollRead = code.includes("return { x: scrollingElement.scrollLeft");
+    const isTileScrollWrite =
+      code.includes("scrollingElement.scrollLeft =") &&
+      !code.includes("restoreProperty(entry.element");
+    if (isPageStateRead || isScrollRead || isTileScrollWrite) {
+      return scripted;
+    }
+    return runInNewContext(code, this.scriptContext);
+  }
+}
+
 function image(width: number, height: number, value: number): FakeImage {
   return new FakeImage(solidBitmap(width, height, value), { width, height });
 }
@@ -147,6 +224,27 @@ describe("captureFullPage", () => {
     expect(restoreScript).toContain("state.fixedElements");
     expect(restoreScript).toContain("state.stickyElements");
     expect(restoreScript).toContain("state.style.remove()");
+  });
+
+  test("restores inline styles on elements detached during capture", async () => {
+    let sticky: FakePageElement | undefined;
+    const harness = new ScriptedPageCaptureHarness({
+      contentSizes: [{ width: 2, height: 2 }],
+      tiles: [image(2, 2, 1)],
+      afterPaint: (position) => {
+        if (sticky) {
+          sticky.isConnected = false;
+        }
+        return position;
+      },
+    });
+    sticky = harness.sticky;
+
+    await captureFullPage(harness);
+
+    expect(harness.sticky.isConnected).toBe(false);
+    expect(harness.sticky.style.getPropertyValue("position")).toBe("sticky");
+    expect(harness.sticky.style.getPropertyValue("top")).toBe("12px");
   });
 
   test("crops the final tile when the browser clamps its scroll position", async () => {
