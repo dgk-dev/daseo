@@ -1736,6 +1736,42 @@ describe("fetchCatalog", () => {
     expect(catalog.models.map((model) => model.id)).toEqual(["profile-model", "extra-model"]);
   });
 
+  test("Pi replacement models skip runtime discovery even though Pi has no modes", async () => {
+    const fetchCatalog = vi.fn(async () => ({
+      models: [{ provider: "pi", id: "runtime-model", label: "Runtime Model" }],
+      modes: [],
+    }));
+    const injectedClient = {
+      provider: "pi",
+      capabilities: {},
+      fetchCatalog,
+      isAvailable: vi.fn(async () => true),
+    } satisfies Partial<AgentClient> as AgentClient;
+    const registry = buildProviderRegistry(logger, {
+      providerOverrides: {
+        pi: { models: [{ id: "pi-codex/gpt-5.6-sol", label: "GPT-5.6 Sol" }] },
+        "pi-safe": {
+          extends: "pi",
+          label: "Pi Safe",
+          models: [{ id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash" }],
+        },
+      },
+    });
+
+    const builtinCatalog = await registry.pi.fetchCatalog(
+      { scope: "workspace", cwd: "/tmp/catalog", force: false },
+      injectedClient,
+    );
+    const derivedCatalog = await registry["pi-safe"].fetchCatalog(
+      { scope: "workspace", cwd: "/tmp/catalog", force: false },
+      injectedClient,
+    );
+
+    expect(builtinCatalog.models.map((model) => model.id)).toEqual(["pi-codex/gpt-5.6-sol"]);
+    expect(derivedCatalog.models.map((model) => model.id)).toEqual(["deepseek/deepseek-v4-flash"]);
+    expect(fetchCatalog).not.toHaveBeenCalled();
+  });
+
   test("replacement models still resolve the provider's capability-aware default mode", async () => {
     const resolveDefaultModeId = vi.fn(async () => "default");
     const injectedClient = {

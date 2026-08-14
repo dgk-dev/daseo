@@ -594,7 +594,10 @@ function createRegistryEntry(
       });
     });
 
-  const hasStaticModes = resolved.definition.modes.length > 0;
+  const hasRuntimeDiscoveredModes =
+    resolved.definition.modes.length === 0 &&
+    resolved.definition.id !== "pi" &&
+    resolved.derivedFromProviderId !== "pi";
 
   return {
     ...resolved.definition,
@@ -628,7 +631,9 @@ function createRegistryEntry(
         // must still be merged on top. If modes are dynamic, probe for modes via
         // the single catalog API; otherwise use static/empty modes with no runtime.
         const models = mergeModelAdditions(provider, replacementModels, additionalModels);
-        if (hasStaticModes) {
+        // Pi has no selectable modes, so its empty manifest is authoritative.
+        // Empty ACP manifests still require a runtime probe for dynamic modes.
+        if (!hasRuntimeDiscoveredModes) {
           const defaultModeId = await catalogClient.resolveDefaultModeId?.({
             config: {
               provider,

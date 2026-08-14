@@ -851,6 +851,31 @@ describe("PiRpcAgentSession", () => {
     });
   });
 
+  test("treats a provider-aborted terminal response as cancellation instead of failure", async () => {
+    const { pi, session, events } = await createSession();
+
+    const { turnId } = await session.startTurn("continue the task");
+    pi.latestSession().finishTurn({
+      role: "assistant",
+      provider: "xai-auth",
+      model: "grok-4.6",
+      responseId: "resp-aborted",
+      stopReason: "aborted",
+      errorMessage: "xAI API error: Responses failed",
+      content: [{ type: "text", text: "Partial useful output" }],
+    });
+
+    await expect(events.nextTurnCancellation()).resolves.toEqual({
+      type: "turn_canceled",
+      provider: "pi",
+      reason: "aborted",
+      turnId,
+    });
+    expect(
+      (events as unknown as { events: AgentStreamEvent[] }).events.map((event) => event.type),
+    ).not.toContain("turn_failed");
+  });
+
   test("suppresses late aborted terminal response arriving after interrupt resolves", async () => {
     const { pi, session, events } = await createSession();
     const fakeSession = pi.latestSession();
@@ -1531,7 +1556,11 @@ describe("PiRpcAgentClient", () => {
       ],
       modes: [],
     });
-    expect(pi.recordedLaunches[0]).toMatchObject({ cwd: "/workspace/with-extension" });
+    expect(pi.recordedLaunches[0]).toMatchObject({
+      cwd: "/workspace/with-extension",
+      noSession: true,
+      argv: ["pi", "--mode", "rpc", "--no-session"],
+    });
   });
 
   test("lists no draft features without starting a Pi session", async () => {

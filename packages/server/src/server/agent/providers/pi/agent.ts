@@ -2289,7 +2289,8 @@ export class PiRpcAgentSession implements AgentSession {
   }
 
   private completeTurn(turnId: string | undefined, messages: PiAgentMessage[]): void {
-    if (turnId && this.interruptingTurnId === turnId && isPiAbortedTerminalResponse(messages)) {
+    const wasAborted = isPiAbortedTerminalResponse(messages);
+    if (turnId && this.interruptingTurnId === turnId && wasAborted) {
       this.interruptedTerminalError = {
         turnId,
         error: latestPiErrorMessage(messages) ?? "Pi turn failed",
@@ -2297,7 +2298,7 @@ export class PiRpcAgentSession implements AgentSession {
       return;
     }
     if (
-      isPiAbortedTerminalResponse(messages) &&
+      wasAborted &&
       (turnId === this.lastInterruptedTurnId || (!turnId && this.lastInterruptedTurnId !== null))
     ) {
       this.lastInterruptedTurnId = null;
@@ -2308,6 +2309,15 @@ export class PiRpcAgentSession implements AgentSession {
     this.activeAssistantMessageId = null;
     this.activeTurnStarted = false;
     this.clearNoTurnBuffers();
+    if (wasAborted) {
+      this.emit({
+        type: "turn_canceled",
+        provider: this.provider,
+        turnId,
+        reason: "aborted",
+      });
+      return;
+    }
     const errorMessage = latestPiErrorMessage(messages);
     if (typeof errorMessage === "string" && errorMessage.length > 0) {
       this.emit({
@@ -2477,6 +2487,7 @@ export class PiRpcAgentClient implements AgentClient {
   async fetchCatalog(options: FetchCatalogOptions): Promise<ProviderCatalog> {
     const runtimeSession = await this.runtime.startSession({
       cwd: options.scope === "global" ? homedir() : options.cwd,
+      noSession: true,
     });
     try {
       const models = transformPiModels(
