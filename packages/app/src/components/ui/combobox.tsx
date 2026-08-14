@@ -1380,7 +1380,7 @@ export function Combobox({
   );
 
   const { refs, floatingStyles, update } = useFloating({
-    placement: isWeb ? desktopPlacement : "bottom-start",
+    placement: desktopPlacement,
     middleware,
     sameScrollView: false,
     elements: {

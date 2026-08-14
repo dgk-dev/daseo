@@ -391,6 +391,45 @@ describe("combined model selector data", () => {
     ).toEqual({ ok: true });
   });
 
+  it("lets a selected model submit while the provider catalog is still loading", () => {
+    expect(
+      resolveSubmissionReadiness({
+        text: "hello",
+        allowsEmptyAutoSubmit: false,
+        providerCount: 1,
+        selection: {
+          provider: "pi",
+          modelId: "pi-claude/claude-fable-5",
+          availableModels: [],
+          isModelLoading: true,
+        },
+        autoSubmitConfig: null,
+        workspaceDirectory: "/repo",
+        hasClient: true,
+      }),
+    ).toEqual({ ok: true });
+
+    expect(
+      resolveSubmissionReadiness({
+        text: "hello",
+        allowsEmptyAutoSubmit: false,
+        providerCount: 1,
+        selection: {
+          provider: "pi",
+          modelId: "",
+          availableModels: [],
+          isModelLoading: true,
+        },
+        autoSubmitConfig: null,
+        workspaceDirectory: "/repo",
+        hasClient: true,
+      }),
+    ).toEqual({
+      ok: false,
+      reason: "Model defaults are still loading",
+    });
+  });
+
   it("uses the active app language for utility labels", async () => {
     await i18n.changeLanguage("zh-CN");
     try {

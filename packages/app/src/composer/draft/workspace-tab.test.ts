@@ -38,6 +38,18 @@ describe("workspace draft agent model validation", () => {
     ).toBe("Model defaults are still loading");
   });
 
+  test("submits an already-selected model without waiting for the catalog", () => {
+    expect(
+      validate({
+        composerState: {
+          ...baseComposerState,
+          isModelLoading: true,
+          effectiveModelId: "pi-codex/gpt-5.6-sol",
+        },
+      }),
+    ).toBeNull();
+  });
+
   test("still requires a selected model when the provider exposes models", () => {
     expect(
       validate({

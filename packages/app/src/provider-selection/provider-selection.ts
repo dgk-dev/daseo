@@ -335,10 +335,12 @@ export function resolveSubmissionReadiness(input: {
   if (!(input.autoSubmitConfig?.provider ?? input.selection.provider)) {
     return { ok: false, reason: i18n.t("providerSelection.selectModel") };
   }
-  if (input.selection.isModelLoading) {
+  const hasSelectedModel = Boolean(input.autoSubmitConfig?.model ?? input.selection.modelId);
+  // An already-selected model (user choice or saved preference) sends immediately;
+  // catalog warmup only gates sends that still need a default model resolved.
+  if (!hasSelectedModel && input.selection.isModelLoading) {
     return { ok: false, reason: i18n.t("providerSelection.readiness.modelDefaultsLoading") };
   }
-  const hasSelectedModel = Boolean(input.autoSubmitConfig?.model ?? input.selection.modelId);
   if (!hasSelectedModel && input.selection.availableModels.length > 0) {
     return { ok: false, reason: i18n.t("providerSelection.readiness.noModelAvailable") };
   }
