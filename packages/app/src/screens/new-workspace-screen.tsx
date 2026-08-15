@@ -93,6 +93,7 @@ import type { CreatePaseoWorktreeInput } from "@getpaseo/client/internal/daemon-
 import type { AgentProvider } from "@getpaseo/protocol/agent-types";
 import type { WorkspaceDraftTabSetup, WorkspaceTabTarget } from "@/workspace-tabs/model";
 import { isEmptyWorkspaceSubmission, runCreateEmptyWorkspace } from "./new-workspace-empty";
+import { useAutoCreateEmptyWorkspace } from "./new-workspace-auto-create";
 import {
   getWorkspaceNamingAttachments,
   remapDraftCwdToWorkspace,
@@ -1538,6 +1539,22 @@ function useNewWorkspaceFormStack(input: NewWorkspaceFormStackInput): ReactEleme
   );
 }
 
+function resolvePickerEmptyText(input: { isFetching: boolean; t: TFunction }): string {
+  return input.isFetching
+    ? input.t("newWorkspace.refPicker.searching")
+    : input.t("newWorkspace.refPicker.noMatchingRefs");
+}
+
+function isProjectScopedLaunch(input: {
+  projectId: string | undefined;
+  sourceDirectory: string | undefined;
+  draftId: string | undefined;
+}): boolean {
+  return Boolean(
+    input.projectId?.trim() && input.sourceDirectory?.trim() && !input.draftId?.trim(),
+  );
+}
+
 export function NewWorkspaceScreen({
   serverId,
   sourceDirectory: sourceDirectoryProp,
@@ -2046,6 +2063,24 @@ export function NewWorkspaceScreen({
     ],
   );
 
+  // Project-scoped launches (sidebar "+ new workspace" rows and the header
+  // button while a workspace is active) skip the intro form; see
+  // useAutoCreateEmptyWorkspace for the fallback rules.
+  const autoCreateEmptyActive = useAutoCreateEmptyWorkspace({
+    requested: isProjectScopedLaunch({ projectId, sourceDirectory: sourceDirectoryProp, draftId }),
+    isConnected,
+    selectedProject,
+    selectedSourceDirectory,
+    selectedServerId,
+    supportsWorkspaceMultiplicity,
+    effectiveIsolation,
+    createdWorkspace,
+    ensureWorkspace,
+    setPendingAction,
+    onError: setErrorMessage,
+    fallbackErrorMessage: t("newWorkspace.errors.createWorktreeFailed"),
+  });
+
   const handleSubmitNewWorkspace = useCallback(
     async (payload: MessagePayload) => {
       try {
@@ -2211,10 +2246,10 @@ export function NewWorkspaceScreen({
     [composerState, isPending],
   );
 
-  const pickerEmptyText =
-    branchSuggestionsQuery.isFetching || githubPrSearchQuery.isFetching
-      ? t("newWorkspace.refPicker.searching")
-      : t("newWorkspace.refPicker.noMatchingRefs");
+  const pickerEmptyText = resolvePickerEmptyText({
+    isFetching: branchSuggestionsQuery.isFetching || githubPrSearchQuery.isFetching,
+    t,
+  });
 
   const formStack = useNewWorkspaceFormStack({
     isCompact,
@@ -2279,6 +2314,17 @@ export function NewWorkspaceScreen({
   });
 
   const screenHeaderLeft = useMemo(() => <SidebarMenuToggle />, []);
+
+  if (autoCreateEmptyActive) {
+    return (
+      <FileDropZone style={styles.container}>
+        <ScreenHeader left={screenHeaderLeft} borderless />
+        <View style={contentStyle}>
+          <TitlebarDragRegion />
+        </View>
+      </FileDropZone>
+    );
+  }
 
   return (
     <FileDropZone style={styles.container}>
