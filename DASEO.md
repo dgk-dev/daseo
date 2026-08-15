@@ -76,10 +76,11 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
    empty local workspace immediately, allowing browser/terminal use before an agent starts;
    global, worktree, unsupported-daemon, and failure paths retain the intro fallback. Key files:
    `packages/app/src/screens/new-workspace-auto-create.ts` and `new-workspace-screen.tsx`.
-10. **Forward MCP handshake compatibility** — newer Pi builds may advertise a protocol date
-    newer than the bundled MCP SDK. A forward-dated `initialize` header is normalized just long
-    enough for normal MCP negotiation to select the daemon's latest supported version; unknown
-    versions on non-initialize requests remain strict. Key files:
+10. **MCP era-negotiation compatibility** — MCP 2.x Pi clients probe with the forward-dated
+    `server/discover` method before falling back to the bundled MCP 1.x SDK. Daseo recognizes
+    that exact probe and returns the expected legacy signal without logging it as a daemon error;
+    forward-dated `initialize` requests can still negotiate the daemon's latest supported version,
+    while unknown established requests remain strict. Key files:
     `packages/server/src/server/agent-mcp-protocol.ts` and `bootstrap.ts`.
 
 ## Build & ship (Mac mini)

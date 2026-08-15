@@ -8,7 +8,10 @@ import path from "node:path";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Logger } from "pino";
 import { z } from "zod";
-import { resolveAgentMcpProtocolVersionOverride } from "./agent-mcp-protocol.js";
+import {
+  resolveAgentMcpProtocolVersionOverride,
+  resolveForwardAgentMcpDiscoveryFallback,
+} from "./agent-mcp-protocol.js";
 import { createBranchChangeRouteHandler } from "./script-route-branch-handler.js";
 
 export type ListenTarget =
@@ -1445,6 +1448,26 @@ export async function createPaseoDaemon(
           callerAgentId = callerAgentIdRaw[0];
         }
         const requestedProtocolVersion = req.header("mcp-protocol-version");
+        const discoveryFallback = resolveForwardAgentMcpDiscoveryFallback({
+          requestedVersion: requestedProtocolVersion,
+          body: req.body,
+        });
+        if (discoveryFallback) {
+          logger.debug(
+            { requestedProtocolVersion: discoveryFallback.requestedVersion },
+            "Forward Agent MCP discovery probe falling back to legacy negotiation",
+          );
+          res.status(400).json({
+            jsonrpc: "2.0",
+            error: {
+              code: -32000,
+              message: "Modern MCP discovery is not supported; retry legacy initialization",
+            },
+            id: discoveryFallback.requestId,
+          });
+          return;
+        }
+
         const protocolVersionOverride = resolveAgentMcpProtocolVersionOverride({
           requestedVersion: requestedProtocolVersion,
           body: req.body,

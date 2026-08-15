@@ -166,7 +166,7 @@ async function assertAgentNotRunning(options: {
 }
 
 describe("agent MCP end-to-end (offline)", () => {
-  test("negotiates a supported version with a forward-version client", async () => {
+  test("falls a modern discovery probe back to legacy negotiation", async () => {
     const paseoHome = await mkdtemp(path.join(os.tmpdir(), "paseo-home-"));
     const staticDir = await mkdtemp(path.join(os.tmpdir(), "paseo-static-"));
     const port = await getAvailablePort();
@@ -187,27 +187,61 @@ describe("agent MCP end-to-end (offline)", () => {
     await daemon.start();
 
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/mcp/agents`, {
+      const endpoint = `http://127.0.0.1:${port}/mcp/agents`;
+      const discoveryResponse = await fetch(endpoint, {
         method: "POST",
         headers: {
           accept: "application/json, text/event-stream",
           "content-type": "application/json",
+          "mcp-method": "server/discover",
           "mcp-protocol-version": "2026-07-28",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "probe-1",
+          method: "server/discover",
+          params: {
+            _meta: {
+              protocolVersion: "2026-07-28",
+              clientInfo: { name: "forward-client", version: "1.0.0" },
+              clientCapabilities: {},
+            },
+          },
+        }),
+      });
+
+      expect(discoveryResponse.status).toBe(400);
+      expect((await discoveryResponse.json()) as unknown).toEqual({
+        jsonrpc: "2.0",
+        error: {
+          code: -32000,
+          message: "Modern MCP discovery is not supported; retry legacy initialization",
+        },
+        id: "probe-1",
+      });
+
+      const initializeResponse = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
         },
         body: JSON.stringify({
           jsonrpc: "2.0",
           id: 1,
           method: "initialize",
           params: {
-            protocolVersion: "2026-07-28",
+            protocolVersion: LATEST_PROTOCOL_VERSION,
             capabilities: {},
             clientInfo: { name: "forward-client", version: "1.0.0" },
           },
         }),
       });
 
-      expect(response.status).toBe(200);
-      expect(await response.text()).toContain(`"protocolVersion":"${LATEST_PROTOCOL_VERSION}"`);
+      expect(initializeResponse.status).toBe(200);
+      expect(await initializeResponse.text()).toContain(
+        `"protocolVersion":"${LATEST_PROTOCOL_VERSION}"`,
+      );
     } finally {
       await daemon.stop();
       await rm(paseoHome, { recursive: true, force: true });
