@@ -76,6 +76,12 @@ const variants = {
       fallbackRelativePath: "./.secrets/GoogleService-Info.prod.plist",
     }),
   },
+  personal: {
+    name: "Paseo DGK",
+    packageId: "sh.paseo.dgk",
+    googleServicesFile: undefined,
+    googleServiceInfoPlist: undefined,
+  },
   development: {
     name: "Paseo Debug",
     packageId: "sh.paseo.debug",
