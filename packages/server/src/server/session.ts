@@ -2306,6 +2306,10 @@ export class Session {
       await this.workspaceFilesSession.handleFileTransferFrame(binaryFrame.frame);
       return;
     }
+    if (binaryFrame.kind === "browser_stream") {
+      // Browser stream frames are routed by the websocket server, never by sessions.
+      return;
+    }
     this.terminalController.handleBinaryFrame(binaryFrame.frame);
   }
 

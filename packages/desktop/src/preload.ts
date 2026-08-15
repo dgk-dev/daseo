@@ -118,6 +118,15 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
       ipcRenderer.invoke("paseo:browser:clear-profile", legacyBrowserIds),
     executeAutomationCommand: (request: Record<string, unknown>) =>
       ipcRenderer.invoke("paseo:browser:execute-automation-command", request),
+    onStreamFrame: (handler: EventHandler): (() => void) => {
+      const listener = (_ipcEvent: Electron.IpcRendererEvent, payload: unknown) => {
+        handler(payload);
+      };
+      ipcRenderer.on("paseo:browser:stream-frame", listener);
+      return () => {
+        ipcRenderer.removeListener("paseo:browser:stream-frame", listener);
+      };
+    },
     captureElement: (
       browserId: string,
       rect: { x: number; y: number; width: number; height: number },

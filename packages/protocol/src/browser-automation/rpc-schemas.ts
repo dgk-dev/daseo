@@ -43,6 +43,9 @@ export const BROWSER_AUTOMATION_COMMAND_NAMES = [
   "scroll",
   "resize",
   "close_tab",
+  "stream_start",
+  "stream_stop",
+  "stream_input",
 ] as const;
 
 export const BrowserAutomationCommandNameSchema = z.enum(BROWSER_AUTOMATION_COMMAND_NAMES);
@@ -231,6 +234,71 @@ export const BrowserAutomationCloseTabCommandSchema = z.object({
   args: BrowserAutomationTabTargetSchema,
 });
 
+export const BrowserAutomationStreamStartCommandSchema = z.object({
+  command: z.literal("stream_start"),
+  args: BrowserAutomationTabTargetSchema.extend({
+    maxWidth: z.number().int().min(120).max(4096).optional(),
+    maxHeight: z.number().int().min(120).max(4096).optional(),
+    quality: z.number().int().min(10).max(100).optional(),
+  }),
+});
+
+export const BrowserAutomationStreamStopCommandSchema = z.object({
+  command: z.literal("stream_stop"),
+  args: BrowserAutomationTabTargetSchema,
+});
+
+// Coordinates are CSS pixels in the streamed guest viewport, taken from the
+// width/height carried by the latest browser stream frame metadata.
+export const BrowserAutomationStreamInputSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("tap"),
+    x: z.number().nonnegative(),
+    y: z.number().nonnegative(),
+    button: BrowserAutomationMouseButtonSchema.optional(),
+    doubleTap: z.boolean().optional(),
+  }),
+  z.object({
+    kind: z.literal("scroll"),
+    x: z.number().nonnegative(),
+    y: z.number().nonnegative(),
+    deltaX: z.number(),
+    deltaY: z.number(),
+  }),
+  z.object({
+    kind: z.literal("text"),
+    text: z.string().min(1).max(4096),
+  }),
+  z.object({
+    kind: z.literal("key"),
+    key: z.enum([
+      "Enter",
+      "Backspace",
+      "Tab",
+      "Escape",
+      "ArrowUp",
+      "ArrowDown",
+      "ArrowLeft",
+      "ArrowRight",
+      "Delete",
+    ]),
+  }),
+  z.object({ kind: z.literal("back") }),
+  z.object({ kind: z.literal("forward") }),
+  z.object({ kind: z.literal("reload") }),
+  z.object({
+    kind: z.literal("navigate"),
+    url: BrowserAutomationHttpUrlSchema,
+  }),
+]);
+
+export const BrowserAutomationStreamInputCommandSchema = z.object({
+  command: z.literal("stream_input"),
+  args: BrowserAutomationTabTargetSchema.extend({
+    input: BrowserAutomationStreamInputSchema,
+  }),
+});
+
 export const BrowserAutomationCommandSchema = z.discriminatedUnion("command", [
   BrowserAutomationListTabsCommandSchema,
   BrowserAutomationNewTabCommandSchema,
@@ -254,6 +322,9 @@ export const BrowserAutomationCommandSchema = z.discriminatedUnion("command", [
   BrowserAutomationScrollCommandSchema,
   BrowserAutomationResizeCommandSchema,
   BrowserAutomationCloseTabCommandSchema,
+  BrowserAutomationStreamStartCommandSchema,
+  BrowserAutomationStreamStopCommandSchema,
+  BrowserAutomationStreamInputCommandSchema,
 ]);
 
 export const BrowserAutomationTabInfoSchema = z.object({
@@ -455,6 +526,23 @@ export const BrowserAutomationCloseTabResultSchema = z.object({
   browserId: BrowserAutomationBrowserIdSchema,
 });
 
+export const BrowserAutomationStreamStartResultSchema = z.object({
+  command: z.literal("stream_start"),
+  browserId: BrowserAutomationBrowserIdSchema,
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+});
+
+export const BrowserAutomationStreamStopResultSchema = z.object({
+  command: z.literal("stream_stop"),
+  browserId: BrowserAutomationBrowserIdSchema,
+});
+
+export const BrowserAutomationStreamInputResultSchema = z.object({
+  command: z.literal("stream_input"),
+  browserId: BrowserAutomationBrowserIdSchema,
+});
+
 export const BrowserAutomationResultSchema = z.discriminatedUnion("command", [
   BrowserAutomationListTabsResultSchema,
   BrowserAutomationNewTabResultSchema,
@@ -478,6 +566,9 @@ export const BrowserAutomationResultSchema = z.discriminatedUnion("command", [
   BrowserAutomationScrollResultSchema,
   BrowserAutomationResizeResultSchema,
   BrowserAutomationCloseTabResultSchema,
+  BrowserAutomationStreamStartResultSchema,
+  BrowserAutomationStreamStopResultSchema,
+  BrowserAutomationStreamInputResultSchema,
 ]);
 
 export const BrowserAutomationErrorSchema = z.object({
@@ -539,3 +630,4 @@ export type BrowserAutomationExecuteRequest = z.infer<typeof BrowserAutomationEx
 export type BrowserAutomationExecuteResponse = z.infer<
   typeof BrowserAutomationExecuteResponseSchema
 >;
+export type BrowserAutomationStreamInput = z.infer<typeof BrowserAutomationStreamInputSchema>;

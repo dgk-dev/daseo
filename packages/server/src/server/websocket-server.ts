@@ -16,6 +16,7 @@ import type { CheckoutDiffManager, CheckoutDiffMetrics } from "./checkout-diff-m
 import type { DaemonConfigStore, MutableDaemonConfig } from "./daemon-config-store.js";
 import {
   type ServerInfoStatusPayload,
+  type SessionInboundMessage,
   type SessionOutboundMessage,
   type WorkspaceSetupSnapshot,
   type WSHelloMessage,
@@ -90,6 +91,7 @@ import {
   type BrowserAutomationHostCapability,
 } from "@getpaseo/protocol/browser-automation/capabilities";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
+import { BrowserStreamHub, createBrokerStreamStarter } from "./browser-tools/stream-hub.js";
 import type { DaemonRuntimeConfig } from "./session/daemon/daemon-session.js";
 import {
   APPLICATION_SOCKET_LEASE_CHECK_INTERVAL_MS,
@@ -572,6 +574,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly providerUsageService: ProviderUsageService;
   private unsubscribeTerminalActivity: (() => void) | null = null;
   private readonly browserToolsBroker: BrowserToolsBroker | null;
+  private readonly browserStreamHub: BrowserStreamHub | null;
   private readonly hubRelationships: HubRelationshipManagement | null;
   private readonly browserToolsRegistrations = new Map<string, BrowserToolsRegistration>();
   private acceptingConnections = true;
@@ -633,6 +636,9 @@ export class VoiceAssistantWebSocketServer {
     this.daemonVersion = daemonVersion.trim();
     this.daemonRuntimeConfig = daemonRuntimeConfig;
     this.browserToolsBroker = browserToolsBroker ?? null;
+    this.browserStreamHub = this.browserToolsBroker
+      ? new BrowserStreamHub(createBrokerStreamStarter(this.browserToolsBroker), this.logger)
+      : null;
     this.hubRelationships = hubRelationships ?? null;
     this.agentManager = agentManager;
     this.agentStorage = agentStorage;
@@ -1533,6 +1539,8 @@ export class VoiceAssistantWebSocketServer {
         providersSnapshot: true,
         // COMPAT(providersSnapshotCwd): added in v0.3.2, remove gate after 2027-02-10.
         providersSnapshotCwd: true,
+        // Local fork: live desktop browser streaming to mobile watchers.
+        browserRemoteStream: this.browserStreamHub !== null,
         // COMPAT(checkoutForgeSetAutoMerge): added in v0.1.106, remove old
         // checkoutGithubSetAutoMerge fallback after 2026-12-28.
         checkoutForgeSetAutoMerge: true,
@@ -1819,12 +1827,114 @@ export class VoiceAssistantWebSocketServer {
       this.externalSessionsByKey.delete(connection.clientId);
     }
     this.unregisterBrowserToolsClient(connection.clientId);
+    void this.browserStreamHub?.removeConnection(connection.clientId);
 
     connection.connectionLogger.trace(
       { clientId: connection.clientId, totalSessions: this.sessions.size },
       logMessage,
     );
     await connection.session.cleanup();
+  }
+
+  private async handleBrowserRemoteRequest(
+    connection: TrustedSessionConnection,
+    message: Extract<
+      SessionInboundMessage,
+      {
+        type:
+          | "browser.remote.watch.request"
+          | "browser.remote.unwatch.request"
+          | "browser.remote.input.request";
+      }
+    >,
+  ): Promise<void> {
+    const hub = this.browserStreamHub;
+    const broker = this.browserToolsBroker;
+    const unavailable = { code: "browser_disabled", message: "Browser streaming is unavailable." };
+
+    if (message.type === "browser.remote.watch.request") {
+      if (!hub) {
+        this.sendToConnection(
+          connection,
+          wrapSessionMessage({
+            type: "browser.remote.watch.response",
+            payload: { requestId: message.requestId, ok: false, error: unavailable },
+          }),
+        );
+        return;
+      }
+      const result = await hub.watch({
+        browserId: message.browserId,
+        watcherKey: connection.clientId,
+        send: (bytes) => {
+          for (const socket of connection.sockets) {
+            if ((socket.bufferedAmount ?? 0) > BrowserStreamHub.MAX_WATCHER_BUFFERED_BYTES) {
+              continue;
+            }
+            this.sendBinaryToClient(socket, bytes);
+          }
+        },
+        ...(message.maxWidth !== undefined ? { maxWidth: message.maxWidth } : {}),
+        ...(message.maxHeight !== undefined ? { maxHeight: message.maxHeight } : {}),
+        ...(message.quality !== undefined ? { quality: message.quality } : {}),
+      });
+      this.sendToConnection(
+        connection,
+        wrapSessionMessage({
+          type: "browser.remote.watch.response",
+          payload: {
+            requestId: message.requestId,
+            ok: result.ok,
+            ...(result.width !== undefined ? { width: result.width } : {}),
+            ...(result.height !== undefined ? { height: result.height } : {}),
+            ...(result.error ? { error: result.error } : {}),
+          },
+        }),
+      );
+      return;
+    }
+
+    if (message.type === "browser.remote.unwatch.request") {
+      await hub?.unwatch(message.browserId, connection.clientId);
+      this.sendToConnection(
+        connection,
+        wrapSessionMessage({
+          type: "browser.remote.unwatch.response",
+          payload: { requestId: message.requestId, ok: true },
+        }),
+      );
+      return;
+    }
+
+    if (!broker) {
+      this.sendToConnection(
+        connection,
+        wrapSessionMessage({
+          type: "browser.remote.input.response",
+          payload: { requestId: message.requestId, ok: false, error: unavailable },
+        }),
+      );
+      return;
+    }
+    const payload = await broker.execute({
+      command: {
+        command: "stream_input",
+        args: { browserId: message.browserId, input: message.input },
+      },
+    });
+    this.sendToConnection(
+      connection,
+      wrapSessionMessage({
+        type: "browser.remote.input.response",
+        payload: {
+          requestId: message.requestId,
+          ok: payload.ok,
+          ...(payload.ok
+            ? {}
+            : { error: { code: payload.error.code, message: payload.error.message } }),
+        },
+      }),
+    );
   }
 
   private syncBrowserToolsClientRegistration(connection: TrustedSessionConnection): void {
@@ -1971,6 +2081,15 @@ export class VoiceAssistantWebSocketServer {
     if (activeConnection.kind === "hub") {
       log.warn("Rejected binary frame on Hub session");
       ws.close(WS_CLOSE_INVALID_HELLO, "Binary frames are not supported on Hub sessions");
+      return true;
+    }
+    if (decodedFrame.kind === "browser_stream") {
+      if (
+        activeConnection.kind === "trusted" &&
+        this.browserToolsRegistrations.has(activeConnection.clientId)
+      ) {
+        this.browserStreamHub?.routeFrame(decodedFrame.frame.browserId, asBytes);
+      }
       return true;
     }
     void Promise.resolve(activeConnection.session.handleBinaryFrame(decodedFrame)).catch(
@@ -2136,6 +2255,15 @@ export class VoiceAssistantWebSocketServer {
       message.message.type === "browser.automation.execute.response"
     ) {
       this.browserToolsBroker?.receiveResponse(message.message as BrowserAutomationExecuteResponse);
+      return;
+    }
+    if (
+      activeConnection.kind === "trusted" &&
+      (message.message.type === "browser.remote.watch.request" ||
+        message.message.type === "browser.remote.unwatch.request" ||
+        message.message.type === "browser.remote.input.request")
+    ) {
+      await this.handleBrowserRemoteRequest(activeConnection, message.message);
       return;
     }
 

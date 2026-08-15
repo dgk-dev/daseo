@@ -119,11 +119,14 @@ import { isRelayClientWebSocketUrl } from "@getpaseo/protocol/daemon-endpoints";
 import { terminalSubscriptionKey } from "@getpaseo/protocol/terminal-subscription-key";
 import {
   asUint8Array,
+  decodeBrowserStreamFrame,
   decodeFileTransferFrame,
+  encodeBrowserStreamFrame,
   encodeFileTransferFrame,
   decodeTerminalStreamFrame,
   FileTransferOpcode,
   TerminalStreamOpcode,
+  type BrowserStreamFrame,
   type FileTransferFrame,
 } from "@getpaseo/protocol/binary-frames/index";
 import {
@@ -147,6 +150,7 @@ import { TerminalStreamRouter, type TerminalStreamEvent } from "./terminal-strea
 import type {
   BrowserAutomationExecuteRequest,
   BrowserAutomationExecuteResponse,
+  BrowserAutomationStreamInput,
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 
 export interface Logger {
@@ -1060,6 +1064,7 @@ export class DaemonClient {
     { cwd: string; path: string; onUpdate: (version: FileVersion) => void }
   >();
   private readonly terminalStreams = new TerminalStreamRouter();
+  private readonly browserStreamListeners = new Set<(frame: BrowserStreamFrame) => void>();
   private pendingBinaryFileReads = new Map<string, PendingBinaryFileRead>();
   private activeBinaryFileTransfers = new Map<string, BinaryFileTransferState>();
   private completedBinaryFileReads = new Map<string, FileReadResult>();
@@ -5025,6 +5030,86 @@ export class DaemonClient {
     });
   }
 
+  /** Browser host side: forward one live screencast frame to the daemon. */
+  sendBrowserStreamFrame(input: {
+    browserId: string;
+    seq: number;
+    width: number;
+    height: number;
+    dataBase64: string;
+  }): void {
+    let payload: Uint8Array;
+    try {
+      payload = decodeBase64ToBytes(input.dataBase64);
+    } catch {
+      return;
+    }
+    this.sendBinaryFrame(
+      encodeBrowserStreamFrame({
+        browserId: input.browserId,
+        meta: { seq: input.seq, width: input.width, height: input.height },
+        payload,
+      }),
+    );
+  }
+
+  /** Watcher side: receive live browser stream frames pushed by the daemon. */
+  onBrowserStreamFrame(handler: (frame: BrowserStreamFrame) => void): () => void {
+    this.browserStreamListeners.add(handler);
+    return () => {
+      this.browserStreamListeners.delete(handler);
+    };
+  }
+
+  async watchBrowserStream(input: {
+    browserId: string;
+    maxWidth?: number;
+    maxHeight?: number;
+    quality?: number;
+    requestId?: string;
+  }): Promise<{
+    ok: boolean;
+    width?: number;
+    height?: number;
+    error?: { code: string; message: string };
+  }> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: input.requestId,
+      message: {
+        type: "browser.remote.watch.request",
+        browserId: input.browserId,
+        ...(input.maxWidth !== undefined ? { maxWidth: input.maxWidth } : {}),
+        ...(input.maxHeight !== undefined ? { maxHeight: input.maxHeight } : {}),
+        ...(input.quality !== undefined ? { quality: input.quality } : {}),
+      },
+      responseType: "browser.remote.watch.response",
+    });
+  }
+
+  async unwatchBrowserStream(browserId: string, requestId?: string): Promise<void> {
+    await this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "browser.remote.unwatch.request", browserId },
+      responseType: "browser.remote.unwatch.response",
+    });
+  }
+
+  async sendBrowserRemoteInput(input: {
+    browserId: string;
+    input: BrowserAutomationStreamInput;
+    requestId?: string;
+  }): Promise<{ ok: boolean; error?: { code: string; message: string } }> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: input.requestId,
+      message: {
+        type: "browser.remote.input.request",
+        browserId: input.browserId,
+        input: input.input,
+      },
+      responseType: "browser.remote.input.response",
+    });
+  }
+
   async killTerminal(terminalId: string, requestId?: string): Promise<KillTerminalPayload> {
     const resolvedRequestId = this.createRequestId(requestId);
     const message = SessionInboundMessageSchema.parse({
@@ -5424,6 +5509,21 @@ export class DaemonClient {
       });
       this.consecutiveLivenessFailures = 0;
       this.handleFileTransferFrame(fileFrame);
+      this.runtimeMetrics?.recordBinaryFrame("other", rawBytes.byteLength, 0);
+      return true;
+    }
+
+    const browserFrame = decodeBrowserStreamFrame(rawBytes);
+    if (browserFrame) {
+      this.traceInstant("paseo.ws.message.inbound", {
+        envelopeType: "binary",
+        messageType: "browser_stream",
+        opcode: String(browserFrame.opcode),
+      });
+      this.consecutiveLivenessFailures = 0;
+      for (const listener of this.browserStreamListeners) {
+        listener(browserFrame);
+      }
       this.runtimeMetrics?.recordBinaryFrame("other", rawBytes.byteLength, 0);
       return true;
     }

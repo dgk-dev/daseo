@@ -17,6 +17,7 @@ import {
   promptShimRestoreScript,
 } from "./dialog-handling.js";
 import { executeAutomationCommand } from "./service.js";
+import { startScreencast, stopScreencast } from "./screencast.js";
 import {
   captureFullPage as captureFullPageImage,
   type FullPageCaptureImage,
@@ -43,6 +44,8 @@ interface IpcHandlerRegistry {
 interface HostWebContents {
   readonly id: number;
   once(event: "destroyed", listener: () => void): void;
+  send?(channel: string, ...args: unknown[]): void;
+  isDestroyed?(): boolean;
 }
 
 export class HostSnapshotEngineRegistry {
@@ -166,6 +169,9 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
         }
         return contents.debugger.sendCommand(command, params ?? {});
       }),
+    startScreencast: (options, onFrame) =>
+      cdpQueue.run(() => startScreencast(contents, options, onFrame)),
+    stopScreencast: () => cdpQueue.run(() => stopScreencast(contents)),
   };
 }
 
@@ -456,6 +462,13 @@ export function registerBrowserAutomationIpc(options?: { ipc?: IpcHandlerRegistr
     }
     return executeAutomationCommand(parsed.data, registry, {
       snapshotEngine: hostSnapshotEngines.get(hostContents),
+      streamSink: {
+        sendFrame: (frame) => {
+          if (hostContents.isDestroyed?.() !== true) {
+            hostContents.send?.("paseo:browser:stream-frame", frame);
+          }
+        },
+      },
     });
   });
 }

@@ -10,6 +10,8 @@ import type {
   BrowserAutomationNetworkLogEntry,
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import { waitForActionableTarget, type ActionabilityResult } from "./actionability.js";
+import type { ScreencastFramePayload, ScreencastOptions } from "./screencast.js";
+import { planStreamInputCdpSteps } from "./stream-input.js";
 import { FullPageCaptureUnsupportedError } from "./full-page-capture.js";
 import { BrowserSnapshotEngine } from "./snapshot-engine.js";
 import {
@@ -40,6 +42,11 @@ export interface TabContents {
   captureFullPage?(options?: { signal?: AbortSignal }): Promise<TabImage>;
   invalidate(): void;
   sendInputEvent(event: IsolatedKeyboardInputEvent): void;
+  startScreencast?(
+    options: ScreencastOptions,
+    onFrame: (frame: ScreencastFramePayload) => void,
+  ): Promise<void>;
+  stopScreencast?(): Promise<void>;
   getConsoleMessages?(): BrowserAutomationConsoleLogEntry[];
   captureDialogs?<T>(
     task: () => Promise<T>,
@@ -261,17 +268,29 @@ function tabInfoFromContents(
   };
 }
 
+export interface BrowserStreamSink {
+  sendFrame(frame: ScreencastFramePayload & { browserId: string }): void;
+}
+
 export function executeAutomationCommand(
   request: BrowserAutomationExecuteRequest,
   registry: BrowserRegistry,
-  options?: { snapshotEngine?: BrowserSnapshotEngine },
+  options?: { snapshotEngine?: BrowserSnapshotEngine; streamSink?: BrowserStreamSink },
 ): AutomationCommandPayload | Promise<AutomationCommandPayload> {
   const { requestId, command } = request;
   const workspaceId = request.workspaceId;
   const snapshotEngine = options?.snapshotEngine ?? defaultSnapshotEngine;
   const handler = commandHandlers[command.command];
 
-  return handler({ request, command, requestId, workspaceId, registry, snapshotEngine });
+  return handler({
+    request,
+    command,
+    requestId,
+    workspaceId,
+    registry,
+    snapshotEngine,
+    streamSink: options?.streamSink,
+  });
 }
 
 interface CommandHandlerContext {
@@ -281,6 +300,7 @@ interface CommandHandlerContext {
   workspaceId: string | undefined;
   registry: BrowserRegistry;
   snapshotEngine: BrowserSnapshotEngine;
+  streamSink: BrowserStreamSink | undefined;
 }
 
 type CommandHandler = (
@@ -511,7 +531,168 @@ const commandHandlers: Record<BrowserAutomationCommand["command"], CommandHandle
     fail(requestId, "browser_unsupported", "browser_resize is handled by the app runtime."),
   close_tab: ({ requestId }) =>
     fail(requestId, "browser_unsupported", "browser_close_tab is handled by the app runtime."),
+  stream_start: ({ command, requestId, workspaceId, registry, streamSink }) => {
+    const streamCommand = command as Extract<BrowserAutomationCommand, { command: "stream_start" }>;
+    return executeStreamStart(requestId, workspaceId, streamCommand.args, registry, streamSink);
+  },
+  stream_stop: ({ command, requestId, workspaceId, registry }) => {
+    const streamCommand = command as Extract<BrowserAutomationCommand, { command: "stream_stop" }>;
+    return executeStreamStop(requestId, workspaceId, streamCommand.args.browserId, registry);
+  },
+  stream_input: ({ command, requestId, workspaceId, registry }) => {
+    const streamCommand = command as Extract<BrowserAutomationCommand, { command: "stream_input" }>;
+    return executeStreamInput(requestId, workspaceId, streamCommand.args, registry);
+  },
 };
+
+async function executeStreamStart(
+  requestId: string,
+  workspaceId: string | undefined,
+  args: Extract<BrowserAutomationCommand, { command: "stream_start" }>["args"],
+  registry: BrowserRegistry,
+  streamSink: BrowserStreamSink | undefined,
+): Promise<AutomationCommandPayload> {
+  const target = resolveTabTarget({ requestId, workspaceId, browserId: args.browserId, registry });
+  if ("ok" in target) {
+    return target;
+  }
+  const { browserId, contents } = target;
+  if (!contents.startScreencast || !streamSink) {
+    return fail(requestId, "browser_unsupported", "Live streaming is not available for this tab.");
+  }
+  const viewport = await readViewportSize(contents);
+  if (!viewport) {
+    return fail(requestId, "browser_unknown_error", "Could not read the tab viewport size.");
+  }
+  try {
+    await contents.startScreencast(
+      {
+        ...(args.maxWidth !== undefined ? { maxWidth: args.maxWidth } : {}),
+        ...(args.maxHeight !== undefined ? { maxHeight: args.maxHeight } : {}),
+        ...(args.quality !== undefined ? { quality: args.quality } : {}),
+      },
+      (frame) => streamSink.sendFrame({ browserId, ...frame }),
+    );
+  } catch (error) {
+    return fail(
+      requestId,
+      "browser_unknown_error",
+      `Could not start the tab stream: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return {
+    requestId,
+    ok: true,
+    result: {
+      command: "stream_start",
+      browserId,
+      width: viewport.width,
+      height: viewport.height,
+    },
+  };
+}
+
+async function executeStreamStop(
+  requestId: string,
+  workspaceId: string | undefined,
+  browserId: string,
+  registry: BrowserRegistry,
+): Promise<AutomationCommandPayload> {
+  const target = resolveTabTarget({ requestId, workspaceId, browserId, registry });
+  if (!("ok" in target)) {
+    await target.contents.stopScreencast?.();
+  }
+  return {
+    requestId,
+    ok: true,
+    result: { command: "stream_stop", browserId },
+  };
+}
+
+async function executeStreamInput(
+  requestId: string,
+  workspaceId: string | undefined,
+  args: Extract<BrowserAutomationCommand, { command: "stream_input" }>["args"],
+  registry: BrowserRegistry,
+): Promise<AutomationCommandPayload> {
+  const target = resolveTabTarget({ requestId, workspaceId, browserId: args.browserId, registry });
+  if ("ok" in target) {
+    return target;
+  }
+  const { browserId, contents } = target;
+  const input = args.input;
+  const ok: AutomationCommandPayload = {
+    requestId,
+    ok: true,
+    result: { command: "stream_input", browserId },
+  };
+
+  if (input.kind === "back") {
+    contents.goBack();
+    return ok;
+  }
+  if (input.kind === "forward") {
+    contents.goForward();
+    return ok;
+  }
+  if (input.kind === "reload") {
+    contents.reload();
+    return ok;
+  }
+  if (input.kind === "navigate") {
+    try {
+      await contents.loadURL(input.url);
+    } catch {
+      // Navigation errors surface in the streamed page itself.
+    }
+    return ok;
+  }
+
+  if (!contents.sendDebugCommand) {
+    return fail(requestId, "browser_unsupported", "Remote input is not available for this tab.");
+  }
+  const steps = planStreamInputCdpSteps(input);
+  if (!steps) {
+    return fail(requestId, "browser_unsupported", "Unsupported remote input.");
+  }
+  try {
+    for (const step of steps) {
+      await contents.sendDebugCommand(step.command, step.params);
+    }
+  } catch (error) {
+    return fail(
+      requestId,
+      "browser_unknown_error",
+      `Remote input failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return ok;
+}
+
+async function readViewportSize(
+  contents: TabContents,
+): Promise<{ width: number; height: number } | null> {
+  try {
+    const raw = await contents.executeJavaScript(
+      "({ width: window.innerWidth, height: window.innerHeight })",
+    );
+    if (
+      typeof raw === "object" &&
+      raw !== null &&
+      typeof (raw as { width?: unknown }).width === "number" &&
+      typeof (raw as { height?: unknown }).height === "number"
+    ) {
+      const width = Math.round((raw as { width: number }).width);
+      const height = Math.round((raw as { height: number }).height);
+      if (width > 0 && height > 0) {
+        return { width, height };
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 interface ResolvedTabTarget {
   browserId: string;

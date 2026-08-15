@@ -32,6 +32,33 @@ interface BrowserAutomationClient {
     handler: (message: BrowserAutomationExecuteRequest) => void,
   ): () => void;
   sendBrowserAutomationExecuteResponse(response: BrowserAutomationExecuteResponse): void;
+  sendBrowserStreamFrame?(input: {
+    browserId: string;
+    seq: number;
+    width: number;
+    height: number;
+    dataBase64: string;
+  }): void;
+}
+
+function isBrowserStreamFramePayload(payload: unknown): payload is {
+  browserId: string;
+  seq: number;
+  width: number;
+  height: number;
+  dataBase64: string;
+} {
+  if (typeof payload !== "object" || payload === null) {
+    return false;
+  }
+  const frame = payload as Record<string, unknown>;
+  return (
+    typeof frame.browserId === "string" &&
+    typeof frame.seq === "number" &&
+    typeof frame.width === "number" &&
+    typeof frame.height === "number" &&
+    typeof frame.dataBase64 === "string"
+  );
 }
 
 export interface BrowserAutomationHandlerOptions {
@@ -47,6 +74,15 @@ export function mountBrowserAutomationHandler(
   options: BrowserAutomationHandlerOptions,
 ): () => void {
   const getHost = options.getHost ?? getDesktopHost;
+  const sendStreamFrame = options.client.sendBrowserStreamFrame?.bind(options.client);
+  const unsubscribeStreamFrames =
+    sendStreamFrame && getHost()?.browser?.onStreamFrame
+      ? getHost()?.browser?.onStreamFrame?.((payload) => {
+          if (isBrowserStreamFramePayload(payload)) {
+            sendStreamFrame(payload);
+          }
+        })
+      : undefined;
   const unsubscribe = options.client.on("browser.automation.execute.request", (request) => {
     void handleBrowserAutomationRequest({
       client: options.client,
@@ -64,6 +100,7 @@ export function mountBrowserAutomationHandler(
     });
   });
   return () => {
+    unsubscribeStreamFrames?.();
     unsubscribe();
   };
 }

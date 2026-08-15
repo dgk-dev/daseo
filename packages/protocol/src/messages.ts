@@ -56,6 +56,7 @@ import {
 import {
   BrowserAutomationExecuteRequestSchema,
   BrowserAutomationExecuteResponseSchema,
+  BrowserAutomationStreamInputSchema,
 } from "./browser-automation/rpc-schemas.js";
 import { BrowserAutomationHostCapabilitySchema } from "./browser-automation/capabilities.js";
 import {
@@ -1237,6 +1238,28 @@ export const WaitForFinishRequestSchema = z.object({
 export const DaemonGetStatusRequestSchema = z.object({
   type: z.literal("daemon.get_status.request"),
   requestId: z.string(),
+});
+
+export const BrowserRemoteWatchRequestSchema = z.object({
+  type: z.literal("browser.remote.watch.request"),
+  requestId: z.string(),
+  browserId: z.string().min(1),
+  maxWidth: z.number().int().min(120).max(4096).optional(),
+  maxHeight: z.number().int().min(120).max(4096).optional(),
+  quality: z.number().int().min(10).max(100).optional(),
+});
+
+export const BrowserRemoteUnwatchRequestSchema = z.object({
+  type: z.literal("browser.remote.unwatch.request"),
+  requestId: z.string(),
+  browserId: z.string().min(1),
+});
+
+export const BrowserRemoteInputRequestSchema = z.object({
+  type: z.literal("browser.remote.input.request"),
+  requestId: z.string(),
+  browserId: z.string().min(1),
+  input: BrowserAutomationStreamInputSchema,
 });
 
 export const DaemonGetPairingOfferRequestSchema = z.object({
@@ -2728,6 +2751,9 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   SetVoiceModeMessageSchema,
   SendAgentMessageRequestSchema,
   WaitForFinishRequestSchema,
+  BrowserRemoteWatchRequestSchema,
+  BrowserRemoteUnwatchRequestSchema,
+  BrowserRemoteInputRequestSchema,
   DaemonGetStatusRequestSchema,
   DaemonGetPairingOfferRequestSchema,
   HubManagementDaemonConnectRequestSchema,
@@ -3038,6 +3064,8 @@ export const ServerInfoStatusPayloadSchema = z
         providersSnapshot: z.boolean().optional(),
         // COMPAT(providersSnapshotCwd): added in v0.3.2, remove gate after 2027-02-10.
         providersSnapshotCwd: z.boolean().optional(),
+        // Local fork: live desktop browser streaming to mobile watchers.
+        browserRemoteStream: z.boolean().optional(),
         // COMPAT(checkoutForgeSetAutoMerge): added in v0.1.106, remove old
         // checkoutGithubSetAutoMerge fallback after 2026-12-28.
         checkoutForgeSetAutoMerge: z.boolean().optional(),
@@ -4110,6 +4138,40 @@ export const GetDaemonConfigResponseMessageSchema = z.object({
       config: MutableDaemonConfigSchema,
     })
     .passthrough(),
+});
+
+const BrowserRemoteErrorSchema = z.object({
+  code: z.string(),
+  message: z.string(),
+});
+
+export const BrowserRemoteWatchResponseSchema = z.object({
+  type: z.literal("browser.remote.watch.response"),
+  payload: z.object({
+    requestId: z.string(),
+    ok: z.boolean(),
+    width: z.number().int().positive().optional(),
+    height: z.number().int().positive().optional(),
+    error: BrowserRemoteErrorSchema.optional(),
+  }),
+});
+
+export const BrowserRemoteUnwatchResponseSchema = z.object({
+  type: z.literal("browser.remote.unwatch.response"),
+  payload: z.object({
+    requestId: z.string(),
+    ok: z.boolean(),
+    error: BrowserRemoteErrorSchema.optional(),
+  }),
+});
+
+export const BrowserRemoteInputResponseSchema = z.object({
+  type: z.literal("browser.remote.input.response"),
+  payload: z.object({
+    requestId: z.string(),
+    ok: z.boolean(),
+    error: BrowserRemoteErrorSchema.optional(),
+  }),
 });
 
 export const DaemonGetStatusResponseSchema = z.object({
@@ -5708,6 +5770,9 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   WorkspaceClearAttentionResponseSchema,
   SendAgentMessageResponseMessageSchema,
   SetVoiceModeResponseMessageSchema,
+  BrowserRemoteWatchResponseSchema,
+  BrowserRemoteUnwatchResponseSchema,
+  BrowserRemoteInputResponseSchema,
   DaemonGetStatusResponseSchema,
   DaemonGetPairingOfferResponseSchema,
   HubManagementDaemonConnectResponseSchema,
@@ -5956,6 +6021,10 @@ export type ListProviderFeaturesResponseMessage = z.infer<
 >;
 export type ListAvailableProvidersResponse = z.infer<typeof ListAvailableProvidersResponseSchema>;
 export type DaemonGetStatusResponse = z.infer<typeof DaemonGetStatusResponseSchema>;
+export type BrowserRemoteWatchRequest = z.infer<typeof BrowserRemoteWatchRequestSchema>;
+export type BrowserRemoteUnwatchRequest = z.infer<typeof BrowserRemoteUnwatchRequestSchema>;
+export type BrowserRemoteInputRequest = z.infer<typeof BrowserRemoteInputRequestSchema>;
+export type BrowserRemoteWatchResponse = z.infer<typeof BrowserRemoteWatchResponseSchema>;
 export type DaemonGetPairingOfferResponse = z.infer<typeof DaemonGetPairingOfferResponseSchema>;
 export type DiagnosticsResponse = z.infer<typeof DiagnosticsResponseSchema>;
 export type GetProvidersSnapshotResponseMessage = z.infer<
