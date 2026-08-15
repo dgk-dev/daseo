@@ -25,6 +25,7 @@ export {
 
 interface BrowserStoreState extends BrowserIndexState {
   createBrowser: (input?: { initialUrl?: string }) => string;
+  adoptBrowser: (browserId: string, input?: { initialUrl?: string }) => void;
   updateBrowser: (browserId: string, patch: BrowserRecordPatch) => void;
   setBrowserViewport: (browserId: string, viewport: BrowserViewport) => void;
   removeBrowser: (browserId: string) => void;
@@ -61,6 +62,27 @@ export const useBrowserStore = create<BrowserStoreState>()(
         }));
 
         return browserId;
+      },
+      adoptBrowser: (browserId, input) => {
+        const normalizedBrowserId = trimNonEmpty(browserId);
+        if (!normalizedBrowserId) {
+          return;
+        }
+        set((state) => {
+          if (state.browsersById[normalizedBrowserId]) {
+            return state;
+          }
+          return {
+            browsersById: {
+              ...state.browsersById,
+              [normalizedBrowserId]: createBrowserRecord({
+                browserId: normalizedBrowserId,
+                initialUrl: input?.initialUrl,
+                now: Date.now(),
+              }),
+            },
+          };
+        });
       },
       updateBrowser: (browserId, patch) => {
         set((state) => applyBrowserPatch(state, browserId, patch));
@@ -106,4 +128,9 @@ export function createWorkspaceBrowser(input?: { initialUrl?: string }): {
 
 export function normalizeWorkspaceBrowserUrl(value: string | null | undefined): string {
   return normalizeBrowserUrl(value);
+}
+
+/** Register a browser record for a tab that already exists on the desktop host. */
+export function adoptWorkspaceBrowser(browserId: string, input?: { initialUrl?: string }): void {
+  useBrowserStore.getState().adoptBrowser(browserId, input);
 }

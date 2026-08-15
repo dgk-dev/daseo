@@ -1262,6 +1262,13 @@ export const BrowserRemoteInputRequestSchema = z.object({
   input: BrowserAutomationStreamInputSchema,
 });
 
+export const BrowserRemoteOpenRequestSchema = z.object({
+  type: z.literal("browser.remote.open.request"),
+  requestId: z.string(),
+  workspaceId: z.string().min(1),
+  url: z.string().url().optional(),
+});
+
 export const DaemonGetPairingOfferRequestSchema = z.object({
   type: z.literal("daemon.get_pairing_offer.request"),
   requestId: z.string(),
@@ -2754,6 +2761,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   BrowserRemoteWatchRequestSchema,
   BrowserRemoteUnwatchRequestSchema,
   BrowserRemoteInputRequestSchema,
+  BrowserRemoteOpenRequestSchema,
   DaemonGetStatusRequestSchema,
   DaemonGetPairingOfferRequestSchema,
   HubManagementDaemonConnectRequestSchema,
@@ -4170,6 +4178,17 @@ export const BrowserRemoteInputResponseSchema = z.object({
   payload: z.object({
     requestId: z.string(),
     ok: z.boolean(),
+    error: BrowserRemoteErrorSchema.optional(),
+  }),
+});
+
+export const BrowserRemoteOpenResponseSchema = z.object({
+  type: z.literal("browser.remote.open.response"),
+  payload: z.object({
+    requestId: z.string(),
+    ok: z.boolean(),
+    browserId: z.string().min(1).optional(),
+    url: z.string().optional(),
     error: BrowserRemoteErrorSchema.optional(),
   }),
 });
@@ -5773,6 +5792,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   BrowserRemoteWatchResponseSchema,
   BrowserRemoteUnwatchResponseSchema,
   BrowserRemoteInputResponseSchema,
+  BrowserRemoteOpenResponseSchema,
   DaemonGetStatusResponseSchema,
   DaemonGetPairingOfferResponseSchema,
   HubManagementDaemonConnectResponseSchema,
@@ -6024,6 +6044,8 @@ export type DaemonGetStatusResponse = z.infer<typeof DaemonGetStatusResponseSche
 export type BrowserRemoteWatchRequest = z.infer<typeof BrowserRemoteWatchRequestSchema>;
 export type BrowserRemoteUnwatchRequest = z.infer<typeof BrowserRemoteUnwatchRequestSchema>;
 export type BrowserRemoteInputRequest = z.infer<typeof BrowserRemoteInputRequestSchema>;
+export type BrowserRemoteOpenRequest = z.infer<typeof BrowserRemoteOpenRequestSchema>;
+export type BrowserRemoteOpenResponse = z.infer<typeof BrowserRemoteOpenResponseSchema>;
 export type BrowserRemoteWatchResponse = z.infer<typeof BrowserRemoteWatchResponseSchema>;
 export type DaemonGetPairingOfferResponse = z.infer<typeof DaemonGetPairingOfferResponseSchema>;
 export type DiagnosticsResponse = z.infer<typeof DiagnosticsResponseSchema>;

@@ -1844,7 +1844,8 @@ export class VoiceAssistantWebSocketServer {
         type:
           | "browser.remote.watch.request"
           | "browser.remote.unwatch.request"
-          | "browser.remote.input.request";
+          | "browser.remote.input.request"
+          | "browser.remote.open.request";
       }
     >,
   ): Promise<void> {
@@ -1901,6 +1902,45 @@ export class VoiceAssistantWebSocketServer {
         wrapSessionMessage({
           type: "browser.remote.unwatch.response",
           payload: { requestId: message.requestId, ok: true },
+        }),
+      );
+      return;
+    }
+
+    if (message.type === "browser.remote.open.request") {
+      if (!broker) {
+        this.sendToConnection(
+          connection,
+          wrapSessionMessage({
+            type: "browser.remote.open.response",
+            payload: { requestId: message.requestId, ok: false, error: unavailable },
+          }),
+        );
+        return;
+      }
+      const payload = await broker.execute({
+        workspaceId: message.workspaceId,
+        command: {
+          command: "new_tab",
+          args: message.url ? { url: message.url } : {},
+        },
+      });
+      const opened =
+        payload.ok && payload.result.command === "new_tab"
+          ? { browserId: payload.result.browserId, url: payload.result.url }
+          : null;
+      this.sendToConnection(
+        connection,
+        wrapSessionMessage({
+          type: "browser.remote.open.response",
+          payload: {
+            requestId: message.requestId,
+            ok: Boolean(opened),
+            ...(opened ? { browserId: opened.browserId, url: opened.url } : {}),
+            ...(payload.ok
+              ? {}
+              : { error: { code: payload.error.code, message: payload.error.message } }),
+          },
         }),
       );
       return;
@@ -2261,7 +2301,8 @@ export class VoiceAssistantWebSocketServer {
       activeConnection.kind === "trusted" &&
       (message.message.type === "browser.remote.watch.request" ||
         message.message.type === "browser.remote.unwatch.request" ||
-        message.message.type === "browser.remote.input.request")
+        message.message.type === "browser.remote.input.request" ||
+        message.message.type === "browser.remote.open.request")
     ) {
       await this.handleBrowserRemoteRequest(activeConnection, message.message);
       return;

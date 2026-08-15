@@ -5110,6 +5110,28 @@ export class DaemonClient {
     });
   }
 
+  /** Open a new browser tab on the desktop browser host and return its id. */
+  async openRemoteBrowserTab(input: {
+    workspaceId: string;
+    url?: string;
+    requestId?: string;
+  }): Promise<{
+    ok: boolean;
+    browserId?: string;
+    url?: string;
+    error?: { code: string; message: string };
+  }> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: input.requestId,
+      message: {
+        type: "browser.remote.open.request",
+        workspaceId: input.workspaceId,
+        ...(input.url ? { url: input.url } : {}),
+      },
+      responseType: "browser.remote.open.response",
+    });
+  }
+
   async killTerminal(terminalId: string, requestId?: string): Promise<KillTerminalPayload> {
     const resolvedRequestId = this.createRequestId(requestId);
     const message = SessionInboundMessageSchema.parse({
