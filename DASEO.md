@@ -10,12 +10,12 @@ both artifacts from the same commit, and update this file if the delta set chang
 
 ## Identity
 
-|              | Paseo (upstream)                 | Daseo (this fork)                                                                    |
-| ------------ | -------------------------------- | ------------------------------------------------------------------------------------ |
-| Repo         | `getpaseo/paseo`                 | `dgk-dev/daseo`, branch `local/patched-desktop`                                      |
-| Mac app      | Paseo.app (App Store / releases) | `/Applications/Daseo.app`, ad-hoc signed local build, version `0.4.0-beta.2-local.N` |
-| Android      | `sh.paseo` (Play)                | `sh.paseo.dgk` ("Daseo"), sideloaded APK, parallel-installable                       |
-| Display name | Paseo                            | Daseo (display only)                                                                 |
+|              | Paseo (upstream)                 | Daseo (this fork)                                                             |
+| ------------ | -------------------------------- | ----------------------------------------------------------------------------- |
+| Repo         | `getpaseo/paseo`                 | `dgk-dev/daseo`, branch `local/patched-desktop`                               |
+| Mac app      | Paseo.app (App Store / releases) | `/Applications/Daseo.app`, ad-hoc signed local build, version `0.4.0-local.N` |
+| Android      | `sh.paseo` (Play)                | `sh.paseo.dgk` ("Daseo"), sideloaded APK, parallel-installable                |
+| Display name | Paseo                            | Daseo (display only)                                                          |
 
 **Deliberately unchanged** to stay upstream-compatible and preserve state: internal
 identifiers (`productName`, Electron userData path, `~/.paseo`, `paseo` CLI, Mac bundle IDs,
@@ -71,7 +71,7 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
 8. **Fold- and CJK-safe mobile UX** — unfolded Fold/tablet sidebar controls stay above the
    Android navigation inset (`packages/app/src/components/left-sidebar.tsx`), while Markdown
    headings use token-proportional line heights so Korean and large-font text is not clipped
-   (`packages/app/src/components/markdown/renderer.tsx`).
+   (`packages/app/src/styles/markdown-styles.ts`).
 9. **Project-scoped empty workspace auto-create** — `/new` launched from a project creates an
    empty local workspace immediately, allowing browser/terminal use before an agent starts;
    global, worktree, unsupported-daemon, and failure paths retain the intro fallback. Key files:

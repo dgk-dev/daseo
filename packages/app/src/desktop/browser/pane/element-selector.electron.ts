@@ -340,16 +340,16 @@ function buildElementSelectorScript(sessionToken: string): string {
       }
       function destroy() {
         document.removeEventListener('mousemove', onMove, true);
-        document.removeEventListener('click', onClick, true);
-        document.removeEventListener('keydown', onKey, true);
-        document.removeEventListener('mousedown', blockEvent, true);
-        document.removeEventListener('mouseup', blockEvent, true);
-        document.removeEventListener('pointerdown', blockEvent, true);
-        document.removeEventListener('pointerup', blockEvent, true);
-        document.removeEventListener('touchstart', blockEvent, true);
-        document.removeEventListener('touchend', blockEvent, true);
-        document.removeEventListener('focus', blockEvent, true);
-        document.removeEventListener('submit', blockEvent, true);
+        window.removeEventListener('click', onClick, true);
+        window.removeEventListener('keydown', onKey, true);
+        window.removeEventListener('mousedown', blockEvent, true);
+        window.removeEventListener('mouseup', blockEvent, true);
+        window.removeEventListener('pointerdown', blockEvent, true);
+        window.removeEventListener('pointerup', blockEvent, true);
+        window.removeEventListener('touchstart', blockEvent, true);
+        window.removeEventListener('touchend', blockEvent, true);
+        window.removeEventListener('focus', blockEvent, true);
+        window.removeEventListener('submit', blockEvent, true);
         document.documentElement.classList.remove('__paseo-select-mode');
         if (last) last.classList.remove('__paseo-hover');
         if (hoverLabel.parentNode) hoverLabel.parentNode.removeChild(hoverLabel);
@@ -357,16 +357,18 @@ function buildElementSelectorScript(sessionToken: string): string {
         window.__paseoSelector = null;
       }
       document.addEventListener('mousemove', onMove, true);
-      document.addEventListener('click', onClick, true);
-      document.addEventListener('keydown', onKey, true);
-      document.addEventListener('mousedown', blockEvent, true);
-      document.addEventListener('mouseup', blockEvent, true);
-      document.addEventListener('pointerdown', blockEvent, true);
-      document.addEventListener('pointerup', blockEvent, true);
-      document.addEventListener('touchstart', blockEvent, true);
-      document.addEventListener('touchend', blockEvent, true);
-      document.addEventListener('focus', blockEvent, true);
-      document.addEventListener('submit', blockEvent, true);
+      // Window capture runs before page-level document handlers so selection
+      // cannot activate the target or leak a delegated page action.
+      window.addEventListener('click', onClick, true);
+      window.addEventListener('keydown', onKey, true);
+      window.addEventListener('mousedown', blockEvent, true);
+      window.addEventListener('mouseup', blockEvent, true);
+      window.addEventListener('pointerdown', blockEvent, true);
+      window.addEventListener('pointerup', blockEvent, true);
+      window.addEventListener('touchstart', blockEvent, true);
+      window.addEventListener('touchend', blockEvent, true);
+      window.addEventListener('focus', blockEvent, true);
+      window.addEventListener('submit', blockEvent, true);
       window.__paseoSelector = { destroy: destroy, sessionToken: sessionToken };
       return { installed: true, sessionToken: sessionToken };
     })()

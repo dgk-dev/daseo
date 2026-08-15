@@ -591,7 +591,10 @@ export function AppearanceSection() {
 
   return (
     <View>
-      <SettingsSection title={t("settings.appearance.theme.title")}>
+      <SettingsSection
+        title={t("settings.appearance.theme.title")}
+        testID="appearance-theme-section"
+      >
         <View style={settingsStyles.card}>
           <ThemeRow value={settings.theme} onChange={handleThemeChange} />
         </View>
