@@ -8,6 +8,7 @@ import path from "node:path";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Logger } from "pino";
 import { z } from "zod";
+import { resolveAgentMcpProtocolVersionOverride } from "./agent-mcp-protocol.js";
 import { createBranchChangeRouteHandler } from "./script-route-branch-handler.js";
 
 export type ListenTarget =
@@ -1443,6 +1444,22 @@ export async function createPaseoDaemon(
         } else if (Array.isArray(callerAgentIdRaw) && typeof callerAgentIdRaw[0] === "string") {
           callerAgentId = callerAgentIdRaw[0];
         }
+        const requestedProtocolVersion = req.header("mcp-protocol-version");
+        const protocolVersionOverride = resolveAgentMcpProtocolVersionOverride({
+          requestedVersion: requestedProtocolVersion,
+          body: req.body,
+        });
+        if (protocolVersionOverride) {
+          req.headers["mcp-protocol-version"] = protocolVersionOverride;
+          logger.info(
+            {
+              requestedProtocolVersion,
+              negotiatedProtocolVersion: protocolVersionOverride,
+            },
+            "Normalizing forward Agent MCP initialize version for negotiation",
+          );
+        }
+
         const { server, transport } = await createAgentMcpSession(callerAgentId);
         res.on("close", () => {
           void transport.close();

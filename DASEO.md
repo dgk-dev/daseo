@@ -76,6 +76,11 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
    empty local workspace immediately, allowing browser/terminal use before an agent starts;
    global, worktree, unsupported-daemon, and failure paths retain the intro fallback. Key files:
    `packages/app/src/screens/new-workspace-auto-create.ts` and `new-workspace-screen.tsx`.
+10. **Forward MCP handshake compatibility** — newer Pi builds may advertise a protocol date
+    newer than the bundled MCP SDK. A forward-dated `initialize` header is normalized just long
+    enough for normal MCP negotiation to select the daemon's latest supported version; unknown
+    versions on non-initialize requests remain strict. Key files:
+    `packages/server/src/server/agent-mcp-protocol.ts` and `bootstrap.ts`.
 
 ## Build & ship (Mac mini)
 
@@ -86,9 +91,13 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
   idle-gated launchd watcher. Never change `CFBundleName`, `CFBundleExecutable`, helper names,
   bundle IDs, or the user-data path. **The `Paseo Daemon` process survives app swaps — always
   restart it too** (see `~/.paseo/restart-daemon-local5.sh` pattern).
-- Android: verify the ignored personal Firebase config exists, then run
-  `APP_VARIANT=personal npx expo prebuild --platform android` and
-  `cd android && ./gradlew assembleRelease`; artifacts in `~/paseo-builds/`, served at
-  `https://mac.tail29eaf5.ts.net/`; install over Wi-Fi ADB (`phone install`) when available.
+- Android: verify the ignored personal Firebase config exists, use JDK 17 and the Android 36
+  SDK (`JAVA_HOME=$(/usr/libexec/java_home -v 17)`,
+  `ANDROID_HOME=/opt/homebrew/share/android-commandlinetools`), then run
+  `APP_VARIANT=personal npx expo prebuild --platform android --clean` and
+  `cd android && ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a` for the Fold
+  download (omit the architecture property to retain a universal fallback). Artifacts live in
+  `~/paseo-builds/`, served at `https://mac.tail29eaf5.ts.net/`; install over Wi-Fi ADB
+  (`phone install`) when available.
 - Both artifacts must come from the same commit. Push with the `dgk-dev` GitHub account,
   then switch `gh` back to `ax-dfcorp`.
