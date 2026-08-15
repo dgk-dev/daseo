@@ -38,8 +38,10 @@ IDs, URL scheme `paseo://`), all i18n strings, and the design-system structure.
 3. **Rebranding (display-only)** — DΛ icons (`packages/app/assets/images/*`,
    `packages/desktop/assets/*`), Android personal variant name "Daseo"
    (`packages/app/app.config.js`), Mac window-title display name
-   (`packages/desktop/src/main.ts`), post-build Info.plist patch + `Daseo.app` rename
-   (activation scripts under `~/.paseo/`).
+   (`packages/desktop/src/main.ts`), safe post-build Info.plist patch via
+   `packages/desktop/scripts/daseo-app-package.mjs`, and outer `Daseo.app` rename.
+   The patch keeps `CFBundleName=Paseo`; Electron uses that internal product name
+   to locate the unchanged `Paseo Helper.app` bundles.
 4. **Daseo theme** — monotone graphite dark variant registered in
    `packages/app/src/styles/theme.ts` (`darkDaseoTheme`) and selectable in appearance
    settings on desktop and mobile.
@@ -56,9 +58,12 @@ IDs, URL scheme `paseo://`), all i18n strings, and the design-system structure.
 
 ## Build & ship (Mac mini)
 
-- Mac: `npm run build:desktop -- --publish never --mac --arm64 --dir`, patch Info.plist
-  version/name, ad-hoc codesign, stage to `~/Applications/Paseo Local Patch.app`, activate
-  via idle-gated launchd watcher. **The `Paseo Daemon` process survives app swaps — always
+- Mac: build with `npm run build:desktop -- --publish never --mac --arm64 --dir`, then run
+  `node packages/desktop/scripts/daseo-app-package.mjs packages/desktop/release/mac-arm64/Paseo.app <local-version>`.
+  Ad-hoc sign the patched bundle, stage it to `~/Applications/Paseo Local Patch.app`, rename
+  only the outer installed directory to `/Applications/Daseo.app`, and activate via an
+  idle-gated launchd watcher. Never change `CFBundleName`, `CFBundleExecutable`, helper names,
+  bundle IDs, or the user-data path. **The `Paseo Daemon` process survives app swaps — always
   restart it too** (see `~/.paseo/restart-daemon-local5.sh` pattern).
 - Android: `APP_VARIANT=personal npx expo prebuild --platform android` then
   `cd android && ./gradlew assembleRelease`; artifacts in `~/paseo-builds/`, served at

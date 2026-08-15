@@ -1,0 +1,73 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterEach, describe, expect, test } from "vitest";
+import { patchDaseoMacBundleMetadata } from "./daseo-app-package.mjs";
+
+const PLIST_BUDDY = "/usr/libexec/PlistBuddy";
+const tempRoots = [];
+
+function readPlistValue(plistPath, key) {
+  return execFileSync(PLIST_BUDDY, ["-c", `Print :${key}`, plistPath], {
+    encoding: "utf8",
+  }).trim();
+}
+
+function createPaseoAppFixture() {
+  const root = mkdtempSync(path.join(os.tmpdir(), "daseo-package-test-"));
+  tempRoots.push(root);
+  const appPath = path.join(root, "Daseo.app");
+  const contentsPath = path.join(appPath, "Contents");
+  mkdirSync(contentsPath, { recursive: true });
+  const plistPath = path.join(contentsPath, "Info.plist");
+  writeFileSync(
+    plistPath,
+    `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleName</key><string>Paseo</string>
+<key>CFBundleDisplayName</key><string>Paseo</string>
+<key>CFBundleExecutable</key><string>Paseo</string>
+<key>CFBundleShortVersionString</key><string>0.4.0-beta.2</string>
+<key>CFBundleVersion</key><string>0.4.0-beta.2</string>
+</dict></plist>
+`,
+  );
+  return { appPath, plistPath };
+}
+
+afterEach(() => {
+  for (const root of tempRoots.splice(0)) {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+describe("Daseo macOS package metadata", () => {
+  test("keeps Paseo's Electron identity while showing Daseo to the user", () => {
+    const { appPath, plistPath } = createPaseoAppFixture();
+
+    patchDaseoMacBundleMetadata({
+      appPath,
+      displayVersion: "0.4.0-beta.2-local.7",
+    });
+
+    expect(readPlistValue(plistPath, "CFBundleName")).toBe("Paseo");
+    expect(readPlistValue(plistPath, "CFBundleDisplayName")).toBe("Daseo");
+    expect(readPlistValue(plistPath, "CFBundleExecutable")).toBe("Paseo");
+    expect(readPlistValue(plistPath, "CFBundleShortVersionString")).toBe("0.4.0-beta.2-local.7");
+    expect(readPlistValue(plistPath, "CFBundleVersion")).toBe("0.4.0-beta.2-local.7");
+  });
+
+  test("applies the safe metadata contract from the packaging command", () => {
+    const { appPath, plistPath } = createPaseoAppFixture();
+    const scriptPath = fileURLToPath(new URL("./daseo-app-package.mjs", import.meta.url));
+
+    execFileSync(process.execPath, [scriptPath, appPath, "0.4.0-beta.2-local.7"]);
+
+    expect(readPlistValue(plistPath, "CFBundleName")).toBe("Paseo");
+    expect(readPlistValue(plistPath, "CFBundleDisplayName")).toBe("Daseo");
+    expect(readPlistValue(plistPath, "CFBundleShortVersionString")).toBe("0.4.0-beta.2-local.7");
+  });
+});
