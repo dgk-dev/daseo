@@ -240,11 +240,11 @@ async function waitForGuestSelector(client, browserId) {
       function: "() => Boolean(globalThis.__paseoSelector)",
     });
     if (JSON.parse(evaluated.resultJson) === true) {
-      return;
+      return true;
     }
     await delay(50);
   }
-  throw new Error("Element selector did not install in the guest within 5000ms");
+  return false;
 }
 
 async function createCallerAgent(daemonPort) {
@@ -715,6 +715,10 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId,
     JSON.parse(selectorDuringLoad.resultJson) === false,
     "Selector injected while the guest reported a genuine load",
   );
+  assert(
+    await page.getByText("Wait for the page to finish loading").isVisible(),
+    "Element selector loading failure was not visible",
+  );
   await page.evaluate((id) => {
     const webview = document.querySelector(`[data-paseo-browser-id="${id}"]`);
     if (!(webview instanceof HTMLElement)) throw new Error(`Browser webview ${id} was unavailable`);
@@ -765,7 +769,10 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId,
   });
 
   await annotateButton.click();
-  await waitForGuestSelector(client, browserId);
+  assert(
+    await waitForGuestSelector(client, browserId),
+    "Loaded local browser did not become ready for element annotation",
+  );
   await page.screenshot({ path: path.join(artifactDir, "local-page-annotate-selector.png") });
   await clickGuestElement(page, client, browserId, "#bridge-target");
   const annotationInput = page.getByRole("textbox", {
@@ -822,7 +829,10 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId,
   await delay(10_000);
   const screenshotButton = originalDeck.getByRole("button", { name: "Screenshot element" });
   await screenshotButton.click();
-  await waitForGuestSelector(client, browserId);
+  assert(
+    await waitForGuestSelector(client, browserId),
+    "Loaded local browser did not become ready for element screenshots",
+  );
   await delay(20_500);
   const selectorAfterPriorTimeout = await callBrowserTool(client, "browser_evaluate", {
     browserId,
