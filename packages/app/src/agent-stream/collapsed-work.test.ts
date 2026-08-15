@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { StreamItem } from "@/types/stream";
-import { collapseCompletedWork } from "./collapsed-work";
+import { collapseCompletedWork, collapseCompletedWorkStream } from "./collapsed-work";
 
 let sequence = 0;
 function item(kind: StreamItem["kind"], id?: string): StreamItem {
@@ -167,5 +167,65 @@ describe("collapseCompletedWork", () => {
       "assistant_message",
       "assistant_message",
     ]);
+  });
+});
+
+describe("collapseCompletedWorkStream", () => {
+  test("folds a turn spanning the tail/head boundary into one summary", () => {
+    const user = item("user_message");
+    const settledWork = item("tool_call");
+    const headWork = item("thought");
+    const finalAssistant = item("assistant_message", "a-final");
+    const result = collapseCompletedWorkStream({
+      tail: [user, settledWork],
+      head: [headWork, finalAssistant],
+      expandedTurnKeys: NONE,
+      isTurnActive: false,
+    });
+    expect(result.tail).toEqual([user]);
+    expect(result.head).toEqual([finalAssistant]);
+    expect(result.workCountByTurnKey.size).toBe(1);
+    expect(result.workCountByTurnKey.get("a-final")).toBe(2);
+  });
+
+  test("leaves the streaming head untouched while a turn is active", () => {
+    const tail = [item("user_message"), item("tool_call"), item("assistant_message", "a1")];
+    const head = [item("tool_call"), item("thought")];
+    const result = collapseCompletedWorkStream({
+      tail,
+      head,
+      expandedTurnKeys: NONE,
+      isTurnActive: true,
+    });
+    expect(result.head).toBe(head);
+    // Trailing tail turn stays expanded defensively during an active turn.
+    expect(result.tail).toBe(tail);
+  });
+
+  test("collapses an idle head-only completed turn immediately", () => {
+    const head = [item("user_message"), item("tool_call"), item("assistant_message", "a1")];
+    const result = collapseCompletedWorkStream({
+      tail: [],
+      head,
+      expandedTurnKeys: NONE,
+      isTurnActive: false,
+    });
+    expect(result.head.map((entry) => entry.kind)).toEqual(["user_message", "assistant_message"]);
+    expect(result.workCountByTurnKey.get("a1")).toBe(1);
+  });
+
+  test("expanding the spanning turn restores items on both sides", () => {
+    const user = item("user_message");
+    const settledWork = item("tool_call");
+    const headWork = item("thought");
+    const finalAssistant = item("assistant_message", "a-final");
+    const result = collapseCompletedWorkStream({
+      tail: [user, settledWork],
+      head: [headWork, finalAssistant],
+      expandedTurnKeys: new Set(["a-final"]),
+      isTurnActive: false,
+    });
+    expect(result.tail).toEqual([user, settledWork]);
+    expect(result.head).toEqual([headWork, finalAssistant]);
   });
 });

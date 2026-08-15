@@ -6,9 +6,13 @@ export type PinnedTabTarget =
 
 export function isPinnedTargetAvailable(
   target: PinnedTabTarget,
-  environment: { isElectron: boolean },
+  environment: { isElectron: boolean; supportsRemoteBrowser?: boolean },
 ): boolean {
-  return target.kind !== "browser" || environment.isElectron;
+  return (
+    target.kind !== "browser" ||
+    environment.isElectron ||
+    environment.supportsRemoteBrowser === true
+  );
 }
 
 export function pinnedTargetKey(target: PinnedTabTarget): string {

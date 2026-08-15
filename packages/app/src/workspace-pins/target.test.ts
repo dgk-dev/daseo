@@ -7,11 +7,17 @@ import {
 } from "./target";
 
 describe("isPinnedTargetAvailable", () => {
-  it("only offers browser targets in Electron", () => {
+  it("offers browser targets in Electron or when the daemon streams browsers", () => {
     const browser = { kind: "browser" } as const;
 
     expect(isPinnedTargetAvailable(browser, { isElectron: true })).toBe(true);
     expect(isPinnedTargetAvailable(browser, { isElectron: false })).toBe(false);
+    expect(
+      isPinnedTargetAvailable(browser, { isElectron: false, supportsRemoteBrowser: true }),
+    ).toBe(true);
+    expect(
+      isPinnedTargetAvailable(browser, { isElectron: false, supportsRemoteBrowser: false }),
+    ).toBe(false);
   });
 
   it("offers cross-platform targets outside Electron", () => {

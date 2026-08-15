@@ -64,6 +64,64 @@ function splitTurns(items: readonly StreamItem[]): Turn[] {
   return turns;
 }
 
+export interface CollapsedStreamResult {
+  tail: StreamItem[];
+  head: StreamItem[];
+  workCountByTurnKey: Map<string, number>;
+}
+
+/**
+ * Collapse across the tail/head boundary. While a turn is active only settled
+ * history collapses (the in-flight turn streams fully); once idle the buffers
+ * are folded together so a turn whose user message sits in the tail and whose
+ * final assistant message is still in the head collapses as one turn with a
+ * single summary row.
+ */
+export function collapseCompletedWorkStream(input: {
+  tail: StreamItem[];
+  head: StreamItem[];
+  expandedTurnKeys: ReadonlySet<string>;
+  isTurnActive: boolean;
+}): CollapsedStreamResult {
+  const { tail, head, expandedTurnKeys, isTurnActive } = input;
+  if (isTurnActive) {
+    const collapsedTail = collapseCompletedWork({
+      items: tail,
+      expandedTurnKeys,
+      keepLastTurnExpanded: true,
+    });
+    return {
+      tail: collapsedTail.items,
+      head,
+      workCountByTurnKey: collapsedTail.workCountByTurnKey,
+    };
+  }
+  if (head.length === 0) {
+    const collapsedTail = collapseCompletedWork({
+      items: tail,
+      expandedTurnKeys,
+      keepLastTurnExpanded: false,
+    });
+    return {
+      tail: collapsedTail.items,
+      head,
+      workCountByTurnKey: collapsedTail.workCountByTurnKey,
+    };
+  }
+  const headItems = new Set(head);
+  const combined = collapseCompletedWork({
+    items: [...tail, ...head],
+    expandedTurnKeys,
+    keepLastTurnExpanded: false,
+  });
+  const tailOut: StreamItem[] = [];
+  const headOut: StreamItem[] = [];
+  for (const item of combined.items) {
+    (headItems.has(item) ? headOut : tailOut).push(item);
+  }
+  return { tail: tailOut, head: headOut, workCountByTurnKey: combined.workCountByTurnKey };
+}
+
 export function collapseCompletedWork(input: {
   items: StreamItem[];
   expandedTurnKeys: ReadonlySet<string>;

@@ -16,6 +16,7 @@ import {
   type PinnedTabTarget,
 } from "@/workspace-pins/target";
 import { usePinnedTargetsStore } from "@/workspace-pins/store";
+import { useSessionStore } from "@/stores/session-store";
 
 export interface ResolvedPin {
   key: string;
@@ -61,6 +62,9 @@ export function usePinnedLaunchers({ serverId, onLaunch }: UsePinnedLaunchersInp
   const { t } = useTranslation();
   const pinned = usePinnedTargetsStore((state) => state.pinned);
   const { config } = useDaemonConfig(serverId);
+  const supportsRemoteBrowser = useSessionStore(
+    (state) => state.sessions[serverId]?.serverInfo?.features?.browserRemoteStream === true,
+  );
   const profiles = useMemo(
     () => resolveTerminalProfiles(config?.terminalProfiles),
     [config?.terminalProfiles],
@@ -69,7 +73,9 @@ export function usePinnedLaunchers({ serverId, onLaunch }: UsePinnedLaunchersInp
   return useMemo(() => {
     const resolved: ResolvedPin[] = [];
     for (const target of pinned) {
-      if (!isPinnedTargetAvailable(target, { isElectron: getIsElectron() })) {
+      if (
+        !isPinnedTargetAvailable(target, { isElectron: getIsElectron(), supportsRemoteBrowser })
+      ) {
         continue;
       }
       if (target.kind === "draft") {
@@ -111,5 +117,5 @@ export function usePinnedLaunchers({ serverId, onLaunch }: UsePinnedLaunchersInp
       });
     }
     return resolved;
-  }, [onLaunch, pinned, profiles, t]);
+  }, [onLaunch, pinned, profiles, supportsRemoteBrowser, t]);
 }

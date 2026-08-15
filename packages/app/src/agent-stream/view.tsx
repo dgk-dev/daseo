@@ -1,5 +1,5 @@
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
-import { collapseCompletedWork } from "./collapsed-work";
+import { collapseCompletedWorkStream } from "./collapsed-work";
 import { CollapsedWorkRow } from "./collapsed-work-row";
 import { CollapsedWorkProvider, type CollapsedWorkController } from "./collapsed-work-context";
 import React, {
@@ -517,50 +517,36 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const [expandedWorkTurnKeys, setExpandedWorkTurnKeys] = useState<ReadonlySet<string>>(
       () => new Set<string>(),
     );
-    const collapsedTail = useMemo(
+    const collapsedStream = useMemo(
       () =>
-        collapseCompletedWork({
-          items: projectedToolCalls.tail,
+        collapseCompletedWorkStream({
+          tail: projectedToolCalls.tail,
+          head: projectedToolCalls.head,
           expandedTurnKeys: expandedWorkTurnKeys,
-          keepLastTurnExpanded: isTurnActive,
+          isTurnActive,
         }),
-      [expandedWorkTurnKeys, isTurnActive, projectedToolCalls.tail],
+      [expandedWorkTurnKeys, isTurnActive, projectedToolCalls.head, projectedToolCalls.tail],
     );
-    const collapsedHead = useMemo(
-      () =>
-        isTurnActive
-          ? null
-          : collapseCompletedWork({
-              items: projectedToolCalls.head,
-              expandedTurnKeys: expandedWorkTurnKeys,
-              keepLastTurnExpanded: false,
-            }),
-      [expandedWorkTurnKeys, isTurnActive, projectedToolCalls.head],
-    );
-    const collapsedHeadItems = collapsedHead?.items ?? projectedToolCalls.head;
 
     const baseRenderModel = useMemo(() => {
       return buildAgentStreamRenderModel({
         isTurnActive,
         activeTurnStartedAt: effectiveTurnPresentation.startedAt,
-        tail: collapsedTail.items,
-        head: collapsedHeadItems,
+        tail: collapsedStream.tail,
+        head: collapsedStream.head,
         platform: isWeb ? "web" : "native",
         isMobileBreakpoint: isMobile,
       });
     }, [
       isMobile,
       isTurnActive,
-      collapsedTail.items,
-      collapsedHeadItems,
+      collapsedStream.tail,
+      collapsedStream.head,
       effectiveTurnPresentation.startedAt,
     ]);
     const collapsedWorkController = useMemo<CollapsedWorkController>(
       () => ({
-        getWorkCount: (turnKey) =>
-          collapsedTail.workCountByTurnKey.get(turnKey) ??
-          collapsedHead?.workCountByTurnKey.get(turnKey) ??
-          0,
+        getWorkCount: (turnKey) => collapsedStream.workCountByTurnKey.get(turnKey) ?? 0,
         getDurationMs: (turnKey) =>
           baseRenderModel.turnTiming.byAssistantId.get(turnKey)?.durationMs,
         isExpanded: (turnKey) => expandedWorkTurnKeys.has(turnKey),
@@ -578,8 +564,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       }),
       [
         baseRenderModel.turnTiming.byAssistantId,
-        collapsedHead?.workCountByTurnKey,
-        collapsedTail.workCountByTurnKey,
+        collapsedStream.workCountByTurnKey,
         expandedWorkTurnKeys,
       ],
     );
