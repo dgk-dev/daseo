@@ -1986,6 +1986,7 @@ export const fr: TranslationResources = {
           claude: "Claude",
           ghostty: "Fantôme",
           pureBlack: "Noir pur",
+          daseo: "Daseo",
           auto: "Système",
         },
       },

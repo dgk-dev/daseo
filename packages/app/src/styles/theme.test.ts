@@ -12,9 +12,11 @@ describe("Theme catalog", () => {
       "claude",
       "ghostty",
       "pureBlack",
+      "daseo",
     ]);
     expect(getNextThemePreference("dark")).toBe("auto");
-    expect(getNextThemePreference("pureBlack")).toBe("light");
+    expect(getNextThemePreference("pureBlack")).toBe("daseo");
+    expect(getNextThemePreference("daseo")).toBe("light");
   });
 });
 

@@ -103,6 +103,9 @@ const APP_SCHEME = "paseo";
 const PASEO_DEBUG = process.env.PASEO_DEBUG === "1";
 const DISABLE_SINGLE_INSTANCE_LOCK = process.env.PASEO_DISABLE_SINGLE_INSTANCE_LOCK === "1";
 const APP_NAME = process.env.PASEO_TEST_APP_NAME?.trim() || "Paseo";
+// Daseo fork: user-facing name only. APP_NAME stays "Paseo" because it keys the
+// Electron userData path and single-instance lock; renaming it would orphan state.
+const DISPLAY_APP_NAME = process.env.PASEO_TEST_APP_NAME?.trim() || "Daseo";
 const UPDATE_QUIT_DEADLINE_MS = 5_000;
 const pendingBrowserWindowOpenRequests = new PendingBrowserWindowOpenRequests();
 const agentNavigationInbox = new AgentNavigationInbox();
@@ -708,7 +711,7 @@ async function createWindow(
     ? clampWindowStateToWorkAreas(savedWindowState, getWorkAreasPrimaryFirst())
     : null;
 
-  const title = devWorktreeName ? `${APP_NAME} (${devWorktreeName})` : APP_NAME;
+  const title = devWorktreeName ? `${DISPLAY_APP_NAME} (${devWorktreeName})` : DISPLAY_APP_NAME;
   const mainWindow = new BrowserWindow({
     title,
     ...resolveWindowBounds(restoredWindowState),

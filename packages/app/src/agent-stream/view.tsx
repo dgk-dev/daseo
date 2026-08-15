@@ -1,4 +1,6 @@
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { collapseCompletedWork } from "./collapsed-work";
+import { CollapsedWorkProvider, type CollapsedWorkController } from "./collapsed-work-context";
 import React, {
   forwardRef,
   memo,
@@ -505,11 +507,45 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       ],
     );
 
+    // Codex-style history: hide completed turns' work items behind the turn
+    // footer. The live turn (and, defensively, the trailing turn while a turn
+    // is active) keeps streaming full activity.
+    const [expandedWorkTurnKeys, setExpandedWorkTurnKeys] = useState<ReadonlySet<string>>(
+      () => new Set<string>(),
+    );
+    const collapsedWork = useMemo(
+      () =>
+        collapseCompletedWork({
+          items: projectedToolCalls.tail,
+          expandedTurnKeys: expandedWorkTurnKeys,
+          keepLastTurnExpanded: isTurnActive,
+        }),
+      [expandedWorkTurnKeys, isTurnActive, projectedToolCalls.tail],
+    );
+    const collapsedWorkController = useMemo<CollapsedWorkController>(
+      () => ({
+        getWorkCount: (turnKey) => collapsedWork.workCountByTurnKey.get(turnKey) ?? 0,
+        isExpanded: (turnKey) => expandedWorkTurnKeys.has(turnKey),
+        toggle: (turnKey) => {
+          setExpandedWorkTurnKeys((previous) => {
+            const next = new Set(previous);
+            if (next.has(turnKey)) {
+              next.delete(turnKey);
+            } else {
+              next.add(turnKey);
+            }
+            return next;
+          });
+        },
+      }),
+      [collapsedWork.workCountByTurnKey, expandedWorkTurnKeys],
+    );
+
     const baseRenderModel = useMemo(() => {
       return buildAgentStreamRenderModel({
         isTurnActive,
         activeTurnStartedAt: effectiveTurnPresentation.startedAt,
-        tail: projectedToolCalls.tail,
+        tail: collapsedWork.items,
         head: projectedToolCalls.head,
         platform: isWeb ? "web" : "native",
         isMobileBreakpoint: isMobile,
@@ -517,8 +553,8 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     }, [
       isMobile,
       isTurnActive,
+      collapsedWork.items,
       projectedToolCalls.head,
-      projectedToolCalls.tail,
       effectiveTurnPresentation.startedAt,
     ]);
     const streamLayout = useMemo(
@@ -981,52 +1017,54 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
 
     return (
       <ToolCallSheetProvider>
-        <AssistantSelectionCopySurface style={stylesheet.container}>
-          <MessageOuterSpacingProvider disableOuterSpacing>
-            {streamRenderStrategy.render({
-              agentId,
-              segments: renderModel.segments,
-              historyRowRevision,
-              liveHeadRowRevision: expandedToolCallGroupIds,
-              boundary,
-              renderers,
-              listEmptyComponent,
-              viewportRef,
-              routeBottomAnchorRequest,
-              isAuthoritativeHistoryReady,
-              onNearBottomChange: setIsNearBottom,
-              onReadingPositionChange: chatOutline.reportReadingPosition,
-              onNearHistoryStart: loadOlder,
-              isLoadingOlderHistory: isLoadingOlder,
-              hasOlderHistory: hasOlder,
-              olderHistoryProgressKey: progressKey,
-              scrollEnabled: streamScrollEnabled,
-              listStyle: stylesheet.list,
-              baseListContentContainerStyle: stylesheet.listContentContainer,
-              forwardListContentContainerStyle: stylesheet.forwardListContentContainer,
-            })}
-          </MessageOuterSpacingProvider>
-          <ChatOutlineRail
-            prompts={chatOutline.prompts}
-            activePrompt={chatOutline.activePrompt}
-            onJumpToPrompt={chatOutline.jumpToPrompt}
-          />
-          {(!isNearBottom || isTimelineDetached) && (
-            <View style={stylesheet.scrollToBottomContainer} pointerEvents="box-none">
-              <Animated.View entering={scrollIndicatorFadeIn} exiting={scrollIndicatorFadeOut}>
-                <Pressable
-                  style={stylesheet.scrollToBottomButton}
-                  onPress={scrollToBottom}
-                  accessibilityRole="button"
-                  accessibilityLabel={t("agentStream.scrollToBottom")}
-                  testID="scroll-to-bottom-button"
-                >
-                  <ChevronDown size={24} color={stylesheet.scrollToBottomIcon.color} />
-                </Pressable>
-              </Animated.View>
-            </View>
-          )}
-        </AssistantSelectionCopySurface>
+        <CollapsedWorkProvider value={collapsedWorkController}>
+          <AssistantSelectionCopySurface style={stylesheet.container}>
+            <MessageOuterSpacingProvider disableOuterSpacing>
+              {streamRenderStrategy.render({
+                agentId,
+                segments: renderModel.segments,
+                historyRowRevision,
+                liveHeadRowRevision: expandedToolCallGroupIds,
+                boundary,
+                renderers,
+                listEmptyComponent,
+                viewportRef,
+                routeBottomAnchorRequest,
+                isAuthoritativeHistoryReady,
+                onNearBottomChange: setIsNearBottom,
+                onReadingPositionChange: chatOutline.reportReadingPosition,
+                onNearHistoryStart: loadOlder,
+                isLoadingOlderHistory: isLoadingOlder,
+                hasOlderHistory: hasOlder,
+                olderHistoryProgressKey: progressKey,
+                scrollEnabled: streamScrollEnabled,
+                listStyle: stylesheet.list,
+                baseListContentContainerStyle: stylesheet.listContentContainer,
+                forwardListContentContainerStyle: stylesheet.forwardListContentContainer,
+              })}
+            </MessageOuterSpacingProvider>
+            <ChatOutlineRail
+              prompts={chatOutline.prompts}
+              activePrompt={chatOutline.activePrompt}
+              onJumpToPrompt={chatOutline.jumpToPrompt}
+            />
+            {(!isNearBottom || isTimelineDetached) && (
+              <View style={stylesheet.scrollToBottomContainer} pointerEvents="box-none">
+                <Animated.View entering={scrollIndicatorFadeIn} exiting={scrollIndicatorFadeOut}>
+                  <Pressable
+                    style={stylesheet.scrollToBottomButton}
+                    onPress={scrollToBottom}
+                    accessibilityRole="button"
+                    accessibilityLabel={t("agentStream.scrollToBottom")}
+                    testID="scroll-to-bottom-button"
+                  >
+                    <ChevronDown size={24} color={stylesheet.scrollToBottomIcon.color} />
+                  </Pressable>
+                </Animated.View>
+              </View>
+            )}
+          </AssistantSelectionCopySurface>
+        </CollapsedWorkProvider>
       </ToolCallSheetProvider>
     );
   },

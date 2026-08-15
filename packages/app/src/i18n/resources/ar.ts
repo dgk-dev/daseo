@@ -1936,6 +1936,7 @@ export const ar: TranslationResources = {
           claude: "كلود",
           ghostty: "شبحي",
           pureBlack: "أسود خالص",
+          daseo: "Daseo",
           auto: "نظام",
         },
       },

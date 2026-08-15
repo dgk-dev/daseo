@@ -1946,6 +1946,7 @@ export const en = {
           claude: "Claude",
           ghostty: "Ghostty",
           pureBlack: "Pure black",
+          daseo: "Daseo",
           auto: "System",
         },
       },

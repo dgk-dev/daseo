@@ -18,8 +18,10 @@ vi.mock("react-native-unistyles", () => ({
       typeof factory === "function"
         ? (factory as (theme: Record<string, unknown>) => unknown)({
             spacing: { 1: 4, 2: 8, 3: 12, 4: 16, 6: 24 },
+            fontFamily: { ui: "system-ui", mono: "monospace" },
             colors: {
               foregroundMuted: "#aaa",
+              foregroundExtraMuted: "#888",
               palette: { amber: { 500: "#f0b429", 700: "#b7791f" } },
             },
           })

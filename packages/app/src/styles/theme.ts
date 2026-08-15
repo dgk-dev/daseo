@@ -683,6 +683,30 @@ const pureBlackDarkColors = buildDarkSemanticColors({
 
 export const darkPureBlackTheme = buildDarkTheme(pureBlackDarkColors);
 
+// Daseo — monotone graphite. Grayscale accents, crisp borders, terminal-first feel.
+const daseoDarkColors = buildDarkSemanticColors({
+  surface0: "#050506",
+  surface1: "#0b0b0d",
+  surface2: "#121215",
+  surface3: "#1b1b1f",
+  surface4: "#26262b",
+  surfaceDiffEmpty: "#0a0a0c",
+  surfaceSidebar: "#050506",
+  surfaceSidebarHover: "#151518",
+  foregroundMuted: "#9b9ba3",
+  foregroundExtraMuted: "#66666e",
+  scrollbarHandle: "#4a4a52",
+  border: "#1f1f24",
+  borderAccent: "#2c2c33",
+  accent: "#52525b",
+  accentBright: "#c8c8d0",
+  destructive: "#b04a4a",
+  terminalBlack: "#55555c",
+  terminalBrightBlack: "#85858d",
+});
+
+export const darkDaseoTheme = buildDarkTheme(daseoDarkColors);
+
 export const lightTheme = {
   colorScheme: "light" as const,
   colors: {
@@ -766,6 +790,13 @@ export const THEME_OPTIONS = [
     unistylesName: "darkPureBlack",
     theme: darkPureBlackTheme,
     swatch: "#000000",
+  },
+  {
+    name: "daseo",
+    group: "variant",
+    unistylesName: "darkDaseo",
+    theme: darkDaseoTheme,
+    swatch: "#151518",
   },
 ] as const;
 

@@ -77,7 +77,7 @@ const variants = {
     }),
   },
   personal: {
-    name: "Paseo DGK",
+    name: "Daseo",
     packageId: "sh.paseo.dgk",
     googleServicesFile: undefined,
     googleServiceInfoPlist: undefined,

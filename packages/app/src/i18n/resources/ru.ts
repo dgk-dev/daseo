@@ -1972,6 +1972,7 @@ export const ru: TranslationResources = {
           claude: "Клод",
           ghostty: "Призрачный",
           pureBlack: "Чистый чёрный",
+          daseo: "Daseo",
           auto: "Система",
         },
       },

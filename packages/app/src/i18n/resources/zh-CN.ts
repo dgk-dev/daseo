@@ -1914,6 +1914,7 @@ export const zhCN: TranslationResources = {
           claude: "Claude",
           ghostty: "Ghostty",
           pureBlack: "纯黑",
+          daseo: "Daseo",
           auto: "系统",
         },
       },
