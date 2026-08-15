@@ -469,17 +469,30 @@ function createRelayTransportAdapter(
   const relayTransport: RelayTransport = {
     send: (data) =>
       new Promise<void>((resolve, reject) => {
+        const settleIfSocketClosed = (error?: Error): boolean => {
+          if (socket.readyState === WebSocket.OPEN) return false;
+          logger.debug(
+            { err: error, readyState: socket.readyState },
+            "relay_socket_send_abandoned_after_close",
+          );
+          resolve();
+          return true;
+        };
+
         try {
+          if (settleIfSocketClosed()) return;
           socket.send(data, (error) => {
             if (!error) {
               resolve();
               return;
             }
+            if (settleIfSocketClosed(error)) return;
             logger.warn({ err: error }, "relay_socket_send_failed");
             reject(error);
           });
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
+          if (settleIfSocketClosed(err)) return;
           logger.warn({ err }, "relay_socket_send_failed");
           reject(err);
         }

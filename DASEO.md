@@ -82,6 +82,10 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     forward-dated `initialize` requests can still negotiate the daemon's latest supported version,
     while unknown established requests remain strict. Key files:
     `packages/server/src/server/agent-mcp-protocol.ts` and `bootstrap.ts`.
+11. **Relay close-race hardening** — when a superseded mobile relay socket enters `CLOSING`
+    between the send readiness check and callback, its final frame is dropped as normal disconnect
+    control flow instead of surfacing a false daemon `Client error`. Failures on sockets that are
+    still open remain strict. Key file: `packages/server/src/server/relay-transport.ts`.
 
 ## Build & ship (Mac mini)
 

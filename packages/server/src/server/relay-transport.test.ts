@@ -28,6 +28,7 @@ function hasLogMessage(logger: TestLogger, level: "info" | "warn", message: stri
 class FakeRelayWebSocket {
   static readonly CONNECTING = 0;
   static readonly OPEN = 1;
+  static readonly CLOSING = 2;
   static readonly CLOSED = 3;
 
   readyState = FakeRelayWebSocket.CONNECTING;
@@ -80,8 +81,12 @@ class FakeRelayWebSocket {
     callback();
   }
 
-  completeNextSend() {
-    this.pendingSendCallbacks.shift()?.();
+  completeNextSend(error?: Error) {
+    this.pendingSendCallbacks.shift()?.(error);
+  }
+
+  beginClosing() {
+    this.readyState = FakeRelayWebSocket.CLOSING;
   }
 
   ping() {
@@ -327,6 +332,15 @@ describe("relay-transport control lifecycle", () => {
     dataSocket.completeNextSend();
     await sending;
     expect(completed).toBe(true);
+
+    logger.messages.length = 0;
+    const closingSend = Promise.resolve(encryptedSocket.send(new Uint8Array([4, 5, 6])));
+    await Promise.resolve();
+    dataSocket.beginClosing();
+    dataSocket.completeNextSend(new Error("WebSocket is not open: readyState 2 (CLOSING)"));
+
+    await expect(closingSend).resolves.toBeUndefined();
+    expect(hasLogMessage(logger, "warn", "relay_socket_send_failed")).toBe(false);
   });
 
   test("uses relayUseTls for control and data socket URLs", () => {
