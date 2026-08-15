@@ -7,6 +7,7 @@ import { createContext, useContext } from "react";
  */
 export interface CollapsedWorkController {
   getWorkCount: (turnKey: string) => number;
+  getDurationMs: (turnKey: string) => number | undefined;
   isExpanded: (turnKey: string) => boolean;
   toggle: (turnKey: string) => void;
 }

@@ -20,7 +20,6 @@ import type { TurnFooterHost } from "./layout";
 import { AssistantForkMenu } from "@/components/assistant-fork-menu";
 import { SyncedLoader } from "@/components/synced-loader";
 import { useRetainedPanelActive } from "@/components/retained-panel";
-import { Pressable, Text } from "react-native";
 import { useCollapsedWork } from "./collapsed-work-context";
 
 const ThemedSyncedLoader = withUnistyles(SyncedLoader);
@@ -197,50 +196,21 @@ function CompletedTurnFooter({
     [boundary, onForkAssistantTurn],
   );
   const turnKey = items[startIndex]?.id;
+  const collapsedWork = useCollapsedWork();
+  // The Codex-style "Worked for …" row above the message already shows the
+  // duration for turns with collapsed work; avoid repeating it here.
+  const hasCollapsedWorkRow = Boolean(turnKey && (collapsedWork?.getWorkCount(turnKey) ?? 0) > 0);
   return (
     <View style={stylesheet.turnFooterSlot}>
       <AssistantTurnFooter
         getContent={getContent}
-        completedAt={timing?.completedAt}
-        durationMs={timing?.durationMs}
+        completedAt={hasCollapsedWorkRow ? undefined : timing?.completedAt}
+        durationMs={hasCollapsedWorkRow ? undefined : timing?.durationMs}
         onFork={boundary && onForkAssistantTurn ? handleFork : undefined}
       />
-      {turnKey ? <CollapsedWorkChip turnKey={turnKey} /> : null}
     </View>
   );
 }
-
-/**
- * Codex-style expander for a completed turn's hidden work items. Renders only
- * when the stream view provides the collapsed-work controller and the turn
- * actually had work items.
- */
-const COLLAPSED_WORK_CHIP_HIT_SLOP = { top: 8, bottom: 8, left: 4, right: 4 } as const;
-
-const CollapsedWorkChip = memo(function CollapsedWorkChip({ turnKey }: { turnKey: string }) {
-  const controller = useCollapsedWork();
-  const workCount = controller?.getWorkCount(turnKey) ?? 0;
-  const expanded = controller?.isExpanded(turnKey) ?? false;
-  const handlePress = useCallback(() => {
-    controller?.toggle(turnKey);
-  }, [controller, turnKey]);
-  if (!controller || workCount === 0) {
-    return null;
-  }
-  const label = `${expanded ? "▾" : "▸"} ${workCount} ${workCount === 1 ? "step" : "steps"}`;
-  return (
-    <Pressable
-      onPress={handlePress}
-      accessibilityRole="button"
-      accessibilityLabel={expanded ? "Hide work details" : "Show work details"}
-      testID="collapsed-work-chip"
-      style={stylesheet.collapsedWorkChip}
-      hitSlop={COLLAPSED_WORK_CHIP_HIT_SLOP}
-    >
-      <Text style={stylesheet.collapsedWorkChipText}>{label}</Text>
-    </Pressable>
-  );
-});
 
 function TurnFooterRow({ children }: { children: ReactNode }) {
   const rowStyle = useMemo(() => [stylesheet.streamItemWrapper, stylesheet.turnFooterRow], []);
@@ -263,15 +233,6 @@ const stylesheet = StyleSheet.create((theme) => ({
     alignSelf: "flex-start",
     minHeight: 24,
     paddingBottom: theme.spacing[6],
-  },
-  collapsedWorkChip: {
-    marginLeft: theme.spacing[3],
-    paddingHorizontal: theme.spacing[1],
-  },
-  collapsedWorkChipText: {
-    color: theme.colors.foregroundExtraMuted,
-    fontFamily: theme.fontFamily.mono,
-    fontSize: STREAM_METADATA_FONT_SIZE,
   },
   turnFooterContent: {
     height: 24,

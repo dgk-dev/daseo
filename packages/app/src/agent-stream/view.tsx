@@ -1,5 +1,6 @@
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { collapseCompletedWork } from "./collapsed-work";
+import { CollapsedWorkRow } from "./collapsed-work-row";
 import { CollapsedWorkProvider, type CollapsedWorkController } from "./collapsed-work-context";
 import React, {
   forwardRef,
@@ -507,13 +508,16 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       ],
     );
 
-    // Codex-style history: hide completed turns' work items behind the turn
-    // footer. The live turn (and, defensively, the trailing turn while a turn
-    // is active) keeps streaming full activity.
+    // Codex-style history: once a turn completes, its work items fold away and
+    // a "Worked for …" row above the final message toggles them back. The live
+    // turn (and, defensively, the trailing tail turn while a turn is active)
+    // keeps streaming full activity. The live head is collapsed too once the
+    // turn goes idle, because completed-turn items stay in the head buffer
+    // until the next turn flushes them into the tail.
     const [expandedWorkTurnKeys, setExpandedWorkTurnKeys] = useState<ReadonlySet<string>>(
       () => new Set<string>(),
     );
-    const collapsedWork = useMemo(
+    const collapsedTail = useMemo(
       () =>
         collapseCompletedWork({
           items: projectedToolCalls.tail,
@@ -522,9 +526,43 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         }),
       [expandedWorkTurnKeys, isTurnActive, projectedToolCalls.tail],
     );
+    const collapsedHead = useMemo(
+      () =>
+        isTurnActive
+          ? null
+          : collapseCompletedWork({
+              items: projectedToolCalls.head,
+              expandedTurnKeys: expandedWorkTurnKeys,
+              keepLastTurnExpanded: false,
+            }),
+      [expandedWorkTurnKeys, isTurnActive, projectedToolCalls.head],
+    );
+    const collapsedHeadItems = collapsedHead?.items ?? projectedToolCalls.head;
+
+    const baseRenderModel = useMemo(() => {
+      return buildAgentStreamRenderModel({
+        isTurnActive,
+        activeTurnStartedAt: effectiveTurnPresentation.startedAt,
+        tail: collapsedTail.items,
+        head: collapsedHeadItems,
+        platform: isWeb ? "web" : "native",
+        isMobileBreakpoint: isMobile,
+      });
+    }, [
+      isMobile,
+      isTurnActive,
+      collapsedTail.items,
+      collapsedHeadItems,
+      effectiveTurnPresentation.startedAt,
+    ]);
     const collapsedWorkController = useMemo<CollapsedWorkController>(
       () => ({
-        getWorkCount: (turnKey) => collapsedWork.workCountByTurnKey.get(turnKey) ?? 0,
+        getWorkCount: (turnKey) =>
+          collapsedTail.workCountByTurnKey.get(turnKey) ??
+          collapsedHead?.workCountByTurnKey.get(turnKey) ??
+          0,
+        getDurationMs: (turnKey) =>
+          baseRenderModel.turnTiming.byAssistantId.get(turnKey)?.durationMs,
         isExpanded: (turnKey) => expandedWorkTurnKeys.has(turnKey),
         toggle: (turnKey) => {
           setExpandedWorkTurnKeys((previous) => {
@@ -538,25 +576,13 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           });
         },
       }),
-      [collapsedWork.workCountByTurnKey, expandedWorkTurnKeys],
+      [
+        baseRenderModel.turnTiming.byAssistantId,
+        collapsedHead?.workCountByTurnKey,
+        collapsedTail.workCountByTurnKey,
+        expandedWorkTurnKeys,
+      ],
     );
-
-    const baseRenderModel = useMemo(() => {
-      return buildAgentStreamRenderModel({
-        isTurnActive,
-        activeTurnStartedAt: effectiveTurnPresentation.startedAt,
-        tail: collapsedWork.items,
-        head: projectedToolCalls.head,
-        platform: isWeb ? "web" : "native",
-        isMobileBreakpoint: isMobile,
-      });
-    }, [
-      isMobile,
-      isTurnActive,
-      collapsedWork.items,
-      projectedToolCalls.head,
-      effectiveTurnPresentation.startedAt,
-    ]);
     const streamLayout = useMemo(
       () =>
         layoutStream({
@@ -674,24 +700,27 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const renderAssistantMessageItem = useCallback(
       (layoutItem: StreamLayoutItem, item: Extract<StreamItem, { kind: "assistant_message" }>) => {
         return (
-          <AssistantFileLinkResolverProvider
-            client={client}
-            serverId={resolvedServerId}
-            workspaceRoot={workspaceRoot}
-            onOpenWorkspaceFile={handleInlinePathPress}
-            toast={toast}
-          >
-            <AssistantMessage
-              occurrenceKey={createAssistantImageOccurrenceKey({ agentId, itemId: item.id })}
-              message={item.text}
-              timestamp={item.timestamp.getTime()}
-              workspaceRoot={workspaceRoot}
-              serverId={resolvedServerId}
+          <>
+            <CollapsedWorkRow turnKey={item.id} />
+            <AssistantFileLinkResolverProvider
               client={client}
-              spacing={layoutItem.assistantSpacing}
-              phase={layoutItem.phase}
-            />
-          </AssistantFileLinkResolverProvider>
+              serverId={resolvedServerId}
+              workspaceRoot={workspaceRoot}
+              onOpenWorkspaceFile={handleInlinePathPress}
+              toast={toast}
+            >
+              <AssistantMessage
+                occurrenceKey={createAssistantImageOccurrenceKey({ agentId, itemId: item.id })}
+                message={item.text}
+                timestamp={item.timestamp.getTime()}
+                workspaceRoot={workspaceRoot}
+                serverId={resolvedServerId}
+                client={client}
+                spacing={layoutItem.assistantSpacing}
+                phase={layoutItem.phase}
+              />
+            </AssistantFileLinkResolverProvider>
+          </>
         );
       },
       [agentId, client, handleInlinePathPress, resolvedServerId, toast, workspaceRoot],

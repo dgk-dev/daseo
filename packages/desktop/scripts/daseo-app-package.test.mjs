@@ -70,4 +70,23 @@ describe("Daseo macOS package metadata", () => {
     expect(readPlistValue(plistPath, "CFBundleDisplayName")).toBe("Daseo");
     expect(readPlistValue(plistPath, "CFBundleShortVersionString")).toBe("0.4.0-beta.2-local.7");
   });
+
+  test("writes localized bundle names and marks the display name localized", () => {
+    const { appPath, plistPath } = createPaseoAppFixture();
+    patchDaseoMacBundleMetadata({ appPath, displayVersion: "0.4.0-test" });
+    for (const locale of ["en", "ko"]) {
+      const strings = path.join(
+        appPath,
+        "Contents",
+        "Resources",
+        `${locale}.lproj`,
+        "InfoPlist.strings",
+      );
+      const content = execFileSync("/bin/cat", [strings], { encoding: "utf8" });
+      expect(content).toContain('CFBundleName = "Daseo";');
+      expect(content).toContain('CFBundleDisplayName = "Daseo";');
+    }
+    expect(readPlistValue(plistPath, "LSHasLocalizedDisplayName")).toBe("true");
+    expect(readPlistValue(plistPath, "CFBundleName")).toBe("Paseo");
+  });
 });
