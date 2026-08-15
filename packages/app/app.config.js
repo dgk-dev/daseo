@@ -79,8 +79,12 @@ const variants = {
   personal: {
     name: "Daseo",
     packageId: "sh.paseo.dgk",
-    googleServicesFile: undefined,
+    googleServicesFile: resolveSecretFile({
+      envKey: "GOOGLE_SERVICES_FILE_PERSONAL",
+      fallbackRelativePath: "./.secrets/google-services.personal.json",
+    }),
     googleServiceInfoPlist: undefined,
+    directFcmPush: true,
   },
   development: {
     name: "Paseo Debug",
@@ -190,6 +194,7 @@ export default {
     extra: {
       fdroidBuild: isFdroidBuild,
       profileBuild: isProfileBuild,
+      directFcmPush: variant.directFcmPush === true,
       router: {},
       eas: {
         projectId: "0e7f65ce-0367-46c8-a238-2b65963d235a",

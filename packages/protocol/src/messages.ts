@@ -56,6 +56,7 @@ import {
 import {
   BrowserAutomationExecuteRequestSchema,
   BrowserAutomationExecuteResponseSchema,
+  BrowserAutomationBrowserIdSchema,
   BrowserAutomationStreamInputSchema,
 } from "./browser-automation/rpc-schemas.js";
 import { BrowserAutomationHostCapabilitySchema } from "./browser-automation/capabilities.js";
@@ -1267,6 +1268,19 @@ export const BrowserRemoteOpenRequestSchema = z.object({
   requestId: z.string(),
   workspaceId: z.string().min(1),
   url: z.string().url().optional(),
+});
+
+export const BrowserRemoteListRequestSchema = z.object({
+  type: z.literal("browser.remote.list.request"),
+  requestId: z.string().min(1),
+  workspaceId: z.string().min(1),
+});
+
+export const BrowserRemoteCloseRequestSchema = z.object({
+  type: z.literal("browser.remote.close.request"),
+  requestId: z.string().min(1),
+  workspaceId: z.string().min(1),
+  browserId: BrowserAutomationBrowserIdSchema,
 });
 
 export const DaemonGetPairingOfferRequestSchema = z.object({
@@ -2762,6 +2776,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   BrowserRemoteUnwatchRequestSchema,
   BrowserRemoteInputRequestSchema,
   BrowserRemoteOpenRequestSchema,
+  BrowserRemoteListRequestSchema,
+  BrowserRemoteCloseRequestSchema,
   DaemonGetStatusRequestSchema,
   DaemonGetPairingOfferRequestSchema,
   HubManagementDaemonConnectRequestSchema,
@@ -4189,6 +4205,37 @@ export const BrowserRemoteOpenResponseSchema = z.object({
     ok: z.boolean(),
     browserId: z.string().min(1).optional(),
     url: z.string().optional(),
+    error: BrowserRemoteErrorSchema.optional(),
+  }),
+});
+
+export const BrowserRemoteTabInfoSchema = z.object({
+  browserId: BrowserAutomationBrowserIdSchema,
+  workspaceId: z.string().optional(),
+  url: z.string(),
+  title: z.string(),
+  isActive: z.boolean(),
+  isLoading: z.boolean(),
+  canGoBack: z.boolean().optional(),
+  canGoForward: z.boolean().optional(),
+});
+
+export const BrowserRemoteListResponseSchema = z.object({
+  type: z.literal("browser.remote.list.response"),
+  payload: z.object({
+    requestId: z.string().min(1),
+    ok: z.boolean(),
+    tabs: z.array(BrowserRemoteTabInfoSchema).optional(),
+    error: BrowserRemoteErrorSchema.optional(),
+  }),
+});
+
+export const BrowserRemoteCloseResponseSchema = z.object({
+  type: z.literal("browser.remote.close.response"),
+  payload: z.object({
+    requestId: z.string().min(1),
+    ok: z.boolean(),
+    browserId: BrowserAutomationBrowserIdSchema.optional(),
     error: BrowserRemoteErrorSchema.optional(),
   }),
 });
@@ -5793,6 +5840,8 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   BrowserRemoteUnwatchResponseSchema,
   BrowserRemoteInputResponseSchema,
   BrowserRemoteOpenResponseSchema,
+  BrowserRemoteListResponseSchema,
+  BrowserRemoteCloseResponseSchema,
   DaemonGetStatusResponseSchema,
   DaemonGetPairingOfferResponseSchema,
   HubManagementDaemonConnectResponseSchema,
@@ -6046,6 +6095,11 @@ export type BrowserRemoteUnwatchRequest = z.infer<typeof BrowserRemoteUnwatchReq
 export type BrowserRemoteInputRequest = z.infer<typeof BrowserRemoteInputRequestSchema>;
 export type BrowserRemoteOpenRequest = z.infer<typeof BrowserRemoteOpenRequestSchema>;
 export type BrowserRemoteOpenResponse = z.infer<typeof BrowserRemoteOpenResponseSchema>;
+export type BrowserRemoteTabInfo = z.infer<typeof BrowserRemoteTabInfoSchema>;
+export type BrowserRemoteListRequest = z.infer<typeof BrowserRemoteListRequestSchema>;
+export type BrowserRemoteListResponse = z.infer<typeof BrowserRemoteListResponseSchema>;
+export type BrowserRemoteCloseRequest = z.infer<typeof BrowserRemoteCloseRequestSchema>;
+export type BrowserRemoteCloseResponse = z.infer<typeof BrowserRemoteCloseResponseSchema>;
 export type BrowserRemoteWatchResponse = z.infer<typeof BrowserRemoteWatchResponseSchema>;
 export type DaemonGetPairingOfferResponse = z.infer<typeof DaemonGetPairingOfferResponseSchema>;
 export type DiagnosticsResponse = z.infer<typeof DiagnosticsResponseSchema>;

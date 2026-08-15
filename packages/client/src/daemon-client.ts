@@ -83,6 +83,7 @@ import type {
   ProviderDiagnosticResponseMessage,
   ProviderUsageListResponseMessage,
   DaemonGetStatusResponse,
+  BrowserRemoteTabInfo,
   DaemonGetPairingOfferResponse,
   DiagnosticsResponse,
   AgentRewindResponseMessage,
@@ -5129,6 +5130,43 @@ export class DaemonClient {
         ...(input.url ? { url: input.url } : {}),
       },
       responseType: "browser.remote.open.response",
+    });
+  }
+
+  /** List the authoritative desktop browser tabs belonging to one workspace. */
+  async listRemoteBrowserTabs(input: { workspaceId: string; requestId?: string }): Promise<{
+    ok: boolean;
+    tabs?: BrowserRemoteTabInfo[];
+    error?: { code: string; message: string };
+  }> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: input.requestId,
+      message: {
+        type: "browser.remote.list.request",
+        workspaceId: input.workspaceId,
+      },
+      responseType: "browser.remote.list.response",
+    });
+  }
+
+  /** Close the authoritative desktop browser tab from a remote client. */
+  async closeRemoteBrowserTab(input: {
+    workspaceId: string;
+    browserId: string;
+    requestId?: string;
+  }): Promise<{
+    ok: boolean;
+    browserId?: string;
+    error?: { code: string; message: string };
+  }> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: input.requestId,
+      message: {
+        type: "browser.remote.close.request",
+        workspaceId: input.workspaceId,
+        browserId: input.browserId,
+      },
+      responseType: "browser.remote.close.response",
     });
   }
 

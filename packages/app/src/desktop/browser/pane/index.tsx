@@ -92,6 +92,12 @@ export function BrowserPane({ browserId, serverId, isInteractive = true }: Brows
       return;
     }
     let disposed = false;
+    let watchStartedAt = Date.now();
+    let rewatchInFlight = false;
+    lastFrameAtRef.current = 0;
+    frameRef.current = null;
+    setFrame(null);
+    setStatus("connecting");
 
     const unsubscribeFrames = client.onBrowserStreamFrame((streamFrame: BrowserStreamFrame) => {
       if (disposed || streamFrame.browserId !== browserId) {
@@ -109,6 +115,7 @@ export function BrowserPane({ browserId, serverId, isInteractive = true }: Brows
     });
 
     const watch = async () => {
+      watchStartedAt = Date.now();
       const result = await client
         .watchBrowserStream({
           browserId,
@@ -129,30 +136,29 @@ export function BrowserPane({ browserId, serverId, isInteractive = true }: Brows
     };
     void watch();
 
-    const stallTimer = setInterval(() => {
-      if (disposed) {
-        return;
-      }
-      const idleMs = Date.now() - lastFrameAtRef.current;
-      if (lastFrameAtRef.current !== 0 && idleMs < STALL_TIMEOUT_MS) {
-        return;
-      }
-      if (lastFrameAtRef.current === 0 && idleMs < STALL_TIMEOUT_MS) {
-        return;
-      }
-      setStatus((current) => (current === "live" ? "stalled" : current));
-      // The desktop host may have restarted; drop the stale subscription and
-      // start a fresh stream.
-      void (async () => {
+    const rewatch = async () => {
+      if (disposed || rewatchInFlight) return;
+      rewatchInFlight = true;
+      try {
         try {
           await client.unwatchBrowserStream(browserId);
         } catch {
           // A failed unwatch never blocks the retry.
         }
-        if (!disposed) {
-          await watch();
-        }
-      })();
+        if (!disposed) await watch();
+      } finally {
+        rewatchInFlight = false;
+      }
+    };
+
+    const stallTimer = setInterval(() => {
+      if (disposed) return;
+      const latestActivityAt = lastFrameAtRef.current || watchStartedAt;
+      if (Date.now() - latestActivityAt < STALL_TIMEOUT_MS) return;
+      setStatus((current) => (current === "live" ? "stalled" : current));
+      // The desktop host may have restarted; drop the stale subscription and
+      // start one bounded retry at a time.
+      void rewatch();
     }, REWATCH_INTERVAL_MS);
 
     return () => {

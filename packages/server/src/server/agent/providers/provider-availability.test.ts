@@ -62,6 +62,9 @@ describe("default provider availability", () => {
   });
 
   test("Codex reports available from a Microsoft Store install path when PATH misses codex", async () => {
+    // The executable probe must run on a real Windows process; mocking only
+    // process.platform leaves Node's macOS spawn semantics in place.
+    if (process.platform !== "win32") return;
     const originalPlatform = process.platform;
     const originalLocalAppData = process.env.LOCALAPPDATA;
     const root = makeTempDir("provider-availability-codex-store-");

@@ -115,6 +115,7 @@ import {
   useBrowserStore,
 } from "@/desktop/browser/store";
 import { getDesktopHost } from "@/desktop/host";
+import { reconcileRemoteBrowserTabs } from "@/desktop/browser/remote-tabs-sync";
 import { buildProviderCommand } from "@/utils/provider-command-templates";
 import { generateDraftId } from "@/stores/draft-keys";
 import { resolveWorkspaceRouteId } from "@/utils/workspace-identity";
@@ -2055,6 +2056,57 @@ function WorkspaceScreenContent({
     isRouteFocused,
     workspaceId: normalizedWorkspaceId,
   });
+  useEffect(() => {
+    if (
+      getIsElectron() ||
+      !isRouteFocused ||
+      !isConnected ||
+      !client ||
+      !supportsRemoteBrowser ||
+      !hasHydratedWorkspaceLayoutStore ||
+      !normalizedWorkspaceId
+    ) {
+      return;
+    }
+    let disposed = false;
+    let inFlight = false;
+    const sync = async () => {
+      if (disposed || inFlight) return;
+      inFlight = true;
+      try {
+        const result = await client.listRemoteBrowserTabs({
+          workspaceId: normalizedWorkspaceId,
+        });
+        if (!disposed && result.ok && result.tabs) {
+          reconcileRemoteBrowserTabs({
+            serverId: normalizedServerId,
+            workspaceId: normalizedWorkspaceId,
+            tabs: result.tabs.filter(
+              (tab) => !tab.workspaceId || tab.workspaceId === normalizedWorkspaceId,
+            ),
+          });
+        }
+      } catch {
+        // Preserve local viewers across transient host/relay disconnects.
+      } finally {
+        inFlight = false;
+      }
+    };
+    void sync();
+    const interval = setInterval(() => void sync(), 2_000);
+    return () => {
+      disposed = true;
+      clearInterval(interval);
+    };
+  }, [
+    client,
+    hasHydratedWorkspaceLayoutStore,
+    isConnected,
+    isRouteFocused,
+    normalizedServerId,
+    normalizedWorkspaceId,
+    supportsRemoteBrowser,
+  ]);
   const openWorkspaceTabInBackground = useWorkspaceLayoutStore(
     (state) => state.openTabInBackground,
   );
@@ -2852,14 +2904,34 @@ function WorkspaceScreenContent({
         await handleCloseAgentTab({ tabId, agentId: tab.target.agentId });
         return;
       }
+      if (tab.target.kind === "browser" && !getIsElectron() && supportsRemoteBrowser && client) {
+        try {
+          const result = await client.closeRemoteBrowserTab({
+            workspaceId: normalizedWorkspaceId,
+            browserId: tab.target.browserId,
+          });
+          if (!result.ok && result.error?.code !== "browser_tab_not_found") {
+            toast.error(result.error?.message ?? t("workspace.terminal.hostDisconnected"));
+            return;
+          }
+        } catch {
+          toast.error(t("workspace.terminal.hostDisconnected"));
+          return;
+        }
+      }
       handleClosePassiveTab({ tabId, target: tab.target });
     },
     [
       allTabDescriptorsById,
+      client,
       confirmDiscardModifiedTab,
       handleCloseAgentTab,
       handleClosePassiveTab,
       handleCloseTerminalTab,
+      normalizedWorkspaceId,
+      supportsRemoteBrowser,
+      t,
+      toast,
     ],
   );
 

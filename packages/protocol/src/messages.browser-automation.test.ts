@@ -156,6 +156,64 @@ describe("browser automation protocol integration", () => {
     expect(parsed.type).toBe("browser.automation.execute.response");
   });
 
+  test("remote browser lifecycle RPCs validate in both protocol directions", () => {
+    expect(
+      SessionInboundMessageSchema.parse({
+        type: "browser.remote.list.request",
+        requestId: "list-1",
+        workspaceId: "workspace-1",
+      }).type,
+    ).toBe("browser.remote.list.request");
+    expect(
+      SessionOutboundMessageSchema.parse({
+        type: "browser.remote.list.response",
+        payload: {
+          requestId: "list-1",
+          ok: true,
+          tabs: [
+            {
+              browserId,
+              workspaceId: "workspace-1",
+              url: "https://example.com",
+              title: "Example",
+              isActive: true,
+              isLoading: false,
+              canGoBack: true,
+              canGoForward: false,
+            },
+          ],
+        },
+      }).type,
+    ).toBe("browser.remote.list.response");
+    expect(
+      SessionInboundMessageSchema.parse({
+        type: "browser.remote.close.request",
+        requestId: "close-1",
+        workspaceId: "workspace-1",
+        browserId,
+      }).type,
+    ).toBe("browser.remote.close.request");
+    expect(
+      SessionOutboundMessageSchema.parse({
+        type: "browser.remote.close.response",
+        payload: { requestId: "close-1", ok: true, browserId },
+      }).type,
+    ).toBe("browser.remote.close.response");
+  });
+
+  test("remote browser tab state rejects malformed host identifiers", () => {
+    expect(() =>
+      SessionOutboundMessageSchema.parse({
+        type: "browser.remote.list.response",
+        payload: {
+          requestId: "list-1",
+          ok: true,
+          tabs: [{ browserId: "bad", url: "https://example.com", title: "Bad" }],
+        },
+      }),
+    ).toThrow();
+  });
+
   test("mutable daemon config defaults browser tools off and accepts opt-in patches", () => {
     expect(
       MutableDaemonConfigSchema.parse({

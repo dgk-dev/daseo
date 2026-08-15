@@ -86,14 +86,24 @@ export async function startScreencast(
     contents.debugger.attach("1.3");
   }
   ensureFrameListener(contents);
-  activeByContentsId.set(contents.id, { seq: 0, onFrame });
-  await contents.debugger.sendCommand("Page.startScreencast", {
-    format: "jpeg",
-    quality: options.quality ?? DEFAULT_QUALITY,
-    maxWidth: options.maxWidth ?? DEFAULT_MAX_WIDTH,
-    maxHeight: options.maxHeight ?? DEFAULT_MAX_HEIGHT,
-    everyNthFrame: 1,
-  });
+  const active = { seq: 0, onFrame };
+  activeByContentsId.set(contents.id, active);
+  try {
+    await contents.debugger.sendCommand("Page.startScreencast", {
+      format: "jpeg",
+      quality: options.quality ?? DEFAULT_QUALITY,
+      maxWidth: options.maxWidth ?? DEFAULT_MAX_WIDTH,
+      maxHeight: options.maxHeight ?? DEFAULT_MAX_HEIGHT,
+      everyNthFrame: 1,
+    });
+  } catch (error) {
+    // Do not report a stream as active after CDP rejected startup. Guard the
+    // deletion in case a newer start replaced this callback concurrently.
+    if (activeByContentsId.get(contents.id) === active) {
+      activeByContentsId.delete(contents.id);
+    }
+    throw error;
+  }
 }
 
 export async function stopScreencast(contents: ScreencastContents): Promise<void> {

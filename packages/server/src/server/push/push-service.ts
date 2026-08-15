@@ -1,5 +1,7 @@
 import type pino from "pino";
 
+import { FcmService } from "./fcm-service.js";
+
 export interface PushPayload {
   title: string;
   body: string;
@@ -31,17 +33,26 @@ const MAX_BATCH_SIZE = 100;
 export class PushService {
   private readonly logger: pino.Logger;
   private readonly revokeToken: (token: string) => void;
+  private readonly fcmService: FcmService;
 
   constructor(logger: pino.Logger, revokeToken: (token: string) => void) {
     this.logger = logger.child({ component: "push-service" });
     this.revokeToken = revokeToken;
+    this.fcmService = new FcmService(logger, revokeToken);
   }
 
   async sendPush(tokens: string[], payload: PushPayload): Promise<void> {
-    if (tokens.length === 0) {
-      return;
-    }
+    if (tokens.length === 0) return;
+    const fcmTokens = tokens.filter((token) => token.startsWith("fcm:"));
+    const expoTokens = tokens.filter((token) => !token.startsWith("fcm:"));
+    await Promise.all([
+      this.sendExpoPush(expoTokens, payload),
+      this.fcmService.sendPush(fcmTokens, payload),
+    ]);
+  }
 
+  private async sendExpoPush(tokens: string[], payload: PushPayload): Promise<void> {
+    if (tokens.length === 0) return;
     const messages: ExpoPushMessage[] = tokens.map((token) => ({
       to: token,
       title: payload.title,
@@ -92,8 +103,8 @@ export class PushService {
 
       if (ticket.status === "error") {
         this.logger.error(
-          { token: message.to, message: ticket.message, details: ticket.details },
-          "Push failed for token",
+          { message: ticket.message, details: ticket.details },
+          "Expo push failed for token",
         );
 
         // Remove invalid tokens

@@ -1,4 +1,4 @@
-import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ChildProcess } from "node:child_process";
@@ -333,9 +333,13 @@ describe.runIf(isPlatform("win32"))("Windows spawn launch regression", () => {
 describe.skipIf(isPlatform("win32"))("spawn launch regression smoke", () => {
   test("direct launch with a space-containing executable works on this platform", async () => {
     const fixture = makeFixture();
+    // Avoid macOS Gatekeeper revalidation of a copied signed Node binary while
+    // still exercising a direct executable path containing spaces.
+    const executableWithSpaces = path.join(fixture.root, "Linked Paseo Node");
+    symlinkSync(process.execPath, executableWithSpaces);
 
     const result = await runFixture({
-      command: fixture.fakeDaemonNode,
+      command: executableWithSpaces,
       args: [fixture.assertScript, ...fixture.expectedArgs],
       shell: false,
     });

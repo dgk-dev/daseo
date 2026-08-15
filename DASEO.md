@@ -18,8 +18,9 @@ both artifacts from the same commit, and update this file if the delta set chang
 | Display name | Paseo                            | Daseo (display only)                                                                 |
 
 **Deliberately unchanged** to stay upstream-compatible and preserve state: internal
-identifiers (`productName`, Electron userData path, `~/.paseo`, `paseo` CLI, bundle/package
-IDs, URL scheme `paseo://`), all i18n strings, and the design-system structure.
+identifiers (`productName`, Electron userData path, `~/.paseo`, `paseo` CLI, Mac bundle IDs,
+URL scheme `paseo://`), all i18n strings, and the design-system structure. The Android
+personal variant is the deliberate exception: it uses `sh.paseo.dgk` for parallel install.
 
 ## Fork deltas (must survive upstream merges)
 
@@ -31,10 +32,14 @@ IDs, URL scheme `paseo://`), all i18n strings, and the design-system structure.
    `packages/server/src/server/browser-tools/stream-hub.ts`,
    `packages/desktop/src/features/browser-automation/{screencast,stream-input}.ts`,
    `packages/app/src/desktop/browser/pane/index.tsx` (native viewer).
-2. **Mobile "New browser" entry points** — `browser.remote.open` RPC lets phones open a
-   real desktop browser tab and attach the stream viewer; workspace header ⋯ menu and
-   tabs-row ∨ menu show the item when the feature flag is on
-   (`packages/app/src/screens/workspace/workspace-screen.tsx`).
+2. **Bidirectional browser workspace sync** — `browser.remote.open/list/close` RPCs let
+   phones open real desktop tabs, continuously discover tabs created by Mac UI or agent
+   browser tools, refresh URL/title/navigation/loading state, and close the authoritative
+   Mac tab. Mobile viewers reconcile from the Mac SSOT on focus and every two seconds;
+   transient disconnects preserve local viewers. Workspace header ⋯ menu, tabs-row ∨ menu,
+   and pinned globe launcher expose `New browser` when the feature flag is on. Key files:
+   `packages/app/src/screens/workspace/workspace-screen.tsx` and
+   `packages/app/src/desktop/browser/remote-tabs-sync.ts`.
 3. **Rebranding (display-only)** — DΛ icons (`packages/app/assets/images/*`,
    `packages/desktop/assets/*`), Android personal variant name "Daseo"
    (`packages/app/app.config.js`), Mac window-title display name
@@ -46,15 +51,31 @@ IDs, URL scheme `paseo://`), all i18n strings, and the design-system structure.
    `packages/app/src/styles/theme.ts` (`darkDaseoTheme`) and selectable in appearance
    settings on desktop and mobile.
 5. **Codex-style collapsed work history** — completed turns hide tool/thought/todo/activity
-   items behind the per-turn "Worked for …" footer with an expandable steps chip; the live
-   turn still streams full activity. Provider-agnostic (UI-level).
-   `packages/app/src/agent-stream/collapsed-work.ts` + wiring in
-   `agent-stream/view.tsx`, `turn-footer.tsx`, `components/message.tsx`.
-6. **Model/abort robustness patches** — replacement-model catalog probe skip, aborted-turn
+   items behind one expandable "Worked for …" row above the final assistant message; the
+   live turn still streams full activity. Provider-agnostic (UI-level), including turns
+   spanning the settled/live buffer boundary. `packages/app/src/agent-stream/collapsed-work.ts`
+   - wiring in `agent-stream/view.tsx` and `collapsed-work-row.tsx`.
+6. **Independent Android push notifications** — the personal Android variant gets a native
+   FCM device token instead of depending on upstream's Expo project; the Mac daemon sends
+   agent-finished and permission-request notifications through FCM HTTP v1. Key files:
+   `packages/app/src/push-notifications/internal/subscriptions.ts`,
+   `packages/server/src/server/push/fcm-service.ts`, and `packages/app/app.config.js`.
+   Runtime credentials are intentionally outside git: Android config at
+   `packages/app/.secrets/google-services.personal.json`; sender service account at
+   `~/.paseo/daseo-fcm-service-account.json` (mode 0600). Firebase project: `daseo-push`.
+7. **Model/abort robustness patches** — replacement-model catalog probe skip, aborted-turn
    cancellation normalization (`packages/server/src/server/agent/provider-registry.ts`,
    `providers/pi/agent.ts`), send-gate fix and native combobox placement
    (`packages/app/src/provider-selection/provider-selection.ts`,
    `components/ui/combobox.tsx`).
+8. **Fold- and CJK-safe mobile UX** — unfolded Fold/tablet sidebar controls stay above the
+   Android navigation inset (`packages/app/src/components/left-sidebar.tsx`), while Markdown
+   headings use token-proportional line heights so Korean and large-font text is not clipped
+   (`packages/app/src/components/markdown/renderer.tsx`).
+9. **Project-scoped empty workspace auto-create** — `/new` launched from a project creates an
+   empty local workspace immediately, allowing browser/terminal use before an agent starts;
+   global, worktree, unsupported-daemon, and failure paths retain the intro fallback. Key files:
+   `packages/app/src/screens/new-workspace-auto-create.ts` and `new-workspace-screen.tsx`.
 
 ## Build & ship (Mac mini)
 
@@ -65,7 +86,8 @@ IDs, URL scheme `paseo://`), all i18n strings, and the design-system structure.
   idle-gated launchd watcher. Never change `CFBundleName`, `CFBundleExecutable`, helper names,
   bundle IDs, or the user-data path. **The `Paseo Daemon` process survives app swaps — always
   restart it too** (see `~/.paseo/restart-daemon-local5.sh` pattern).
-- Android: `APP_VARIANT=personal npx expo prebuild --platform android` then
+- Android: verify the ignored personal Firebase config exists, then run
+  `APP_VARIANT=personal npx expo prebuild --platform android` and
   `cd android && ./gradlew assembleRelease`; artifacts in `~/paseo-builds/`, served at
   `https://mac.tail29eaf5.ts.net/`; install over Wi-Fi ADB (`phone install`) when available.
 - Both artifacts must come from the same commit. Push with the `dgk-dev` GitHub account,

@@ -1845,7 +1845,9 @@ export class VoiceAssistantWebSocketServer {
           | "browser.remote.watch.request"
           | "browser.remote.unwatch.request"
           | "browser.remote.input.request"
-          | "browser.remote.open.request";
+          | "browser.remote.open.request"
+          | "browser.remote.list.request"
+          | "browser.remote.close.request";
       }
     >,
   ): Promise<void> {
@@ -1908,41 +1910,17 @@ export class VoiceAssistantWebSocketServer {
     }
 
     if (message.type === "browser.remote.open.request") {
-      if (!broker) {
-        this.sendToConnection(
-          connection,
-          wrapSessionMessage({
-            type: "browser.remote.open.response",
-            payload: { requestId: message.requestId, ok: false, error: unavailable },
-          }),
-        );
-        return;
-      }
-      const payload = await broker.execute({
-        workspaceId: message.workspaceId,
-        command: {
-          command: "new_tab",
-          args: message.url ? { url: message.url } : {},
-        },
-      });
-      const opened =
-        payload.ok && payload.result.command === "new_tab"
-          ? { browserId: payload.result.browserId, url: payload.result.url }
-          : null;
-      this.sendToConnection(
-        connection,
-        wrapSessionMessage({
-          type: "browser.remote.open.response",
-          payload: {
-            requestId: message.requestId,
-            ok: Boolean(opened),
-            ...(opened ? { browserId: opened.browserId, url: opened.url } : {}),
-            ...(payload.ok
-              ? {}
-              : { error: { code: payload.error.code, message: payload.error.message } }),
-          },
-        }),
-      );
+      await this.handleBrowserRemoteOpenRequest(connection, message);
+      return;
+    }
+
+    if (message.type === "browser.remote.list.request") {
+      await this.handleBrowserRemoteListRequest(connection, message);
+      return;
+    }
+
+    if (message.type === "browser.remote.close.request") {
+      await this.handleBrowserRemoteCloseRequest(connection, message);
       return;
     }
 
@@ -1969,6 +1947,167 @@ export class VoiceAssistantWebSocketServer {
         payload: {
           requestId: message.requestId,
           ok: payload.ok,
+          ...(payload.ok
+            ? {}
+            : { error: { code: payload.error.code, message: payload.error.message } }),
+        },
+      }),
+    );
+  }
+
+  private async handleBrowserRemoteOpenRequest(
+    connection: TrustedSessionConnection,
+    message: Extract<SessionInboundMessage, { type: "browser.remote.open.request" }>,
+  ): Promise<void> {
+    const broker = this.browserToolsBroker;
+    if (!broker) {
+      this.sendToConnection(
+        connection,
+        wrapSessionMessage({
+          type: "browser.remote.open.response",
+          payload: {
+            requestId: message.requestId,
+            ok: false,
+            error: { code: "browser_disabled", message: "Browser streaming is unavailable." },
+          },
+        }),
+      );
+      return;
+    }
+    const payload = await broker.execute({
+      workspaceId: message.workspaceId,
+      command: {
+        command: "new_tab",
+        args: message.url ? { url: message.url } : {},
+      },
+    });
+    const opened =
+      payload.ok && payload.result.command === "new_tab"
+        ? { browserId: payload.result.browserId, url: payload.result.url }
+        : null;
+    this.sendToConnection(
+      connection,
+      wrapSessionMessage({
+        type: "browser.remote.open.response",
+        payload: {
+          requestId: message.requestId,
+          ok: Boolean(opened),
+          ...(opened ? { browserId: opened.browserId, url: opened.url } : {}),
+          ...(payload.ok
+            ? {}
+            : { error: { code: payload.error.code, message: payload.error.message } }),
+        },
+      }),
+    );
+  }
+
+  private async handleBrowserRemoteListRequest(
+    connection: TrustedSessionConnection,
+    message: Extract<SessionInboundMessage, { type: "browser.remote.list.request" }>,
+  ): Promise<void> {
+    const broker = this.browserToolsBroker;
+    if (!broker) {
+      this.sendToConnection(
+        connection,
+        wrapSessionMessage({
+          type: "browser.remote.list.response",
+          payload: {
+            requestId: message.requestId,
+            ok: false,
+            error: { code: "browser_disabled", message: "Browser streaming is unavailable." },
+          },
+        }),
+      );
+      return;
+    }
+    const payload = await broker.execute({
+      workspaceId: message.workspaceId,
+      command: { command: "list_tabs", args: {} },
+    });
+    const tabs =
+      payload.ok && payload.result.command === "list_tabs"
+        ? payload.result.tabs.filter(
+            (tab) => !tab.workspaceId || tab.workspaceId === message.workspaceId,
+          )
+        : null;
+    this.sendToConnection(
+      connection,
+      wrapSessionMessage({
+        type: "browser.remote.list.response",
+        payload: {
+          requestId: message.requestId,
+          ok: Boolean(tabs),
+          ...(tabs ? { tabs } : {}),
+          ...(payload.ok
+            ? {}
+            : { error: { code: payload.error.code, message: payload.error.message } }),
+        },
+      }),
+    );
+  }
+
+  private async handleBrowserRemoteCloseRequest(
+    connection: TrustedSessionConnection,
+    message: Extract<SessionInboundMessage, { type: "browser.remote.close.request" }>,
+  ): Promise<void> {
+    const broker = this.browserToolsBroker;
+    if (!broker) {
+      this.sendToConnection(
+        connection,
+        wrapSessionMessage({
+          type: "browser.remote.close.response",
+          payload: {
+            requestId: message.requestId,
+            ok: false,
+            error: { code: "browser_disabled", message: "Browser streaming is unavailable." },
+          },
+        }),
+      );
+      return;
+    }
+    const listed = await broker.execute({
+      workspaceId: message.workspaceId,
+      command: { command: "list_tabs", args: {} },
+    });
+    const belongsToWorkspace =
+      listed.ok &&
+      listed.result.command === "list_tabs" &&
+      listed.result.tabs.some(
+        (tab) =>
+          tab.browserId === message.browserId &&
+          (!tab.workspaceId || tab.workspaceId === message.workspaceId),
+      );
+    if (!belongsToWorkspace) {
+      this.sendToConnection(
+        connection,
+        wrapSessionMessage({
+          type: "browser.remote.close.response",
+          payload: {
+            requestId: message.requestId,
+            ok: false,
+            error: {
+              code: "browser_tab_not_found",
+              message: "Browser tab does not belong to this workspace.",
+            },
+          },
+        }),
+      );
+      return;
+    }
+    const payload = await broker.execute({
+      workspaceId: message.workspaceId,
+      command: { command: "close_tab", args: { browserId: message.browserId } },
+    });
+    const closed = payload.ok && payload.result.command === "close_tab";
+    if (closed) this.browserStreamHub?.dropBrowser(message.browserId);
+    this.sendToConnection(
+      connection,
+      wrapSessionMessage({
+        type: "browser.remote.close.response",
+        payload: {
+          requestId: message.requestId,
+          ok: closed,
+          ...(closed ? { browserId: message.browserId } : {}),
           ...(payload.ok
             ? {}
             : { error: { code: payload.error.code, message: payload.error.message } }),
@@ -2302,7 +2441,9 @@ export class VoiceAssistantWebSocketServer {
       (message.message.type === "browser.remote.watch.request" ||
         message.message.type === "browser.remote.unwatch.request" ||
         message.message.type === "browser.remote.input.request" ||
-        message.message.type === "browser.remote.open.request")
+        message.message.type === "browser.remote.open.request" ||
+        message.message.type === "browser.remote.list.request" ||
+        message.message.type === "browser.remote.close.request")
     ) {
       await this.handleBrowserRemoteRequest(activeConnection, message.message);
       return;

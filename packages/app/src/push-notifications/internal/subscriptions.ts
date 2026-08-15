@@ -10,6 +10,13 @@ function storageKey(serverId: string): string {
   return `${STORAGE_PREFIX}${serverId}`;
 }
 
+function usesDirectFcmPush(): boolean {
+  const constants = Constants as unknown as {
+    expoConfig?: { extra?: { directFcmPush?: unknown } };
+  };
+  return constants.expoConfig?.extra?.directFcmPush === true;
+}
+
 function getExpoProjectId(): string | null {
   const constants = Constants as unknown as {
     easConfig?: { projectId?: unknown };
@@ -38,21 +45,30 @@ async function resolveToken(serverId: string): Promise<string | null> {
   }
 
   if (Platform.OS === "android") {
-    await Notifications.setNotificationChannelAsync("default", {
-      name: "default",
-      importance: Notifications.AndroidImportance.DEFAULT,
+    await Notifications.setNotificationChannelAsync("agent-updates", {
+      name: "Agent updates",
+      importance: Notifications.AndroidImportance.HIGH,
+      sound: "default",
+      vibrationPattern: [0, 250, 250, 250],
     });
   }
 
-  const projectId = getExpoProjectId();
-  if (!projectId) {
-    console.warn("[PushNotifications] Missing EAS projectId; cannot fetch Expo push token");
-    return cached;
+  let token: string;
+  if (Platform.OS === "android" && usesDirectFcmPush()) {
+    const result = await Notifications.getDevicePushTokenAsync();
+    const deviceToken = typeof result.data === "string" ? result.data.trim() : "";
+    if (!deviceToken) return cached;
+    token = `fcm:${deviceToken}`;
+  } else {
+    const projectId = getExpoProjectId();
+    if (!projectId) {
+      console.warn("[PushNotifications] Missing EAS projectId; cannot fetch Expo push token");
+      return cached;
+    }
+    const result = await Notifications.getExpoPushTokenAsync({ projectId });
+    token = result.data.trim();
+    if (!token) return cached;
   }
-
-  const result = await Notifications.getExpoPushTokenAsync({ projectId });
-  const token = result.data.trim();
-  if (!token) return cached;
   await AsyncStorage.setItem(key, token);
   return token;
 }

@@ -97,7 +97,10 @@ describe("OMP diagnostics", () => {
     expect(diagnostic).toContain(`Agent database: ${path.join(agentDir, "agent.db")} (found)`);
     expect(diagnostic).toContain("npm-installed OMP requires Bun >= 1.3.14");
     expect(diagnostic).not.toContain("auth.json");
-    expect(diagnostic).not.toContain(".pi/agent");
+    // PATH may legitimately contain Pi's bin directory; only OMP storage
+    // locations must stay out of the legacy Pi agent root.
+    expect(diagnostic.match(/^  Agent directory: (.+)$/m)?.[1]).not.toContain(".pi/agent");
+    expect(diagnostic.match(/^  Agent database: (.+)$/m)?.[1]).not.toContain(".pi/agent");
   });
 });
 

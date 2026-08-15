@@ -5862,3 +5862,53 @@ test("waitForFinish with timeout=0 omits timeoutMs and has no client deadline", 
     vi.useRealTimers();
   }
 });
+
+test("correlates remote browser list and close lifecycle RPCs", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_browser_remote",
+    logger: createMockLogger(),
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen({ features: { browserRemoteStream: true } });
+  await connectPromise;
+
+  const listPromise = client.listRemoteBrowserTabs({ workspaceId: "workspace-1" });
+  const listRequest = parseSentFrame(mock.sent[0]);
+  expect(listRequest).toMatchObject({
+    type: "browser.remote.list.request",
+    workspaceId: "workspace-1",
+    requestId: expect.any(String),
+  });
+  const listPayload = listRequest as { requestId: string };
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "browser.remote.list.response",
+      payload: { requestId: listPayload.requestId, ok: true, tabs: [] },
+    }),
+  );
+  await expect(listPromise).resolves.toMatchObject({ ok: true, tabs: [] });
+
+  const browserId = "11111111-1111-4111-8111-111111111111";
+  const closePromise = client.closeRemoteBrowserTab({ workspaceId: "workspace-1", browserId });
+  const closeRequest = parseSentFrame(mock.sent[1]);
+  expect(closeRequest).toMatchObject({
+    type: "browser.remote.close.request",
+    workspaceId: "workspace-1",
+    browserId,
+    requestId: expect.any(String),
+  });
+  const closePayload = closeRequest as { requestId: string };
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "browser.remote.close.response",
+      payload: { requestId: closePayload.requestId, ok: true, browserId },
+    }),
+  );
+  await expect(closePromise).resolves.toMatchObject({ ok: true, browserId });
+});
