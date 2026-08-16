@@ -404,6 +404,14 @@ export function buildHostRootRoute(serverId: string) {
   return `/h/${encodeSegment(normalized)}` as const;
 }
 
+export function buildHostEmptyRoute(serverId: string) {
+  const base = buildHostRootRoute(serverId);
+  if (base === "/") {
+    return base;
+  }
+  return `${base}/empty` as const;
+}
+
 export function buildHostOpenProjectRoute(serverId: string) {
   const base = buildHostRootRoute(serverId);
   if (base === "/") {

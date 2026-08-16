@@ -36,6 +36,7 @@ function KnownHostRoute() {
   const stack = (
     <ThemedStack screenOptions={HOST_STACK_SCREEN_OPTIONS}>
       <Stack.Screen name="index" />
+      <Stack.Screen name="empty" />
       <Stack.Screen name="workspace/[workspaceId]/index" />
       <Stack.Screen name="agent/[agentId]" options={AGENT_SCREEN_OPTIONS} />
       <Stack.Screen name="sessions" />

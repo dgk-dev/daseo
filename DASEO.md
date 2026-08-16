@@ -79,8 +79,11 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
    (`packages/app/src/styles/markdown-styles.ts`).
 9. **Project-scoped empty workspace auto-create** — `/new` launched from a project creates an
    empty local workspace immediately, allowing browser/terminal use before an agent starts;
-   global, worktree, unsupported-daemon, and failure paths retain the intro fallback. Key files:
-   `packages/app/src/screens/new-workspace-auto-create.ts` and `new-workspace-screen.tsx`.
+   global, worktree, unsupported-daemon, and failure paths retain the intro fallback. Archiving
+   the active workspace never enters this creation path: Daseo selects an existing workspace in
+   the same project or leaves the main pane empty when none remains. Key files:
+   `packages/app/src/screens/new-workspace-auto-create.ts`, `new-workspace-screen.tsx`, and
+   `packages/app/src/utils/workspace-archive-navigation.ts`.
 10. **MCP era-negotiation compatibility** — MCP 2.x Pi clients probe with the forward-dated
     `server/discover` method before falling back to the bundled MCP 1.x SDK. Daseo recognizes
     that exact probe and returns the expected legacy signal without logging it as a daemon error;

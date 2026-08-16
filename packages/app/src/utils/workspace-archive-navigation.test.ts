@@ -28,7 +28,7 @@ function workspace(
 }
 
 describe("buildWorkspaceArchiveRedirectRoute", () => {
-  it("redirects an archived worktree to the new workspace screen for the same project", () => {
+  it("redirects an archived worktree to an existing workspace in the same project", () => {
     const workspaces = [
       workspace({ id: "/repo", workspaceKind: "checkout", name: "main" }),
       workspace({ id: "/repo/.paseo/worktrees/feature", name: "feature" }),
@@ -40,10 +40,10 @@ describe("buildWorkspaceArchiveRedirectRoute", () => {
         archivedWorkspaceId: "/repo/.paseo/worktrees/feature",
         workspaces,
       }),
-    ).toBe("/new?serverId=server-1&dir=%2Frepo&name=Project&projectId=project-1");
+    ).toBe("/h/server-1/workspace/b64_L3JlcG8");
   });
 
-  it("redirects to the new workspace route when no sibling workspace target exists", () => {
+  it("opens the empty workspace route when the archived workspace was the last one", () => {
     const workspaces = [
       workspace({
         id: "/repo/.paseo/worktrees/feature",
@@ -58,10 +58,10 @@ describe("buildWorkspaceArchiveRedirectRoute", () => {
         archivedWorkspaceId: "/repo/.paseo/worktrees/feature",
         workspaces,
       }),
-    ).toBe("/new?serverId=server-1&dir=%2Frepo&name=Project&projectId=project-1");
+    ).toBe("/h/server-1/empty");
   });
 
-  it("redirects to the new workspace route instead of another workspace", () => {
+  it("keeps the main area empty instead of jumping to another project", () => {
     const workspaces = [
       workspace({
         id: "/notes",
@@ -69,6 +69,12 @@ describe("buildWorkspaceArchiveRedirectRoute", () => {
         projectRootPath: "/notes",
         projectKind: "directory",
         workspaceKind: "checkout",
+      }),
+      workspace({
+        id: "/repo",
+        projectId: "repo",
+        projectRootPath: "/repo",
+        workspaceKind: "local_checkout",
       }),
     ];
 
@@ -78,7 +84,7 @@ describe("buildWorkspaceArchiveRedirectRoute", () => {
         archivedWorkspaceId: "/notes",
         workspaces,
       }),
-    ).toBe("/new?serverId=server-1&dir=%2Fnotes&name=Project&projectId=notes");
+    ).toBe("/h/server-1/empty");
   });
 });
 
@@ -136,6 +142,6 @@ describe("redirectIfArchivingActiveWorkspace", () => {
       ),
     ).toBe(true);
 
-    expect(routes).toEqual(["/new?serverId=server-1&dir=%2Frepo&name=Project&projectId=project-1"]);
+    expect(routes).toEqual(["/h/server-1/workspace/main"]);
   });
 });
