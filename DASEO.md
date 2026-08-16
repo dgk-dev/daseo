@@ -45,13 +45,14 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
    and pinned globe launcher expose `New browser` when the feature flag is on. Key files:
    `packages/app/src/screens/workspace/workspace-screen.tsx` and
    `packages/app/src/desktop/browser/remote-tabs-sync.ts`.
-3. **Rebranding (display-only)** — DΛ icons (`packages/app/assets/images/*`,
-   `packages/desktop/assets/*`), Android personal variant name "Daseo"
-   (`packages/app/app.config.js`), Mac window-title display name
-   (`packages/desktop/src/main.ts`), safe post-build Info.plist patch via
-   `packages/desktop/scripts/daseo-app-package.mjs`, and outer `Daseo.app` rename.
-   The patch keeps `CFBundleName=Paseo`; Electron uses that internal product name
-   to locate the unchanged `Paseo Helper.app` bundles.
+3. **Rebranding (display-only)** — DΛ native icons, PWA/status icons, and in-app startup
+   mark (`packages/app/assets/images/*`, `packages/app/public/*`,
+   `packages/app/src/components/icons/paseo-logo.tsx`, `packages/desktop/assets/*`), Android
+   personal variant name "Daseo" (`packages/app/app.config.js`), Mac window-title display
+   name (`packages/desktop/src/main.ts`), safe post-build Info.plist patch via
+   `packages/desktop/scripts/daseo-app-package.mjs`, and outer `Daseo.app` rename. The patch
+   keeps `CFBundleName=Paseo`; Electron uses that internal product name to locate the
+   unchanged `Paseo Helper.app` bundles.
 4. **Daseo theme** — monotone graphite dark variant registered in
    `packages/app/src/styles/theme.ts` (`darkDaseoTheme`) and selectable in appearance
    settings on desktop and mobile.
