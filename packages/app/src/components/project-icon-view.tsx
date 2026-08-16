@@ -1,13 +1,10 @@
 import { useMemo } from "react";
 import { type StyleProp, Text, type TextStyle, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { ProjectIconImage } from "@/components/project-icon-image";
-import { deriveIdentityColorName, identityColor } from "@/styles/identity-colors";
-
-const WHITE_TEXT = { color: "#ffffff" } as const;
-const FALLBACK_LAYOUT = { alignItems: "center", justifyContent: "center" } as const;
 
 /**
- * Corner radius of the *generated* project icon — the colored square with an initial — as a
+ * Corner radius of the *generated* project icon — the graphite square with an initial — as a
  * fraction of the box, so it reads as the same shape at 16pt in the sidebar and 40pt in the edit
  * sheet. Fixed tokens did not give that: the radius scale is coarse at the bottom, so small icons
  * landed on 2pt and looked square while large ones were visibly rounder.
@@ -23,7 +20,7 @@ export function projectIconRadius(size: number): number {
 }
 
 /**
- * A project's icon: its chosen image, or a colored square carrying its initial.
+ * A project's icon: its chosen image, or a quiet theme-derived square carrying its initial.
  *
  * Geometry lives here, not at the call site. It used to be five copies of the same
  * width/height/radius/centering block, which is how the radius drifted apart in the first
@@ -33,12 +30,12 @@ export function projectIconRadius(size: number): number {
 export function ProjectIconView({
   iconDataUri,
   initial,
-  projectViewKey,
   size,
   textStyle,
 }: {
   iconDataUri: string | null;
   initial: string;
+  /** Kept in the shared API; the Daseo fallback intentionally does not derive color from it. */
   projectViewKey: string;
   size: number;
   textStyle: StyleProp<TextStyle>;
@@ -46,15 +43,10 @@ export function ProjectIconView({
   // The uploaded image is sized but never clipped — see projectIconRadius.
   const box = useMemo(() => ({ width: size, height: size }), [size]);
   const fallbackStyles = useMemo(
-    () => [
-      box,
-      { borderRadius: projectIconRadius(size) },
-      FALLBACK_LAYOUT,
-      { backgroundColor: identityColor(deriveIdentityColorName(projectViewKey)) },
-    ],
-    [box, size, projectViewKey],
+    () => [box, { borderRadius: projectIconRadius(size) }, styles.fallback],
+    [box, size],
   );
-  const textStyles = useMemo(() => [textStyle, WHITE_TEXT], [textStyle]);
+  const textStyles = useMemo(() => [textStyle, styles.fallbackText], [textStyle]);
 
   const fallback = useMemo(
     () => (
@@ -71,3 +63,14 @@ export function ProjectIconView({
     fallback
   );
 }
+
+const styles = StyleSheet.create((theme) => ({
+  fallback: {
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: theme.colors.surface3,
+  },
+  fallbackText: {
+    color: theme.colors.foregroundMuted,
+  },
+}));

@@ -1,17 +1,16 @@
-// Muted tones, all landing in a 4.2-4.8:1 contrast band against the white letter on top.
+// Muted identity tones, all landing in a 4.2-4.8:1 contrast band against white content.
 //
-// Two properties matter more than the individual hues. First, low chroma: these squares sit
-// in a sidebar row next to a status dot, a PR glyph and a diff stat, and at full saturation
-// the project icon wins a fight it shouldn't be in. Second, even luminance: the previous set
-// was raw Tailwind 500s spanning 1.9:1 (amber, where the white letter was barely visible) to
-// 4.5:1 (indigo), so a project's color decided how loud it was in the list. Holding every
-// swatch to one contrast band makes the color identifying rather than ranking.
+// Two properties matter more than the individual hues. First, low chroma: an identity marker
+// sits beside operational status and metadata, and at full saturation it wins a fight it should
+// not be in. Second, even luminance: raw palette colors let hue decide how loud one identity is
+// relative to another. Holding every swatch to one contrast band makes color identifying rather
+// than ranking.
 //
 // Retune with the contrast band, not by eye — a hue nudged for looks quietly re-weights that
-// project against the other nine.
+// identity against the other nine.
 //
 // Order is load-bearing: `deriveIdentityColorName` indexes into this array, so reordering
-// silently recolors every existing project icon.
+// silently recolors every derived participant identity.
 export const IDENTITY_COLOR_NAMES = [
   "violet",
   "sky",
