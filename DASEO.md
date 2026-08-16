@@ -26,12 +26,17 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
 
 1. **Remote browser streaming to mobile** — daemon `BrowserStreamHub` fans CDP screencast
    frames (binary opcode `0x20`) from the Electron browser host to mobile watchers over the
-   relay; tap/scroll/text/key/navigate inputs map back through trusted CDP. Feature flag
-   `serverInfo.features.browserRemoteStream`. Key files:
+   relay; tap/two-axis-scroll/text/key/navigate inputs map back through trusted CDP. CDP ACKs
+   cap the producer at the mobile-requested frame interval, server backpressure preserves only
+   the latest frame, and static/navigation fallback captures prevent a blank or stale first
+   paint. Each pane has an independent viewer ID and workspace-scoped control path; hidden or
+   backgrounded panes unsubscribe, frame sequence rejects stale delivery, and failed startup
+   uses bounded backoff before exposing a manual Retry control while retaining the last frame.
+   Feature flag `serverInfo.features.browserRemoteStream`. Key files:
    `packages/protocol/src/binary-frames/browser-stream.ts`,
    `packages/server/src/server/browser-tools/stream-hub.ts`,
    `packages/desktop/src/features/browser-automation/{screencast,stream-input}.ts`,
-   `packages/app/src/desktop/browser/pane/index.tsx` (native viewer).
+   `packages/app/src/desktop/browser/pane/index.tsx` and `remote-stream-retry.ts` (native viewer).
 2. **Bidirectional browser workspace sync** — `browser.remote.open/list/close` RPCs let
    phones open real desktop tabs, continuously discover tabs created by Mac UI or agent
    browser tools, refresh URL/title/navigation/loading state, and close the authoritative

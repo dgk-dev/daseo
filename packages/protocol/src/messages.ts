@@ -1318,21 +1318,30 @@ export const BrowserRemoteWatchRequestSchema = z.object({
   type: z.literal("browser.remote.watch.request"),
   requestId: z.string(),
   browserId: z.string().min(1),
+  // COMPAT(browser-remote-workspace-viewer): added in v0.4.0; remove after 2027-02-16.
+  workspaceId: z.string().min(1).optional(),
+  viewerId: z.string().min(1).max(128).optional(),
   maxWidth: z.number().int().min(120).max(4096).optional(),
   maxHeight: z.number().int().min(120).max(4096).optional(),
   quality: z.number().int().min(10).max(100).optional(),
+  minFrameIntervalMs: z.number().int().min(0).max(1_000).optional(),
 });
 
 export const BrowserRemoteUnwatchRequestSchema = z.object({
   type: z.literal("browser.remote.unwatch.request"),
   requestId: z.string(),
   browserId: z.string().min(1),
+  // COMPAT(browser-remote-workspace-viewer): added in v0.4.0; remove after 2027-02-16.
+  workspaceId: z.string().min(1).optional(),
+  viewerId: z.string().min(1).max(128).optional(),
 });
 
 export const BrowserRemoteInputRequestSchema = z.object({
   type: z.literal("browser.remote.input.request"),
   requestId: z.string(),
   browserId: z.string().min(1),
+  // COMPAT(browser-remote-workspace-viewer): added in v0.4.0; remove after 2027-02-16.
+  workspaceId: z.string().min(1).optional(),
   input: BrowserAutomationStreamInputSchema,
 });
 

@@ -496,6 +496,10 @@ const WS_CLOSE_SERVER_SHUTDOWN = 1001;
 const WS_PROTOCOL_VERSION = 1;
 const WS_RUNTIME_METRICS_FLUSH_MS = 30_000;
 
+function browserStreamWatcherKey(clientId: string, viewerId: string | undefined): string {
+  return viewerId ? `${clientId}:${viewerId}` : clientId;
+}
+
 export class MissingDaemonVersionError extends Error {
   constructor() {
     super("VoiceAssistantWebSocketServer requires a non-empty daemonVersion.");
@@ -1900,20 +1904,29 @@ export class VoiceAssistantWebSocketServer {
         );
         return;
       }
+      const watcherKey = browserStreamWatcherKey(connection.clientId, message.viewerId);
       const result = await hub.watch({
         browserId: message.browserId,
-        watcherKey: connection.clientId,
+        ...(message.workspaceId ? { workspaceId: message.workspaceId } : {}),
+        watcherKey,
+        connectionKey: connection.clientId,
         send: (bytes) => {
+          let delivered = false;
           for (const socket of connection.sockets) {
             if ((socket.bufferedAmount ?? 0) > BrowserStreamHub.MAX_WATCHER_BUFFERED_BYTES) {
               continue;
             }
             this.sendBinaryToClient(socket, bytes);
+            delivered = true;
           }
+          return delivered;
         },
         ...(message.maxWidth !== undefined ? { maxWidth: message.maxWidth } : {}),
         ...(message.maxHeight !== undefined ? { maxHeight: message.maxHeight } : {}),
         ...(message.quality !== undefined ? { quality: message.quality } : {}),
+        ...(message.minFrameIntervalMs !== undefined
+          ? { minFrameIntervalMs: message.minFrameIntervalMs }
+          : {}),
       });
       this.sendToConnection(
         connection,
@@ -1932,7 +1945,10 @@ export class VoiceAssistantWebSocketServer {
     }
 
     if (message.type === "browser.remote.unwatch.request") {
-      await hub?.unwatch(message.browserId, connection.clientId);
+      await hub?.unwatch(
+        message.browserId,
+        browserStreamWatcherKey(connection.clientId, message.viewerId),
+      );
       this.sendToConnection(
         connection,
         wrapSessionMessage({
@@ -1969,6 +1985,7 @@ export class VoiceAssistantWebSocketServer {
       return;
     }
     const payload = await broker.execute({
+      ...(message.workspaceId ? { workspaceId: message.workspaceId } : {}),
       command: {
         command: "stream_input",
         args: { browserId: message.browserId, input: message.input },

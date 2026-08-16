@@ -29,6 +29,7 @@ interface BrowserToolsDaemonHarness {
   connectBrowserHostClient(
     options?: ConnectBrowserHostClientOptions,
   ): Promise<BrowserHostClientHandle>;
+  connectRemoteClient(): Promise<DaemonClient>;
   stop(): Promise<void>;
 }
 
@@ -105,6 +106,79 @@ describe("WebSocketServer browser tools wiring", () => {
       ok: true,
       result: { command: "list_tabs", tabs: [] },
     });
+  });
+
+  it("scopes remote stream lifecycle and input to the requesting workspace and viewer", async () => {
+    const harness = await startBrowserToolsDaemonHarness();
+    const browserHost = await harness.connectBrowserHostClient();
+    const remote = await harness.connectRemoteClient();
+
+    const watchPromise = remote.watchBrowserStream({
+      browserId: BROWSER_ID,
+      workspaceId: "workspace-1",
+      viewerId: "viewer-1",
+      minFrameIntervalMs: 100,
+    });
+    const startRequest = await browserHost.nextBrowserRequest();
+    expect(startRequest).toMatchObject({
+      workspaceId: "workspace-1",
+      command: {
+        command: "stream_start",
+        args: { browserId: BROWSER_ID, minFrameIntervalMs: 100 },
+      },
+    });
+    browserHost.respondToBrowserRequest({
+      type: "browser.automation.execute.response",
+      payload: {
+        requestId: startRequest.requestId,
+        ok: true,
+        result: { command: "stream_start", browserId: BROWSER_ID, width: 1200, height: 800 },
+      },
+    });
+    await expect(watchPromise).resolves.toMatchObject({ ok: true, width: 1200, height: 800 });
+
+    const inputPromise = remote.sendBrowserRemoteInput({
+      browserId: BROWSER_ID,
+      workspaceId: "workspace-1",
+      input: { kind: "tap", x: 10, y: 20 },
+    });
+    const inputRequest = await browserHost.nextBrowserRequest();
+    expect(inputRequest).toMatchObject({
+      workspaceId: "workspace-1",
+      command: {
+        command: "stream_input",
+        args: { browserId: BROWSER_ID, input: { kind: "tap", x: 10, y: 20 } },
+      },
+    });
+    browserHost.respondToBrowserRequest({
+      type: "browser.automation.execute.response",
+      payload: {
+        requestId: inputRequest.requestId,
+        ok: true,
+        result: { command: "stream_input", browserId: BROWSER_ID },
+      },
+    });
+    await expect(inputPromise).resolves.toMatchObject({ ok: true });
+
+    const unwatchPromise = remote.unwatchBrowserStream({
+      browserId: BROWSER_ID,
+      workspaceId: "workspace-1",
+      viewerId: "viewer-1",
+    });
+    const stopRequest = await browserHost.nextBrowserRequest();
+    expect(stopRequest).toMatchObject({
+      workspaceId: "workspace-1",
+      command: { command: "stream_stop", args: { browserId: BROWSER_ID } },
+    });
+    browserHost.respondToBrowserRequest({
+      type: "browser.automation.execute.response",
+      payload: {
+        requestId: stopRequest.requestId,
+        ok: true,
+        result: { command: "stream_stop", browserId: BROWSER_ID },
+      },
+    });
+    await expect(unwatchPromise).resolves.toBeUndefined();
   });
 
   it("unregisters capable clients on disconnect and clears pending browser commands", async () => {
@@ -238,6 +312,17 @@ async function startBrowserToolsDaemonHarness(): Promise<BrowserToolsDaemonHarne
           await waitFor(() => broker.getRegisteredClientCount() === 0);
         },
       };
+    },
+    async connectRemoteClient() {
+      const client = new DaemonClient({
+        url,
+        clientType: "mobile",
+        connectTimeoutMs: 500,
+        reconnect: { enabled: false },
+      });
+      clients.add(client);
+      await client.connect();
+      return client;
     },
     async stop() {
       await Promise.all(Array.from(clients, (client) => client.close()));

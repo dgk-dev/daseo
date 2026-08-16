@@ -5922,6 +5922,87 @@ test("waitForFinish with timeout=0 omits timeoutMs and has no client deadline", 
   }
 });
 
+test("scopes remote browser stream lifecycle and input to a viewer and workspace", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_browser_stream_scope",
+    logger: createMockLogger(),
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen({ features: { browserRemoteStream: true } });
+  await connectPromise;
+  const browserId = "11111111-1111-4111-8111-111111111111";
+
+  const watchPromise = client.watchBrowserStream({
+    browserId,
+    workspaceId: "workspace-1",
+    viewerId: "viewer-1",
+    maxWidth: 1600,
+    maxHeight: 1600,
+    quality: 55,
+    minFrameIntervalMs: 100,
+  });
+  const watchRequest = parseSentFrame(mock.sent.at(-1));
+  expect(watchRequest).toMatchObject({
+    type: "browser.remote.watch.request",
+    browserId,
+    workspaceId: "workspace-1",
+    viewerId: "viewer-1",
+    minFrameIntervalMs: 100,
+  });
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "browser.remote.watch.response",
+      payload: { requestId: watchRequest.requestId, ok: true, width: 1200, height: 800 },
+    }),
+  );
+  await expect(watchPromise).resolves.toMatchObject({ ok: true, width: 1200, height: 800 });
+
+  const inputPromise = client.sendBrowserRemoteInput({
+    browserId,
+    workspaceId: "workspace-1",
+    input: { kind: "tap", x: 10, y: 20 },
+  });
+  const inputRequest = parseSentFrame(mock.sent.at(-1));
+  expect(inputRequest).toMatchObject({
+    type: "browser.remote.input.request",
+    browserId,
+    workspaceId: "workspace-1",
+  });
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "browser.remote.input.response",
+      payload: { requestId: inputRequest.requestId, ok: true },
+    }),
+  );
+  await expect(inputPromise).resolves.toMatchObject({ ok: true });
+
+  const unwatchPromise = client.unwatchBrowserStream({
+    browserId,
+    workspaceId: "workspace-1",
+    viewerId: "viewer-1",
+  });
+  const unwatchRequest = parseSentFrame(mock.sent.at(-1));
+  expect(unwatchRequest).toMatchObject({
+    type: "browser.remote.unwatch.request",
+    browserId,
+    workspaceId: "workspace-1",
+    viewerId: "viewer-1",
+  });
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "browser.remote.unwatch.response",
+      payload: { requestId: unwatchRequest.requestId, ok: true },
+    }),
+  );
+  await expect(unwatchPromise).resolves.toBeUndefined();
+});
+
 test("correlates remote browser list and close lifecycle RPCs", async () => {
   const mock = createMockTransport();
   const client = new DaemonClient({

@@ -240,6 +240,7 @@ export const BrowserAutomationStreamStartCommandSchema = z.object({
     maxWidth: z.number().int().min(120).max(4096).optional(),
     maxHeight: z.number().int().min(120).max(4096).optional(),
     quality: z.number().int().min(10).max(100).optional(),
+    minFrameIntervalMs: z.number().int().min(0).max(1_000).optional(),
   }),
 });
 

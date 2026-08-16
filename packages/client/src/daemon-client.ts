@@ -5171,9 +5171,12 @@ export class DaemonClient {
 
   async watchBrowserStream(input: {
     browserId: string;
+    workspaceId?: string;
+    viewerId?: string;
     maxWidth?: number;
     maxHeight?: number;
     quality?: number;
+    minFrameIntervalMs?: number;
     requestId?: string;
   }): Promise<{
     ok: boolean;
@@ -5186,24 +5189,44 @@ export class DaemonClient {
       message: {
         type: "browser.remote.watch.request",
         browserId: input.browserId,
+        ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+        ...(input.viewerId ? { viewerId: input.viewerId } : {}),
         ...(input.maxWidth !== undefined ? { maxWidth: input.maxWidth } : {}),
         ...(input.maxHeight !== undefined ? { maxHeight: input.maxHeight } : {}),
         ...(input.quality !== undefined ? { quality: input.quality } : {}),
+        ...(input.minFrameIntervalMs !== undefined
+          ? { minFrameIntervalMs: input.minFrameIntervalMs }
+          : {}),
       },
       responseType: "browser.remote.watch.response",
     });
   }
 
-  async unwatchBrowserStream(browserId: string, requestId?: string): Promise<void> {
+  async unwatchBrowserStream(
+    browserIdOrInput:
+      | string
+      | { browserId: string; workspaceId?: string; viewerId?: string; requestId?: string },
+    legacyRequestId?: string,
+  ): Promise<void> {
+    const input =
+      typeof browserIdOrInput === "string"
+        ? { browserId: browserIdOrInput, requestId: legacyRequestId }
+        : browserIdOrInput;
     await this.sendCorrelatedSessionRequest({
-      requestId,
-      message: { type: "browser.remote.unwatch.request", browserId },
+      requestId: input.requestId,
+      message: {
+        type: "browser.remote.unwatch.request",
+        browserId: input.browserId,
+        ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+        ...(input.viewerId ? { viewerId: input.viewerId } : {}),
+      },
       responseType: "browser.remote.unwatch.response",
     });
   }
 
   async sendBrowserRemoteInput(input: {
     browserId: string;
+    workspaceId?: string;
     input: BrowserAutomationStreamInput;
     requestId?: string;
   }): Promise<{ ok: boolean; error?: { code: string; message: string } }> {
@@ -5212,6 +5235,7 @@ export class DaemonClient {
       message: {
         type: "browser.remote.input.request",
         browserId: input.browserId,
+        ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
         input: input.input,
       },
       responseType: "browser.remote.input.response",

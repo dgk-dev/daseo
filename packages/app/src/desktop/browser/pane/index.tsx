@@ -13,9 +13,13 @@ import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
 import { ArrowLeft, ArrowRight, CornerDownLeft, RotateCw } from "lucide-react-native";
 import type { BrowserStreamFrame } from "@getpaseo/protocol/binary-frames/index";
-import { useHostRuntimeClient } from "@/runtime/host-runtime";
+import { Button } from "@/components/ui/button";
+import { useRetainedPanelActive } from "@/components/retained-panel";
+import { useAppVisible } from "@/hooks/use-app-visible";
+import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import { mapTouchToGuest } from "./remote-viewport";
+import { nextRemoteStreamRetry, shouldAcceptRemoteStreamSequence } from "./remote-stream-retry";
 
 interface BrowserPaneProps {
   browserId: string;
@@ -29,10 +33,16 @@ interface BrowserPaneProps {
 const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const STREAM_QUALITY = 55;
 const STREAM_MAX_DIMENSION = 1600;
-const STALL_TIMEOUT_MS = 8_000;
-const REWATCH_INTERVAL_MS = 5_000;
+const STREAM_MIN_FRAME_INTERVAL_MS = 100;
+const FIRST_FRAME_TIMEOUT_MS = 8_000;
 const TAP_SLOP_PX = 8;
 const SCROLL_SEND_INTERVAL_MS = 60;
+let nextViewerOrdinal = 0;
+
+function createViewerId(): string {
+  nextViewerOrdinal += 1;
+  return `mobile-browser-viewer-${Date.now().toString(36)}-${nextViewerOrdinal.toString(36)}`;
+}
 
 function bytesToBase64(bytes: Uint8Array): string {
   let out = "";
@@ -54,56 +64,121 @@ interface FrameState {
   height: number;
 }
 
-export function BrowserPane({ browserId, serverId, isInteractive = true }: BrowserPaneProps) {
+type StreamStatus = "connecting" | "retrying" | "live" | "stopped";
+
+export function BrowserPane({
+  browserId,
+  serverId,
+  workspaceId,
+  isInteractive = true,
+  onFocusPane,
+}: BrowserPaneProps) {
   const { theme } = useUnistyles();
   const { t } = useTranslation();
   const client = useHostRuntimeClient(serverId);
+  const isConnected = useHostRuntimeIsConnected(serverId);
+  const appVisible = useAppVisible();
+  const retainedPanelActive = useRetainedPanelActive();
   const supportsStream = useSessionStore(
     (state) => state.sessions[serverId]?.serverInfo?.features?.browserRemoteStream === true,
   );
 
   const [frame, setFrame] = useState<FrameState | null>(null);
-  const [status, setStatus] = useState<"connecting" | "live" | "stalled" | "error">("connecting");
+  const [status, setStatus] = useState<StreamStatus>("connecting");
   const [urlText, setUrlText] = useState("");
+  const [reconnectGeneration, setReconnectGeneration] = useState(0);
+  const [viewerId] = useState(createViewerId);
   const containerSizeRef = useRef({ width: 0, height: 0 });
   const frameRef = useRef<FrameState | null>(null);
-  const lastFrameAtRef = useRef(0);
+  const lastSequenceRef = useRef(-1);
   const scrollGestureRef = useRef({
     moved: false,
+    lastDx: 0,
     lastDy: 0,
-    pendingGuestDelta: 0,
+    pendingGuestDeltaX: 0,
+    pendingGuestDeltaY: 0,
     guestX: 0,
     guestY: 0,
     lastSentAt: 0,
   });
+  const shouldWatch = retainedPanelActive && appVisible && isConnected;
 
   const sendInput = useCallback(
     (input: Parameters<NonNullable<typeof client>["sendBrowserRemoteInput"]>[0]["input"]) => {
       if (!client) {
         return;
       }
-      void client.sendBrowserRemoteInput({ browserId, input }).catch(() => undefined);
+      void client.sendBrowserRemoteInput({ browserId, workspaceId, input }).catch(() => undefined);
     },
-    [browserId, client],
+    [browserId, client, workspaceId],
   );
+
+  useEffect(() => {
+    frameRef.current = null;
+    lastSequenceRef.current = -1;
+    setFrame(null);
+    setStatus("connecting");
+  }, [browserId]);
 
   useEffect(() => {
     if (!client || !supportsStream) {
       return;
     }
+    if (!shouldWatch) {
+      setStatus(frameRef.current ? "retrying" : "connecting");
+      return;
+    }
     let disposed = false;
-    let watchStartedAt = Date.now();
-    let rewatchInFlight = false;
-    lastFrameAtRef.current = 0;
-    frameRef.current = null;
-    setFrame(null);
-    setStatus("connecting");
+    let retryAttempt = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let firstFrameTimer: ReturnType<typeof setTimeout> | null = null;
+    let watchInFlight = false;
+    lastSequenceRef.current = -1;
+    setStatus(frameRef.current ? "retrying" : "connecting");
 
-    const unsubscribeFrames = client.onBrowserStreamFrame((streamFrame: BrowserStreamFrame) => {
-      if (disposed || streamFrame.browserId !== browserId) {
+    const clearFirstFrameTimer = () => {
+      if (firstFrameTimer) {
+        clearTimeout(firstFrameTimer);
+        firstFrameTimer = null;
+      }
+    };
+
+    const clearRetryTimer = () => {
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+    };
+
+    let performRewatch = async () => {};
+    const scheduleRetry = () => {
+      if (disposed || retryTimer) {
         return;
       }
-      lastFrameAtRef.current = Date.now();
+      const retry = nextRemoteStreamRetry({ attempt: retryAttempt });
+      if (!retry) {
+        setStatus("stopped");
+        return;
+      }
+      retryAttempt = retry.nextAttempt;
+      setStatus("retrying");
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        void performRewatch();
+      }, retry.delayMs);
+    };
+
+    const unsubscribeFrames = client.onBrowserStreamFrame((streamFrame: BrowserStreamFrame) => {
+      if (
+        disposed ||
+        streamFrame.browserId !== browserId ||
+        !shouldAcceptRemoteStreamSequence(lastSequenceRef.current, streamFrame.meta.seq)
+      ) {
+        return;
+      }
+      lastSequenceRef.current = streamFrame.meta.seq;
+      clearFirstFrameTimer();
+      clearRetryTimer();
       const next: FrameState = {
         uri: `data:image/jpeg;base64,${bytesToBase64(streamFrame.payload)}`,
         width: streamFrame.meta.width,
@@ -114,74 +189,92 @@ export function BrowserPane({ browserId, serverId, isInteractive = true }: Brows
       setStatus("live");
     });
 
-    const watch = async () => {
-      watchStartedAt = Date.now();
+    const performWatch = async () => {
+      if (disposed || watchInFlight) {
+        return;
+      }
+      watchInFlight = true;
       const result = await client
         .watchBrowserStream({
           browserId,
+          workspaceId,
+          viewerId,
           maxWidth: STREAM_MAX_DIMENSION,
           maxHeight: STREAM_MAX_DIMENSION,
           quality: STREAM_QUALITY,
+          minFrameIntervalMs: STREAM_MIN_FRAME_INTERVAL_MS,
         })
         .catch(() => ({ ok: false }) as const);
+      watchInFlight = false;
       if (disposed) {
         return;
       }
-      setStatus((current) => {
-        if (result.ok) {
-          return current === "live" ? current : "connecting";
-        }
-        return "error";
-      });
-    };
-    void watch();
-
-    const rewatch = async () => {
-      if (disposed || rewatchInFlight) return;
-      rewatchInFlight = true;
-      try {
-        try {
-          await client.unwatchBrowserStream(browserId);
-        } catch {
-          // A failed unwatch never blocks the retry.
-        }
-        if (!disposed) await watch();
-      } finally {
-        rewatchInFlight = false;
+      if (!result.ok) {
+        scheduleRetry();
+        return;
       }
+      clearFirstFrameTimer();
+      firstFrameTimer = setTimeout(() => {
+        firstFrameTimer = null;
+        scheduleRetry();
+      }, FIRST_FRAME_TIMEOUT_MS);
     };
 
-    const stallTimer = setInterval(() => {
-      if (disposed) return;
-      const latestActivityAt = lastFrameAtRef.current || watchStartedAt;
-      if (Date.now() - latestActivityAt < STALL_TIMEOUT_MS) return;
-      setStatus((current) => (current === "live" ? "stalled" : current));
-      // The desktop host may have restarted; drop the stale subscription and
-      // start one bounded retry at a time.
-      void rewatch();
-    }, REWATCH_INTERVAL_MS);
+    performRewatch = async () => {
+      if (disposed || watchInFlight) {
+        return;
+      }
+      clearFirstFrameTimer();
+      try {
+        await client.unwatchBrowserStream({
+          browserId,
+          workspaceId,
+          viewerId,
+        });
+      } catch {
+        // A failed unwatch never blocks a bounded recovery attempt.
+      }
+      if (disposed) {
+        return;
+      }
+      // The desktop sequence is monotonic across screencast restarts. Resetting
+      // also permits recovery after a full desktop-host process restart.
+      lastSequenceRef.current = -1;
+      await performWatch();
+    };
+
+    void performWatch();
 
     return () => {
       disposed = true;
-      clearInterval(stallTimer);
+      clearRetryTimer();
+      clearFirstFrameTimer();
       unsubscribeFrames();
-      void client.unwatchBrowserStream(browserId).catch(() => undefined);
+      void client
+        .unwatchBrowserStream({
+          browserId,
+          workspaceId,
+          viewerId,
+        })
+        .catch(() => undefined);
     };
-  }, [browserId, client, supportsStream]);
+  }, [browserId, client, reconnectGeneration, shouldWatch, supportsStream, viewerId, workspaceId]);
 
   const flushScrollDelta = useCallback(() => {
     const gesture = scrollGestureRef.current;
-    const deltaY = Math.round(gesture.pendingGuestDelta);
-    if (Math.abs(deltaY) < 1) {
+    const deltaX = Math.round(gesture.pendingGuestDeltaX);
+    const deltaY = Math.round(gesture.pendingGuestDeltaY);
+    if (Math.abs(deltaX) < 1 && Math.abs(deltaY) < 1) {
       return;
     }
-    gesture.pendingGuestDelta -= deltaY;
+    gesture.pendingGuestDeltaX -= deltaX;
+    gesture.pendingGuestDeltaY -= deltaY;
     gesture.lastSentAt = Date.now();
     sendInput({
       kind: "scroll",
       x: gesture.guestX,
       y: gesture.guestY,
-      deltaX: 0,
+      deltaX,
       deltaY,
     });
   }, [sendInput]);
@@ -204,13 +297,16 @@ export function BrowserPane({ browserId, serverId, isInteractive = true }: Brows
   const panResponder = useMemo(
     () =>
       PanResponder.create({
-        onStartShouldSetPanResponder: () => isInteractive,
-        onMoveShouldSetPanResponder: () => isInteractive,
+        onStartShouldSetPanResponder: () => isInteractive && shouldWatch && status === "live",
+        onMoveShouldSetPanResponder: () => isInteractive && shouldWatch && status === "live",
         onPanResponderGrant: (event) => {
+          onFocusPane?.();
           const tracker = scrollGestureRef.current;
           tracker.moved = false;
+          tracker.lastDx = 0;
           tracker.lastDy = 0;
-          tracker.pendingGuestDelta = 0;
+          tracker.pendingGuestDeltaX = 0;
+          tracker.pendingGuestDeltaY = 0;
           const guest = mapEventToGuest(event);
           if (guest) {
             tracker.guestX = Math.round(guest.x);
@@ -236,10 +332,14 @@ export function BrowserPane({ browserId, serverId, isInteractive = true }: Brows
             container.width / current.width,
             container.height / current.height,
           );
+          const deltaDx = gesture.dx - tracker.lastDx;
           const deltaDy = gesture.dy - tracker.lastDy;
+          tracker.lastDx = gesture.dx;
           tracker.lastDy = gesture.dy;
-          // Dragging the finger up moves the page content up: scroll down.
-          tracker.pendingGuestDelta += -deltaDy / Math.max(scale, 0.01);
+          // Dragging content follows the finger, so wheel deltas use the
+          // opposite direction in both axes.
+          tracker.pendingGuestDeltaX += -deltaDx / Math.max(scale, 0.01);
+          tracker.pendingGuestDeltaY += -deltaDy / Math.max(scale, 0.01);
           if (Date.now() - tracker.lastSentAt >= SCROLL_SEND_INTERVAL_MS) {
             flushScrollDelta();
           }
@@ -263,7 +363,7 @@ export function BrowserPane({ browserId, serverId, isInteractive = true }: Brows
           flushScrollDelta();
         },
       }),
-    [flushScrollDelta, isInteractive, mapEventToGuest, sendInput],
+    [flushScrollDelta, isInteractive, mapEventToGuest, onFocusPane, sendInput, shouldWatch, status],
   );
 
   const handleContainerLayout = useCallback((event: LayoutChangeEvent) => {
@@ -308,10 +408,15 @@ export function BrowserPane({ browserId, serverId, isInteractive = true }: Brows
   const handleReload = useCallback(() => sendInput({ kind: "reload" }), [sendInput]);
   const handleScrollUp = useCallback(() => scrollBy(-600), [scrollBy]);
   const handleScrollDown = useCallback(() => scrollBy(600), [scrollBy]);
+  const handleReconnect = useCallback(() => {
+    setReconnectGeneration((current) => current + 1);
+  }, []);
   const frameSource = useMemo(() => (frame ? { uri: frame.uri } : null), [frame]);
 
   const mutedColor = theme.colors.foregroundMuted;
   const foreground = theme.colors.foreground;
+  const statusLabel =
+    status === "stopped" ? t("workspace.browser.errors.failedToLoad") : t("common.states.loading");
 
   if (!supportsStream) {
     return (
@@ -379,29 +484,37 @@ export function BrowserPane({ browserId, serverId, isInteractive = true }: Brows
         {frameSource ? (
           <Image source={frameSource} style={styles.frameImage} resizeMode="contain" />
         ) : (
-          <Text style={[styles.subtitle, { color: mutedColor }]}>
-            {status === "error"
-              ? t("workspace.browser.errors.failedToLoad")
-              : t("providerSelection.loading")}
-          </Text>
+          <View style={styles.streamPlaceholder}>
+            <Text style={[styles.subtitle, { color: mutedColor }]}>{statusLabel}</Text>
+            {status === "stopped" ? (
+              <Button variant="outline" size="sm" onPress={handleReconnect}>
+                {t("common.actions.retry")}
+              </Button>
+            ) : null}
+          </View>
         )}
         {frame && status !== "live" ? (
-          <View style={styles.staleOverlay} pointerEvents="none">
-            <Text style={[styles.staleText, { color: foreground }]}>
-              {t("providerSelection.loading")}
-            </Text>
+          <View style={styles.staleOverlay} pointerEvents={status === "stopped" ? "auto" : "none"}>
+            <Text style={[styles.staleText, { color: foreground }]}>{statusLabel}</Text>
+            {status === "stopped" ? (
+              <Button variant="outline" size="xs" onPress={handleReconnect}>
+                {t("common.actions.retry")}
+              </Button>
+            ) : null}
           </View>
         ) : null}
       </View>
 
-      <View style={styles.scrollBar}>
-        <Pressable onPress={handleScrollUp} style={styles.scrollButton}>
-          <Text style={[styles.scrollGlyph, { color: mutedColor }]}>▲</Text>
-        </Pressable>
-        <Pressable onPress={handleScrollDown} style={styles.scrollButton}>
-          <Text style={[styles.scrollGlyph, { color: mutedColor }]}>▼</Text>
-        </Pressable>
-      </View>
+      {status === "live" ? (
+        <View style={styles.scrollBar}>
+          <Pressable onPress={handleScrollUp} style={styles.scrollButton}>
+            <Text style={[styles.scrollGlyph, { color: mutedColor }]}>▲</Text>
+          </Pressable>
+          <Pressable onPress={handleScrollDown} style={styles.scrollButton}>
+            <Text style={[styles.scrollGlyph, { color: mutedColor }]}>▼</Text>
+          </Pressable>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -414,34 +527,34 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
-    padding: 16,
+    gap: theme.spacing[2],
+    padding: theme.spacing[4],
   },
   title: {
-    fontSize: 16,
-    fontWeight: "600",
+    fontSize: theme.fontSize.base,
+    fontWeight: theme.fontWeight.medium,
   },
   subtitle: {
-    fontSize: 12,
+    fontSize: theme.fontSize.xs,
   },
   toolbar: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
+    gap: theme.spacing[1],
+    paddingHorizontal: theme.spacing[2],
+    paddingVertical: theme.spacing[1.5],
   },
   toolbarButton: {
-    padding: 8,
-    borderRadius: 8,
+    padding: theme.spacing[2],
+    borderRadius: theme.borderRadius.lg,
   },
   urlInput: {
     flex: 1,
     borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    fontSize: 13,
+    borderRadius: theme.borderRadius.lg,
+    paddingHorizontal: theme.spacing[3],
+    paddingVertical: theme.spacing[1.5],
+    fontSize: theme.fontSize.sm,
   },
   viewport: {
     flex: 1,
@@ -453,35 +566,42 @@ const styles = StyleSheet.create((theme) => ({
     width: "100%",
     height: "100%",
   },
+  streamPlaceholder: {
+    alignItems: "center",
+    gap: theme.spacing[3],
+  },
   staleOverlay: {
     position: "absolute",
-    top: 8,
-    right: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
+    top: theme.spacing[2],
+    right: theme.spacing[2],
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    paddingHorizontal: theme.spacing[2],
+    paddingVertical: theme.spacing[1],
+    borderRadius: theme.borderRadius.md,
     backgroundColor: theme.colors.surface1,
-    opacity: 0.9,
+    opacity: 0.94,
   },
   staleText: {
-    fontSize: 11,
+    fontSize: theme.fontSize.xs,
   },
   scrollBar: {
     position: "absolute",
-    right: 6,
-    bottom: 24,
-    gap: 8,
+    right: theme.spacing[1.5],
+    bottom: theme.spacing[6],
+    gap: theme.spacing[2],
   },
   scrollButton: {
     width: 36,
     height: 36,
-    borderRadius: 18,
+    borderRadius: theme.borderRadius.full,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: theme.colors.surface1,
     opacity: 0.85,
   },
   scrollGlyph: {
-    fontSize: 14,
+    fontSize: theme.fontSize.sm,
   },
 }));

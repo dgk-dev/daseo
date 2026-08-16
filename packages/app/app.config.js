@@ -159,9 +159,9 @@ export default {
           image: "./assets/images/splash-icon.png",
           imageWidth: 200,
           resizeMode: "contain",
-          backgroundColor: "#ffffff",
+          backgroundColor: "#050506",
           dark: {
-            backgroundColor: "#000000",
+            backgroundColor: "#050506",
           },
         },
       ],

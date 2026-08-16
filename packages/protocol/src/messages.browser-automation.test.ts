@@ -159,6 +159,33 @@ describe("browser automation protocol integration", () => {
   test("remote browser lifecycle RPCs validate in both protocol directions", () => {
     expect(
       SessionInboundMessageSchema.parse({
+        type: "browser.remote.watch.request",
+        requestId: "watch-1",
+        browserId,
+        workspaceId: "workspace-1",
+        viewerId: "viewer-1",
+        maxWidth: 1600,
+        maxHeight: 1600,
+        quality: 55,
+        minFrameIntervalMs: 100,
+      }),
+    ).toMatchObject({
+      type: "browser.remote.watch.request",
+      workspaceId: "workspace-1",
+      viewerId: "viewer-1",
+      minFrameIntervalMs: 100,
+    });
+    expect(
+      SessionInboundMessageSchema.parse({
+        type: "browser.remote.input.request",
+        requestId: "input-1",
+        browserId,
+        workspaceId: "workspace-1",
+        input: { kind: "tap", x: 1, y: 2 },
+      }).type,
+    ).toBe("browser.remote.input.request");
+    expect(
+      SessionInboundMessageSchema.parse({
         type: "browser.remote.list.request",
         requestId: "list-1",
         workspaceId: "workspace-1",

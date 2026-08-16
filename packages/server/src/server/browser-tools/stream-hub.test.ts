@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { BrowserStreamHub, type BrowserStreamStarter } from "./stream-hub.js";
 
 const BROWSER_ID = "0b54f9a2-9d1c-4f6e-89ab-1234567890ab";
@@ -11,6 +11,10 @@ function createStarter(overrides?: Partial<BrowserStreamStarter>) {
     stop: ReturnType<typeof vi.fn>;
   };
 }
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("BrowserStreamHub", () => {
   test("starts the host stream once for concurrent watchers and fans frames out", async () => {
@@ -92,5 +96,96 @@ describe("BrowserStreamHub", () => {
       send: () => undefined,
     });
     expect(retried).toEqual({ ok: true, width: 100, height: 100 });
+  });
+
+  test("keeps independent viewers from one connection subscribed", async () => {
+    const starter = createStarter();
+    const hub = new BrowserStreamHub(starter);
+    await hub.watch({
+      browserId: BROWSER_ID,
+      watcherKey: "client-a:viewer-1",
+      connectionKey: "client-a",
+      send: () => undefined,
+    });
+    await hub.watch({
+      browserId: BROWSER_ID,
+      watcherKey: "client-a:viewer-2",
+      connectionKey: "client-a",
+      send: () => undefined,
+    });
+
+    await hub.unwatch(BROWSER_ID, "client-a:viewer-1");
+    expect(hub.getWatcherCount(BROWSER_ID)).toBe(1);
+    expect(starter.stop).not.toHaveBeenCalled();
+
+    await hub.removeConnection("client-a");
+    expect(hub.getWatcherCount(BROWSER_ID)).toBe(0);
+    expect(starter.stop).toHaveBeenCalledTimes(1);
+  });
+
+  test("waits for an in-flight start before stopping an abandoned stream", async () => {
+    let resolveStart: ((result: { ok: true; width: number; height: number }) => void) | null = null;
+    const start = vi.fn(
+      () =>
+        new Promise<{ ok: true; width: number; height: number }>((resolve) => {
+          resolveStart = resolve;
+        }),
+    );
+    const starter = createStarter({ start });
+    const hub = new BrowserStreamHub(starter);
+
+    const watching = hub.watch({
+      browserId: BROWSER_ID,
+      watcherKey: "client-a",
+      send: () => undefined,
+    });
+    const unwatching = hub.unwatch(BROWSER_ID, "client-a");
+    expect(starter.stop).not.toHaveBeenCalled();
+
+    resolveStart?.({ ok: true, width: 1200, height: 800 });
+    await Promise.all([watching, unwatching]);
+
+    expect(starter.stop).toHaveBeenCalledWith({ browserId: BROWSER_ID });
+    expect(hub.getWatcherCount(BROWSER_ID)).toBe(0);
+  });
+
+  test("retries only the latest frame after watcher backpressure clears", async () => {
+    vi.useFakeTimers();
+    const starter = createStarter();
+    const hub = new BrowserStreamHub(starter);
+    let writable = false;
+    const send = vi.fn(() => writable);
+    await hub.watch({ browserId: BROWSER_ID, watcherKey: "client-a", send });
+    const first = new Uint8Array([0x20, 1]);
+    const latest = new Uint8Array([0x20, 2]);
+
+    hub.routeFrame(BROWSER_ID, first);
+    hub.routeFrame(BROWSER_ID, latest);
+    writable = true;
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(send).toHaveBeenLastCalledWith(latest);
+    expect(send).toHaveBeenCalledTimes(3);
+  });
+
+  test("rejects a watcher that claims a different workspace for an active tab", async () => {
+    const starter = createStarter();
+    const hub = new BrowserStreamHub(starter);
+    await hub.watch({
+      browserId: BROWSER_ID,
+      workspaceId: "workspace-a",
+      watcherKey: "client-a",
+      send: () => undefined,
+    });
+
+    await expect(
+      hub.watch({
+        browserId: BROWSER_ID,
+        workspaceId: "workspace-b",
+        watcherKey: "client-b",
+        send: () => undefined,
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "browser_denied" } });
+    expect(starter.start).toHaveBeenCalledTimes(1);
   });
 });

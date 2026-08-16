@@ -570,6 +570,11 @@ async function executeStreamStart(
         ...(args.maxWidth !== undefined ? { maxWidth: args.maxWidth } : {}),
         ...(args.maxHeight !== undefined ? { maxHeight: args.maxHeight } : {}),
         ...(args.quality !== undefined ? { quality: args.quality } : {}),
+        ...(args.minFrameIntervalMs !== undefined
+          ? { minFrameIntervalMs: args.minFrameIntervalMs }
+          : {}),
+        viewportWidth: viewport.width,
+        viewportHeight: viewport.height,
       },
       (frame) => streamSink.sendFrame({ browserId, ...frame }),
     );

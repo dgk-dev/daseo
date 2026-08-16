@@ -14,22 +14,47 @@ export interface BrowserStreamStartResult {
 export interface BrowserStreamStarter {
   start(input: {
     browserId: string;
+    workspaceId?: string;
     maxWidth?: number;
     maxHeight?: number;
     quality?: number;
+    minFrameIntervalMs?: number;
   }): Promise<BrowserStreamStartResult>;
-  stop(browserId: string): Promise<void>;
+  stop(input: { browserId: string; workspaceId?: string }): Promise<void>;
 }
 
 interface BrowserStreamWatcher {
-  send(bytes: Uint8Array): void;
+  connectionKey: string;
+  send(bytes: Uint8Array): boolean | void;
+  pendingFrame: Uint8Array | null;
+  retryTimer: ReturnType<typeof setTimeout> | null;
 }
 
 interface BrowserStreamEntry {
+  workspaceId?: string;
   watchers: Map<string, BrowserStreamWatcher>;
   starting: Promise<BrowserStreamStartResult> | null;
   started: BrowserStreamStartResult | null;
+  stopping: Promise<void> | null;
 }
+
+interface BrowserStreamWatchInput {
+  browserId: string;
+  workspaceId?: string;
+  watcherKey: string;
+  connectionKey?: string;
+  send: (bytes: Uint8Array) => boolean | void;
+  maxWidth?: number;
+  maxHeight?: number;
+  quality?: number;
+  minFrameIntervalMs?: number;
+}
+
+const WATCHER_RETRY_INTERVAL_MS = 100;
+const BROWSER_CLOSED_DURING_START: BrowserStreamStartResult = {
+  ok: false,
+  error: { code: "browser_tab_closed", message: "Browser tab closed while starting stream." },
+};
 
 /**
  * Fans live browser stream frames from the desktop browser host out to
@@ -44,62 +69,134 @@ export class BrowserStreamHub {
     private readonly logger?: BrowserStreamLogger,
   ) {}
 
-  public async watch(input: {
-    browserId: string;
-    watcherKey: string;
-    send: (bytes: Uint8Array) => void;
-    maxWidth?: number;
-    maxHeight?: number;
-    quality?: number;
-  }): Promise<BrowserStreamStartResult> {
-    const entry = this.entries.get(input.browserId) ?? {
-      watchers: new Map<string, BrowserStreamWatcher>(),
-      starting: null,
-      started: null,
-    };
-    this.entries.set(input.browserId, entry);
-    entry.watchers.set(input.watcherKey, { send: input.send });
+  public async watch(input: BrowserStreamWatchInput): Promise<BrowserStreamStartResult> {
+    const resolved = this.resolveWatchEntry(input);
+    if ("failure" in resolved) {
+      return resolved.failure;
+    }
+    const { entry } = resolved;
+    this.replaceWatcher(entry, input);
 
+    if (entry.stopping) {
+      await entry.stopping;
+    }
+    if (this.entries.get(input.browserId) !== entry) {
+      return BROWSER_CLOSED_DURING_START;
+    }
     if (entry.started?.ok) {
       return entry.started;
     }
-    if (!entry.starting) {
-      entry.starting = this.starter
-        .start({
-          browserId: input.browserId,
-          ...(input.maxWidth !== undefined ? { maxWidth: input.maxWidth } : {}),
-          ...(input.maxHeight !== undefined ? { maxHeight: input.maxHeight } : {}),
-          ...(input.quality !== undefined ? { quality: input.quality } : {}),
-        })
-        .then((result) => {
-          entry.starting = null;
-          entry.started = result.ok ? result : null;
-          return result;
-        })
-        .catch((error: unknown) => {
-          entry.starting = null;
-          const message = error instanceof Error ? error.message : String(error);
-          return { ok: false, error: { code: "browser_unknown_error", message } };
-        });
-    }
-    const result = await entry.starting;
-    if (!result.ok && entry.watchers.size === 0) {
-      this.entries.delete(input.browserId);
+
+    const starting = this.ensureStarting(entry, input);
+    const result = await starting;
+    this.recordStartResult(input.browserId, entry, starting, result);
+    if (entry.watchers.size === 0) {
+      await this.stopIfIdle(input.browserId, entry);
     }
     return result;
   }
 
-  public async unwatch(browserId: string, watcherKey: string): Promise<void> {
-    const entry = this.entries.get(browserId);
-    if (!entry || !entry.watchers.delete(watcherKey)) {
+  private resolveWatchEntry(
+    input: BrowserStreamWatchInput,
+  ): { entry: BrowserStreamEntry } | { failure: BrowserStreamStartResult } {
+    const entry = this.entries.get(input.browserId) ?? {
+      ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+      watchers: new Map<string, BrowserStreamWatcher>(),
+      starting: null,
+      started: null,
+      stopping: null,
+    };
+    if (entry.workspaceId && input.workspaceId && entry.workspaceId !== input.workspaceId) {
+      return {
+        failure: {
+          ok: false,
+          error: {
+            code: "browser_denied",
+            message: "Browser tab does not belong to this workspace.",
+          },
+        },
+      };
+    }
+    if (!entry.workspaceId && input.workspaceId) {
+      entry.workspaceId = input.workspaceId;
+    }
+    this.entries.set(input.browserId, entry);
+    return { entry };
+  }
+
+  private replaceWatcher(entry: BrowserStreamEntry, input: BrowserStreamWatchInput): void {
+    const previousWatcher = entry.watchers.get(input.watcherKey);
+    if (previousWatcher) {
+      this.clearWatcher(previousWatcher);
+    }
+    entry.watchers.set(input.watcherKey, {
+      connectionKey: input.connectionKey ?? input.watcherKey,
+      send: input.send,
+      pendingFrame: null,
+      retryTimer: null,
+    });
+  }
+
+  private ensureStarting(
+    entry: BrowserStreamEntry,
+    input: BrowserStreamWatchInput,
+  ): Promise<BrowserStreamStartResult> {
+    if (!entry.starting) {
+      entry.starting = this.starter
+        .start({
+          browserId: input.browserId,
+          ...(entry.workspaceId ? { workspaceId: entry.workspaceId } : {}),
+          ...(input.maxWidth !== undefined ? { maxWidth: input.maxWidth } : {}),
+          ...(input.maxHeight !== undefined ? { maxHeight: input.maxHeight } : {}),
+          ...(input.quality !== undefined ? { quality: input.quality } : {}),
+          ...(input.minFrameIntervalMs !== undefined
+            ? { minFrameIntervalMs: input.minFrameIntervalMs }
+            : {}),
+        })
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          return { ok: false, error: { code: "browser_unknown_error", message } };
+        });
+    }
+    return entry.starting;
+  }
+
+  private recordStartResult(
+    browserId: string,
+    entry: BrowserStreamEntry,
+    starting: Promise<BrowserStreamStartResult>,
+    result: BrowserStreamStartResult,
+  ): void {
+    if (this.entries.get(browserId) !== entry || entry.starting !== starting) {
       return;
     }
+    entry.starting = null;
+    entry.started = result.ok ? result : null;
+  }
+
+  public async unwatch(browserId: string, watcherKey: string): Promise<void> {
+    const entry = this.entries.get(browserId);
+    const watcher = entry?.watchers.get(watcherKey);
+    if (!entry || !watcher) {
+      return;
+    }
+    this.clearWatcher(watcher);
+    entry.watchers.delete(watcherKey);
     await this.stopIfIdle(browserId, entry);
   }
 
-  public async removeConnection(watcherKey: string): Promise<void> {
+  public async removeConnection(connectionKey: string): Promise<void> {
     for (const [browserId, entry] of this.entries) {
-      if (entry.watchers.delete(watcherKey)) {
+      let removed = false;
+      for (const [watcherKey, watcher] of entry.watchers) {
+        if (watcher.connectionKey !== connectionKey) {
+          continue;
+        }
+        this.clearWatcher(watcher);
+        entry.watchers.delete(watcherKey);
+        removed = true;
+      }
+      if (removed) {
         await this.stopIfIdle(browserId, entry);
       }
     }
@@ -107,6 +204,13 @@ export class BrowserStreamHub {
 
   /** Host tab closed or host disconnected: drop state without issuing stream_stop. */
   public dropBrowser(browserId: string): void {
+    const entry = this.entries.get(browserId);
+    if (!entry) {
+      return;
+    }
+    for (const watcher of entry.watchers.values()) {
+      this.clearWatcher(watcher);
+    }
     this.entries.delete(browserId);
   }
 
@@ -115,8 +219,15 @@ export class BrowserStreamHub {
     if (!entry) {
       return;
     }
-    for (const watcher of entry.watchers.values()) {
-      watcher.send(bytes);
+    for (const [watcherKey, watcher] of entry.watchers) {
+      if (this.sendToWatcher(watcher, bytes)) {
+        watcher.pendingFrame = null;
+        continue;
+      }
+      // Preserve only the newest frame. A static compositor update may be the
+      // final frame, so retrying it avoids leaving a recovered socket stale.
+      watcher.pendingFrame = bytes;
+      this.scheduleWatcherRetry(browserId, entry, watcherKey, watcher);
     }
   }
 
@@ -126,22 +237,90 @@ export class BrowserStreamHub {
 
   public static readonly MAX_WATCHER_BUFFERED_BYTES = 2 * 1024 * 1024;
 
-  private async stopIfIdle(browserId: string, entry: BrowserStreamEntry): Promise<void> {
-    if (entry.watchers.size > 0) {
-      return;
-    }
-    const wasStarted = entry.started?.ok === true || entry.starting !== null;
-    this.entries.delete(browserId);
-    if (!wasStarted) {
-      return;
-    }
+  private sendToWatcher(watcher: BrowserStreamWatcher, bytes: Uint8Array): boolean {
     try {
-      await this.starter.stop(browserId);
-    } catch (error) {
-      this.logger?.warn(
-        { browserId, error: error instanceof Error ? error.message : String(error) },
-        "Failed to stop browser stream",
-      );
+      return watcher.send(bytes) !== false;
+    } catch {
+      return false;
+    }
+  }
+
+  private scheduleWatcherRetry(
+    browserId: string,
+    entry: BrowserStreamEntry,
+    watcherKey: string,
+    watcher: BrowserStreamWatcher,
+  ): void {
+    if (watcher.retryTimer) {
+      return;
+    }
+    watcher.retryTimer = setTimeout(() => {
+      watcher.retryTimer = null;
+      if (this.entries.get(browserId) !== entry || entry.watchers.get(watcherKey) !== watcher) {
+        return;
+      }
+      const pending = watcher.pendingFrame;
+      if (!pending) {
+        return;
+      }
+      if (this.sendToWatcher(watcher, pending)) {
+        watcher.pendingFrame = null;
+        return;
+      }
+      this.scheduleWatcherRetry(browserId, entry, watcherKey, watcher);
+    }, WATCHER_RETRY_INTERVAL_MS);
+  }
+
+  private clearWatcher(watcher: BrowserStreamWatcher): void {
+    if (watcher.retryTimer) {
+      clearTimeout(watcher.retryTimer);
+      watcher.retryTimer = null;
+    }
+    watcher.pendingFrame = null;
+  }
+
+  private async stopIfIdle(browserId: string, entry: BrowserStreamEntry): Promise<void> {
+    if (entry.watchers.size > 0 || this.entries.get(browserId) !== entry) {
+      return;
+    }
+    if (entry.starting) {
+      await entry.starting;
+      if (entry.watchers.size > 0 || this.entries.get(browserId) !== entry) {
+        return;
+      }
+    }
+    if (entry.stopping) {
+      await entry.stopping;
+      if (entry.watchers.size > 0 || this.entries.get(browserId) !== entry) {
+        return;
+      }
+    }
+    if (entry.started?.ok) {
+      entry.started = null;
+      const stopping = this.starter
+        .stop({
+          browserId,
+          ...(entry.workspaceId ? { workspaceId: entry.workspaceId } : {}),
+        })
+        .catch((error: unknown) => {
+          this.logger?.warn(
+            { browserId, error: error instanceof Error ? error.message : String(error) },
+            "Failed to stop browser stream",
+          );
+        });
+      entry.stopping = stopping;
+      await stopping;
+      if (entry.stopping === stopping) {
+        entry.stopping = null;
+      }
+    }
+    if (
+      entry.watchers.size === 0 &&
+      entry.starting === null &&
+      entry.stopping === null &&
+      this.entries.get(browserId) === entry
+    ) {
+      this.entries.delete(browserId);
     }
   }
 }
@@ -152,6 +331,7 @@ export function createBrokerStreamStarter(
   return {
     async start(input) {
       const payload = await broker.execute({
+        ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
         command: {
           command: "stream_start",
           args: {
@@ -159,6 +339,9 @@ export function createBrokerStreamStarter(
             ...(input.maxWidth !== undefined ? { maxWidth: input.maxWidth } : {}),
             ...(input.maxHeight !== undefined ? { maxHeight: input.maxHeight } : {}),
             ...(input.quality !== undefined ? { quality: input.quality } : {}),
+            ...(input.minFrameIntervalMs !== undefined
+              ? { minFrameIntervalMs: input.minFrameIntervalMs }
+              : {}),
           },
         },
       });
@@ -173,8 +356,11 @@ export function createBrokerStreamStarter(
       }
       return { ok: false, error: { code: payload.error.code, message: payload.error.message } };
     },
-    async stop(browserId) {
-      await broker.execute({ command: { command: "stream_stop", args: { browserId } } });
+    async stop(input) {
+      await broker.execute({
+        ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+        command: { command: "stream_stop", args: { browserId: input.browserId } },
+      });
     },
   };
 }
