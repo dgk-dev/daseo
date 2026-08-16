@@ -343,10 +343,13 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
   containerLastInGroup: {
     marginBottom: theme.spacing[4],
   },
+  // Daseo treats a submitted prompt as a quiet IDE panel, not a chat bubble. Keep the
+  // readable spacing and typography while the square frame distinguishes input from output.
   bubble: {
-    backgroundColor: theme.colors.surface3,
-    borderRadius: theme.borderRadius["2xl"],
-    borderTopRightRadius: theme.borderRadius.sm,
+    backgroundColor: theme.colors.surface2,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.borderAccent,
+    borderRadius: theme.borderRadius.none,
     paddingHorizontal: theme.spacing[4],
     paddingVertical: theme.spacing[4],
     minWidth: 0,

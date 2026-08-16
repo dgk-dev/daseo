@@ -49,9 +49,10 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
    mark (`packages/app/assets/images/*`, `packages/app/public/*`,
    `packages/app/src/components/icons/paseo-logo.tsx`, `packages/desktop/assets/*`), Android
    personal variant name "Daseo" (`packages/app/app.config.js`), Mac window-title display
-   name (`packages/desktop/src/main.ts`), and quiet theme-derived project fallback icons in
+   name (`packages/desktop/src/main.ts`), quiet theme-derived project fallback icons in
    `packages/app/src/components/project-icon-view.tsx` that reserve color for operational
-   status. Packaging uses the safe post-build Info.plist patch at
+   status, and square graphite user prompt panels in `packages/app/src/components/message.tsx`
+   that preserve the shared message layout and readability. Packaging uses the safe post-build Info.plist patch at
    `packages/desktop/scripts/daseo-app-package.mjs` plus the outer `Daseo.app` rename. The patch
    keeps `CFBundleName=Paseo`; Electron uses that internal product name to locate the
    unchanged `Paseo Helper.app` bundles.
