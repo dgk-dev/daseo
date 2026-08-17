@@ -10,12 +10,12 @@ both artifacts from the same commit, and update this file if the delta set chang
 
 ## Identity
 
-|              | Paseo (upstream)                 | Daseo (this fork)                                                             |
-| ------------ | -------------------------------- | ----------------------------------------------------------------------------- |
-| Repo         | `getpaseo/paseo`                 | `dgk-dev/daseo`, branch `local/patched-desktop`                               |
-| Mac app      | Paseo.app (App Store / releases) | `/Applications/Daseo.app`, ad-hoc signed local build, version `0.4.0-local.N` |
-| Android      | `sh.paseo` (Play)                | `sh.paseo.dgk` ("Daseo"), sideloaded APK, parallel-installable                |
-| Display name | Paseo                            | Daseo (display only)                                                          |
+|              | Paseo (upstream)                 | Daseo (this fork)                                                               |
+| ------------ | -------------------------------- | ------------------------------------------------------------------------------- |
+| Repo         | `getpaseo/paseo`                 | `dgk-dev/daseo`, branch `local/patched-desktop`                                 |
+| Mac app      | Paseo.app (App Store / releases) | `/Applications/Daseo.app`, stable locally signed build, version `0.4.0-local.N` |
+| Android      | `sh.paseo` (Play)                | `sh.paseo.dgk` ("Daseo"), sideloaded APK, parallel-installable                  |
+| Display name | Paseo                            | Daseo (display only)                                                            |
 
 **Deliberately unchanged** to stay upstream-compatible and preserve state: internal
 identifiers (`productName`, Electron userData path, `~/.paseo`, `paseo` CLI, Mac bundle IDs,
@@ -126,17 +126,26 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     `packages/server/src/server/agent/{agent-prompt,agent-manager,agent-sdk-types}.ts`,
     `packages/server/src/server/agent/providers/{codex-app-server-agent,claude/agent,pi/agent}.ts`,
     `packages/app/src/composer/`, and `packages/app/src/types/stream.ts`.
+13. **Stable local macOS signing** — Mac builds must be signed with the login-keychain identity
+    `Daseo Local Code Signing`, whose stable designated requirement preserves Accessibility,
+    Screen Recording, and Full Disk Access grants across local rebuilds. The private key and trust
+    record stay outside git. `packages/desktop/scripts/daseo-code-sign.mjs` fails closed when the
+    identity is absent; never substitute ad-hoc (`codesign --sign -`) signing because its changing
+    cdhash makes macOS treat every Daseo update as a new privacy subject.
 
 ## Build & ship (Mac mini)
 
 - Before either platform build, run `npm run brand:check`; generated DΛ assets must match the
   canonical mark and manifest. Mac: build with `npm run build:desktop -- --publish never --mac --arm64 --dir`, then run
-  `node packages/desktop/scripts/daseo-app-package.mjs packages/desktop/release/mac-arm64/Paseo.app <local-version>`.
-  Ad-hoc sign the patched bundle, stage it to `~/Applications/Paseo Local Patch.app`, rename
-  only the outer installed directory to `/Applications/Daseo.app`, and activate via an
-  idle-gated launchd watcher. Never change `CFBundleName`, `CFBundleExecutable`, helper names,
-  bundle IDs, or the user-data path. **The `Paseo Daemon` process survives app swaps — always
-  restart it too** (see `~/.paseo/restart-daemon-local5.sh` pattern).
+  `node packages/desktop/scripts/daseo-app-package.mjs packages/desktop/release/mac-arm64/Paseo.app <local-version>`
+  followed by
+  `node packages/desktop/scripts/daseo-code-sign.mjs packages/desktop/release/mac-arm64/Paseo.app`.
+  The signer requires the stable `Daseo Local Code Signing` identity and intentionally refuses an
+  ad-hoc fallback. Stage the signed bundle to `~/Applications/Paseo Local Patch.app`, rename only
+  the outer installed directory to `/Applications/Daseo.app`, and activate via an idle-gated
+  launchd watcher. Never change `CFBundleName`, `CFBundleExecutable`, helper names, bundle IDs,
+  or the user-data path. **The `Paseo Daemon` process survives app swaps — always restart it too**
+  (see `~/.paseo/restart-daemon-local5.sh` pattern).
 - Android: verify the ignored personal Firebase config exists, use JDK 17 and the Android 36
   SDK (`JAVA_HOME=$(/usr/libexec/java_home -v 17)`,
   `ANDROID_HOME=/opt/homebrew/share/android-commandlinetools`), then run
