@@ -1863,7 +1863,8 @@ const styles = StyleSheet.create((theme: Theme) => ({
     backgroundColor: theme.colors.surface1,
     borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.borderAccent,
-    borderRadius: theme.borderRadius["2xl"],
+    // The shared Daseo composer is an IDE-like prompt panel on both desktop and mobile.
+    borderRadius: theme.borderRadius.none,
     paddingVertical: {
       xs: theme.spacing[2],
       md: theme.spacing[4],

@@ -922,7 +922,6 @@ function resolveContextWindowValues(
 }
 
 interface ComposerCancelButtonProps {
-  buttonIconSize: number;
   cancelButtonStyle: (object | undefined)[];
   handleCancelAgent: () => void;
   isConnected: boolean;
@@ -932,7 +931,6 @@ interface ComposerCancelButtonProps {
 }
 
 function ComposerCancelButton({
-  buttonIconSize,
   cancelButtonStyle,
   handleCancelAgent,
   isConnected,
@@ -944,9 +942,9 @@ function ComposerCancelButton({
     ? t("composer.cancel.cancelingAgent")
     : t("composer.cancel.stopAgent");
   const icon = isCancellingAgent ? (
-    <LoadingSpinner size="small" color="white" />
+    <ThemedStopSpinner size="small" />
   ) : (
-    <Square size={buttonIconSize} color="white" fill="white" />
+    <ThemedStopSquare size={ICON_SIZE.xs} />
   );
   const shortcutNode = agentInterruptKeys ? <Shortcut chord={agentInterruptKeys} /> : null;
   return (
@@ -1813,7 +1811,6 @@ export function Composer({
   const activeActionContent = useMemo(
     () => (
       <ComposerCancelButton
-        buttonIconSize={buttonIconSize}
         cancelButtonStyle={cancelButtonStyle}
         handleCancelAgent={handleCancelAgent}
         isConnected={isConnected}
@@ -1822,15 +1819,7 @@ export function Composer({
         t={t}
       />
     ),
-    [
-      agentInterruptKeys,
-      buttonIconSize,
-      cancelButtonStyle,
-      handleCancelAgent,
-      isCancellingAgent,
-      isConnected,
-      t,
-    ],
+    [agentInterruptKeys, cancelButtonStyle, handleCancelAgent, isCancellingAgent, isConnected, t],
   );
 
   const rightContent = useMemo(
@@ -2306,11 +2295,12 @@ const styles = StyleSheet.create((theme: Theme) => ({
     width: "100%",
     gap: theme.spacing[3],
   },
+  // Keep the circular 28pt control system and hit target; only quiet the fill and inner stop mark.
   cancelButton: {
     width: 28,
     height: 28,
     borderRadius: theme.borderRadius.full,
-    backgroundColor: theme.colors.palette.red[600],
+    backgroundColor: theme.colors.surface3,
     alignItems: "center",
     justifyContent: "center",
     marginLeft: theme.spacing[1],
@@ -2404,6 +2394,13 @@ const styles = StyleSheet.create((theme: Theme) => ({
   },
 })) as unknown as Record<string, object>;
 
+const ThemedStopSpinner = withUnistyles(LoadingSpinner, (theme) => ({
+  color: theme.colors.foregroundMuted,
+}));
+const ThemedStopSquare = withUnistyles(Square, (theme) => ({
+  color: theme.colors.foregroundMuted,
+  fill: theme.colors.foregroundMuted,
+}));
 const ThemedPencil = withUnistyles(Pencil);
 const ThemedArrowUp = withUnistyles(ArrowUp);
 const ThemedGitPullRequest = withUnistyles(GitPullRequest);
