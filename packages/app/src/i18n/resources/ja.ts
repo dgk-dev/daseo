@@ -278,6 +278,7 @@ export const ja: TranslationResources = {
     },
   },
   message: {
+    steering: "現在のタスクに指示を追加",
     diagram: {
       diagram: "図",
       zoomIn: "拡大",
@@ -1837,11 +1838,12 @@ export const ja: TranslationResources = {
       defaultSend: {
         label: "デフォルトの送信",
         descriptions: {
-          interrupt: "エージェント実行中、Enterで中断します。Command/Ctrl+Enterでキューに追加。",
+          steer:
+            "エージェント実行中、Enterで現在の実行に指示を追加します。Command/Ctrl+Enterでキューに追加。",
           queue: "エージェント実行中、Enterでキューに追加します。Command/Ctrl+Enterで送信。",
         },
         options: {
-          interrupt: "中断",
+          steer: "指示を追加",
           queue: "キュー",
         },
       },

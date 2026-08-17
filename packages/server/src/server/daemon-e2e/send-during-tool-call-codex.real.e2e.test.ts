@@ -16,7 +16,7 @@ import {
 } from "./real-provider-test-config.js";
 
 function tmpCwd(): string {
-  return mkdtempSync(path.join(tmpdir(), "daemon-real-codex-tool-interrupt-"));
+  return mkdtempSync(path.join(tmpdir(), "daemon-real-codex-tool-steer-"));
 }
 
 function sleep(ms: number): Promise<void> {
@@ -52,6 +52,21 @@ function getAgentStatusesBeforeFirstAssistant(
   const observedPrefix =
     firstAssistantIndex < 0 ? messages : messages.slice(0, firstAssistantIndex);
   return getAgentStatuses(observedPrefix, agentId);
+}
+
+function getTurnTerminalTypes(messages: SessionOutboundMessage[], agentId: string): string[] {
+  return messages
+    .filter(
+      (message) =>
+        message.type === "agent_stream" &&
+        message.payload.agentId === agentId &&
+        (message.payload.event.type === "turn_completed" ||
+          message.payload.event.type === "turn_failed" ||
+          message.payload.event.type === "turn_canceled"),
+    )
+    .map((message) =>
+      message.type === "agent_stream" ? message.payload.event.type : "unreachable",
+    );
 }
 
 function getAssistantTexts(messages: SessionOutboundMessage[], agentId: string): string[] {
@@ -155,7 +170,7 @@ describe("daemon E2E (real codex) - send message during tool call", () => {
     }
   });
 
-  test("does not emit an idle agent_update between UI send and the replacement Codex turn", async () => {
+  test("steers a running Codex tool turn without interruption or an idle gap", async () => {
     const logger = pino({ level: "silent" });
     const cwd = tmpCwd();
     const daemon = await createTestPaseoDaemon({
@@ -171,7 +186,7 @@ describe("daemon E2E (real codex) - send message during tool call", () => {
 
       const agent = await client.createAgent({
         cwd,
-        title: "codex-tool-interrupt-repro",
+        title: "codex-tool-steer-repro",
         ...getRealProviderConfig("codex"),
       });
 
@@ -190,7 +205,7 @@ describe("daemon E2E (real codex) - send message during tool call", () => {
 
       collector.clear();
 
-      await client.sendAgentMessage(agent.id, "Reply with exactly: INTERRUPT_RECEIVED", {
+      await client.sendAgentMessage(agent.id, "Reply with exactly: STEER_RECEIVED", {
         messageId: generateClientMessageId(),
       });
 
@@ -206,12 +221,21 @@ describe("daemon E2E (real codex) - send message during tool call", () => {
       if (finish.status !== "idle") {
         const snapshot = await client.fetchAgent({ agentId: agent.id });
         throw new Error(
-          `Expected idle after replacement, got ${finish.status}. postSendStatuses=${JSON.stringify(postSendStatuses)} statusesBeforeFirstAssistant=${JSON.stringify(statusesBeforeFirstAssistant)} postSendAssistantTexts=${JSON.stringify(getAssistantTexts(postSendMessages, agent.id))} agentStatus=${snapshot?.agent.status ?? null} recentTimeline=${JSON.stringify(summarizeTimelineItems(timeline))}`,
+          `Expected idle after steering, got ${finish.status}. postSendStatuses=${JSON.stringify(postSendStatuses)} statusesBeforeFirstAssistant=${JSON.stringify(statusesBeforeFirstAssistant)} postSendAssistantTexts=${JSON.stringify(getAssistantTexts(postSendMessages, agent.id))} agentStatus=${snapshot?.agent.status ?? null} recentTimeline=${JSON.stringify(summarizeTimelineItems(timeline))}`,
         );
       }
 
       expect(statusesBeforeFirstAssistant).not.toContain("idle");
       expect(statusesBeforeFirstAssistant).not.toContain("error");
+      expect(getTurnTerminalTypes(postSendMessages, agent.id)).not.toContain("turn_canceled");
+      expect(
+        timeline.entries.some(
+          (entry) =>
+            entry.item.type === "user_message" &&
+            entry.item.text === "Reply with exactly: STEER_RECEIVED" &&
+            entry.item.steering === true,
+        ),
+      ).toBe(true);
 
       const assistantTexts = timeline.entries
         .filter((entry) => entry.item.type === "assistant_message")
@@ -220,7 +244,7 @@ describe("daemon E2E (real codex) - send message during tool call", () => {
           return item.text;
         });
       expect(assistantTexts.some((text) => text.includes("[System Error]"))).toBe(false);
-      expect(assistantTexts.some((text) => text.toUpperCase().includes("INTERRUPT_RECEIVED"))).toBe(
+      expect(assistantTexts.some((text) => text.toUpperCase().includes("STEER_RECEIVED"))).toBe(
         true,
       );
     } finally {
@@ -231,7 +255,7 @@ describe("daemon E2E (real codex) - send message during tool call", () => {
     }
   }, 300_000);
 
-  test("does not emit an idle agent_update when a second prompt is sent 200ms after the first", async () => {
+  test("steers when a second prompt is sent 200ms after the first", async () => {
     const logger = pino({ level: "silent" });
     const cwd = tmpCwd();
     const daemon = await createTestPaseoDaemon({
@@ -247,7 +271,7 @@ describe("daemon E2E (real codex) - send message during tool call", () => {
 
       const agent = await client.createAgent({
         cwd,
-        title: "codex-quick-follow-up-repro",
+        title: "codex-quick-steer-repro",
         ...getRealProviderConfig("codex"),
       });
 
@@ -264,7 +288,7 @@ describe("daemon E2E (real codex) - send message during tool call", () => {
 
       collector.clear();
 
-      await client.sendAgentMessage(agent.id, "Reply with exactly: QUICK_FOLLOW_UP_RECEIVED", {
+      await client.sendAgentMessage(agent.id, "Reply with exactly: QUICK_STEER_RECEIVED", {
         messageId: generateClientMessageId(),
       });
 
@@ -280,12 +304,21 @@ describe("daemon E2E (real codex) - send message during tool call", () => {
       if (finish.status !== "idle") {
         const snapshot = await client.fetchAgent({ agentId: agent.id });
         throw new Error(
-          `Expected idle after quick follow-up, got ${finish.status}. postSendStatuses=${JSON.stringify(postSendStatuses)} statusesBeforeFirstAssistant=${JSON.stringify(statusesBeforeFirstAssistant)} postSendAssistantTexts=${JSON.stringify(getAssistantTexts(postSendMessages, agent.id))} agentStatus=${snapshot?.agent.status ?? null} recentTimeline=${JSON.stringify(summarizeTimelineItems(timeline))}`,
+          `Expected idle after quick steering, got ${finish.status}. postSendStatuses=${JSON.stringify(postSendStatuses)} statusesBeforeFirstAssistant=${JSON.stringify(statusesBeforeFirstAssistant)} postSendAssistantTexts=${JSON.stringify(getAssistantTexts(postSendMessages, agent.id))} agentStatus=${snapshot?.agent.status ?? null} recentTimeline=${JSON.stringify(summarizeTimelineItems(timeline))}`,
         );
       }
 
       expect(statusesBeforeFirstAssistant).not.toContain("idle");
       expect(statusesBeforeFirstAssistant).not.toContain("error");
+      expect(getTurnTerminalTypes(postSendMessages, agent.id)).not.toContain("turn_canceled");
+      expect(
+        timeline.entries.some(
+          (entry) =>
+            entry.item.type === "user_message" &&
+            entry.item.text === "Reply with exactly: QUICK_STEER_RECEIVED" &&
+            entry.item.steering === true,
+        ),
+      ).toBe(true);
 
       const assistantTexts = timeline.entries
         .filter((entry) => entry.item.type === "assistant_message")
@@ -295,7 +328,7 @@ describe("daemon E2E (real codex) - send message during tool call", () => {
         });
       expect(assistantTexts.some((text) => text.includes("[System Error]"))).toBe(false);
       expect(
-        assistantTexts.some((text) => text.toUpperCase().includes("QUICK_FOLLOW_UP_RECEIVED")),
+        assistantTexts.some((text) => text.toUpperCase().includes("QUICK_STEER_RECEIVED")),
       ).toBe(true);
     } finally {
       collector?.unsubscribe();

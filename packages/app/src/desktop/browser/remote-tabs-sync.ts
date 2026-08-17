@@ -34,6 +34,19 @@ function browserStateChanged(existing: BrowserRecord, remote: RemoteBrowserTabIn
   );
 }
 
+function focusAuthoritativeBrowser(input: {
+  workspaceKey: string;
+  remoteTabs: readonly RemoteBrowserTabInfo[];
+  localTabIdByBrowserId: ReadonlyMap<string, string>;
+}): void {
+  const activeBrowserId = input.remoteTabs.find((tab) => tab.isActive)?.browserId;
+  if (!activeBrowserId) return;
+  const activeTabId = input.localTabIdByBrowserId.get(activeBrowserId);
+  if (activeTabId) {
+    useWorkspaceLayoutStore.getState().focusTab(input.workspaceKey, activeTabId);
+  }
+}
+
 /**
  * Reconcile a mobile workspace's persisted browser tabs against the desktop
  * host, which is authoritative for browser lifetime and state.
@@ -67,6 +80,7 @@ export function reconcileRemoteBrowserTabs(input: {
   }
 
   const remoteIds = new Set(remoteTabs.map((tab) => tab.browserId));
+  const localTabIdByBrowserId = new Map<string, string>();
   let added = 0;
   let removed = 0;
   let updated = 0;
@@ -93,13 +107,15 @@ export function reconcileRemoteBrowserTabs(input: {
 
     const matching = localByBrowserId.get(remote.browserId) ?? [];
     if (matching.length === 0) {
-      layoutStore.openTabInBackground(workspaceKey, {
+      const tabId = layoutStore.openTabInBackground(workspaceKey, {
         kind: "browser",
         browserId: remote.browserId,
       });
+      if (tabId) localTabIdByBrowserId.set(remote.browserId, tabId);
       added += 1;
       continue;
     }
+    localTabIdByBrowserId.set(remote.browserId, matching[0]!.tabId);
     // Collapse any historical duplicate viewers for the same authoritative tab.
     for (const duplicate of matching.slice(1)) {
       layoutStore.closeTab(workspaceKey, duplicate.tabId);
@@ -115,6 +131,8 @@ export function reconcileRemoteBrowserTabs(input: {
     }
     useBrowserStore.getState().removeBrowser(browserId);
   }
+
+  focusAuthoritativeBrowser({ workspaceKey, remoteTabs, localTabIdByBrowserId });
 
   return { added, removed, updated };
 }

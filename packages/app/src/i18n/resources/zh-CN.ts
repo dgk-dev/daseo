@@ -275,6 +275,7 @@ export const zhCN: TranslationResources = {
     },
   },
   message: {
+    steering: "已向当前任务追加指令",
     diagram: {
       diagram: "图表",
       zoomIn: "放大",
@@ -1800,11 +1801,11 @@ export const zhCN: TranslationResources = {
       defaultSend: {
         label: "默认发送",
         descriptions: {
-          interrupt: "Agent 运行时，Enter 会中断。Command/Ctrl+Enter 会排队。",
+          steer: "Agent 运行时，Enter 会向当前任务追加指令。Command/Ctrl+Enter 会排队。",
           queue: "Agent 运行时，Enter 会排队。Command/Ctrl+Enter 会提交。",
         },
         options: {
-          interrupt: "中断",
+          steer: "追加指令",
           queue: "排队",
         },
       },

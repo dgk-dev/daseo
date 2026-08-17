@@ -64,6 +64,93 @@ describe("projectTimelineRows", () => {
     });
   });
 
+  test("applies a later phase-only update to the same assistant message", () => {
+    const rows: AgentTimelineRow[] = [
+      {
+        seq: 1,
+        timestamp: "2026-02-13T00:00:00.000Z",
+        item: { type: "assistant_message", text: "Done.", messageId: "msg-1" },
+      },
+      {
+        seq: 2,
+        timestamp: "2026-02-13T00:00:00.100Z",
+        item: {
+          type: "assistant_message",
+          text: "",
+          messageId: "msg-1",
+          phase: "final_answer",
+        },
+      },
+    ];
+
+    const projected = projectTimelineRows({ rows, mode: "projected" });
+
+    expect(projected).toHaveLength(1);
+    expect(projected[0]?.item).toEqual({
+      type: "assistant_message",
+      text: "Done.",
+      messageId: "msg-1",
+      phase: "final_answer",
+    });
+  });
+
+  test("keeps explicitly different assistant phases separate", () => {
+    const rows: AgentTimelineRow[] = [
+      {
+        seq: 1,
+        timestamp: "2026-02-13T00:00:00.000Z",
+        item: {
+          type: "assistant_message",
+          text: "Working.",
+          messageId: "msg-1",
+          phase: "commentary",
+        },
+      },
+      {
+        seq: 2,
+        timestamp: "2026-02-13T00:00:00.100Z",
+        item: {
+          type: "assistant_message",
+          text: "Done.",
+          messageId: "msg-1",
+          phase: "final_answer",
+        },
+      },
+    ];
+
+    const projected = projectTimelineRows({ rows, mode: "projected" });
+
+    expect(projected.map((entry) => entry.item)).toEqual(rows.map((row) => row.item));
+  });
+
+  test("keeps identified assistant text separate from idless commentary", () => {
+    const rows: AgentTimelineRow[] = [
+      {
+        seq: 1,
+        timestamp: "2026-02-13T00:00:00.000Z",
+        item: {
+          type: "assistant_message",
+          text: "Final answer.",
+          messageId: "msg-final",
+          phase: "final_answer",
+        },
+      },
+      {
+        seq: 2,
+        timestamp: "2026-02-13T00:00:00.100Z",
+        item: {
+          type: "assistant_message",
+          text: "Extension notice.",
+          phase: "commentary",
+        },
+      },
+    ];
+
+    const projected = projectTimelineRows({ rows, mode: "projected" });
+
+    expect(projected.map((entry) => entry.item)).toEqual(rows.map((row) => row.item));
+  });
+
   test("keeps adjacent assistant chunks with different message ids separate in projected mode", () => {
     const rows: AgentTimelineRow[] = [
       {

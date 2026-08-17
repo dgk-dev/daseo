@@ -58,6 +58,7 @@ import {
   toDiagnosticErrorMessage,
 } from "../diagnostic-utils.js";
 import {
+  getPiAssistantMessagePhase,
   getUserMessageText,
   streamPiHistory,
   type PiCapturedUserMessageEntry,
@@ -151,6 +152,10 @@ function mapPiSlashCommands(
   return [...mappedCommands.values()];
 }
 
+// Current Pi emits agent_settled after retries, compaction continuations, and
+// steering queues drain. Keep a short fallback for older compatible runtimes.
+const PI_AGENT_SETTLEMENT_FALLBACK_MS = 1_000;
+
 const PI_CAPABILITIES: AgentCapabilityFlags = {
   supportsStreaming: true,
   supportsSessionPersistence: true,
@@ -159,6 +164,7 @@ const PI_CAPABILITIES: AgentCapabilityFlags = {
   supportsMcpServers: false,
   supportsReasoningStream: true,
   supportsToolInvocations: true,
+  supportsSteering: true,
   supportsRewindConversation: true,
   supportsRewindFiles: false,
   supportsRewindBoth: false,
@@ -1030,6 +1036,8 @@ function isPiAgentSessionEvent(event: PiRuntimeEvent): event is PiAgentSessionEv
     case "compaction_start":
     case "compaction_end":
     case "agent_end":
+    case "agent_settled":
+    case "queue_update":
       return true;
     default:
       return false;
@@ -1229,6 +1237,11 @@ export class PiRpcAgentSession implements AgentSession {
   private pendingCombinedAskUserResponse: PendingCombinedAskUserResponse | null = null;
   private activeTurnId: string | null = null;
   private activeClientMessageId: string | null = null;
+  private awaitingInitialUserMessage = false;
+  private readonly pendingSteeringCorrelations: Array<{ clientMessageId: string | null }> = [];
+  private activeSteeringRequests = 0;
+  private pendingAgentEnd: { turnId: string | undefined; messages: PiAgentMessage[] } | null = null;
+  private settlementFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   private activeAssistantMessageId: string | null = null;
   private activeTurnStarted = false;
   private activeNoTurnPromptText: string | null = null;
@@ -1303,6 +1316,9 @@ export class PiRpcAgentSession implements AgentSession {
     this.activeTurnId = turnId;
     this.lastInterruptedTurnId = null;
     this.activeClientMessageId = options?.clientMessageId ?? null;
+    this.awaitingInitialUserMessage = true;
+    this.pendingSteeringCorrelations.splice(0);
+    this.clearPendingSettlement();
     this.activeAssistantMessageId = null;
     this.activeTurnStarted = false;
     this.activePromptRequestId = null;
@@ -1333,7 +1349,8 @@ export class PiRpcAgentSession implements AgentSession {
           return;
         }
         this.activeTurnId = null;
-        this.activeClientMessageId = null;
+        this.clearTurnInputCorrelations();
+        this.clearPendingSettlement();
         this.activeTurnStarted = false;
         this.activeAssistantMessageId = null;
         this.clearNoTurnBuffers();
@@ -1356,6 +1373,37 @@ export class PiRpcAgentSession implements AgentSession {
     })();
 
     return { turnId };
+  }
+
+  async steerTurn(
+    prompt: AgentPromptInput,
+    expectedTurnId: string,
+    options?: AgentRunOptions,
+  ): Promise<{ turnId: string }> {
+    if (!this.activeTurnId || this.activeTurnId !== expectedTurnId) {
+      throw new Error("Pi turn ended before steering was accepted");
+    }
+    const payload = convertPromptInput(prompt, { model: this.state.model });
+    const correlation = { clientMessageId: options?.clientMessageId ?? null };
+    this.pendingSteeringCorrelations.push(correlation);
+    this.activeSteeringRequests += 1;
+    try {
+      const ack = await this.runtimeSession.steer(payload.text, payload.images);
+      if (ack.agentInvoked === false) {
+        const index = this.pendingSteeringCorrelations.indexOf(correlation);
+        if (index >= 0) this.pendingSteeringCorrelations.splice(index, 1);
+      }
+    } catch (error) {
+      const index = this.pendingSteeringCorrelations.indexOf(correlation);
+      if (index >= 0) this.pendingSteeringCorrelations.splice(index, 1);
+      throw error;
+    } finally {
+      this.activeSteeringRequests = Math.max(0, this.activeSteeringRequests - 1);
+    }
+    if (this.activeTurnId !== expectedTurnId) {
+      throw new Error("Pi turn ended before steering was accepted");
+    }
+    return { turnId: expectedTurnId };
   }
 
   subscribe(callback: (event: AgentStreamEvent) => void): () => void {
@@ -1460,7 +1508,8 @@ export class PiRpcAgentSession implements AgentSession {
         const terminalError = this.interruptedTerminalError;
         this.interruptedTerminalError = null;
         this.activeTurnId = null;
-        this.activeClientMessageId = null;
+        this.clearTurnInputCorrelations();
+        this.clearPendingSettlement();
         this.activeTurnStarted = false;
         this.activeAssistantMessageId = null;
         this.clearNoTurnBuffers();
@@ -1475,7 +1524,8 @@ export class PiRpcAgentSession implements AgentSession {
     }
     if (turnId && this.activeTurnId === turnId) {
       this.activeTurnId = null;
-      this.activeClientMessageId = null;
+      this.clearTurnInputCorrelations();
+      this.clearPendingSettlement();
       this.activeTurnStarted = false;
       this.activeAssistantMessageId = null;
       this.clearNoTurnBuffers();
@@ -1530,6 +1580,8 @@ export class PiRpcAgentSession implements AgentSession {
     try {
       await this.runtimeSession.close();
     } finally {
+      this.clearTurnInputCorrelations();
+      this.clearPendingSettlement();
       this.rejectAllExtensionResults(new Error("Pi session closed"));
       this.cleanup?.();
     }
@@ -1645,6 +1697,48 @@ export class PiRpcAgentSession implements AgentSession {
     this.completeTurn(turnId, []);
   }
 
+  private clearTurnInputCorrelations(): void {
+    this.activeClientMessageId = null;
+    this.awaitingInitialUserMessage = false;
+    this.pendingSteeringCorrelations.splice(0);
+    this.activeSteeringRequests = 0;
+  }
+
+  private clearPendingSettlement(): void {
+    if (this.settlementFallbackTimer) {
+      clearTimeout(this.settlementFallbackTimer);
+      this.settlementFallbackTimer = null;
+    }
+    this.pendingAgentEnd = null;
+  }
+
+  private handleAgentEnd(
+    turnId: string | undefined,
+    event: Extract<PiAgentSessionEvent, { type: "agent_end" }>,
+  ): void {
+    if (!this.activeTurnId || !turnId) return;
+    this.pendingAgentEnd = { turnId, messages: event.messages ?? [] };
+    if (event.willRetry === true || this.pendingSteeringCorrelations.length > 0) {
+      return;
+    }
+    if (this.settlementFallbackTimer) clearTimeout(this.settlementFallbackTimer);
+    this.settlementFallbackTimer = setTimeout(() => {
+      this.settlementFallbackTimer = null;
+      const pending = this.pendingAgentEnd;
+      if (!pending || this.activeTurnId !== pending.turnId) return;
+      this.pendingAgentEnd = null;
+      this.completeTurn(pending.turnId, pending.messages);
+    }, PI_AGENT_SETTLEMENT_FALLBACK_MS);
+    this.settlementFallbackTimer.unref?.();
+  }
+
+  private handleAgentSettled(turnId: string | undefined): void {
+    const pending = this.pendingAgentEnd;
+    this.clearPendingSettlement();
+    if (!this.activeTurnId || !turnId) return;
+    this.completeTurn(turnId, pending?.messages ?? []);
+  }
+
   private clearNoTurnBuffers(): void {
     this.activeNoTurnPromptText = null;
     this.activePromptRequestId = null;
@@ -1666,6 +1760,8 @@ export class PiRpcAgentSession implements AgentSession {
           ...(this.activeClientMessageId ? { clientMessageId: this.activeClientMessageId } : {}),
         },
       });
+      this.activeClientMessageId = null;
+      this.awaitingInitialUserMessage = false;
     }
     for (const output of outputs) {
       this.emit({
@@ -1870,6 +1966,16 @@ export class PiRpcAgentSession implements AgentSession {
     if (!entry) {
       return true;
     }
+    let clientMessageId: string | null;
+    let steering = false;
+    if (this.awaitingInitialUserMessage) {
+      clientMessageId = this.activeClientMessageId;
+      this.activeClientMessageId = null;
+      this.awaitingInitialUserMessage = false;
+    } else {
+      clientMessageId = this.pendingSteeringCorrelations.shift()?.clientMessageId ?? null;
+      steering = true;
+    }
     this.emit({
       type: "timeline",
       provider: this.provider,
@@ -1878,7 +1984,8 @@ export class PiRpcAgentSession implements AgentSession {
         type: "user_message",
         text: entry.text,
         messageId: entry.id,
-        ...(this.activeClientMessageId ? { clientMessageId: this.activeClientMessageId } : {}),
+        ...(clientMessageId ? { clientMessageId } : {}),
+        ...(steering ? { steering: true } : {}),
       },
     });
     return true;
@@ -2048,7 +2155,8 @@ export class PiRpcAgentSession implements AgentSession {
     }
     const turnId = this.activeTurnId;
     this.activeTurnId = null;
-    this.activeClientMessageId = null;
+    this.clearTurnInputCorrelations();
+    this.clearPendingSettlement();
     this.activeTurnStarted = false;
     this.clearNoTurnBuffers();
     this.emit({
@@ -2065,6 +2173,10 @@ export class PiRpcAgentSession implements AgentSession {
     switch (event.type) {
       case "agent_start":
         this.activeTurnStarted = true;
+        if (this.settlementFallbackTimer) {
+          clearTimeout(this.settlementFallbackTimer);
+          this.settlementFallbackTimer = null;
+        }
         this.clearNoTurnBuffers();
         this.emit({
           type: "thread_started",
@@ -2074,6 +2186,10 @@ export class PiRpcAgentSession implements AgentSession {
         return;
       case "turn_start":
         this.activeTurnStarted = true;
+        if (this.settlementFallbackTimer) {
+          clearTimeout(this.settlementFallbackTimer);
+          this.settlementFallbackTimer = null;
+        }
         this.clearNoTurnBuffers();
         this.emit({
           type: "turn_started",
@@ -2132,7 +2248,12 @@ export class PiRpcAgentSession implements AgentSession {
         });
         return;
       case "agent_end":
-        this.completeTurn(turnId, event.messages ?? []);
+        this.handleAgentEnd(turnId, event);
+        return;
+      case "agent_settled":
+        this.handleAgentSettled(turnId);
+        return;
+      case "queue_update":
         return;
       default:
         return;
@@ -2198,6 +2319,8 @@ export class PiRpcAgentSession implements AgentSession {
     if (event.assistantMessageEvent.type === "text_delta") {
       // Pi-compatible runtimes may emit updates without a preceding message_start.
       this.activeAssistantMessageId ??= event.message?.responseId || randomUUID();
+      const phase =
+        event.message?.role === "assistant" ? getPiAssistantMessagePhase(event.message) : undefined;
       this.emit({
         type: "timeline",
         provider: this.provider,
@@ -2206,6 +2329,7 @@ export class PiRpcAgentSession implements AgentSession {
           type: "assistant_message",
           text: event.assistantMessageEvent.delta ?? "",
           messageId: this.activeAssistantMessageId,
+          ...(phase ? { phase } : {}),
         },
       });
       return;
@@ -2234,6 +2358,18 @@ export class PiRpcAgentSession implements AgentSession {
     turnId: string | undefined,
   ): void {
     if (event.message.role === "assistant") {
+      const messageId = event.message.responseId || this.activeAssistantMessageId;
+      const phase = getPiAssistantMessagePhase(event.message);
+      if (messageId && phase) {
+        // textSignature is finalized at text_end/message_end. Emit a metadata-only
+        // update so streamed text receives the same phase as replayed history.
+        this.emit({
+          type: "timeline",
+          provider: this.provider,
+          turnId,
+          item: { type: "assistant_message", text: "", messageId, phase },
+        });
+      }
       this.activeAssistantMessageId = null;
       return;
     }
@@ -2244,10 +2380,12 @@ export class PiRpcAgentSession implements AgentSession {
           type: "timeline",
           provider: this.provider,
           turnId,
-          item: { type: "assistant_message", text },
+          item: { type: "assistant_message", text, phase: "commentary" },
         });
       }
-      this.completeTurn(turnId, []);
+      if (!this.activeTurnStarted && this.activeSteeringRequests === 0) {
+        this.completeTurn(turnId, []);
+      }
       return;
     }
   }
@@ -2306,7 +2444,8 @@ export class PiRpcAgentSession implements AgentSession {
       return;
     }
     this.activeTurnId = null;
-    this.activeClientMessageId = null;
+    this.clearTurnInputCorrelations();
+    this.clearPendingSettlement();
     this.activeAssistantMessageId = null;
     this.activeTurnStarted = false;
     this.clearNoTurnBuffers();

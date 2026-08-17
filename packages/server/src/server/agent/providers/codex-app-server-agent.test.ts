@@ -86,6 +86,7 @@ interface CodexClientLike {
 type CodexTestSession = AgentSession & {
   connected: boolean;
   currentThreadId: string | null;
+  currentTurnId: string | null;
   activeForegroundTurnId: string | null;
   client: CodexClientLike | null;
 };
@@ -1347,6 +1348,53 @@ describe("Codex app-server provider", () => {
     expect(events.slice(0, 2).map((event) => event.type)).toEqual(["turn_started", "timeline"]);
     appServer.completeTurn();
     await session.close();
+  });
+
+  test("uses the native turn id returned by turn/start for immediate steering", async () => {
+    const session = createSession();
+    session.activeForegroundTurnId = null;
+    session.currentTurnId = null;
+    const request = vi.fn(async (method: string) => {
+      if (method === "thread/loaded/list") return { data: ["test-thread"] };
+      if (method === "turn/start") return { turn: { id: "native-from-start" } };
+      if (method === "turn/steer") return { turnId: "native-from-start" };
+      throw new Error(`Unexpected request: ${method}`);
+    });
+    session.client = { request };
+
+    const started = await session.startTurn("start");
+    expect(started.turnId).not.toBe("native-from-start");
+    await session.steerTurn?.("steer", started.turnId);
+
+    expect(request).toHaveBeenCalledWith(
+      "turn/steer",
+      expect.objectContaining({ expectedTurnId: "native-from-start" }),
+      90_000,
+    );
+  });
+
+  test("steers the exact active Codex turn without starting or interrupting it", async () => {
+    const session = createSession();
+    session.currentTurnId = "native-turn-1";
+    const request = vi.fn(async () => ({ turnId: "native-turn-1" }));
+    session.client = { request };
+
+    await expect(
+      session.steerTurn?.("new mid-turn context", "test-turn", {
+        clientMessageId: "client-steer-1",
+      }),
+    ).resolves.toEqual({ turnId: "test-turn" });
+
+    expect(request).toHaveBeenCalledWith(
+      "turn/steer",
+      {
+        threadId: "test-thread",
+        clientUserMessageId: "client-steer-1",
+        input: [{ type: "text", text: "new mid-turn context", text_elements: [] }],
+        expectedTurnId: "native-turn-1",
+      },
+      90_000,
+    );
   });
 
   test("configures Codex app-server to use a custom provider base URL", async () => {
@@ -3352,6 +3400,7 @@ describe("Codex app-server provider", () => {
                     type: "agentMessage",
                     id: "message-history",
                     text: "History loaded.",
+                    phase: "final_answer",
                     timestamp: "2026-05-01T10:00:00.000Z",
                   },
                   {
@@ -3386,6 +3435,7 @@ describe("Codex app-server provider", () => {
           type: "assistant_message",
           text: "History loaded.",
           messageId: "message-history",
+          phase: "final_answer",
         },
       },
       {
@@ -3396,6 +3446,78 @@ describe("Codex app-server provider", () => {
           type: "compaction",
           status: "completed",
         },
+      },
+    ]);
+  });
+
+  test("replays Codex mid-turn steering inside one explicit turn boundary", async () => {
+    const session = createSession();
+    session.client = {
+      request: vi.fn(async () => ({
+        thread: {
+          turns: [
+            {
+              items: [
+                {
+                  type: "userMessage",
+                  id: "user-start",
+                  clientId: "client-start",
+                  content: [{ type: "text", text: "Start" }],
+                },
+                {
+                  type: "agentMessage",
+                  id: "commentary",
+                  text: "Working",
+                  phase: "commentary",
+                },
+                {
+                  type: "userMessage",
+                  id: "user-steer",
+                  clientId: "client-steer",
+                  content: [{ type: "text", text: "Steer" }],
+                },
+                {
+                  type: "agentMessage",
+                  id: "final",
+                  text: "Done",
+                  phase: "final_answer",
+                },
+              ],
+            },
+          ],
+        },
+      })),
+    };
+
+    await asInternals(session).loadPersistedHistory();
+    const history: AgentStreamEvent[] = [];
+    for await (const event of session.streamHistory()) history.push(event);
+
+    expect(history.map((event) => (event.type === "timeline" ? event.item : null))).toEqual([
+      {
+        type: "user_message",
+        text: "Start",
+        messageId: "user-start",
+        clientMessageId: "client-start",
+      },
+      {
+        type: "assistant_message",
+        text: "Working",
+        messageId: "commentary",
+        phase: "commentary",
+      },
+      {
+        type: "user_message",
+        text: "Steer",
+        messageId: "user-steer",
+        clientMessageId: "client-steer",
+        steering: true,
+      },
+      {
+        type: "assistant_message",
+        text: "Done",
+        messageId: "final",
+        phase: "final_answer",
       },
     ]);
   });
@@ -4950,7 +5072,7 @@ describe("Codex app-server provider", () => {
     });
   });
 
-  test("streams Codex assistant message deltas and does not replay completed text", () => {
+  test("applies a Codex assistant phase that first arrives with completed text", () => {
     const session = createSession();
     const events: AgentStreamEvent[] = [];
     session.subscribe((event) => events.push(event));
@@ -4968,6 +5090,7 @@ describe("Codex app-server provider", () => {
         id: "assistant-item-1",
         type: "agentMessage",
         text: "Hello",
+        phase: "final_answer",
       },
     });
 
@@ -4983,6 +5106,69 @@ describe("Codex app-server provider", () => {
         provider: "codex",
         turnId: "test-turn",
         item: { type: "assistant_message", text: "lo", messageId: "assistant-item-1" },
+      },
+      {
+        type: "timeline",
+        provider: "codex",
+        turnId: "test-turn",
+        item: {
+          type: "assistant_message",
+          text: "",
+          messageId: "assistant-item-1",
+          phase: "final_answer",
+        },
+      },
+    ]);
+  });
+
+  test("carries a Codex assistant phase from item start through streamed deltas", () => {
+    const session = createSession();
+    const events: AgentStreamEvent[] = [];
+    session.subscribe((event) => events.push(event));
+
+    asInternals(session).handleNotification("item/started", {
+      item: {
+        id: "assistant-commentary",
+        type: "agentMessage",
+        text: "",
+        phase: "commentary",
+      },
+    });
+    asInternals(session).handleNotification("item/agentMessage/delta", {
+      itemId: "assistant-commentary",
+      delta: "Working",
+    });
+    asInternals(session).handleNotification("item/completed", {
+      item: {
+        id: "assistant-commentary",
+        type: "agentMessage",
+        text: "Working",
+        phase: "commentary",
+      },
+    });
+
+    expect(events).toEqual([
+      {
+        type: "timeline",
+        provider: "codex",
+        turnId: "test-turn",
+        item: {
+          type: "assistant_message",
+          text: "Working",
+          messageId: "assistant-commentary",
+          phase: "commentary",
+        },
+      },
+      {
+        type: "timeline",
+        provider: "codex",
+        turnId: "test-turn",
+        item: {
+          type: "assistant_message",
+          text: "",
+          messageId: "assistant-commentary",
+          phase: "commentary",
+        },
       },
     ]);
   });

@@ -153,6 +153,17 @@ describe("resident browser webviews", () => {
     expect(webview.style.width).toBe("640px");
     expect(webview.style.height).toBe("480px");
 
+    expect(
+      ensureTestBrowser({
+        browserId: "browser-stable-parent",
+        workspaceId: "workspace-stable-parent",
+        url: "https://example.com",
+      }),
+    ).toBe(webview);
+    expect(permanentParent.style.width).toBe("640px");
+    expect(permanentParent.style.height).toBe("480px");
+    expect(permanentParent.style.pointerEvents).toBe("auto");
+
     releaseResidentBrowserWebview("browser-stable-parent", webview);
     expect(webview.parentElement).toBe(permanentParent);
     expectParkedSurface(permanentParent);

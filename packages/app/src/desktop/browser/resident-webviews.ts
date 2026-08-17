@@ -331,7 +331,8 @@ export function ensureResidentBrowserWebview(input: {
 
   const resident = residentWebviewsByBrowserId.get(browserId) ?? null;
   if (resident?.isConnected) {
-    releaseResidentBrowserWebview(browserId, resident);
+    // Ensure is also called by authoritative tab-list reconciliation. Never
+    // park a webview that is currently presented in a desktop pane.
     return resident;
   }
 

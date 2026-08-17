@@ -94,6 +94,7 @@ export class FakePi implements PiRuntime {
 
 export class FakePiSession implements PiRuntimeSession {
   readonly prompts: Array<{ message: string; imageCount: number }> = [];
+  readonly steers: Array<{ message: string; imageCount: number }> = [];
   readonly compactRequests: Array<{ customInstructions?: string }> = [];
   readonly setAutoCompactionRequests: boolean[] = [];
   readonly subagentSubscriptionRequests: FakePiSubagentSubscriptionLevel[] = [];
@@ -176,6 +177,14 @@ export class FakePiSession implements PiRuntimeSession {
     }
     this.handleTreeNavigationCommand(message);
     this.handleEntryCaptureCommand(message);
+    return this.promptAck;
+  }
+
+  async steer(
+    message: string,
+    images?: Array<{ type: "image"; data: string; mimeType: string }>,
+  ): Promise<PiPromptAck> {
+    this.steers.push({ message, imageCount: images?.length ?? 0 });
     return this.promptAck;
   }
 
@@ -350,9 +359,18 @@ export class FakePiSession implements PiRuntimeSession {
     }
   }
 
-  finishTurn(message: PiAgentMessage = { role: "assistant", content: [] }): void {
+  finishLowLevelRun(message: PiAgentMessage = { role: "assistant", content: [] }): void {
     this.messages = [...this.messages, message];
     this.emit({ type: "agent_end", messages: this.messages });
+  }
+
+  settleTurn(): void {
+    this.emit({ type: "agent_settled" });
+  }
+
+  finishTurn(message: PiAgentMessage = { role: "assistant", content: [] }): void {
+    this.finishLowLevelRun(message);
+    this.settleTurn();
   }
 
   finishSubmittedUserMessage(entry: FakePiUserEntry): void {

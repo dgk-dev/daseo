@@ -164,6 +164,16 @@ function browserAutomationRequest(): BrowserAutomationExecuteRequest {
   };
 }
 
+function workspaceBrowserListRequest(): BrowserAutomationExecuteRequest {
+  return {
+    type: "browser.automation.execute.request",
+    requestId: "req-list-workspace",
+    agentId: "agent-1",
+    workspaceId: "wks_workspace_a",
+    command: { command: "list_tabs", args: {} },
+  };
+}
+
 function browserNewTabRequest(): BrowserAutomationExecuteRequest {
   return {
     type: "browser.automation.execute.request",
@@ -275,8 +285,12 @@ useWorkspaceLayoutStore.persist.setOptions({
 });
 
 describe("mountBrowserAutomationHandler", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     browserAutomationStorage.clear();
+    await Promise.all([
+      useBrowserStore.persist.rehydrate(),
+      useWorkspaceLayoutStore.persist.rehydrate(),
+    ]);
     useBrowserStore.setState({ browsersById: {} });
     useWorkspaceLayoutStore.setState({ layoutByWorkspace: {} });
   });
@@ -492,6 +506,69 @@ describe("mountBrowserAutomationHandler", () => {
         retryable: false,
       },
     });
+  });
+
+  test("workspace list_tabs returns every layout browser and materializes unmounted guests", async () => {
+    const browser = new BrowserAutomationHandlerHarness();
+    const workspaceKey = buildWorkspaceTabPersistenceKey({
+      serverId: "server-1",
+      workspaceId: "wks_workspace_a",
+    });
+    if (!workspaceKey) throw new Error("Expected workspace key");
+
+    const firstId = useBrowserStore.getState().createBrowser({ initialUrl: "https://one.example" });
+    const secondId = useBrowserStore
+      .getState()
+      .createBrowser({ initialUrl: "https://two.example" });
+    useBrowserStore.getState().updateBrowser(firstId, { title: "One", canGoBack: true });
+    useBrowserStore.getState().updateBrowser(secondId, { title: "Two", isLoading: true });
+    useWorkspaceLayoutStore.getState().openTabFocused(workspaceKey, {
+      kind: "browser",
+      browserId: firstId,
+    });
+    useWorkspaceLayoutStore.getState().openTabFocused(workspaceKey, {
+      kind: "browser",
+      browserId: secondId,
+    });
+    browser.mount({ serverId: "server-1" });
+
+    browser.receive(workspaceBrowserListRequest());
+    await flushAsyncWork();
+
+    expect(browser.client.payloadAt(0)).toEqual({
+      requestId: "req-list-workspace",
+      ok: true,
+      result: {
+        command: "list_tabs",
+        tabs: [
+          {
+            browserId: firstId,
+            workspaceId: "wks_workspace_a",
+            url: "https://one.example",
+            title: "One",
+            isActive: false,
+            isLoading: false,
+            canGoBack: true,
+            canGoForward: false,
+          },
+          {
+            browserId: secondId,
+            workspaceId: "wks_workspace_a",
+            url: "https://two.example",
+            title: "Two",
+            isActive: true,
+            isLoading: true,
+            canGoBack: false,
+            canGoForward: false,
+          },
+        ],
+      },
+    });
+    expect(browser.resident.ensuredWebviews).toEqual([
+      { browserId: firstId, workspaceId: "wks_workspace_a", url: "https://one.example" },
+      { browserId: secondId, workspaceId: "wks_workspace_a", url: "https://two.example" },
+    ]);
+    expect(browser.browser.executedRequests).toEqual([]);
   });
 
   test("non-new-tab requests send the desktop bridge response", async () => {

@@ -14,7 +14,12 @@ export type AgentUnarchiveController = Pick<AgentManager, "notifyAgentState" | "
 
 export type AgentRunController = Pick<
   AgentManager,
-  "getAgent" | "tryRunOutOfBand" | "hasInFlightRun" | "replaceAgentRun" | "streamAgent"
+  | "getAgent"
+  | "tryRunOutOfBand"
+  | "trySteerAgentRun"
+  | "hasInFlightRun"
+  | "replaceAgentRun"
+  | "streamAgent"
 >;
 
 export interface StartAgentRunOptions {
@@ -22,6 +27,9 @@ export interface StartAgentRunOptions {
   runOptions?: AgentRunOptions;
 }
 
+// This coordinator intentionally keeps out-of-band, steer, replace, and drain
+// policy in one place so every prompt entrypoint shares identical ordering.
+// oxlint-disable-next-line complexity
 export async function startAgentRun(
   agentManager: AgentRunController,
   agentId: string,
@@ -48,8 +56,25 @@ export async function startAgentRun(
   if (agentManager.tryRunOutOfBand(agentId, prompt, options?.runOptions)) {
     return { outOfBand: true };
   }
-  const shouldReplace = Boolean(options?.replaceRunning && agentManager.hasInFlightRun(agentId));
+  const hasInFlightRun = agentManager.hasInFlightRun(agentId);
   const runOptions = options?.runOptions;
+  if (
+    options?.replaceRunning &&
+    hasInFlightRun &&
+    (await agentManager.trySteerAgentRun(agentId, prompt, runOptions))
+  ) {
+    logger.trace(
+      {
+        agentId,
+        provider: snapshot?.provider,
+        providerSessionId: snapshot?.persistence?.sessionId ?? undefined,
+        turnId: snapshot?.activeForegroundTurnId ?? undefined,
+      },
+      "agent.session.steer.accepted",
+    );
+    return { outOfBand: false };
+  }
+  const shouldReplace = Boolean(options?.replaceRunning && hasInFlightRun);
   const iterator = shouldReplace
     ? await agentManager.replaceAgentRun(agentId, prompt, runOptions)
     : agentManager.streamAgent(agentId, prompt, runOptions);

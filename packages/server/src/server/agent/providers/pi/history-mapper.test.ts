@@ -33,7 +33,15 @@ describe("Pi history mapper", () => {
           content: [
             { type: "thinking", thinking: "checking file" },
             { type: "toolCall", id: "tool-1", name: "read", arguments: { path: "note.txt" } },
-            { type: "text", text: "done" },
+            {
+              type: "text",
+              text: "done",
+              textSignature: JSON.stringify({
+                v: 1,
+                id: "message-final",
+                phase: "final_answer",
+              }),
+            },
           ],
         },
         {
@@ -78,7 +86,12 @@ describe("Pi history mapper", () => {
       {
         type: "timeline",
         provider: "pi",
-        item: { type: "assistant_message", text: "done", messageId: "response-1" },
+        item: {
+          type: "assistant_message",
+          text: "done",
+          messageId: "response-1",
+          phase: "final_answer",
+        },
       },
       {
         type: "timeline",
@@ -96,6 +109,93 @@ describe("Pi history mapper", () => {
             limit: undefined,
           },
           error: null,
+        },
+      },
+    ]);
+  });
+
+  test("replays a Pi steering user message inside the same explicit-phase turn", async () => {
+    const signature = (phase: "commentary" | "final_answer") => JSON.stringify({ v: 1, phase });
+
+    await expect(
+      collectHistory([
+        { role: "user", content: "Start" },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Working", textSignature: signature("commentary") }],
+        },
+        { role: "user", content: "Steer" },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Done", textSignature: signature("final_answer") }],
+        },
+      ]),
+    ).resolves.toEqual([
+      {
+        type: "timeline",
+        provider: "pi",
+        item: { type: "user_message", text: "Start" },
+      },
+      {
+        type: "timeline",
+        provider: "pi",
+        item: {
+          type: "assistant_message",
+          text: "Working",
+          messageId: "pi-history-assistant-1",
+          phase: "commentary",
+        },
+      },
+      {
+        type: "timeline",
+        provider: "pi",
+        item: { type: "user_message", text: "Steer", steering: true },
+      },
+      {
+        type: "timeline",
+        provider: "pi",
+        item: {
+          type: "assistant_message",
+          text: "Done",
+          messageId: "pi-history-assistant-2",
+          phase: "final_answer",
+        },
+      },
+    ]);
+  });
+
+  test("ignores malformed or unknown Pi assistant phase metadata", async () => {
+    await expect(
+      collectHistory([
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "malformed", textSignature: "{not-json" },
+            {
+              type: "text",
+              text: "unknown",
+              textSignature: JSON.stringify({ phase: "analysis" }),
+            },
+          ],
+        },
+      ]),
+    ).resolves.toEqual([
+      {
+        type: "timeline",
+        provider: "pi",
+        item: {
+          type: "assistant_message",
+          text: "malformed",
+          messageId: "pi-history-assistant-1",
+        },
+      },
+      {
+        type: "timeline",
+        provider: "pi",
+        item: {
+          type: "assistant_message",
+          text: "unknown",
+          messageId: "pi-history-assistant-1",
         },
       },
     ]);
@@ -135,7 +235,11 @@ describe("Pi history mapper", () => {
       {
         type: "timeline",
         provider: "pi",
-        item: { type: "assistant_message", text: "Extension command output" },
+        item: {
+          type: "assistant_message",
+          text: "Extension command output",
+          phase: "commentary",
+        },
       },
     ]);
   });

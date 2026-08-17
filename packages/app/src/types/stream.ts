@@ -1,4 +1,8 @@
-import type { AgentProvider, ToolCallDetail } from "@getpaseo/protocol/agent-types";
+import type {
+  AgentProvider,
+  AssistantMessagePhase,
+  ToolCallDetail,
+} from "@getpaseo/protocol/agent-types";
 import type { AgentAttachment, AgentStreamEventPayload } from "@getpaseo/protocol/messages";
 import type { AttachmentMetadata } from "@/attachments/types";
 import { extractTaskEntriesFromToolCall } from "../utils/tool-call-parsers";
@@ -89,6 +93,8 @@ export interface UserMessageItem {
   clientMessageId?: string;
   messageId?: string;
   timelineCursor?: TimelinePosition;
+  /** Input accepted into the provider's already-active turn. */
+  steering?: boolean;
   text: string;
   timestamp: Date;
   images?: UserMessageImageAttachment[];
@@ -100,6 +106,7 @@ export interface UserMessageInput {
   clientMessageId?: string;
   messageId?: string;
   timelineCursor?: TimelinePosition;
+  steering?: boolean;
   text: string;
   timestamp: Date;
   images?: UserMessageImageAttachment[];
@@ -117,6 +124,7 @@ export function createUserMessage(input: UserMessageInput): UserMessageItem {
     ...(input.clientMessageId ? { clientMessageId: input.clientMessageId } : {}),
     ...(input.messageId ? { messageId: input.messageId } : {}),
     ...(input.timelineCursor ? { timelineCursor: input.timelineCursor } : {}),
+    ...(input.steering ? { steering: true } : {}),
     text: input.text,
     timestamp: input.timestamp,
     ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
@@ -251,12 +259,14 @@ function produceUserMessage(
     clientMessageId: incoming.clientMessageId ?? existing.clientMessageId,
     messageId: incoming.messageId ?? existing.messageId,
     timelineCursor: incoming.timelineCursor ?? existing.timelineCursor,
+    steering: incoming.steering ?? existing.steering,
   });
   if (
     existing.id === merged.id &&
     existing.clientMessageId === merged.clientMessageId &&
     existing.messageId === merged.messageId &&
     existing.timelineCursor === merged.timelineCursor &&
+    existing.steering === merged.steering &&
     existing.text === merged.text &&
     existing.timestamp === merged.timestamp &&
     existing.images === merged.images &&
@@ -835,6 +845,8 @@ export interface AssistantMessageItem {
   timestamp: Date;
   blockGroupId?: string;
   blockIndex?: number;
+  /** Provider-authored distinction between interim commentary and a final answer. */
+  phase?: AssistantMessagePhase;
   /** Terminal state for the turn ending at this assistant item, when observed live. */
   turnOutcome?: AssistantTurnOutcome;
 }
@@ -994,6 +1006,7 @@ function appendUserMessage(
   _source: StreamUpdateSource,
   messageId?: string,
   clientMessageId?: string,
+  steering?: boolean,
   timelineCursor?: TimelinePosition,
 ): StreamItem[] {
   const { chunk, hasContent } = normalizeChunk(text);
@@ -1007,10 +1020,52 @@ function appendUserMessage(
     clientMessageId,
     messageId,
     timelineCursor,
+    steering,
     text: chunk,
     timestamp,
   });
   return upsertUserMessage(state, nextItem);
+}
+
+function applyAssistantPhase(
+  state: StreamItem[],
+  messageId: string | undefined,
+  phase: AssistantMessagePhase,
+): StreamItem[] {
+  let fallbackIndex = -1;
+  if (messageId === undefined) {
+    for (let index = state.length - 1; index >= 0; index -= 1) {
+      if (state[index]?.kind === "assistant_message") {
+        fallbackIndex = index;
+        break;
+      }
+    }
+  }
+
+  let changed = false;
+  const next = state.map((item, index) => {
+    const matches =
+      item.kind === "assistant_message" &&
+      (messageId !== undefined ? item.messageId === messageId : index === fallbackIndex);
+    if (!matches || item.phase === phase) return item;
+    changed = true;
+    return { ...item, phase };
+  });
+  return changed ? next : state;
+}
+
+function assistantPhaseFields(phase: AssistantMessagePhase | undefined) {
+  return phase ? { phase } : {};
+}
+
+function isSameAssistantStream(
+  existing: AssistantMessageItem,
+  messageId: string | undefined,
+  phase: AssistantMessagePhase | undefined,
+): boolean {
+  const phaseCompatible =
+    existing.phase === undefined || phase === undefined || existing.phase === phase;
+  return existing.messageId === messageId && phaseCompatible;
 }
 
 function appendAssistantMessage(
@@ -1019,24 +1074,24 @@ function appendAssistantMessage(
   timestamp: Date,
   source: StreamUpdateSource,
   messageId?: string,
+  phase?: AssistantMessagePhase,
   reservedItemIds?: ReadonlySet<string>,
   timelineCursor?: TimelinePosition,
 ): StreamItem[] {
   const { chunk, hasContent } = normalizeChunk(text);
   if (!chunk) {
-    return state;
+    return phase ? applyAssistantPhase(state, messageId, phase) : state;
   }
 
   const last = state[state.length - 1];
   const shouldAppendToLast =
-    last &&
-    last.kind === "assistant_message" &&
-    (messageId === undefined || last.messageId === messageId);
+    last && last.kind === "assistant_message" && isSameAssistantStream(last, messageId, phase);
   if (shouldAppendToLast) {
     const updated: AssistantMessageItem = {
       ...last,
       text: `${last.text}${chunk}`,
       timestamp,
+      ...assistantPhaseFields(phase),
       ...(timelineCursor ? { timelineCursor } : {}),
     };
     return [...state.slice(0, -1), updated];
@@ -1049,12 +1104,13 @@ function appendAssistantMessage(
     source === "live" &&
     last?.kind === "user_message" &&
     secondLast?.kind === "assistant_message" &&
-    (messageId === undefined || secondLast.messageId === messageId)
+    isSameAssistantStream(secondLast, messageId, phase)
   ) {
     const updated: AssistantMessageItem = {
       ...secondLast,
       text: `${secondLast.text}${chunk}`,
       timestamp,
+      ...assistantPhaseFields(phase),
       ...(timelineCursor ? { timelineCursor } : {}),
     };
     return [...state.slice(0, -2), updated, last];
@@ -1070,6 +1126,7 @@ function appendAssistantMessage(
     kind: "assistant_message",
     id: entryId,
     ...(messageId ? { messageId } : {}),
+    ...assistantPhaseFields(phase),
     ...(timelineCursor ? { timelineCursor } : {}),
     text: chunk,
     timestamp,
@@ -1569,6 +1626,7 @@ function reduceTimelineEvent(
           source,
           item.messageId,
           item.clientMessageId,
+          item.steering,
           timelineCursor,
         ),
       );
@@ -1580,6 +1638,7 @@ function reduceTimelineEvent(
           timestamp,
           source,
           item.messageId,
+          item.phase,
           reservedItemIds,
           timelineCursor,
         ),
@@ -2011,6 +2070,34 @@ function applyCanonicalUserMessageEvent(params: {
   };
 }
 
+function applyAssistantPhaseEvent(input: {
+  tail: StreamItem[];
+  head: StreamItem[];
+  event: AgentStreamEventPayload;
+}): ApplyStreamEventResult {
+  const item = input.event.type === "timeline" ? input.event.item : null;
+  if (
+    item?.type !== "assistant_message" ||
+    item.messageId === undefined ||
+    item.phase === undefined
+  ) {
+    return {
+      tail: input.tail,
+      head: input.head,
+      changedTail: false,
+      changedHead: false,
+    };
+  }
+  const tail = applyAssistantPhase(input.tail, item.messageId, item.phase);
+  const head = applyAssistantPhase(input.head, item.messageId, item.phase);
+  return {
+    tail,
+    head,
+    changedTail: tail !== input.tail,
+    changedHead: head !== input.head,
+  };
+}
+
 /**
  * Apply a stream event using head/tail model.
  *
@@ -2043,10 +2130,12 @@ export function applyStreamEvent(params: {
     unmatchedInsert: params.unmatchedUserMessageInsert,
   });
   if (canonicalUserResult) return canonicalUserResult;
-  let nextTail = tail;
-  let nextHead = head;
-  let changedTail = false;
-  let changedHead = false;
+  const phased = applyAssistantPhaseEvent({ tail, head, event });
+  let nextTail = phased.tail;
+  let nextHead = phased.head;
+  let changedTail = phased.changedTail;
+  let changedHead = phased.changedHead;
+
   const flushHead = () => {
     if (nextHead.length === 0) {
       return;

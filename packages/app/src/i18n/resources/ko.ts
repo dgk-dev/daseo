@@ -276,6 +276,7 @@ export const ko: TranslationResources = {
     },
   },
   message: {
+    steering: "현재 작업에 지시 추가됨",
     diagram: {
       diagram: "다이어그램",
       zoomIn: "확대",
@@ -1831,13 +1832,13 @@ export const ko: TranslationResources = {
       defaultSend: {
         label: "기본 전송",
         descriptions: {
-          interrupt:
-            "에이전트가 실행 중일 때 Enter는 중단합니다. Command/Ctrl+Enter는 대기열에 추가합니다.",
+          steer:
+            "에이전트가 실행 중일 때 Enter는 현재 작업에 지시를 추가합니다. Command/Ctrl+Enter는 대기열에 추가합니다.",
           queue:
             "에이전트가 실행 중일 때 Enter는 대기열에 추가합니다. Command/Ctrl+Enter는 제출합니다.",
         },
         options: {
-          interrupt: "중단",
+          steer: "작업 중 지시",
           queue: "대기열",
         },
       },

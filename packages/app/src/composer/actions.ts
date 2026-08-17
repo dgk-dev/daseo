@@ -176,6 +176,7 @@ export interface DispatchComposerAgentMessageInput {
     images: AttachmentMetadata[],
   ) => Promise<Array<{ data: string; mimeType: string }> | undefined>;
   submission: MessageSubmissionWriter;
+  steering?: boolean;
 }
 
 export async function dispatchComposerAgentMessage(
@@ -191,6 +192,7 @@ export async function dispatchComposerAgentMessage(
     timestamp: new Date(),
     images: wirePayload.images,
     attachments: wirePayload.attachments,
+    steering: input.steering,
   });
   input.submission.begin(input.agentId, userMessage);
   try {

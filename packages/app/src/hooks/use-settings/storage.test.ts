@@ -67,6 +67,26 @@ describe("loadAppSettingsFromStorage", () => {
     );
   });
 
+  it("defaults active-run sends to steering", async () => {
+    const deps = makeDeps();
+
+    const result = await loadAppSettingsFromStorage(deps);
+
+    expect(result.sendBehavior).toBe("steer");
+  });
+
+  it("migrates the legacy interrupt send preference to steering", async () => {
+    const deps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({ sendBehavior: "interrupt" }),
+      }),
+    });
+
+    const result = await loadAppSettingsFromStorage(deps);
+
+    expect(result.sendBehavior).toBe("steer");
+  });
+
   it("defaults language to system when storage is empty", async () => {
     const deps = makeDeps();
 

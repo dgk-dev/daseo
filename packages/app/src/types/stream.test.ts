@@ -91,6 +91,38 @@ describe("user message identity", () => {
     expect(result).toEqual([local]);
   });
 
+  it("adds authoritative steering metadata to an optimistic user message", () => {
+    const submitted = createUserMessage({
+      clientMessageId: "client-steer",
+      text: "new context",
+      timestamp: new Date("2026-08-17T01:00:00.000Z"),
+    });
+
+    const result = reduceStreamUpdate(
+      [submitted],
+      {
+        type: "timeline",
+        provider: "codex",
+        item: {
+          type: "user_message",
+          text: "new context",
+          messageId: "provider-steer",
+          clientMessageId: "client-steer",
+          steering: true,
+        },
+      },
+      new Date("2026-08-17T01:00:01.000Z"),
+    );
+
+    expect(result).toEqual([
+      {
+        ...submitted,
+        messageId: "provider-steer",
+        steering: true,
+      },
+    ]);
+  });
+
   it("matches a submitted message against a legacy canonical row that has no client identity", () => {
     // Daemons before v0.2.0 do not echo clientMessageId. During agent creation the
     // legacy canonical row can land before the local submission is handed off, so the
@@ -259,11 +291,17 @@ function assistantTimeline(
   text: string,
   provider: AgentProvider = "claude",
   messageId?: string,
+  phase?: "commentary" | "final_answer",
 ): AgentStreamEventPayload {
   return {
     type: "timeline",
     provider,
-    item: { type: "assistant_message", text, ...(messageId ? { messageId } : {}) },
+    item: {
+      type: "assistant_message",
+      text,
+      ...(messageId ? { messageId } : {}),
+      ...(phase ? { phase } : {}),
+    },
   };
 }
 
@@ -618,6 +656,59 @@ describe("stream reducer canonical tool calls", () => {
     assert.strictEqual(first.text, "Hello");
     assert.strictEqual(first.id, "msg-same");
     assert.strictEqual(first.messageId, "msg-same");
+  });
+
+  it("applies a metadata-only phase update without duplicating assistant text", () => {
+    const state = hydrateStreamState([
+      {
+        event: assistantTimeline("Done.", "pi", "msg-phase"),
+        timestamp: new Date("2025-01-01T10:02:00Z"),
+      },
+      {
+        event: assistantTimeline("", "pi", "msg-phase", "final_answer"),
+        timestamp: new Date("2025-01-01T10:02:01Z"),
+      },
+    ]);
+
+    const messages = state.filter(
+      (item): item is Extract<StreamItem, { kind: "assistant_message" }> =>
+        item.kind === "assistant_message",
+    );
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      text: "Done.",
+      messageId: "msg-phase",
+      phase: "final_answer",
+    });
+  });
+
+  it("keeps idless commentary separate from identified final answers", () => {
+    const state = hydrateStreamState([
+      {
+        event: assistantTimeline("Long final.", "pi", "response-long", "final_answer"),
+        timestamp: new Date("2025-01-01T10:02:00Z"),
+      },
+      {
+        event: assistantTimeline("Extension notice.", "pi", undefined, "commentary"),
+        timestamp: new Date("2025-01-01T10:02:01Z"),
+      },
+      {
+        event: assistantTimeline("Short follow-up.", "pi", "response-short", "final_answer"),
+        timestamp: new Date("2025-01-01T10:02:02Z"),
+      },
+    ]);
+
+    expect(
+      state.flatMap((item) =>
+        item.kind === "assistant_message"
+          ? [{ text: item.text, messageId: item.messageId, phase: item.phase }]
+          : [],
+      ),
+    ).toEqual([
+      { text: "Long final.", messageId: "response-long", phase: "final_answer" },
+      { text: "Extension notice.", messageId: undefined, phase: "commentary" },
+      { text: "Short follow-up.", messageId: "response-short", phase: "final_answer" },
+    ]);
   });
 
   it("keeps row identities unique when an assistant message resumes after a tool", () => {

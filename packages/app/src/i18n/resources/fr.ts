@@ -279,6 +279,7 @@ export const fr: TranslationResources = {
     },
   },
   message: {
+    steering: "Orientation de la tâche en cours",
     diagram: {
       diagram: "Diagramme",
       zoomIn: "Zoomer",
@@ -1869,13 +1870,13 @@ export const fr: TranslationResources = {
       defaultSend: {
         label: "Envoi par défaut",
         descriptions: {
-          interrupt:
-            "Lorsque l'agent est en cours d'exécution, Entrée interrompt. Commande/Ctrl+Entrée met en file d'attente.",
+          steer:
+            "Lorsque l'agent est en cours d'exécution, Entrée oriente l'exécution en cours. Commande/Ctrl+Entrée met en file d'attente.",
           queue:
             "Lorsque l'agent est en cours d'exécution, Entrée met en file d'attente. Commande/Ctrl+Entrée envoie.",
         },
         options: {
-          interrupt: "Interrompre",
+          steer: "Orienter",
           queue: "File d'attente",
         },
       },

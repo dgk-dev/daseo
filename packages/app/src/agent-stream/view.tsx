@@ -687,6 +687,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
             client={client}
             isFirstInGroup={layoutItem.isFirstInUserGroup}
             isLastInGroup={layoutItem.isLastInUserGroup}
+            isSteering={item.steering === true}
             isPending={
               item.clientMessageId !== undefined &&
               pendingClientMessageIds.has(item.clientMessageId)

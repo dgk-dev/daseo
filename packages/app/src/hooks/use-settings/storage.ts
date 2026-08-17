@@ -21,7 +21,7 @@ export const APP_SETTINGS_KEY = "@paseo:app-settings";
 export const APP_SETTINGS_QUERY_KEY = ["app-settings"];
 const LEGACY_SETTINGS_KEY = "@paseo:settings";
 
-export type SendBehavior = "interrupt" | "queue";
+export type SendBehavior = "steer" | "queue";
 export type ReleaseChannel = "stable" | "beta";
 export type ServiceUrlBehavior = "ask" | "in-app" | "external";
 export type WorkspaceTitleSource = "title" | "branch";
@@ -90,7 +90,8 @@ const StoredAppSettingsSchema = z.strictObject({
   language: z
     .enum(["system", "ar", "en", "es", "fr", "ja", "ko", "pt-BR", "ru", "zh-CN"])
     .optional(),
-  sendBehavior: z.enum(["interrupt", "queue"]).optional(),
+  // COMPAT(interruptSendBehavior): old "interrupt" now migrates to native steering.
+  sendBehavior: z.enum(["steer", "queue", "interrupt"]).optional(),
   serviceUrlBehavior: z.enum(["ask", "in-app", "external"]).optional(),
   terminalScrollbackLines: z.union([z.number(), z.string()]).optional(),
   useLegacyTerminalRenderer: z.boolean().optional(),
@@ -120,7 +121,7 @@ type StoredAppSettings = z.infer<typeof StoredAppSettingsSchema>;
 export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   theme: "auto",
   language: "system",
-  sendBehavior: "interrupt",
+  sendBehavior: "steer",
   serviceUrlBehavior: "ask",
   terminalScrollbackLines: DEFAULT_TERMINAL_SCROLLBACK_LINES,
   useLegacyTerminalRenderer: false,
@@ -294,8 +295,10 @@ function pickEnumAppSettings(stored: StoredAppSettings): Partial<AppSettings> {
   if (typeof stored.theme === "string" && VALID_THEMES.has(stored.theme)) {
     result.theme = stored.theme;
   }
-  if (stored.sendBehavior === "interrupt" || stored.sendBehavior === "queue") {
+  if (stored.sendBehavior === "steer" || stored.sendBehavior === "queue") {
     result.sendBehavior = stored.sendBehavior;
+  } else if (stored.sendBehavior === "interrupt") {
+    result.sendBehavior = "steer";
   }
   if (
     typeof stored.serviceUrlBehavior === "string" &&

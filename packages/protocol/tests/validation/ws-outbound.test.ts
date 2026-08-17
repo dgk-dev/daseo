@@ -138,6 +138,58 @@ const SourceSchema = z.object({
     );
   });
 
+  it("validates optional assistant message phases in generated envelopes", () => {
+    const envelope = (phase?: string) => ({
+      type: "session",
+      message: {
+        type: "agent_stream",
+        payload: {
+          agentId: "agent-1",
+          timestamp: "2026-08-17T00:00:00.000Z",
+          event: {
+            type: "timeline",
+            provider: "codex",
+            item: {
+              type: "assistant_message",
+              text: "Done.",
+              ...(phase === undefined ? {} : { phase }),
+            },
+          },
+        },
+      },
+    });
+
+    expect(GeneratedWSOutboundMessageSchema.safeParse(envelope()).success).toBe(true);
+    expect(GeneratedWSOutboundMessageSchema.safeParse(envelope("commentary")).success).toBe(true);
+    expect(GeneratedWSOutboundMessageSchema.safeParse(envelope("final_answer")).success).toBe(true);
+    expect(GeneratedWSOutboundMessageSchema.safeParse(envelope("analysis")).success).toBe(false);
+  });
+
+  it("validates steering user messages", () => {
+    const userEnvelope = (steering: unknown) => ({
+      type: "session",
+      message: {
+        type: "agent_stream",
+        payload: {
+          agentId: "agent-1",
+          timestamp: "2026-08-17T00:00:00.000Z",
+          event: {
+            type: "timeline",
+            provider: "pi",
+            item: {
+              type: "user_message",
+              text: "new context",
+              steering,
+            },
+          },
+        },
+      },
+    });
+
+    expect(GeneratedWSOutboundMessageSchema.safeParse(userEnvelope(true)).success).toBe(true);
+    expect(GeneratedWSOutboundMessageSchema.safeParse(userEnvelope("yes")).success).toBe(false);
+  });
+
   it("accepts project config responses with and without setup commit status", () => {
     const payload = {
       requestId: "project-config-read",

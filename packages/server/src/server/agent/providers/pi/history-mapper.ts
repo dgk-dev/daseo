@@ -1,3 +1,4 @@
+import type { AssistantMessagePhase } from "@getpaseo/protocol/agent-types";
 import type { AgentStreamEvent, AgentTimelineItem, ToolCallDetail } from "../../agent-sdk-types.js";
 import type { PiAgentMessage, PiImageContent, PiTextContent } from "./rpc-types.js";
 import {
@@ -52,10 +53,39 @@ export function getUserMessageText(content: string | (PiTextContent | PiImageCon
   return textParts.join("\n\n");
 }
 
+export function getPiTextContentPhase(content: PiTextContent): AssistantMessagePhase | undefined {
+  if (typeof content.textSignature !== "string") return undefined;
+  try {
+    const signature: unknown = JSON.parse(content.textSignature);
+    if (typeof signature !== "object" || signature === null || Array.isArray(signature)) {
+      return undefined;
+    }
+    const phase = Reflect.get(signature, "phase");
+    return phase === "commentary" || phase === "final_answer" ? phase : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function getPiAssistantMessagePhase(
+  message: Extract<PiAgentMessage, { role: "assistant" }>,
+): AssistantMessagePhase | undefined {
+  for (let index = message.content.length - 1; index >= 0; index -= 1) {
+    const content = message.content[index];
+    if (content?.type !== "text") continue;
+    const phase = getPiTextContentPhase(content);
+    if (phase) return phase;
+  }
+  return undefined;
+}
+
 export class PiHistoryMapper {
   private readonly pendingToolCalls = new Map<string, PiTrackedToolCall>();
   private userIndex = 0;
   private assistantIndex = 0;
+  private hasUserInCurrentTurn = false;
+  private sawExplicitAssistantPhase = false;
+  private currentTurnHasFinalAnswer = false;
 
   constructor(
     private readonly provider: string,
@@ -100,6 +130,15 @@ export class PiHistoryMapper {
       return [];
     }
     const userEntry = this.userEntries[this.userIndex - 1];
+    const steering =
+      this.hasUserInCurrentTurn &&
+      this.sawExplicitAssistantPhase &&
+      !this.currentTurnHasFinalAnswer;
+    if (!steering) {
+      this.sawExplicitAssistantPhase = false;
+      this.currentTurnHasFinalAnswer = false;
+    }
+    this.hasUserInCurrentTurn = true;
     return [
       {
         type: "timeline",
@@ -108,6 +147,7 @@ export class PiHistoryMapper {
           type: "user_message",
           text,
           ...(userEntry ? { messageId: userEntry.id } : {}),
+          ...(steering ? { steering: true } : {}),
         },
       },
     ];
@@ -126,7 +166,7 @@ export class PiHistoryMapper {
           {
             type: "timeline",
             provider: this.provider,
-            item: { type: "assistant_message", text },
+            item: { type: "assistant_message", text, phase: "commentary" },
           },
         ]
       : [];
@@ -141,10 +181,18 @@ export class PiHistoryMapper {
       message.responseId || `${this.provider}-history-assistant-${this.assistantIndex}`;
     for (const content of message.content) {
       if (content.type === "text" && content.text) {
+        const phase = getPiTextContentPhase(content);
+        if (phase) this.sawExplicitAssistantPhase = true;
+        if (phase === "final_answer") this.currentTurnHasFinalAnswer = true;
         events.push({
           type: "timeline",
           provider: this.provider,
-          item: { type: "assistant_message", text: content.text, messageId },
+          item: {
+            type: "assistant_message",
+            text: content.text,
+            messageId,
+            ...(phase ? { phase } : {}),
+          },
         });
         continue;
       }

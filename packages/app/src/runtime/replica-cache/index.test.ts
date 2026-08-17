@@ -105,6 +105,7 @@ function message(
   id: string,
   text: string,
   turnOutcome?: "completed" | "failed" | "canceled",
+  phase?: "commentary" | "final_answer",
 ): StreamItem {
   return {
     kind: "assistant_message",
@@ -113,6 +114,7 @@ function message(
     timestamp: new Date("2026-07-18T08:02:00.000Z"),
     timelineCursor: { epoch: "epoch-1", seq: 12 },
     ...(turnOutcome ? { turnOutcome } : {}),
+    ...(phase ? { phase } : {}),
   };
 }
 
@@ -303,6 +305,50 @@ describe("ReplicaCache", () => {
 
     expect(useSessionStore.getState().sessions[SERVER_ID]?.agentStreamTail.get("agent-1")).toEqual([
       message("message-1", "Interrupted", "canceled"),
+    ]);
+  });
+
+  it("restores assistant message phases used by transcript folding", async () => {
+    const storage = new MemoryStorage();
+    const writer = new ReplicaCache(storage);
+    writer.setHosts([SERVER_ID]);
+    seedSession();
+    useSessionStore.getState().setAgentStreamTail(
+      SERVER_ID,
+      new Map([
+        [
+          "agent-1",
+          [
+            createUserMessage({
+              clientMessageId: "steering-user",
+              text: "new context",
+              steering: true,
+              timelineCursor: { epoch: "epoch-1", seq: 11 },
+              timestamp: new Date("2026-07-18T08:01:59.000Z"),
+            }),
+            message("commentary", "Working", undefined, "commentary"),
+            message("final", "Done", "completed", "final_answer"),
+          ],
+        ],
+      ]),
+    );
+    await writer.flush();
+
+    useSessionStore.getState().clearSession(SERVER_ID);
+    const reader = new ReplicaCache(storage);
+    reader.setHosts([SERVER_ID]);
+    await reader.restore();
+
+    expect(useSessionStore.getState().sessions[SERVER_ID]?.agentStreamTail.get("agent-1")).toEqual([
+      createUserMessage({
+        clientMessageId: "steering-user",
+        text: "new context",
+        steering: true,
+        timelineCursor: { epoch: "epoch-1", seq: 11 },
+        timestamp: new Date("2026-07-18T08:01:59.000Z"),
+      }),
+      message("commentary", "Working", undefined, "commentary"),
+      message("final", "Done", "completed", "final_answer"),
     ]);
   });
 

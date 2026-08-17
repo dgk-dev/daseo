@@ -6,12 +6,17 @@ import {
   resizeResidentBrowserWebview,
 } from "@/desktop/browser/resident-webviews";
 import {
+  adoptWorkspaceBrowser,
   createFixedBrowserViewport,
   createWorkspaceBrowser,
   getBrowserRecord,
   useBrowserStore,
 } from "@/desktop/browser/store";
-import { collectAllTabs, useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
+import {
+  collectAllTabs,
+  getFocusedBrowserId,
+  useWorkspaceLayoutStore,
+} from "@/stores/workspace-layout-store";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 
 type BrowserAutomationExecuteRequest = Extract<
@@ -136,6 +141,19 @@ async function handleBrowserAutomationRequest(params: {
   const browserHost = getHost()?.browser;
   const executeAutomationCommand = browserHost?.executeAutomationCommand;
 
+  if (request.command.command === "list_tabs" && serverId && request.workspaceId) {
+    client.sendBrowserAutomationExecuteResponse({
+      type: "browser.automation.execute.response",
+      payload: listWorkspaceBrowserTabsForRequest({
+        request,
+        serverId,
+        browserHost,
+        ensureResidentBrowserWebview,
+      }),
+    });
+    return;
+  }
+
   if (request.command.command === "new_tab") {
     try {
       client.sendBrowserAutomationExecuteResponse({
@@ -209,6 +227,83 @@ async function handleBrowserAutomationRequest(params: {
       payload: normalizeThrownBridgeError(request.requestId, error),
     });
   }
+}
+
+function listWorkspaceBrowserTabsForRequest(params: {
+  request: BrowserAutomationExecuteRequest;
+  serverId: string;
+  browserHost: DesktopHostBridge["browser"] | undefined;
+  ensureResidentBrowserWebview: typeof ensureResidentBrowserWebviewDefault;
+}): BrowserAutomationResponsePayload {
+  const { request, serverId, browserHost, ensureResidentBrowserWebview } = params;
+  const workspaceId = request.workspaceId;
+  if (!workspaceId) {
+    return browserAutomationFailure({
+      requestId: request.requestId,
+      code: "browser_unsupported",
+      message: "Cannot list browser tabs without a workspace context.",
+    });
+  }
+  if (!useWorkspaceLayoutStore.persist.hasHydrated() || !useBrowserStore.persist.hasHydrated()) {
+    return browserAutomationFailure({
+      requestId: request.requestId,
+      code: "browser_timeout",
+      message: "Browser tab state is still restoring on the desktop host.",
+      retryable: true,
+    });
+  }
+
+  const workspaceKey = buildWorkspaceTabPersistenceKey({ serverId, workspaceId });
+  const layout = workspaceKey
+    ? useWorkspaceLayoutStore.getState().layoutByWorkspace[workspaceKey]
+    : null;
+  if (!layout) {
+    return {
+      requestId: request.requestId,
+      ok: true,
+      result: { command: "list_tabs", tabs: [] },
+    };
+  }
+
+  const activeBrowserId = getFocusedBrowserId(layout);
+  const seen = new Set<string>();
+  const tabs = collectAllTabs(layout.root).flatMap((tab) => {
+    if (tab.target.kind !== "browser" || seen.has(tab.target.browserId)) return [];
+    const { browserId } = tab.target;
+    seen.add(browserId);
+    let browser = getBrowserRecord(browserId);
+    if (!browser) {
+      adoptWorkspaceBrowser(browserId);
+      browser = getBrowserRecord(browserId);
+    }
+    if (!browser) return [];
+
+    if (browserHost?.executeAutomationCommand) {
+      try {
+        ensureResidentBrowserWebview({ browserId, workspaceId, url: browser.url });
+      } catch {
+        // The layout remains authoritative even while a guest is reattaching.
+      }
+    }
+    return [
+      {
+        browserId,
+        workspaceId,
+        url: browser.url,
+        title: browser.title,
+        isActive: browserId === activeBrowserId,
+        isLoading: browser.isLoading,
+        canGoBack: browser.canGoBack,
+        canGoForward: browser.canGoForward,
+      },
+    ];
+  });
+
+  return {
+    requestId: request.requestId,
+    ok: true,
+    result: { command: "list_tabs", tabs },
+  };
 }
 
 function resizeBrowserTabForRequest(params: {

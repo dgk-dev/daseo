@@ -307,6 +307,7 @@ const CLAUDE_CAPABILITIES: AgentCapabilityFlags = {
   supportsMcpServers: true,
   supportsReasoningStream: true,
   supportsToolInvocations: true,
+  supportsSteering: true,
   supportsRewindConversation: true,
   supportsRewindFiles: true,
   supportsRewindBoth: true,
@@ -2252,6 +2253,33 @@ class ClaudeAgentSession implements AgentSession {
     return { turnId };
   }
 
+  async steerTurn(
+    prompt: AgentPromptInput,
+    expectedTurnId: string,
+    options?: AgentRunOptions,
+  ): Promise<{ turnId: string }> {
+    if (this.closed) {
+      throw new Error("Claude session is closed");
+    }
+    if (this.activeForegroundTurnId !== expectedTurnId) {
+      throw new Error("Claude turn ended before steering was accepted");
+    }
+    const sdkMessage = this.toSdkUserMessage(prompt);
+    sdkMessage.priority = "next";
+
+    await this.ensureQuery();
+    if (!this.input) {
+      throw new Error("Claude session input stream not initialized");
+    }
+    this.input.push(sdkMessage);
+    setTimeout(() => {
+      if (this.activeForegroundTurnId === expectedTurnId) {
+        this.emitSubmittedUserMessage(sdkMessage, expectedTurnId, options?.clientMessageId, true);
+      }
+    }, 0);
+    return { turnId: expectedTurnId };
+  }
+
   subscribe(callback: (event: AgentStreamEvent) => void): () => void {
     this.subscribers.add(callback);
     return () => {
@@ -3989,6 +4017,7 @@ class ClaudeAgentSession implements AgentSession {
     message: Extract<SDKMessage, { type: "user" }>,
     turnId: string,
     clientMessageId?: string,
+    steering = false,
   ): void {
     const events: AgentStreamEvent[] = [];
     this.appendUserMessageEvents(message, events);
@@ -3999,8 +4028,12 @@ class ClaudeAgentSession implements AgentSession {
     for (const event of events) {
       if (event.type === "timeline") {
         const item =
-          event.item.type === "user_message" && clientMessageId
-            ? { ...event.item, clientMessageId }
+          event.item.type === "user_message"
+            ? {
+                ...event.item,
+                ...(clientMessageId ? { clientMessageId } : {}),
+                ...(steering ? { steering: true } : {}),
+              }
             : event.item;
         this.notifySubscribers({ ...event, item, turnId });
       } else {

@@ -171,6 +171,28 @@ describe("PiCliRuntime", () => {
     });
   });
 
+  test("submits active Pi input with native steering behavior", async () => {
+    const child = createPiChild();
+    const pendingPrompt = capturePendingCommand(child, "prompt");
+    const session = await createRuntime(child).startSession({ cwd: "/workspace/project" });
+
+    const steer = session.steer("new instruction");
+    const promptCommand = await pendingPrompt;
+
+    expect(promptCommand).toMatchObject({
+      type: "prompt",
+      message: "new instruction",
+      streamingBehavior: "steer",
+      id: expect.any(String),
+    });
+
+    writePiResponse(child, promptCommand, { agentInvoked: true });
+    await expect(steer).resolves.toEqual({
+      requestId: promptCommand.id,
+      agentInvoked: true,
+    });
+  });
+
   test("prompt acceptance waits beyond the default timeout during compaction", async () => {
     vi.useFakeTimers();
     const child = createPiChild();

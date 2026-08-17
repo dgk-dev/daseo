@@ -456,6 +456,27 @@ describe("dispatchComposerAgentMessage", () => {
     expect(stream.tail.get("agent") ?? []).toEqual([]);
   });
 
+  it("marks an optimistic active-turn submission as steering", async () => {
+    const client = createFakeSendClient();
+    const stream = createFakeStream();
+
+    await dispatchComposerAgentMessage({
+      client,
+      agentId: "agent",
+      text: "new mid-turn context",
+      attachments: [],
+      encodeImages: passthroughEncodeImages,
+      submission: stream,
+      steering: true,
+    });
+
+    expect(stream.tail.get("agent")?.[0]).toMatchObject({
+      kind: "user_message",
+      text: "new mid-turn context",
+      steering: true,
+    });
+  });
+
   it("does not swallow a transport error when submission state is missing", async () => {
     const transportError = new Error("Connection lost with unknown submission state");
     const client = createFakeSendClient({ rejection: transportError });

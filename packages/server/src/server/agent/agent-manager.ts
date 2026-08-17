@@ -78,6 +78,7 @@ import {
 
 const RELOAD_SESSION_CLOSE_TIMEOUT_MS = 3_000;
 const INTERRUPT_SESSION_TIMEOUT_MS = 2_000;
+const STEERING_TURN_START_TIMEOUT_MS = 15_000;
 const STORED_AGENT_CAPABILITIES: AgentCapabilityFlags = {
   supportsStreaming: false,
   supportsSessionPersistence: true,
@@ -2079,6 +2080,64 @@ export class AgentManager {
     return true;
   }
 
+  /**
+   * Submit a prompt into the exact active provider turn when the provider can
+   * guarantee same-turn steering. Returns false without side effects when the
+   * session is idle or does not support steering.
+   */
+  async trySteerAgentRun(
+    agentId: string,
+    prompt: AgentPromptInput,
+    options?: AgentRunOptions,
+  ): Promise<boolean> {
+    const agent = this.requireSessionAgent(agentId);
+    if (agent.capabilities.supportsSteering !== true || !agent.session.steerTurn) {
+      return false;
+    }
+
+    let activeTurnId = agent.activeForegroundTurnId;
+    if (!activeTurnId && this.runs.hasRun(agentId)) {
+      const startAbort = new AbortController();
+      const startTimeout = setTimeout(
+        () => startAbort.abort("steering turn start timeout"),
+        STEERING_TURN_START_TIMEOUT_MS,
+      );
+      try {
+        await this.waitForAgentRunStart(agentId, { signal: startAbort.signal });
+      } catch {
+        // If the pending run never became steerable, preserve the legacy
+        // replace/start fallback rather than losing the submitted prompt.
+        return false;
+      } finally {
+        clearTimeout(startTimeout);
+      }
+      activeTurnId = agent.activeForegroundTurnId;
+    }
+    if (!activeTurnId) return false;
+
+    const result = await agent.session.steerTurn(prompt, activeTurnId, options);
+    if (result.turnId !== activeTurnId || agent.activeForegroundTurnId !== activeTurnId) {
+      throw new Error(`Agent ${agentId} active turn changed before steering was accepted`);
+    }
+    if (options?.clientMessageId) {
+      this.recordSubmittedPrompt(agent, prompt, options.clientMessageId, {
+        messageId: options.clientMessageId,
+        steering: true,
+      });
+      this.emitState(agent);
+    }
+    this.logger.trace(
+      {
+        agentId,
+        provider: agent.provider,
+        sessionId: agent.persistence?.sessionId ?? undefined,
+        turnId: activeTurnId,
+      },
+      "agent.manager.steer.accepted",
+    );
+    return true;
+  }
+
   async appendTimelineItem(agentId: string, item: AgentTimelineItem): Promise<void> {
     const agent = this.requireAgent(agentId);
     item = limitAgentTimelineItemContent(item);
@@ -4077,7 +4136,7 @@ export class AgentManager {
     agent: ActiveManagedAgent,
     prompt: AgentPromptInput,
     clientMessageId: string,
-    options?: { messageId?: string; providerMessageId?: string },
+    options?: { messageId?: string; providerMessageId?: string; steering?: boolean },
   ): void {
     if (this.timelineStore.getSubmittedUserMessage(agent.id, clientMessageId)) {
       return;
@@ -4089,6 +4148,7 @@ export class AgentManager {
       text: submittedPromptText(prompt),
       clientMessageId,
       ...(options?.messageId ? { messageId: options.messageId } : {}),
+      ...(options?.steering ? { steering: true } : {}),
     };
     this.recordAndDispatchTimelineItem(agent.id, item, agent.provider, undefined, options);
   }

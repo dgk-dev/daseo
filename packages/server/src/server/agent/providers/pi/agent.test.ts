@@ -553,6 +553,113 @@ describe("PiRpcAgentSession", () => {
     ]);
   });
 
+  test("steers multiple prompts through one Pi turn and settles only after the queue drains", async () => {
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    const { turnId } = await session.startTurn("initial task", {
+      clientMessageId: "client-initial",
+    });
+    fakeSession.emit({ type: "turn_start" });
+    fakeSession.finishSubmittedUserMessage({
+      id: "entry-initial",
+      parentId: null,
+      text: "initial task",
+    });
+
+    await expect(
+      session.steerTurn?.("new mid-turn context", turnId, {
+        clientMessageId: "client-steer",
+      }),
+    ).resolves.toEqual({ turnId });
+    expect(fakeSession.steers).toEqual([{ message: "new mid-turn context", imageCount: 0 }]);
+
+    fakeSession.finishLowLevelRun({
+      role: "assistant",
+      content: [{ type: "text", text: "intermediate" }],
+    });
+    expect(events.turnCompletedEvents()).toHaveLength(0);
+
+    fakeSession.finishSubmittedUserMessage({
+      id: "entry-steer",
+      parentId: "entry-initial",
+      text: "new mid-turn context",
+    });
+    fakeSession.finishLowLevelRun({
+      role: "assistant",
+      content: [{ type: "text", text: "final" }],
+    });
+    fakeSession.settleTurn();
+
+    await expect(events.nextTurnCompletion()).resolves.toMatchObject({ turnId });
+    expect(events.turnCompletedEvents()).toHaveLength(1);
+    expect(events.timelineItems().filter((item) => item.type === "user_message")).toEqual([
+      {
+        type: "user_message",
+        text: "initial task",
+        messageId: "entry-initial",
+        clientMessageId: "client-initial",
+      },
+      {
+        type: "user_message",
+        text: "new mid-turn context",
+        messageId: "entry-steer",
+        clientMessageId: "client-steer",
+        steering: true,
+      },
+    ]);
+  });
+
+  test("emits Pi assistant phase metadata when it arrives at message end", async () => {
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    await session.startTurn("hello");
+    fakeSession.emit({
+      type: "message_start",
+      message: { role: "assistant", content: [], responseId: "response-final" },
+    });
+    fakeSession.emit({
+      type: "message_update",
+      message: { role: "assistant", content: [], responseId: "response-final" },
+      assistantMessageEvent: { type: "text_delta", delta: "Final answer." },
+    });
+    fakeSession.emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        responseId: "response-final",
+        content: [
+          {
+            type: "text",
+            text: "Final answer.",
+            textSignature: JSON.stringify({
+              v: 1,
+              id: "response-final",
+              phase: "final_answer",
+            }),
+          },
+        ],
+      },
+    });
+    fakeSession.finishTurn();
+
+    await events.nextTurnCompletion();
+    expect(events.timelineItems()).toEqual([
+      {
+        type: "assistant_message",
+        text: "Final answer.",
+        messageId: "response-final",
+      },
+      {
+        type: "assistant_message",
+        text: "",
+        messageId: "response-final",
+        phase: "final_answer",
+      },
+    ]);
+  });
+
   test("streams Pi task calls as sub-agent cards with lifecycle status", async () => {
     const { pi, session, events } = await createSession();
     const fakeSession = pi.latestSession();
@@ -787,10 +894,42 @@ describe("PiRpcAgentSession", () => {
     expect(events.timelineAndCompletionEvents()).toEqual([
       {
         type: "timeline",
-        item: { type: "assistant_message", text: "Extension command output" },
+        item: {
+          type: "assistant_message",
+          text: "Extension command output",
+          phase: "commentary",
+        },
       },
       { type: "turn_completed" },
     ]);
+  });
+
+  test("does not complete an active Pi turn for a steered extension message", async () => {
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    const { turnId } = await session.startTurn("keep working");
+    fakeSession.emit({ type: "turn_start" });
+    await session.steerTurn?.("/show-status", turnId, {
+      clientMessageId: "client-extension-steer",
+    });
+    fakeSession.emit({
+      type: "message_end",
+      message: {
+        role: "custom",
+        content: [{ type: "text", text: "Still working" }],
+      },
+    });
+
+    expect(events.turnCompletedEvents()).toHaveLength(0);
+    expect(events.timelineItems()).toContainEqual({
+      type: "assistant_message",
+      text: "Still working",
+      phase: "commentary",
+    });
+
+    fakeSession.finishTurn();
+    await expect(events.nextTurnCompletion()).resolves.toMatchObject({ turnId });
   });
 
   test("canceling a silent Pi extension command leaves the session usable", async () => {

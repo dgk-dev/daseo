@@ -40,11 +40,14 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
 2. **Bidirectional browser workspace sync** — `browser.remote.open/list/close` RPCs let
    phones open real desktop tabs, continuously discover tabs created by Mac UI or agent
    browser tools, refresh URL/title/navigation/loading state, and close the authoritative
-   Mac tab. Mobile viewers reconcile from the Mac SSOT on focus and every two seconds;
-   transient disconnects preserve local viewers. Workspace header ⋯ menu, tabs-row ∨ menu,
-   and pinned globe launcher expose `New browser` when the feature flag is on. Key files:
-   `packages/app/src/screens/workspace/workspace-screen.tsx` and
-   `packages/app/src/desktop/browser/remote-tabs-sync.ts`.
+   Mac tab. The desktop workspace layout—not only currently mounted webviews—is the tab-list
+   SSOT; listing materializes every persisted browser guest without parking the visible guest,
+   and mobile mirrors the authoritative active browser. Mobile viewers reconcile on focus and
+   every two seconds; transient disconnects or host hydration preserve local viewers. Workspace
+   header ⋯ menu, tabs-row ∨ menu, and pinned globe launcher expose `New browser` when the feature
+   flag is on. Key files: `packages/app/src/screens/workspace/workspace-screen.tsx`,
+   `packages/app/src/desktop/browser/automation/handler.ts`, `resident-webviews.ts`, and
+   `remote-tabs-sync.ts`.
 3. **Rebranding (display-only)** — the sole DΛ geometry source is
    `packages/app/assets/brand/daseo-mark.svg`; `npm run brand:generate` deterministically owns
    the generated React Native path module plus native, PWA/status, notification, splash, macOS,
@@ -63,15 +66,18 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
    `packages/app/src/styles/theme.ts` (`darkDaseoTheme`) and selectable in appearance
    settings on desktop and mobile.
 5. **Provider-neutral completed-turn disclosure** — completed turns show the user prompt and
-   the complete final assistant block group, while thought/tool/todo/activity/compaction and
-   intermediate assistant commentary fold behind one expandable "Worked for …" row. Expansion
-   restores the original stream items and order losslessly. Claude, Codex/ChatGPT, Grok-through-Pi,
-   OpenCode, and other providers share the same UI-level turn contract; `blockGroupId` is used when
-   available but never required; adjacent ungrouped assistant rows are preserved as one final
-   response. Active, partial/detached, permission-blocked, failed, and canceled turns stay open,
-   while error and failed/canceled tool rows remain visible. Terminal outcomes survive canonical
-   hydration, and provider message identity preserves manual expansion across renderer-row changes.
-   The projection also spans the settled/live buffer boundary. Key files:
+   every provider-authored `final_answer`, while thought/tool/todo/activity/compaction and explicit
+   `commentary` fold behind one expandable "Worked for …" row. The optional phase follows Codex's
+   official `commentary | final_answer` contract through Pi/Codex live events, history, coalescing,
+   protocol validation, canonical projection, replica cache, and rendering; phase-less providers
+   retain the legacy final-suffix fallback. Expansion restores the original stream items and order
+   losslessly. Claude, Codex/ChatGPT, Grok-through-Pi, OpenCode, and other providers share the same
+   UI contract; `blockGroupId` is used when available but never required. Active,
+   partial/detached, permission-blocked, failed, and canceled turns stay open, while error and
+   failed/canceled tool rows remain visible. Terminal outcomes survive canonical hydration, and
+   provider message identity preserves manual expansion across renderer-row changes. The projection
+   also spans the settled/live buffer boundary. Key files: `packages/protocol/src/agent-types.ts`,
+   `packages/server/src/server/agent/providers/{codex-app-server-agent,pi/agent}.ts`,
    `packages/app/src/agent-stream/collapsed-work.ts`, `view.tsx`, `collapsed-work-row.tsx`, and
    `packages/app/src/types/stream.ts`.
 6. **Independent Android push notifications** — the personal Android variant gets a native
@@ -110,6 +116,16 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     between the send readiness check and callback, its final frame is dropped as normal disconnect
     control flow instead of surfacing a false daemon `Client error`. Failures on sockets that are
     still open remain strict. Key file: `packages/server/src/server/relay-transport.ts`.
+12. **Provider-native active-turn steering** — ordinary prompts sent while a supported agent is
+    running join that exact turn instead of canceling and replacing it. Codex uses `turn/steer`
+    with the native expected turn id, Pi uses RPC `streamingBehavior: "steer"` and waits for
+    `agent_settled`, and Claude pushes a priority-`next` SDK user message. Capability negotiation
+    keeps unsupported or older providers on the queue/replacement fallback without model-specific
+    branches. Steering identity survives optimistic UI, canonical echo, cache, history, and
+    completed-work folding, with a subtle user-message marker. Key files:
+    `packages/server/src/server/agent/{agent-prompt,agent-manager,agent-sdk-types}.ts`,
+    `packages/server/src/server/agent/providers/{codex-app-server-agent,claude/agent,pi/agent}.ts`,
+    `packages/app/src/composer/`, and `packages/app/src/types/stream.ts`.
 
 ## Build & ship (Mac mini)
 

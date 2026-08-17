@@ -278,6 +278,7 @@ export const es: TranslationResources = {
     },
   },
   message: {
+    steering: "Guiando la tarea actual",
     diagram: {
       diagram: "Diagrama",
       zoomIn: "Acercar",
@@ -1866,13 +1867,13 @@ export const es: TranslationResources = {
       defaultSend: {
         label: "Envío predeterminado",
         descriptions: {
-          interrupt:
-            "Cuando el agente se está ejecutando, Enter interrumpe. Command/Ctrl+Enter pone en cola.",
+          steer:
+            "Cuando el agente se está ejecutando, Enter guía la ejecución actual. Command/Ctrl+Enter pone en cola.",
           queue:
             "Cuando el agente se está ejecutando, Enter pone en cola. Command/Ctrl+Enter envía.",
         },
         options: {
-          interrupt: "Interrumpir",
+          steer: "Guiar",
           queue: "Cola",
         },
       },

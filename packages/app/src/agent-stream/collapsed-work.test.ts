@@ -300,6 +300,93 @@ describe("collapseCompletedWork", () => {
     expect(result.summaryTurnKeyByAssistantId.get("final-a")).toBe("provider-final-b");
   });
 
+  test("keeps explicit final answers visible across an autonomous extension follow-up", () => {
+    const user = item("user_message");
+    const work = item("tool_call");
+    const detailedAnswer = assistant("detailed-answer", {
+      text: "The full researched conclusion.",
+      messageId: "response-detailed",
+      phase: "final_answer",
+    });
+    const extensionNotice = assistant("extension-notice", {
+      text: "Content fetched for 9/10 URLs.",
+      phase: "commentary",
+    });
+    const followUpThought = item("thought");
+    const followUp = assistant("follow-up", {
+      text: "The conclusion is unchanged.",
+      messageId: "response-follow-up",
+      phase: "final_answer",
+    });
+    const compaction = item("compaction");
+    const items = [
+      user,
+      work,
+      detailedAnswer,
+      extensionNotice,
+      followUpThought,
+      followUp,
+      compaction,
+    ];
+
+    const result = collapseCompletedWork({
+      items,
+      expandedTurnKeys: NONE,
+      keepLastTurnExpanded: false,
+    });
+
+    expect(result.items).toEqual([user, detailedAnswer, followUp, compaction]);
+    expect(result.workCountByTurnKey.get("response-follow-up")).toBe(3);
+    expect(result.summaryTurnKeyByAssistantId.get("detailed-answer")).toBe("response-follow-up");
+  });
+
+  test("keeps steering prompts inside the active turn while folding prior commentary", () => {
+    const initial = item("user_message");
+    const commentary = assistant("commentary", {
+      text: "I am checking it.",
+      phase: "commentary",
+    });
+    const work = item("tool_call");
+    const steering = {
+      ...item("user_message"),
+      id: "steering-user",
+      steering: true,
+    } as StreamItem;
+    const finalAnswer = assistant("final", {
+      text: "Done.",
+      messageId: "final-response",
+      phase: "final_answer",
+      turnOutcome: "completed",
+    });
+
+    const result = collapseCompletedWork({
+      items: [initial, commentary, work, steering, finalAnswer],
+      expandedTurnKeys: NONE,
+      keepLastTurnExpanded: false,
+    });
+
+    expect(result.items).toEqual([initial, steering, finalAnswer]);
+    expect(result.workCountByTurnKey.get("final-response")).toBe(2);
+  });
+
+  test("keeps commentary visible when a provider supplies no final answer", () => {
+    const user = item("user_message");
+    const work = item("tool_call");
+    const commentary = assistant("commentary-only", {
+      text: "The extension command completed.",
+      phase: "commentary",
+    });
+
+    const result = collapseCompletedWork({
+      items: [user, work, commentary],
+      expandedTurnKeys: NONE,
+      keepLastTurnExpanded: false,
+    });
+
+    expect(result.items).toEqual([user, commentary]);
+    expect(result.workCountByTurnKey.get("commentary-only")).toBe(1);
+  });
+
   test("preserves manual expansion when canonical hydration changes renderer row ids", () => {
     const stableMessageId = "provider-final-message";
     const liveItems = [

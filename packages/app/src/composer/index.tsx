@@ -251,6 +251,7 @@ function buildAgentStateSelector(serverId: string, agentId: string) {
       totalCostUsd: agent?.lastUsage?.totalCostUsd ?? null,
       model: agent?.model ?? null,
       provider: agent?.provider ?? null,
+      supportsSteering: agent?.capabilities.supportsSteering === true,
     };
   };
 }
@@ -1344,6 +1345,9 @@ export function Composer({
       if (!client) {
         throw new Error(t("workspace.terminal.hostDisconnected"));
       }
+      const targetAgent = useSessionStore.getState().sessions[serverId]?.agents.get(targetAgentId);
+      const steering =
+        targetAgent?.status === "running" && targetAgent.capabilities.supportsSteering === true;
       await dispatchComposerAgentMessage({
         client,
         agentId: targetAgentId,
@@ -1354,6 +1358,7 @@ export function Composer({
         }),
         encodeImages,
         submission: createMessageSubmissionWriter(serverId),
+        steering,
       });
       onAttentionPromptSend?.();
     };
@@ -1373,6 +1378,10 @@ export function Composer({
   const settleAgentCancellation = useSessionStore((state) => state.settleAgentCancellation);
   const isAgentRunning = hasActiveTurn;
   const hasAgent = agentState.status !== null;
+  const defaultSendBehavior =
+    appSettings.sendBehavior === "steer" && !agentState.supportsSteering
+      ? "queue"
+      : appSettings.sendBehavior;
 
   const queueWriter = useMemo<QueueWriter>(
     () => ({
@@ -1755,7 +1764,8 @@ export function Composer({
   const handleSendQueuedNow = useCallback(
     async (id: string) => {
       if (!sendAgentMessageRef.current && !onSubmitMessageRef.current) return;
-      // Reuse the regular send path; server-side send atomically interrupts any active run.
+      // Reuse the regular send path; steer-capable providers accept this into
+      // the active turn, while other providers preserve their legacy behavior.
       const result = await sendQueuedComposerMessageNow({
         agentId,
         messageId: id,
@@ -2217,7 +2227,7 @@ export function Composer({
                 voiceServerId={serverId}
                 voiceAgentId={agentId}
                 isAgentRunning={isAgentRunning}
-                defaultSendBehavior={appSettings.sendBehavior}
+                defaultSendBehavior={defaultSendBehavior}
                 onQueue={handleQueue}
                 onSubmitLoadingPress={submitLoadingPressHandler}
                 onKeyPress={handleCommandKeyPress}

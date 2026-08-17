@@ -116,14 +116,31 @@ class PiCliRuntimeSession implements PiRuntimeSession {
     message: string,
     images?: Array<{ type: "image"; data: string; mimeType: string }>,
   ): Promise<PiPromptAck> {
+    // Pi can stay active for compaction or retry after emitting agent_end.
+    // Queue a prompt sent in that settlement gap instead of rejecting it.
+    return await this.sendPrompt(message, images, "followUp");
+  }
+
+  async steer(
+    message: string,
+    images?: Array<{ type: "image"; data: string; mimeType: string }>,
+  ): Promise<PiPromptAck> {
+    // `prompt` + streamingBehavior preserves extension-command handling while
+    // giving ordinary input Pi's native same-run steering semantics.
+    return await this.sendPrompt(message, images, "steer");
+  }
+
+  private async sendPrompt(
+    message: string,
+    images: Array<{ type: "image"; data: string; mimeType: string }> | undefined,
+    streamingBehavior: "steer" | "followUp",
+  ): Promise<PiPromptAck> {
     const { id: requestId, promise } = this.process.startRequest(
       {
         type: "prompt",
         message,
         ...(images?.length ? { images } : {}),
-        // Pi can stay active for compaction or retry after emitting agent_end.
-        // Queue a prompt sent in that settlement gap instead of rejecting it.
-        streamingBehavior: "followUp",
+        streamingBehavior,
       },
       PI_PROMPT_REQUEST_TIMEOUT_MS,
     );

@@ -3,8 +3,9 @@ import type { StreamItem } from "@/types/stream";
 /**
  * Provider-neutral completed-turn projection. The canonical stream remains
  * untouched; only render output changes. Completed intermediate activity folds
- * behind one summary row, while the entire final assistant block group stays
- * visible. Expanding a row therefore restores the exact original item order.
+ * behind one summary row, while explicit final answers stay visible. Messages
+ * without phase metadata retain the legacy positional fallback. Expanding a row
+ * therefore restores the exact original item order.
  */
 
 const WORK_KINDS = new Set<StreamItem["kind"]>([
@@ -51,11 +52,20 @@ function splitTurns(items: readonly StreamItem[]): Turn[] {
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index]!;
     if (item.kind === "user_message") {
+      if (current && item.steering) {
+        // Codex and Pi persist steering as another user item inside the same
+        // provider turn. Keep it visible without inventing a new turn boundary.
+        continue;
+      }
       if (current) {
         current.end = index;
         turns.push(current);
       }
-      current = { start: index, end: items.length, hasUserMessage: true };
+      current = {
+        start: index,
+        end: items.length,
+        hasUserMessage: item.steering !== true,
+      };
       continue;
     }
     if (!current) {
@@ -94,34 +104,73 @@ function getAssistantIndices(items: readonly StreamItem[], turn: Turn): number[]
   return assistantIndices;
 }
 
-function getFinalGroupIndices(
-  items: readonly StreamItem[],
-  assistantIndices: readonly number[],
-  lastAssistantIndex: number,
-): Set<number> {
-  const lastAssistant = items[lastAssistantIndex];
-  const blockGroupId =
-    lastAssistant?.kind === "assistant_message" ? lastAssistant.blockGroupId : undefined;
+function addLogicalAssistantGroup(input: {
+  items: readonly StreamItem[];
+  assistantIndices: readonly number[];
+  terminalIndex: number;
+  visibleIndices: Set<number>;
+}): void {
+  const terminal = input.items[input.terminalIndex];
+  const blockGroupId = terminal?.kind === "assistant_message" ? terminal.blockGroupId : undefined;
   if (blockGroupId) {
     // Markdown streaming may promote one logical assistant response into
     // several render items. blockGroupId is authoritative when present;
     // messageId is not, because providers can reuse one message id before and
     // after tool activity.
-    return new Set(
-      assistantIndices.filter((index) => {
-        const assistant = items[index];
-        return assistant?.kind === "assistant_message" && assistant.blockGroupId === blockGroupId;
-      }),
-    );
+    for (const index of input.assistantIndices) {
+      const assistant = input.items[index];
+      if (assistant?.kind === "assistant_message" && assistant.blockGroupId === blockGroupId) {
+        input.visibleIndices.add(index);
+      }
+    }
+    return;
   }
 
-  // Older/custom providers may emit the final response as adjacent assistant
-  // rows without grouping metadata. Preserve the entire contiguous suffix;
-  // a tool/thought/activity boundary still separates intermediate commentary.
-  const finalGroupIndices = new Set([lastAssistantIndex]);
-  for (let index = lastAssistantIndex - 1; index >= 0; index -= 1) {
-    if (items[index]?.kind !== "assistant_message") break;
-    finalGroupIndices.add(index);
+  // Older/custom providers may emit one response as adjacent assistant rows
+  // without grouping metadata. A work item still separates distinct output.
+  input.visibleIndices.add(input.terminalIndex);
+  for (let index = input.terminalIndex - 1; index >= 0; index -= 1) {
+    if (input.items[index]?.kind !== "assistant_message") break;
+    input.visibleIndices.add(index);
+  }
+}
+
+function getFinalGroupIndices(
+  items: readonly StreamItem[],
+  assistantIndices: readonly number[],
+  lastAssistantIndex: number,
+): Set<number> {
+  const finalGroupIndices = new Set<number>();
+  let hasExplicitFinalAnswer = false;
+  for (const index of assistantIndices) {
+    const assistant = items[index];
+    if (assistant?.kind !== "assistant_message" || assistant.phase !== "final_answer") {
+      continue;
+    }
+    hasExplicitFinalAnswer = true;
+    addLogicalAssistantGroup({
+      items,
+      assistantIndices,
+      terminalIndex: index,
+      visibleIndices: finalGroupIndices,
+    });
+  }
+
+  const lastAssistant = items[lastAssistantIndex];
+  // Codex treats absent phase as "unknown" for provider compatibility. Keep
+  // the legacy last-message fallback unless the provider explicitly says the
+  // trailing output is commentary and already supplied a final answer.
+  if (
+    !hasExplicitFinalAnswer ||
+    lastAssistant?.kind !== "assistant_message" ||
+    lastAssistant.phase !== "commentary"
+  ) {
+    addLogicalAssistantGroup({
+      items,
+      assistantIndices,
+      terminalIndex: lastAssistantIndex,
+      visibleIndices: finalGroupIndices,
+    });
   }
   return finalGroupIndices;
 }
@@ -132,11 +181,13 @@ function getTurnDetails(
   finalGroupIndices: ReadonlySet<number>,
 ): StreamItem[] {
   const details: StreamItem[] = [];
+  const lastFinalAssistantIndex = Math.max(...finalGroupIndices);
   for (let index = turn.start; index < turn.end; index += 1) {
     const item = items[index]!;
     const isIntermediateAssistant =
       item.kind === "assistant_message" && !finalGroupIndices.has(index);
-    if (isIntermediateAssistant || WORK_KINDS.has(item.kind)) details.push(item);
+    const isWorkBeforeFinal = WORK_KINDS.has(item.kind) && index < lastFinalAssistantIndex;
+    if (isIntermediateAssistant || isWorkBeforeFinal) details.push(item);
   }
   return details;
 }
@@ -159,6 +210,9 @@ function projectTurn(items: readonly StreamItem[], turn: Turn): TurnProjection |
   if (hasExceptionalOutcome) return null;
 
   const finalGroupIndices = getFinalGroupIndices(items, assistantIndices, lastAssistantIndex);
+  const turnEndAssistantIndex = Math.max(...finalGroupIndices);
+  const turnEndAssistant = items[turnEndAssistantIndex];
+  if (!turnEndAssistant || turnEndAssistant.kind !== "assistant_message") return null;
   const details = getTurnDetails(items, turn, finalGroupIndices);
   // Loading thoughts, running tools, and loading compaction markers indicate a
   // partial projection even if agent liveness briefly reports idle.
@@ -173,8 +227,8 @@ function projectTurn(items: readonly StreamItem[], turn: Turn): TurnProjection |
     // Provider message identity survives block promotion and canonical
     // hydration more reliably than a renderer-row id, preserving manual
     // expansion state while the transcript reconciles.
-    turnKey: lastAssistant.messageId ?? lastAssistant.blockGroupId ?? lastAssistant.id,
-    turnEndAssistantId: lastAssistant.id,
+    turnKey: turnEndAssistant.messageId ?? turnEndAssistant.blockGroupId ?? turnEndAssistant.id,
+    turnEndAssistantId: turnEndAssistant.id,
     summaryAnchorId: summaryAnchor.id,
     hideableDetails,
   };

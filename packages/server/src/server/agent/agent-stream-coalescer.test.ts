@@ -46,6 +46,7 @@ function assistant(
     provider?: AgentProvider;
     turnId?: string;
     messageId?: string;
+    phase?: "commentary" | "final_answer";
   },
 ): Extract<AgentStreamEvent, { type: "timeline" }> {
   return timeline(
@@ -53,6 +54,7 @@ function assistant(
       type: "assistant_message",
       text,
       ...(options?.messageId !== undefined ? { messageId: options.messageId } : {}),
+      ...(options?.phase !== undefined ? { phase: options.phase } : {}),
     },
     options,
   );
@@ -120,6 +122,96 @@ describe("AgentStreamCoalescer", () => {
         agentId: "agent-1",
         item: { type: "assistant_message", text: "hello" },
         provider: "codex",
+      },
+    ]);
+  });
+
+  test("preserves a phase supplied before, during, or after assistant text", async () => {
+    const { coalescer, flushes } = createHarness();
+
+    coalescer.handle(
+      "agent-before",
+      assistant("first", {
+        messageId: "message-before",
+        phase: "commentary",
+      }),
+    );
+    coalescer.handle(
+      "agent-before",
+      assistant(" chunk", {
+        messageId: "message-before",
+      }),
+    );
+    coalescer.handle(
+      "agent-after",
+      assistant("final", {
+        messageId: "message-after",
+      }),
+    );
+    coalescer.handle(
+      "agent-after",
+      assistant("", {
+        messageId: "message-after",
+        phase: "final_answer",
+      }),
+    );
+
+    await vi.advanceTimersByTimeAsync(60);
+    expect(flushes).toEqual([
+      {
+        agentId: "agent-before",
+        item: {
+          type: "assistant_message",
+          text: "first chunk",
+          messageId: "message-before",
+          phase: "commentary",
+        },
+        provider: "codex",
+      },
+      {
+        agentId: "agent-after",
+        item: {
+          type: "assistant_message",
+          text: "final",
+          messageId: "message-after",
+          phase: "final_answer",
+        },
+        provider: "codex",
+      },
+    ]);
+  });
+
+  test("does not merge explicitly different assistant phases", async () => {
+    const { coalescer, flushes } = createHarness();
+
+    coalescer.handle(
+      "agent-1",
+      assistant("working", {
+        messageId: "message-1",
+        phase: "commentary",
+      }),
+    );
+    coalescer.handle(
+      "agent-1",
+      assistant("done", {
+        messageId: "message-1",
+        phase: "final_answer",
+      }),
+    );
+
+    await vi.advanceTimersByTimeAsync(60);
+    expect(flushes.map((flush) => flush.item)).toEqual([
+      {
+        type: "assistant_message",
+        text: "working",
+        messageId: "message-1",
+        phase: "commentary",
+      },
+      {
+        type: "assistant_message",
+        text: "done",
+        messageId: "message-1",
+        phase: "final_answer",
       },
     ]);
   });

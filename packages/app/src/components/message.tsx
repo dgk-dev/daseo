@@ -133,6 +133,7 @@ interface UserMessageProps {
   isLastInGroup?: boolean;
   isPending?: boolean;
   disableOuterSpacing?: boolean;
+  isSteering?: boolean;
 }
 
 const MessageOuterSpacingContext = createContext(false);
@@ -399,6 +400,12 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: STREAM_METADATA_FONT_SIZE,
   },
+  steeringLabel: {
+    alignSelf: "flex-end",
+    marginTop: theme.spacing[1],
+    color: theme.colors.foregroundMuted,
+    fontSize: STREAM_METADATA_FONT_SIZE,
+  },
 }));
 
 interface UserMessageImagePillProps {
@@ -432,6 +439,7 @@ export const UserMessage = memo(function UserMessage({
   isLastInGroup = true,
   isPending = false,
   disableOuterSpacing,
+  isSteering = false,
 }: UserMessageProps) {
   const isCompact = useIsCompactFormFactor();
   const { t } = useTranslation();
@@ -535,6 +543,14 @@ export const UserMessage = memo(function UserMessage({
           {hasText ? (
             <Text selectable style={userMessageStylesheet.text}>
               {message}
+            </Text>
+          ) : null}
+          {isSteering ? (
+            <Text
+              accessibilityLabel={t("message.steering")}
+              style={userMessageStylesheet.steeringLabel}
+            >
+              {t("message.steering")}
             </Text>
           ) : null}
         </View>

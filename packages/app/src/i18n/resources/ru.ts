@@ -277,6 +277,7 @@ export const ru: TranslationResources = {
     },
   },
   message: {
+    steering: "Уточнение текущей задачи",
     diagram: {
       diagram: "Диаграмма",
       zoomIn: "Приблизить",
@@ -1856,11 +1857,12 @@ export const ru: TranslationResources = {
       defaultSend: {
         label: "Отправка по умолчанию",
         descriptions: {
-          interrupt: "Когда агент работает, Enter прерывает. Command/Ctrl+Enter ставит в очередь.",
+          steer:
+            "Когда агент работает, Enter направляет текущий запуск. Command/Ctrl+Enter ставит в очередь.",
           queue: "Когда агент работает, Enter ставит в очередь. Command/Ctrl+Enter отправляет.",
         },
         options: {
-          interrupt: "Прерывать",
+          steer: "Направить",
           queue: "Очередь",
         },
       },

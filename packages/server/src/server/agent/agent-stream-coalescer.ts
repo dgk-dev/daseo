@@ -66,6 +66,10 @@ function isTextTimelineItem(item: CoalescableTimelineItem): item is CoalescableT
   return item.type === "assistant_message" || item.type === "reasoning";
 }
 
+function hasAssistantMetadata(item: CoalescableTextItem): boolean {
+  return item.type === "assistant_message" && item.phase !== undefined;
+}
+
 function isTerminalToolCall(item: CoalescableTimelineItem): boolean {
   return (
     item.type === "tool_call" &&
@@ -78,7 +82,11 @@ function isSameTextStream(previous: PendingTextEntry, next: PendingTextEntry): b
     return false;
   }
   if (previous.item.type === "assistant_message" && next.item.type === "assistant_message") {
-    return previous.item.messageId === next.item.messageId;
+    const phaseCompatible =
+      previous.item.phase === undefined ||
+      next.item.phase === undefined ||
+      previous.item.phase === next.item.phase;
+    return previous.item.messageId === next.item.messageId && phaseCompatible;
   }
   return true;
 }
@@ -100,7 +108,11 @@ export class AgentStreamCoalescer {
       return false;
     }
 
-    if (isTextTimelineItem(event.item) && event.item.text === "") {
+    if (
+      isTextTimelineItem(event.item) &&
+      event.item.text === "" &&
+      !hasAssistantMetadata(event.item)
+    ) {
       return true;
     }
 
@@ -256,6 +268,13 @@ export class AgentStreamCoalescer {
         previous.turnId === entry.turnId
       ) {
         previous.text += entry.text;
+        if (
+          previous.item.type === "assistant_message" &&
+          entry.item.type === "assistant_message" &&
+          entry.item.phase !== undefined
+        ) {
+          previous.item = { ...previous.item, phase: entry.item.phase };
+        }
         continue;
       }
 

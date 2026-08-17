@@ -1,6 +1,7 @@
 import type {
   AgentProviderNotice,
   AgentTaskItem,
+  AssistantMessagePhase,
   ProviderOptions,
   ToolPolicy,
 } from "@getpaseo/protocol/agent-types";
@@ -187,6 +188,8 @@ export interface AgentCapabilityFlags {
   supportsNativePaseoTools?: boolean;
   supportsReasoningStream: boolean;
   supportsToolInvocations: boolean;
+  /** Provider can accept user input into the currently active turn without interruption. */
+  supportsSteering?: boolean;
   supportsRewindConversation?: boolean;
   supportsRewindFiles?: boolean;
   supportsRewindBoth?: boolean;
@@ -380,8 +383,20 @@ export interface CompactionTimelineItem {
 }
 
 export type AgentTimelineItem =
-  | { type: "user_message"; text: string; messageId?: string; clientMessageId?: string }
-  | { type: "assistant_message"; text: string; messageId?: string }
+  | {
+      type: "user_message";
+      text: string;
+      messageId?: string;
+      clientMessageId?: string;
+      /** This input was accepted into an already-active turn. */
+      steering?: boolean;
+    }
+  | {
+      type: "assistant_message";
+      text: string;
+      messageId?: string;
+      phase?: AssistantMessagePhase;
+    }
   | { type: "reasoning"; text: string }
   | ToolCallTimelineItem
   | { type: "todo"; items: AgentTaskItem[] }
@@ -629,6 +644,15 @@ export interface AgentSession {
   readonly features?: AgentFeature[];
   run(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<AgentRunResult>;
   startTurn(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<{ turnId: string }>;
+  /**
+   * Submit input to the exact active turn without interrupting it. Providers
+   * that cannot guarantee same-turn delivery leave this method undefined.
+   */
+  steerTurn?(
+    prompt: AgentPromptInput,
+    expectedTurnId: string,
+    options?: AgentRunOptions,
+  ): Promise<{ turnId: string }>;
   subscribe(callback: (event: AgentStreamEvent) => void): () => void;
   streamHistory(): AsyncGenerator<AgentStreamEvent>;
   getRuntimeInfo(): Promise<AgentRuntimeInfo>;

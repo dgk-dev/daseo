@@ -56,6 +56,7 @@ const StoredTimelineItemSchema = z.discriminatedUnion("kind", [
     kind: z.literal("user_message"),
     clientMessageId: z.string().optional(),
     messageId: z.string().optional(),
+    steering: z.boolean().optional(),
     text: z.string(),
   }),
   z.strictObject({
@@ -65,6 +66,7 @@ const StoredTimelineItemSchema = z.discriminatedUnion("kind", [
     text: z.string(),
     blockGroupId: z.string().optional(),
     blockIndex: z.number().int().nonnegative().optional(),
+    phase: z.enum(["commentary", "final_answer"]).optional(),
     turnOutcome: z.enum(["completed", "failed", "canceled"]).optional(),
   }),
   z.strictObject({
@@ -325,27 +327,43 @@ function timelineBase(item: StreamItem) {
   };
 }
 
+function serializeUserMessage(
+  item: Extract<StreamItem, { kind: "user_message" }>,
+  base: ReturnType<typeof timelineBase>,
+): Extract<StoredTimelineItem, { kind: "user_message" }> {
+  return {
+    ...base,
+    kind: item.kind,
+    ...(item.clientMessageId ? { clientMessageId: item.clientMessageId } : {}),
+    ...(item.messageId ? { messageId: item.messageId } : {}),
+    ...(item.steering ? { steering: true } : {}),
+    text: item.text,
+  };
+}
+
+function serializeAssistantMessage(
+  item: Extract<StreamItem, { kind: "assistant_message" }>,
+  base: ReturnType<typeof timelineBase>,
+): Extract<StoredTimelineItem, { kind: "assistant_message" }> {
+  return {
+    ...base,
+    kind: item.kind,
+    ...(item.messageId ? { messageId: item.messageId } : {}),
+    text: item.text,
+    ...(item.blockGroupId ? { blockGroupId: item.blockGroupId } : {}),
+    ...(item.blockIndex !== undefined ? { blockIndex: item.blockIndex } : {}),
+    ...(item.phase ? { phase: item.phase } : {}),
+    ...(item.turnOutcome ? { turnOutcome: item.turnOutcome } : {}),
+  };
+}
+
 function serializeTimelineItem(item: StreamItem): StoredTimelineItem | null {
   const base = timelineBase(item);
   switch (item.kind) {
     case "user_message":
-      return {
-        ...base,
-        kind: item.kind,
-        ...(item.clientMessageId ? { clientMessageId: item.clientMessageId } : {}),
-        ...(item.messageId ? { messageId: item.messageId } : {}),
-        text: item.text,
-      };
+      return serializeUserMessage(item, base);
     case "assistant_message":
-      return {
-        ...base,
-        kind: item.kind,
-        ...(item.messageId ? { messageId: item.messageId } : {}),
-        text: item.text,
-        ...(item.blockGroupId ? { blockGroupId: item.blockGroupId } : {}),
-        ...(item.blockIndex !== undefined ? { blockIndex: item.blockIndex } : {}),
-        ...(item.turnOutcome ? { turnOutcome: item.turnOutcome } : {}),
-      };
+      return serializeAssistantMessage(item, base);
     case "thought":
       return { ...base, kind: item.kind, text: item.text, status: item.status };
     case "todo_list":
@@ -392,31 +410,51 @@ function serializeTimelineItem(item: StreamItem): StoredTimelineItem | null {
   }
 }
 
-function deserializeTimelineItem(item: StoredTimelineItem): StreamItem {
-  const base = {
+function deserializeTimelineBase(item: StoredTimelineItem) {
+  return {
     id: item.id,
     ...(item.timelineCursor ? { timelineCursor: item.timelineCursor } : {}),
     timestamp: new Date(item.timestamp),
   };
+}
+
+function deserializeUserMessage(
+  item: Extract<StoredTimelineItem, { kind: "user_message" }>,
+  base: ReturnType<typeof deserializeTimelineBase>,
+): Extract<StreamItem, { kind: "user_message" }> {
+  return {
+    ...base,
+    kind: item.kind,
+    ...(item.clientMessageId ? { clientMessageId: item.clientMessageId } : {}),
+    ...(item.messageId ? { messageId: item.messageId } : {}),
+    ...(item.steering ? { steering: true } : {}),
+    text: item.text,
+  };
+}
+
+function deserializeAssistantMessage(
+  item: Extract<StoredTimelineItem, { kind: "assistant_message" }>,
+  base: ReturnType<typeof deserializeTimelineBase>,
+): Extract<StreamItem, { kind: "assistant_message" }> {
+  return {
+    ...base,
+    kind: item.kind,
+    ...(item.messageId ? { messageId: item.messageId } : {}),
+    text: item.text,
+    ...(item.blockGroupId ? { blockGroupId: item.blockGroupId } : {}),
+    ...(item.blockIndex !== undefined ? { blockIndex: item.blockIndex } : {}),
+    ...(item.phase ? { phase: item.phase } : {}),
+    ...(item.turnOutcome ? { turnOutcome: item.turnOutcome } : {}),
+  };
+}
+
+function deserializeTimelineItem(item: StoredTimelineItem): StreamItem {
+  const base = deserializeTimelineBase(item);
   switch (item.kind) {
     case "user_message":
-      return {
-        ...base,
-        kind: item.kind,
-        ...(item.clientMessageId ? { clientMessageId: item.clientMessageId } : {}),
-        ...(item.messageId ? { messageId: item.messageId } : {}),
-        text: item.text,
-      };
+      return deserializeUserMessage(item, base);
     case "assistant_message":
-      return {
-        ...base,
-        kind: item.kind,
-        ...(item.messageId ? { messageId: item.messageId } : {}),
-        text: item.text,
-        ...(item.blockGroupId ? { blockGroupId: item.blockGroupId } : {}),
-        ...(item.blockIndex !== undefined ? { blockIndex: item.blockIndex } : {}),
-        ...(item.turnOutcome ? { turnOutcome: item.turnOutcome } : {}),
-      };
+      return deserializeAssistantMessage(item, base);
     case "thought":
       return { ...base, kind: item.kind, text: item.text, status: item.status };
     case "todo_list":

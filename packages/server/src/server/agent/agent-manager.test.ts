@@ -507,6 +507,30 @@ class ControlledInterruptSession extends TestAgentSession {
   }
 }
 
+class SteerableControlledSession extends ControlledInterruptSession {
+  override readonly capabilities = {
+    ...TEST_CAPABILITIES,
+    supportsSteering: true,
+  };
+  readonly steerCalls: Array<{
+    prompt: AgentPromptInput;
+    expectedTurnId: string;
+    options?: AgentRunOptions;
+  }> = [];
+
+  override async steerTurn(
+    prompt: AgentPromptInput,
+    expectedTurnId: string,
+    options?: AgentRunOptions,
+  ): Promise<{ turnId: string }> {
+    if (expectedTurnId !== this.turnId) {
+      throw new Error(`unexpected turn ${expectedTurnId}`);
+    }
+    this.steerCalls.push({ prompt, expectedTurnId, ...(options ? { options } : {}) });
+    return { turnId: expectedTurnId };
+  }
+}
+
 interface ControlledInterruptFixture {
   agentId: string;
   manager: AgentManager;
@@ -4814,6 +4838,79 @@ test("waitForAgentRunStart resolves while a foreground run is still only pending
 
   await drainRun;
   expect(manager.getAgent(snapshot.id)?.lifecycle).toBe("idle");
+});
+
+test("native steering keeps one foreground turn and records an explicit steering prompt", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-steer-run-"));
+  const turnId = "turn-steer-1";
+  const session = new SteerableControlledSession(
+    { provider: "codex", cwd: workdir },
+    turnId,
+    async () => undefined,
+  );
+  const client = new (class extends TestAgentClient {
+    override readonly capabilities = session.capabilities;
+
+    override async createSession(): Promise<AgentSession> {
+      return session;
+    }
+  })();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: new AgentStorage(join(workdir, "agents"), logger),
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000125",
+  });
+
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    const run = manager.streamAgent(agent.id, "initial prompt");
+    const drain = (async () => {
+      for await (const _event of run) {
+        // Keep the foreground waiter attached through steering and completion.
+      }
+    })();
+    await manager.waitForAgentRunStart(agent.id);
+
+    await expect(
+      manager.trySteerAgentRun(agent.id, "new context", {
+        clientMessageId: "client-steer-1",
+      }),
+    ).resolves.toBe(true);
+
+    expect(session.steerCalls).toEqual([
+      {
+        prompt: "new context",
+        expectedTurnId: turnId,
+        options: { clientMessageId: "client-steer-1" },
+      },
+    ]);
+    expect(manager.getAgent(agent.id)).toMatchObject({
+      lifecycle: "running",
+      activeForegroundTurnId: turnId,
+    });
+    expect(manager.fetchTimeline(agent.id, { direction: "tail", limit: 10 }).rows).toEqual([
+      {
+        seq: 1,
+        timestamp: expect.any(String),
+        item: {
+          type: "user_message",
+          text: "new context",
+          messageId: "client-steer-1",
+          clientMessageId: "client-steer-1",
+          steering: true,
+        },
+      },
+    ]);
+
+    session.pushEvent({ type: "turn_completed", provider: "codex", turnId });
+    await drain;
+    expect(manager.getAgent(agent.id)?.lifecycle).toBe("idle");
+  } finally {
+    rmSync(workdir, { recursive: true, force: true });
+  }
 });
 
 test("replaceAgentRun does not emit idle or resolve waiters between interrupted and replacement runs", async () => {

@@ -29,6 +29,12 @@ const LegacySubAgentToolCallSchema = z.object({
   }),
 });
 
+const LegacyAssistantTimelineItemSchema = z.object({
+  type: z.literal("assistant_message"),
+  text: z.string(),
+  messageId: z.string().optional(),
+});
+
 const LegacyAgentCapabilityFlagsSchema = z.object({
   supportsStreaming: z.boolean(),
   supportsSessionPersistence: z.boolean(),
@@ -94,7 +100,7 @@ describe("wire schema compatibility", () => {
     });
   });
 
-  test("assistant timeline message ids are optional on the wire", () => {
+  test("assistant message identity and phase remain wire-compatible", () => {
     expect(
       AgentTimelineItemPayloadSchema.parse({
         type: "assistant_message",
@@ -104,16 +110,47 @@ describe("wire schema compatibility", () => {
       type: "assistant_message",
       text: "old daemon shape",
     });
-    expect(
-      AgentTimelineItemPayloadSchema.parse({
-        type: "assistant_message",
-        text: "new daemon shape",
-        messageId: "msg-1",
-      }),
-    ).toEqual({
+
+    const current = AgentTimelineItemPayloadSchema.parse({
       type: "assistant_message",
       text: "new daemon shape",
       messageId: "msg-1",
+      phase: "final_answer",
+    });
+    expect(current).toEqual({
+      type: "assistant_message",
+      text: "new daemon shape",
+      messageId: "msg-1",
+      phase: "final_answer",
+    });
+    expect(LegacyAssistantTimelineItemSchema.parse(current)).toEqual({
+      type: "assistant_message",
+      text: "new daemon shape",
+      messageId: "msg-1",
+    });
+  });
+
+  test("steering metadata is optional and ignored by legacy user-message readers", () => {
+    const legacyUserMessageSchema = z.object({
+      type: z.literal("user_message"),
+      text: z.string(),
+      messageId: z.string().optional(),
+      clientMessageId: z.string().optional(),
+    });
+    const current = AgentTimelineItemPayloadSchema.parse({
+      type: "user_message",
+      text: "new context",
+      messageId: "provider-message",
+      clientMessageId: "client-message",
+      steering: true,
+    });
+
+    expect(current).toMatchObject({ steering: true });
+    expect(legacyUserMessageSchema.parse(current)).toEqual({
+      type: "user_message",
+      text: "new context",
+      messageId: "provider-message",
+      clientMessageId: "client-message",
     });
   });
 

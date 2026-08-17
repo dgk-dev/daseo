@@ -273,6 +273,7 @@ export const en = {
     },
   },
   message: {
+    steering: "Steering current task",
     diagram: {
       diagram: "Diagram",
       zoomIn: "Zoom in",
@@ -1877,11 +1878,12 @@ export const en = {
       defaultSend: {
         label: "Default send",
         descriptions: {
-          interrupt: "When the agent is running, Enter interrupts. Command/Ctrl+Enter queues.",
+          steer:
+            "When the agent is running, Enter steers the current run. Command/Ctrl+Enter queues.",
           queue: "When the agent is running, Enter queues. Command/Ctrl+Enter submits.",
         },
         options: {
-          interrupt: "Interrupt",
+          steer: "Steer",
           queue: "Queue",
         },
       },

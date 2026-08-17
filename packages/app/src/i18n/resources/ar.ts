@@ -275,6 +275,7 @@ export const ar: TranslationResources = {
     },
   },
   message: {
+    steering: "توجيه المهمة الحالية",
     diagram: {
       diagram: "مخطط",
       zoomIn: "تكبير",
@@ -1821,12 +1822,12 @@ export const ar: TranslationResources = {
       defaultSend: {
         label: "إرسال افتراضي",
         descriptions: {
-          interrupt:
-            "عند تشغيل الوكيل، يوقف Enter التشغيل. Command/Ctrl+Enter يضيف إلى قائمة الانتظار.",
+          steer:
+            "عند تشغيل الوكيل، يوجّه Enter التشغيل الحالي. Command/Ctrl+Enter يضيف إلى قائمة الانتظار.",
           queue: "عند تشغيل الوكيل، يضيف Enter إلى قائمة الانتظار. Command/Ctrl+Enter يرسل.",
         },
         options: {
-          interrupt: "مقاطعة",
+          steer: "توجيه",
           queue: "طابور",
         },
       },

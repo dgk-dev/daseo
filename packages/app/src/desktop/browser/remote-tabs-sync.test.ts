@@ -8,7 +8,11 @@ vi.mock("@react-native-async-storage/async-storage", () => ({
   },
 }));
 import { adoptWorkspaceBrowser, useBrowserStore } from "@/desktop/browser/store";
-import { collectAllTabs, useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
+import {
+  collectAllTabs,
+  getFocusedBrowserId,
+  useWorkspaceLayoutStore,
+} from "@/stores/workspace-layout-store";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import { reconcileRemoteBrowserTabs, type RemoteBrowserTabInfo } from "./remote-tabs-sync";
 
@@ -105,6 +109,26 @@ describe("reconcileRemoteBrowserTabs", () => {
       isLoading: true,
       canGoBack: true,
     });
+  });
+
+  test("mirrors the authoritative desktop active browser", () => {
+    reconcileRemoteBrowserTabs({
+      serverId: SERVER_ID,
+      workspaceId: WORKSPACE_ID,
+      tabs: [remote(BROWSER_ONE, { isActive: true }), remote(BROWSER_TWO)],
+    });
+    expect(
+      getFocusedBrowserId(useWorkspaceLayoutStore.getState().layoutByWorkspace[WORKSPACE_KEY]),
+    ).toBe(BROWSER_ONE);
+
+    reconcileRemoteBrowserTabs({
+      serverId: SERVER_ID,
+      workspaceId: WORKSPACE_ID,
+      tabs: [remote(BROWSER_ONE), remote(BROWSER_TWO, { isActive: true })],
+    });
+    expect(
+      getFocusedBrowserId(useWorkspaceLayoutStore.getState().layoutByWorkspace[WORKSPACE_KEY]),
+    ).toBe(BROWSER_TWO);
   });
 
   test("deduplicates replayed host entries and keeps the newest state", () => {
