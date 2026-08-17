@@ -673,6 +673,8 @@ export function replaceWithCanonicalStream(
   };
 }
 
+export type AssistantTurnOutcome = "completed" | "failed" | "canceled";
+
 export interface AssistantMessageItem {
   kind: "assistant_message";
   id: string;
@@ -682,6 +684,8 @@ export interface AssistantMessageItem {
   timestamp: Date;
   blockGroupId?: string;
   blockIndex?: number;
+  /** Terminal state for the turn ending at this assistant item, when observed live. */
+  turnOutcome?: AssistantTurnOutcome;
 }
 
 export interface TimelinePosition {
@@ -1487,11 +1491,14 @@ export function reduceStreamUpdate(
         options?.reservedItemIds,
         options?.timelineCursor,
       );
+    case "turn_completed":
+      return markLastTurnAssistantOutcome(finalizeActiveThoughts(state), "completed");
+    case "turn_failed":
+      return markLastTurnAssistantOutcome(finalizeActiveThoughts(state), "failed");
+    case "turn_canceled":
+      return markLastTurnAssistantOutcome(finalizeActiveThoughts(state), "canceled");
     case "thread_started":
     case "turn_started":
-    case "turn_completed":
-    case "turn_failed":
-    case "turn_canceled":
     case "permission_requested":
     case "permission_resolved":
     case "attention_required":
@@ -1536,6 +1543,24 @@ const STREAM_COMPLETION_EVENTS = new Set<AgentStreamEventPayload["type"]>([
   "turn_failed",
   "turn_canceled",
 ]);
+
+function markLastTurnAssistantOutcome(
+  items: StreamItem[],
+  turnOutcome: AssistantTurnOutcome,
+): StreamItem[] {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]!;
+    // A terminal event for a turn that produced no assistant output must not
+    // annotate the previous turn's answer.
+    if (item.kind === "user_message") return items;
+    if (item.kind !== "assistant_message") continue;
+    if (item.turnOutcome === turnOutcome) return items;
+    const next = [...items];
+    next[index] = { ...item, turnOutcome };
+    return next;
+  }
+  return items;
+}
 
 function applyCompletionToTail(
   tail: StreamItem[],

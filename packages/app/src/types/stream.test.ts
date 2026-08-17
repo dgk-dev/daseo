@@ -571,7 +571,80 @@ describe("stream reducer canonical tool calls", () => {
       "After the tool.",
     ]);
     expect(messages.map((message) => message.messageId)).toEqual([messageId, messageId]);
+    expect(messages.map((message) => message.turnOutcome)).toEqual([undefined, "completed"]);
     expect(new Set(messages.map((message) => message.id)).size).toBe(2);
+  });
+
+  it.each([
+    {
+      event: { type: "turn_completed", provider: "claude" } as const,
+      expected: "completed" as const,
+    },
+    {
+      event: { type: "turn_failed", provider: "claude", error: "failed" } as const,
+      expected: "failed" as const,
+    },
+    {
+      event: { type: "turn_canceled", provider: "claude", reason: "stopped" } as const,
+      expected: "canceled" as const,
+    },
+  ])("records provider-neutral $expected turn outcomes", ({ event, expected }) => {
+    const state = hydrateStreamState([
+      {
+        event: {
+          type: "timeline",
+          provider: "claude",
+          item: { type: "user_message", text: "Do the work." },
+        },
+        timestamp: new Date("2025-01-01T10:02:00Z"),
+      },
+      {
+        event: assistantTimeline("Result."),
+        timestamp: new Date("2025-01-01T10:02:01Z"),
+      },
+      { event, timestamp: new Date("2025-01-01T10:02:02Z") },
+    ]);
+    const message = state.findLast((item) => item.kind === "assistant_message");
+    expect(message?.kind === "assistant_message" ? message.turnOutcome : undefined).toBe(expected);
+  });
+
+  it("does not apply a failed empty turn to the previous answer", () => {
+    const state = hydrateStreamState([
+      {
+        event: {
+          type: "timeline",
+          provider: "claude",
+          item: { type: "user_message", text: "First prompt." },
+        },
+        timestamp: new Date("2025-01-01T10:02:00Z"),
+      },
+      {
+        event: assistantTimeline("First result."),
+        timestamp: new Date("2025-01-01T10:02:01Z"),
+      },
+      {
+        event: { type: "turn_completed", provider: "claude" },
+        timestamp: new Date("2025-01-01T10:02:02Z"),
+      },
+      {
+        event: {
+          type: "timeline",
+          provider: "claude",
+          item: { type: "user_message", text: "Second prompt." },
+        },
+        timestamp: new Date("2025-01-01T10:02:03Z"),
+      },
+      {
+        event: { type: "turn_failed", provider: "claude", error: "failed before output" },
+        timestamp: new Date("2025-01-01T10:02:04Z"),
+      },
+    ]);
+    const messages = state.filter(
+      (item): item is Extract<StreamItem, { kind: "assistant_message" }> =>
+        item.kind === "assistant_message",
+    );
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.turnOutcome).toBe("completed");
   });
 
   it("keeps every promoted block when an assistant message resumes after a tool", () => {

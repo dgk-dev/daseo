@@ -60,11 +60,15 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
 4. **Daseo theme** — monotone graphite dark variant registered in
    `packages/app/src/styles/theme.ts` (`darkDaseoTheme`) and selectable in appearance
    settings on desktop and mobile.
-5. **Codex-style collapsed work history** — completed turns hide tool/thought/todo/activity
-   items behind one expandable "Worked for …" row above the final assistant message; the
-   live turn still streams full activity. Provider-agnostic (UI-level), including turns
-   spanning the settled/live buffer boundary. `packages/app/src/agent-stream/collapsed-work.ts`
-   - wiring in `agent-stream/view.tsx` and `collapsed-work-row.tsx`.
+5. **Provider-neutral completed-turn disclosure** — completed turns show the user prompt and
+   the complete final assistant block group, while thought/tool/todo/activity/compaction and
+   intermediate assistant commentary fold behind one expandable "Worked for …" row. Expansion
+   restores the original stream items and order losslessly. Claude, Codex/ChatGPT, Grok-through-Pi,
+   OpenCode, and other providers share the same UI-level turn contract; `blockGroupId` is used when
+   available but never required. Active, partial/detached, permission-blocked, failed, and canceled
+   turns stay open, while error and failed/canceled tool rows remain visible. The projection also
+   spans the settled/live buffer boundary. Key files: `packages/app/src/agent-stream/collapsed-work.ts`,
+   `view.tsx`, `collapsed-work-row.tsx`, and `packages/app/src/types/stream.ts`.
 6. **Independent Android push notifications** — the personal Android variant gets a native
    FCM device token instead of depending on upstream's Expo project; the Mac daemon sends
    agent-finished and permission-request notifications through FCM HTTP v1. Key files:

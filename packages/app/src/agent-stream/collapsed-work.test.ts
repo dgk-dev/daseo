@@ -1,30 +1,82 @@
 import { describe, expect, test } from "vitest";
-import type { StreamItem } from "@/types/stream";
+import type { AssistantMessageItem, StreamItem } from "@/types/stream";
 import { collapseCompletedWork, collapseCompletedWorkStream } from "./collapsed-work";
 
 let sequence = 0;
-function item(kind: StreamItem["kind"], id?: string): StreamItem {
+function nextBase(kind: StreamItem["kind"], id?: string) {
   sequence += 1;
   return {
     kind,
     id: id ?? `${kind}_${sequence}`,
-    text: "x",
     timestamp: new Date(1_700_000_000_000 + sequence * 1000),
-  } as StreamItem;
+  };
+}
+
+function item(kind: StreamItem["kind"], id?: string): StreamItem {
+  const base = nextBase(kind, id);
+  switch (kind) {
+    case "user_message":
+      return { ...base, kind, text: "prompt" };
+    case "assistant_message":
+      return { ...base, kind, text: "answer" };
+    case "thought":
+      return { ...base, kind, text: "thinking", status: "ready" };
+    case "tool_call":
+      return {
+        ...base,
+        kind,
+        payload: {
+          source: "agent",
+          data: {
+            provider: "codex",
+            callId: base.id,
+            name: "shell",
+            status: "completed",
+            error: null,
+            detail: { type: "unknown", input: null, output: null },
+          },
+        },
+      };
+    case "todo_list":
+      return {
+        ...base,
+        kind,
+        provider: "codex",
+        items: [{ text: "task", completed: true }],
+        activity: { type: "created", count: 1 },
+      };
+    case "activity_log":
+      return { ...base, kind, activityType: "info", message: "activity" };
+    case "compaction":
+      return { ...base, kind, status: "completed" };
+  }
+}
+
+function assistant(
+  id: string,
+  overrides: Partial<Omit<AssistantMessageItem, "kind" | "id" | "timestamp">> = {},
+): AssistantMessageItem {
+  return { ...(item("assistant_message", id) as AssistantMessageItem), ...overrides };
+}
+
+function withToolStatus(status: "running" | "completed" | "failed" | "canceled") {
+  const tool = item("tool_call");
+  if (tool.kind !== "tool_call" || tool.payload.source !== "agent") throw new Error("invalid tool");
+  return { ...tool, payload: { ...tool.payload, data: { ...tool.payload.data, status } } };
 }
 
 const NONE: ReadonlySet<string> = new Set();
 
 describe("collapseCompletedWork", () => {
-  test("hides work items of completed turns and keeps messages", () => {
+  test("shows each user prompt and final answer while folding completed details", () => {
     const items = [
       item("user_message"),
       item("thought"),
       item("tool_call"),
-      item("assistant_message", "a1"),
+      assistant("a1"),
       item("user_message"),
-      item("tool_call"),
-      item("assistant_message", "a2"),
+      item("todo_list"),
+      assistant("a2"),
     ];
     const result = collapseCompletedWork({
       items,
@@ -39,16 +91,20 @@ describe("collapseCompletedWork", () => {
     ]);
     expect(result.workCountByTurnKey.get("a1")).toBe(2);
     expect(result.workCountByTurnKey.get("a2")).toBe(1);
+    expect([...result.summaryTurnKeyByAssistantId]).toEqual([
+      ["a1", "a1"],
+      ["a2", "a2"],
+    ]);
   });
 
-  test("keeps the trailing turn visible while a turn is active", () => {
+  test("keeps the trailing turn fully visible and unsummarized while active", () => {
     const items = [
       item("user_message"),
       item("tool_call"),
-      item("assistant_message", "a1"),
+      assistant("a1"),
       item("user_message"),
       item("tool_call"),
-      item("assistant_message", "a2"),
+      assistant("a2"),
     ];
     const result = collapseCompletedWork({
       items,
@@ -62,6 +118,8 @@ describe("collapseCompletedWork", () => {
       "tool_call",
       "assistant_message",
     ]);
+    expect([...result.summaryTurnKeyByAssistantId]).toEqual([["a1", "a1"]]);
+    expect(result.workCountByTurnKey.has("a2")).toBe(false);
   });
 
   test("keeps turns without an assistant message untouched", () => {
@@ -71,75 +129,59 @@ describe("collapseCompletedWork", () => {
       expandedTurnKeys: NONE,
       keepLastTurnExpanded: false,
     });
-    expect(result.items).toHaveLength(3);
+    expect(result.items).toBe(items);
     expect(result.workCountByTurnKey.size).toBe(0);
   });
 
-  test("expanded turns keep their work items", () => {
+  test("expansion restores the exact original item objects and order", () => {
     const items = [
       item("user_message"),
+      assistant("planning"),
       item("tool_call"),
-      item("assistant_message", "a1"),
-      item("user_message"),
-      item("tool_call"),
-      item("assistant_message", "a2"),
+      item("thought"),
+      assistant("final"),
     ];
     const result = collapseCompletedWork({
       items,
-      expandedTurnKeys: new Set(["a1"]),
+      expandedTurnKeys: new Set(["final"]),
       keepLastTurnExpanded: false,
     });
-    expect(result.items.map((entry) => entry.kind)).toEqual([
-      "user_message",
-      "tool_call",
-      "assistant_message",
-      "user_message",
-      "assistant_message",
-    ]);
+    expect(result.items).toBe(items);
+    expect(result.items).toEqual(items);
+    expect(result.workCountByTurnKey.get("final")).toBe(3);
+  });
+
+  test("does not auto-fold a leading partial page without its user boundary", () => {
+    const items = [
+      item("tool_call"),
+      assistant("a0"),
+      item("user_message"),
+      item("thought"),
+      assistant("a1"),
+    ];
+    const result = collapseCompletedWork({
+      items,
+      expandedTurnKeys: NONE,
+      keepLastTurnExpanded: false,
+    });
+    expect(result.items.map((entry) => entry.id)).toEqual([items[0]!.id, "a0", items[2]!.id, "a1"]);
+    expect(result.workCountByTurnKey.has("a0")).toBe(false);
     expect(result.workCountByTurnKey.get("a1")).toBe(1);
   });
 
-  test("collapses a leading partial turn that already has its assistant message", () => {
-    const items = [
-      item("tool_call"),
-      item("assistant_message", "a0"),
-      item("user_message"),
-      item("thought"),
-      item("assistant_message", "a1"),
-    ];
+  test("folds completed compaction into work history", () => {
+    const items = [item("user_message"), item("compaction"), item("tool_call"), assistant("a1")];
     const result = collapseCompletedWork({
       items,
       expandedTurnKeys: NONE,
       keepLastTurnExpanded: false,
     });
-    expect(result.items.map((entry) => entry.kind)).toEqual([
-      "assistant_message",
-      "user_message",
-      "assistant_message",
-    ]);
-  });
-
-  test("keeps compaction markers visible", () => {
-    const items = [
-      item("user_message"),
-      item("compaction"),
-      item("tool_call"),
-      item("assistant_message", "a1"),
-    ];
-    const result = collapseCompletedWork({
-      items,
-      expandedTurnKeys: NONE,
-      keepLastTurnExpanded: false,
-    });
-    expect(result.items.map((entry) => entry.kind)).toEqual([
-      "user_message",
-      "compaction",
-      "assistant_message",
-    ]);
+    expect(result.items.map((entry) => entry.kind)).toEqual(["user_message", "assistant_message"]);
+    expect(result.workCountByTurnKey.get("a1")).toBe(2);
   });
 
   test("returns the identical array when nothing collapses", () => {
-    const items = [item("user_message"), item("assistant_message", "a1")];
+    const items = [item("user_message"), assistant("a1")];
     const result = collapseCompletedWork({
       items,
       expandedTurnKeys: NONE,
@@ -148,34 +190,182 @@ describe("collapseCompletedWork", () => {
     expect(result.items).toBe(items);
   });
 
-  test("counts multi-message turns against the last assistant message", () => {
+  test("folds intermediate assistant commentary, not just tools", () => {
     const items = [
       item("user_message"),
-      item("assistant_message", "a1"),
+      assistant("a1", { text: "I will inspect this." }),
       item("tool_call"),
-      item("assistant_message", "a2"),
+      assistant("a2", { text: "The fix is complete." }),
     ];
     const result = collapseCompletedWork({
       items,
       expandedTurnKeys: NONE,
       keepLastTurnExpanded: false,
     });
-    expect(result.workCountByTurnKey.has("a1")).toBe(false);
-    expect(result.workCountByTurnKey.get("a2")).toBe(1);
-    expect(result.items.map((entry) => entry.kind)).toEqual([
-      "user_message",
-      "assistant_message",
-      "assistant_message",
-    ]);
+    expect(result.items.map((entry) => entry.id)).toEqual([items[0]!.id, "a2"]);
+    expect(result.workCountByTurnKey.get("a2")).toBe(2);
+  });
+
+  test("keeps every block of the final logical assistant response visible", () => {
+    const messageId = "shared-provider-message";
+    const items = [
+      item("user_message"),
+      assistant("planning", {
+        messageId,
+        blockGroupId: "planning-group",
+        blockIndex: 0,
+        text: "Checking first.",
+      }),
+      item("tool_call"),
+      assistant("final-0", {
+        messageId,
+        blockGroupId: "final-group",
+        blockIndex: 0,
+        text: "Complete answer paragraph one.",
+      }),
+      assistant("final-1", {
+        messageId,
+        blockGroupId: "final-group",
+        blockIndex: 1,
+        text: "Complete answer paragraph two.",
+      }),
+    ];
+    const result = collapseCompletedWork({
+      items,
+      expandedTurnKeys: NONE,
+      keepLastTurnExpanded: false,
+    });
+    expect(result.items.map((entry) => entry.id)).toEqual([items[0]!.id, "final-0", "final-1"]);
+    expect(result.workCountByTurnKey.get("final-1")).toBe(2);
+    // The summary anchors before the first final block but uses the last block
+    // as its turn key so timing/footer lookup remains exact.
+    expect([...result.summaryTurnKeyByAssistantId]).toEqual([["final-0", "final-1"]]);
+  });
+
+  test("falls back safely for Claude/Grok-style output without block metadata", () => {
+    const items = [
+      item("user_message"),
+      assistant("commentary", { text: "Working on it." }),
+      item("tool_call"),
+      assistant("final", { text: "Done." }),
+    ];
+    const result = collapseCompletedWork({
+      items,
+      expandedTurnKeys: NONE,
+      keepLastTurnExpanded: false,
+    });
+    expect(result.items.map((entry) => entry.id)).toEqual([items[0]!.id, "final"]);
+    expect(result.summaryTurnKeyByAssistantId.get("final")).toBe("final");
+  });
+
+  test.each(["failed", "canceled"] as const)("keeps a %s turn fully visible", (turnOutcome) => {
+    const items = [
+      item("user_message"),
+      item("thought"),
+      item("tool_call"),
+      assistant("a1", { turnOutcome }),
+    ];
+    const result = collapseCompletedWork({
+      items,
+      expandedTurnKeys: NONE,
+      keepLastTurnExpanded: false,
+    });
+    expect(result.items).toBe(items);
+    expect(result.workCountByTurnKey.size).toBe(0);
+  });
+
+  test("keeps a failed turn open when a provider appends diagnostics after termination", () => {
+    const items = [
+      item("user_message"),
+      item("thought"),
+      assistant("partial", { turnOutcome: "failed" }),
+      assistant("diagnostic", { text: "[Error] provider disconnected" }),
+    ];
+    const result = collapseCompletedWork({
+      items,
+      expandedTurnKeys: NONE,
+      keepLastTurnExpanded: false,
+    });
+    expect(result.items).toBe(items);
+    expect(result.workCountByTurnKey.size).toBe(0);
+  });
+
+  test("leaves error activity visible while folding safe details", () => {
+    const error = {
+      ...(item("activity_log") as Extract<StreamItem, { kind: "activity_log" }>),
+      activityType: "error" as const,
+    };
+    const items = [item("user_message"), item("thought"), error, assistant("a1")];
+    const result = collapseCompletedWork({
+      items,
+      expandedTurnKeys: NONE,
+      keepLastTurnExpanded: false,
+    });
+    expect(result.items).toEqual([items[0], error, items[3]]);
+    expect(result.workCountByTurnKey.get("a1")).toBe(1);
+  });
+
+  test.each(["failed", "canceled"] as const)(
+    "leaves %s tool results visible while folding safe details",
+    (status) => {
+      const exceptionalTool = withToolStatus(status);
+      const items = [item("user_message"), item("thought"), exceptionalTool, assistant("a1")];
+      const result = collapseCompletedWork({
+        items,
+        expandedTurnKeys: NONE,
+        keepLastTurnExpanded: false,
+      });
+      expect(result.items).toEqual([items[0], exceptionalTool, items[3]]);
+      expect(result.workCountByTurnKey.get("a1")).toBe(1);
+    },
+  );
+
+  test("does not hide intermediate assistant error messages", () => {
+    const errorMessage = assistant("error", { text: "[System Error] provider failed" });
+    const items = [item("user_message"), errorMessage, item("tool_call"), assistant("a1")];
+    const result = collapseCompletedWork({
+      items,
+      expandedTurnKeys: NONE,
+      keepLastTurnExpanded: false,
+    });
+    expect(result.items).toEqual([items[0], errorMessage, items[3]]);
+    expect(result.workCountByTurnKey.get("a1")).toBe(1);
+  });
+
+  test.each([
+    [
+      "loading thought",
+      {
+        ...(item("thought") as Extract<StreamItem, { kind: "thought" }>),
+        status: "loading" as const,
+      },
+    ],
+    ["running tool", withToolStatus("running")],
+    [
+      "loading compaction",
+      {
+        ...(item("compaction") as Extract<StreamItem, { kind: "compaction" }>),
+        status: "loading" as const,
+      },
+    ],
+  ])("does not fold a partially loaded turn with %s", (_label, partialItem) => {
+    const items = [item("user_message"), partialItem as StreamItem, assistant("a1")];
+    const result = collapseCompletedWork({
+      items,
+      expandedTurnKeys: NONE,
+      keepLastTurnExpanded: false,
+    });
+    expect(result.items).toBe(items);
+    expect(result.workCountByTurnKey.size).toBe(0);
   });
 });
 
 describe("collapseCompletedWorkStream", () => {
-  test("folds a turn spanning the tail/head boundary into one summary", () => {
+  test("folds a completed turn spanning the tail/head boundary into one summary", () => {
     const user = item("user_message");
     const settledWork = item("tool_call");
     const headWork = item("thought");
-    const finalAssistant = item("assistant_message", "a-final");
+    const finalAssistant = assistant("a-final");
     const result = collapseCompletedWorkStream({
       tail: [user, settledWork],
       head: [headWork, finalAssistant],
@@ -184,12 +374,12 @@ describe("collapseCompletedWorkStream", () => {
     });
     expect(result.tail).toEqual([user]);
     expect(result.head).toEqual([finalAssistant]);
-    expect(result.workCountByTurnKey.size).toBe(1);
     expect(result.workCountByTurnKey.get("a-final")).toBe(2);
+    expect(result.summaryTurnKeyByAssistantId.get("a-final")).toBe("a-final");
   });
 
-  test("leaves the streaming head untouched while a turn is active", () => {
-    const tail = [item("user_message"), item("tool_call"), item("assistant_message", "a1")];
+  test("leaves permission-blocked or streaming head content untouched while active", () => {
+    const tail = [item("user_message"), item("tool_call"), assistant("a1")];
     const head = [item("tool_call"), item("thought")];
     const result = collapseCompletedWorkStream({
       tail,
@@ -198,12 +388,13 @@ describe("collapseCompletedWorkStream", () => {
       isTurnActive: true,
     });
     expect(result.head).toBe(head);
-    // Trailing tail turn stays expanded defensively during an active turn.
     expect(result.tail).toBe(tail);
+    expect(result.workCountByTurnKey.size).toBe(0);
+    expect(result.summaryTurnKeyByAssistantId.size).toBe(0);
   });
 
   test("collapses an idle head-only completed turn immediately", () => {
-    const head = [item("user_message"), item("tool_call"), item("assistant_message", "a1")];
+    const head = [item("user_message"), item("tool_call"), assistant("a1")];
     const result = collapseCompletedWorkStream({
       tail: [],
       head,
@@ -214,11 +405,11 @@ describe("collapseCompletedWorkStream", () => {
     expect(result.workCountByTurnKey.get("a1")).toBe(1);
   });
 
-  test("expanding the spanning turn restores items on both sides", () => {
+  test("expanding a spanning turn restores items on both sides without copying", () => {
     const user = item("user_message");
     const settledWork = item("tool_call");
     const headWork = item("thought");
-    const finalAssistant = item("assistant_message", "a-final");
+    const finalAssistant = assistant("a-final");
     const result = collapseCompletedWorkStream({
       tail: [user, settledWork],
       head: [headWork, finalAssistant],
@@ -227,5 +418,7 @@ describe("collapseCompletedWorkStream", () => {
     });
     expect(result.tail).toEqual([user, settledWork]);
     expect(result.head).toEqual([headWork, finalAssistant]);
+    expect(result.tail[1]).toBe(settledWork);
+    expect(result.head[0]).toBe(headWork);
   });
 });

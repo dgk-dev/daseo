@@ -509,23 +509,31 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     );
 
     // Codex-style history: once a turn completes, its work items fold away and
-    // a "Worked for …" row above the final message toggles them back. The live
-    // turn (and, defensively, the trailing tail turn while a turn is active)
-    // keeps streaming full activity. The live head is collapsed too once the
-    // turn goes idle, because completed-turn items stay in the head buffer
-    // until the next turn flushes them into the tail.
+    // a "Worked for …" row above the final message toggles them back. Protect
+    // the trailing turn not only while streaming, but also while canonical
+    // history is partial/detached or user permission is still required.
     const [expandedWorkTurnKeys, setExpandedWorkTurnKeys] = useState<ReadonlySet<string>>(
       () => new Set<string>(),
     );
+    const shouldProtectTrailingTurn =
+      isTurnActive ||
+      !isAuthoritativeHistoryReady ||
+      isTimelineDetached ||
+      pendingPermissions.size > 0;
     const collapsedStream = useMemo(
       () =>
         collapseCompletedWorkStream({
           tail: projectedToolCalls.tail,
           head: projectedToolCalls.head,
           expandedTurnKeys: expandedWorkTurnKeys,
-          isTurnActive,
+          isTurnActive: shouldProtectTrailingTurn,
         }),
-      [expandedWorkTurnKeys, isTurnActive, projectedToolCalls.head, projectedToolCalls.tail],
+      [
+        expandedWorkTurnKeys,
+        projectedToolCalls.head,
+        projectedToolCalls.tail,
+        shouldProtectTrailingTurn,
+      ],
     );
 
     const baseRenderModel = useMemo(() => {
@@ -684,9 +692,10 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
 
     const renderAssistantMessageItem = useCallback(
       (layoutItem: StreamLayoutItem, item: Extract<StreamItem, { kind: "assistant_message" }>) => {
+        const collapsedWorkTurnKey = collapsedStream.summaryTurnKeyByAssistantId.get(item.id);
         return (
           <>
-            <CollapsedWorkRow turnKey={item.id} />
+            {collapsedWorkTurnKey ? <CollapsedWorkRow turnKey={collapsedWorkTurnKey} /> : null}
             <AssistantFileLinkResolverProvider
               client={client}
               serverId={resolvedServerId}
@@ -708,7 +717,15 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           </>
         );
       },
-      [agentId, client, handleInlinePathPress, resolvedServerId, toast, workspaceRoot],
+      [
+        agentId,
+        client,
+        collapsedStream.summaryTurnKeyByAssistantId,
+        handleInlinePathPress,
+        resolvedServerId,
+        toast,
+        workspaceRoot,
+      ],
     );
 
     const renderThoughtItem = useCallback(
