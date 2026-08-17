@@ -1,5 +1,5 @@
-<svg width="48" height="48" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect x="47" y="47" width="418" height="418" rx="96" fill="#0A0A0C"/>
-  <path transform="translate(256 256) scale(.68) translate(-256 -256)" d="M110 150H170C230 150 265 190 265 256C265 322 230 362 170 362H110V150ZM153 193V319H168C202 319 222 297 222 256C222 215 202 193 168 193H153Z M270 362L316 150H356L402 362H359L336 220L313 362H270Z" fill="#F4F4F5" fill-rule="evenodd"/>
-  <circle cx="390" cy="390" r="90" fill="#3b82f6"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 512 512">
+<rect x="47" y="47" width="418" height="418" rx="96" fill="#0A0A0C"/>
+<path transform="translate(256 256) scale(0.68) translate(-256 -256)" d="M110 150H170C230 150 265 190 265 256C265 322 230 362 170 362H110V150ZM153 193V319H168C202 319 222 297 222 256C222 215 202 193 168 193H153Z M270 362L316 150H356L402 362H359L336 220L313 362H270Z" fill="#F0F0F2" fill-rule="evenodd" clip-rule="evenodd"/>
+<circle cx="390" cy="390" r="90" fill="#3B82F6"/>
 </svg>

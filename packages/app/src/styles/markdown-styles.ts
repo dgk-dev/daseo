@@ -2,6 +2,31 @@ import type { Theme } from "./theme";
 import { isWeb } from "@/constants/platform";
 
 const webSelectableTextStyle = isWeb ? { userSelect: "text" as const } : {};
+const markdownHeadingContainerStyle = {
+  flexDirection: "row" as const,
+  flexWrap: "wrap" as const,
+  alignItems: "flex-start" as const,
+  alignContent: "flex-start" as const,
+  alignSelf: "stretch" as const,
+  flexShrink: 1,
+  minWidth: 0,
+  width: "100%" as const,
+  maxWidth: "100%" as const,
+  overflow: "visible" as const,
+};
+const markdownHeadingTextStyle = {
+  flexShrink: 1,
+  minWidth: 0,
+  maxWidth: "100%" as const,
+  ...(isWeb
+    ? {
+        // Keep Korean/CJK words intact at normal widths while still allowing
+        // a genuinely long heading to wrap instead of overflowing.
+        wordBreak: "keep-all" as const,
+        overflowWrap: "break-word" as const,
+      }
+    : {}),
+};
 
 /**
  * Creates comprehensive markdown styles for react-native-markdown-display.
@@ -53,6 +78,7 @@ export function createMarkdownStyles(theme: Theme) {
     // =========================================================================
 
     heading1: {
+      ...markdownHeadingContainerStyle,
       ...webSelectableTextStyle,
       fontSize: theme.fontSize["3xl"],
       fontWeight: theme.fontWeight.bold,
@@ -66,6 +92,7 @@ export function createMarkdownStyles(theme: Theme) {
     },
 
     heading2: {
+      ...markdownHeadingContainerStyle,
       ...webSelectableTextStyle,
       fontSize: theme.fontSize["2xl"],
       fontWeight: theme.fontWeight.bold,
@@ -79,6 +106,7 @@ export function createMarkdownStyles(theme: Theme) {
     },
 
     heading3: {
+      ...markdownHeadingContainerStyle,
       ...webSelectableTextStyle,
       fontSize: theme.fontSize.xl,
       fontWeight: theme.fontWeight.semibold,
@@ -89,6 +117,7 @@ export function createMarkdownStyles(theme: Theme) {
     },
 
     heading4: {
+      ...markdownHeadingContainerStyle,
       ...webSelectableTextStyle,
       fontSize: theme.fontSize.lg,
       fontWeight: theme.fontWeight.semibold,
@@ -99,6 +128,7 @@ export function createMarkdownStyles(theme: Theme) {
     },
 
     heading5: {
+      ...markdownHeadingContainerStyle,
       ...webSelectableTextStyle,
       fontSize: theme.fontSize.base,
       fontWeight: theme.fontWeight.semibold,
@@ -109,6 +139,7 @@ export function createMarkdownStyles(theme: Theme) {
     },
 
     heading6: {
+      ...markdownHeadingContainerStyle,
       ...webSelectableTextStyle,
       fontSize: theme.fontSize.base,
       fontWeight: theme.fontWeight.semibold,
@@ -119,6 +150,11 @@ export function createMarkdownStyles(theme: Theme) {
       textTransform: "uppercase" as const,
       letterSpacing: 0.5,
     },
+
+    // Applied by the shared text rule only when a text leaf belongs to a
+    // heading. This overrides prose's aggressive `anywhere` wrapping without
+    // weakening long-path wrapping in body paragraphs.
+    heading_text: markdownHeadingTextStyle,
 
     // =========================================================================
     // TEXT FORMATTING

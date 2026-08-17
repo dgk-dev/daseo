@@ -11,6 +11,7 @@ import {
   Pressable,
   Text,
   View,
+  type StyleProp,
   type TextProps,
   type TextStyle,
   type ViewStyle,
@@ -40,6 +41,7 @@ import {
 import { resolveInlineImageSize, type InlineImageDimensions } from "./inline-image-size";
 import { groupMarkdownParts, type MarkdownPartGroup } from "./part-groups";
 import { colorMarkdownLinkChildren } from "./link-children";
+import { resolveMarkdownTextStyle } from "./heading-style";
 import { MarkdownLinkText } from "./link-text";
 
 export type MarkdownStyles = Record<string, TextStyle & ViewStyle & { [key: string]: unknown }>;
@@ -407,8 +409,8 @@ function MarkdownDetails({
 
 interface MarkdownInheritedTextProps {
   inheritedStyles: TextStyle;
-  textStyle: TextStyle;
-  style?: TextStyle;
+  textStyle: StyleProp<TextStyle>;
+  style?: StyleProp<TextStyle>;
   monoSurface?: boolean;
   onPress?: TextProps["onPress"];
   accessibilityRole?: TextProps["accessibilityRole"];
@@ -513,14 +515,14 @@ export function createSharedMarkdownRules(): RenderRules {
     text: (
       node: ASTNode,
       _children: ReactNode[],
-      _parent: ASTNode[],
+      parent: ASTNode[],
       styles: MarkdownStyles,
       inheritedStyles: TextStyle = {},
     ) => (
       <MarkdownInheritedText
         key={node.key}
         inheritedStyles={inheritedStyles}
-        textStyle={styles.text}
+        textStyle={resolveMarkdownTextStyle(styles, parent)}
       >
         {node.content}
       </MarkdownInheritedText>
@@ -528,14 +530,14 @@ export function createSharedMarkdownRules(): RenderRules {
     textgroup: (
       node: ASTNode,
       children: ReactNode[],
-      _parent: ASTNode[],
+      parent: ASTNode[],
       styles: MarkdownStyles,
       inheritedStyles: TextStyle = {},
     ) => (
       <MarkdownInheritedText
         key={node.key}
         inheritedStyles={inheritedStyles}
-        textStyle={styles.textgroup}
+        textStyle={resolveMarkdownTextStyle(styles, parent, styles.textgroup)}
       >
         {children}
       </MarkdownInheritedText>

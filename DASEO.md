@@ -45,10 +45,12 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
    and pinned globe launcher expose `New browser` when the feature flag is on. Key files:
    `packages/app/src/screens/workspace/workspace-screen.tsx` and
    `packages/app/src/desktop/browser/remote-tabs-sync.ts`.
-3. **Rebranding (display-only)** — DΛ native icons, PWA/status icons, and in-app startup
-   mark (`packages/app/assets/images/*`, `packages/app/public/*`,
-   `packages/app/src/components/icons/paseo-logo.tsx`, `packages/desktop/assets/*`), Android
-   personal variant name "Daseo" (`packages/app/app.config.js`), Mac window-title display
+3. **Rebranding (display-only)** — the sole DΛ geometry source is
+   `packages/app/assets/brand/daseo-mark.svg`; `npm run brand:generate` deterministically owns
+   the generated React Native path module plus native, PWA/status, notification, splash, macOS,
+   Linux, and Windows image derivatives. `npm run brand:check`, the pre-commit hook, and desktop
+   build reject manual drift. Android personal variant name "Daseo" (`packages/app/app.config.js`),
+   Mac window-title display
    name (`packages/desktop/src/main.ts`), quiet theme-derived project fallback icons in
    `packages/app/src/components/project-icon-view.tsx` that reserve color for operational
    status, square graphite user prompt panels in `packages/app/src/components/message.tsx`, and
@@ -65,10 +67,13 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
    intermediate assistant commentary fold behind one expandable "Worked for …" row. Expansion
    restores the original stream items and order losslessly. Claude, Codex/ChatGPT, Grok-through-Pi,
    OpenCode, and other providers share the same UI-level turn contract; `blockGroupId` is used when
-   available but never required. Active, partial/detached, permission-blocked, failed, and canceled
-   turns stay open, while error and failed/canceled tool rows remain visible. The projection also
-   spans the settled/live buffer boundary. Key files: `packages/app/src/agent-stream/collapsed-work.ts`,
-   `view.tsx`, `collapsed-work-row.tsx`, and `packages/app/src/types/stream.ts`.
+   available but never required; adjacent ungrouped assistant rows are preserved as one final
+   response. Active, partial/detached, permission-blocked, failed, and canceled turns stay open,
+   while error and failed/canceled tool rows remain visible. Terminal outcomes survive canonical
+   hydration, and provider message identity preserves manual expansion across renderer-row changes.
+   The projection also spans the settled/live buffer boundary. Key files:
+   `packages/app/src/agent-stream/collapsed-work.ts`, `view.tsx`, `collapsed-work-row.tsx`, and
+   `packages/app/src/types/stream.ts`.
 6. **Independent Android push notifications** — the personal Android variant gets a native
    FCM device token instead of depending on upstream's Expo project; the Mac daemon sends
    agent-finished and permission-request notifications through FCM HTTP v1. Key files:
@@ -84,8 +89,10 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
    `components/ui/combobox.tsx`).
 8. **Fold- and CJK-safe mobile UX** — unfolded Fold/tablet sidebar controls stay above the
    Android navigation inset (`packages/app/src/components/left-sidebar.tsx`), while Markdown
-   headings use token-proportional line heights so Korean and large-font text is not clipped
-   (`packages/app/src/styles/markdown-styles.ts`).
+   headings use token-proportional line heights plus full-width wrapping containers and a CJK
+   keep-all leaf policy, so multi-line Korean and large-font text measures its complete height
+   instead of clipping (`packages/app/src/styles/markdown-styles.ts` and
+   `components/markdown/heading-style.ts`).
 9. **Project-scoped empty workspace auto-create** — `/new` launched from a project creates an
    empty local workspace immediately, allowing browser/terminal use before an agent starts;
    global, worktree, unsupported-daemon, and failure paths retain the intro fallback. Archiving
@@ -106,7 +113,8 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
 
 ## Build & ship (Mac mini)
 
-- Mac: build with `npm run build:desktop -- --publish never --mac --arm64 --dir`, then run
+- Before either platform build, run `npm run brand:check`; generated DΛ assets must match the
+  canonical mark and manifest. Mac: build with `npm run build:desktop -- --publish never --mac --arm64 --dir`, then run
   `node packages/desktop/scripts/daseo-app-package.mjs packages/desktop/release/mac-arm64/Paseo.app <local-version>`.
   Ad-hoc sign the patched bundle, stage it to `~/Applications/Paseo Local Patch.app`, rename
   only the outer installed directory to `/Applications/Daseo.app`, and activate via an

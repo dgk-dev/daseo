@@ -12,3 +12,5 @@ pre-commit:
       run: npm run lint -- {staged_files}
     - name: typecheck
       run: npm run typecheck
+    - name: daseo-brand-assets
+      run: npm run brand:check

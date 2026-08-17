@@ -552,11 +552,17 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       collapsedStream.head,
       effectiveTurnPresentation.startedAt,
     ]);
-    const collapsedWorkController = useMemo<CollapsedWorkController>(
-      () => ({
-        getWorkCount: (turnKey) => collapsedStream.workCountByTurnKey.get(turnKey) ?? 0,
-        getDurationMs: (turnKey) =>
-          baseRenderModel.turnTiming.byAssistantId.get(turnKey)?.durationMs,
+    const collapsedWorkController = useMemo<CollapsedWorkController>(() => {
+      const resolveTurnKey = (key: string) =>
+        collapsedStream.turnKeyByTurnEndAssistantId.get(key) ?? key;
+      return {
+        getWorkCount: (key) => collapsedStream.workCountByTurnKey.get(resolveTurnKey(key)) ?? 0,
+        getDurationMs: (key) => {
+          const turnKey = resolveTurnKey(key);
+          const turnEndAssistantId =
+            collapsedStream.turnEndAssistantIdByTurnKey.get(turnKey) ?? key;
+          return baseRenderModel.turnTiming.byAssistantId.get(turnEndAssistantId)?.durationMs;
+        },
         isExpanded: (turnKey) => expandedWorkTurnKeys.has(turnKey),
         toggle: (turnKey) => {
           setExpandedWorkTurnKeys((previous) => {
@@ -569,13 +575,14 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
             return next;
           });
         },
-      }),
-      [
-        baseRenderModel.turnTiming.byAssistantId,
-        collapsedStream.workCountByTurnKey,
-        expandedWorkTurnKeys,
-      ],
-    );
+      };
+    }, [
+      baseRenderModel.turnTiming.byAssistantId,
+      collapsedStream.turnEndAssistantIdByTurnKey,
+      collapsedStream.turnKeyByTurnEndAssistantId,
+      collapsedStream.workCountByTurnKey,
+      expandedWorkTurnKeys,
+    ]);
     const streamLayout = useMemo(
       () =>
         layoutStream({

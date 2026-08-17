@@ -18,10 +18,14 @@ const ERROR_ASSISTANT_PREFIX = /^\[(?:system )?error\]/i;
 
 export interface CollapsedWorkResult {
   items: StreamItem[];
-  /** Folded-detail count per completed turn, including expanded turns. */
+  /** Folded-detail count per stable completed-turn key, including expanded turns. */
   workCountByTurnKey: Map<string, number>;
-  /** Final-answer anchor item id -> completed turn key. */
+  /** Final-answer anchor item id -> stable completed-turn key. */
   summaryTurnKeyByAssistantId: Map<string, string>;
+  /** Stable completed-turn key -> final rendered assistant item id. */
+  turnEndAssistantIdByTurnKey: Map<string, string>;
+  /** Final rendered assistant item id -> stable completed-turn key. */
+  turnKeyByTurnEndAssistantId: Map<string, string>;
 }
 
 export function isCollapsibleWorkItem(item: StreamItem): boolean {
@@ -36,6 +40,7 @@ interface Turn {
 
 interface TurnProjection {
   turnKey: string;
+  turnEndAssistantId: string;
   summaryAnchorId: string;
   hideableDetails: StreamItem[];
 }
@@ -97,17 +102,28 @@ function getFinalGroupIndices(
   const lastAssistant = items[lastAssistantIndex];
   const blockGroupId =
     lastAssistant?.kind === "assistant_message" ? lastAssistant.blockGroupId : undefined;
-  if (!blockGroupId) return new Set([lastAssistantIndex]);
+  if (blockGroupId) {
+    // Markdown streaming may promote one logical assistant response into
+    // several render items. blockGroupId is authoritative when present;
+    // messageId is not, because providers can reuse one message id before and
+    // after tool activity.
+    return new Set(
+      assistantIndices.filter((index) => {
+        const assistant = items[index];
+        return assistant?.kind === "assistant_message" && assistant.blockGroupId === blockGroupId;
+      }),
+    );
+  }
 
-  // Markdown streaming may promote one logical assistant response into several
-  // render items. blockGroupId is authoritative when present; messageId is not,
-  // because providers can reuse one message id before and after tool activity.
-  return new Set(
-    assistantIndices.filter((index) => {
-      const assistant = items[index];
-      return assistant?.kind === "assistant_message" && assistant.blockGroupId === blockGroupId;
-    }),
-  );
+  // Older/custom providers may emit the final response as adjacent assistant
+  // rows without grouping metadata. Preserve the entire contiguous suffix;
+  // a tool/thought/activity boundary still separates intermediate commentary.
+  const finalGroupIndices = new Set([lastAssistantIndex]);
+  for (let index = lastAssistantIndex - 1; index >= 0; index -= 1) {
+    if (items[index]?.kind !== "assistant_message") break;
+    finalGroupIndices.add(index);
+  }
+  return finalGroupIndices;
 }
 
 function getTurnDetails(
@@ -154,7 +170,11 @@ function projectTurn(items: readonly StreamItem[], turn: Turn): TurnProjection |
   const summaryAnchor = items[Math.min(...finalGroupIndices)];
   if (!summaryAnchor || summaryAnchor.kind !== "assistant_message") return null;
   return {
-    turnKey: lastAssistant.id,
+    // Provider message identity survives block promotion and canonical
+    // hydration more reliably than a renderer-row id, preserving manual
+    // expansion state while the transcript reconciles.
+    turnKey: lastAssistant.messageId ?? lastAssistant.blockGroupId ?? lastAssistant.id,
+    turnEndAssistantId: lastAssistant.id,
     summaryAnchorId: summaryAnchor.id,
     hideableDetails,
   };
@@ -165,6 +185,8 @@ export interface CollapsedStreamResult {
   head: StreamItem[];
   workCountByTurnKey: Map<string, number>;
   summaryTurnKeyByAssistantId: Map<string, string>;
+  turnEndAssistantIdByTurnKey: Map<string, string>;
+  turnKeyByTurnEndAssistantId: Map<string, string>;
 }
 
 /**
@@ -190,6 +212,8 @@ export function collapseCompletedWorkStream(input: {
       head,
       workCountByTurnKey: collapsedTail.workCountByTurnKey,
       summaryTurnKeyByAssistantId: collapsedTail.summaryTurnKeyByAssistantId,
+      turnEndAssistantIdByTurnKey: collapsedTail.turnEndAssistantIdByTurnKey,
+      turnKeyByTurnEndAssistantId: collapsedTail.turnKeyByTurnEndAssistantId,
     };
   }
   if (head.length === 0) {
@@ -203,6 +227,8 @@ export function collapseCompletedWorkStream(input: {
       head,
       workCountByTurnKey: collapsedTail.workCountByTurnKey,
       summaryTurnKeyByAssistantId: collapsedTail.summaryTurnKeyByAssistantId,
+      turnEndAssistantIdByTurnKey: collapsedTail.turnEndAssistantIdByTurnKey,
+      turnKeyByTurnEndAssistantId: collapsedTail.turnKeyByTurnEndAssistantId,
     };
   }
   const headItems = new Set(head);
@@ -221,6 +247,8 @@ export function collapseCompletedWorkStream(input: {
     head: headOut,
     workCountByTurnKey: combined.workCountByTurnKey,
     summaryTurnKeyByAssistantId: combined.summaryTurnKeyByAssistantId,
+    turnEndAssistantIdByTurnKey: combined.turnEndAssistantIdByTurnKey,
+    turnKeyByTurnEndAssistantId: combined.turnKeyByTurnEndAssistantId,
   };
 }
 
@@ -233,8 +261,16 @@ export function collapseCompletedWork(input: {
   const { items, expandedTurnKeys, keepLastTurnExpanded } = input;
   const workCountByTurnKey = new Map<string, number>();
   const summaryTurnKeyByAssistantId = new Map<string, string>();
+  const turnEndAssistantIdByTurnKey = new Map<string, string>();
+  const turnKeyByTurnEndAssistantId = new Map<string, string>();
   if (items.length === 0) {
-    return { items, workCountByTurnKey, summaryTurnKeyByAssistantId };
+    return {
+      items,
+      workCountByTurnKey,
+      summaryTurnKeyByAssistantId,
+      turnEndAssistantIdByTurnKey,
+      turnKeyByTurnEndAssistantId,
+    };
   }
 
   const turns = splitTurns(items);
@@ -246,16 +282,26 @@ export function collapseCompletedWork(input: {
 
     workCountByTurnKey.set(projection.turnKey, projection.hideableDetails.length);
     summaryTurnKeyByAssistantId.set(projection.summaryAnchorId, projection.turnKey);
+    turnEndAssistantIdByTurnKey.set(projection.turnKey, projection.turnEndAssistantId);
+    turnKeyByTurnEndAssistantId.set(projection.turnEndAssistantId, projection.turnKey);
     if (expandedTurnKeys.has(projection.turnKey)) continue;
     for (const item of projection.hideableDetails) hidden.add(item);
   }
 
   if (hidden.size === 0) {
-    return { items, workCountByTurnKey, summaryTurnKeyByAssistantId };
+    return {
+      items,
+      workCountByTurnKey,
+      summaryTurnKeyByAssistantId,
+      turnEndAssistantIdByTurnKey,
+      turnKeyByTurnEndAssistantId,
+    };
   }
   return {
     items: items.filter((item) => !hidden.has(item)),
     workCountByTurnKey,
     summaryTurnKeyByAssistantId,
+    turnEndAssistantIdByTurnKey,
+    turnKeyByTurnEndAssistantId,
   };
 }

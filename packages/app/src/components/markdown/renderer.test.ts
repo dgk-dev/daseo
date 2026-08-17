@@ -8,7 +8,9 @@ import { Text, type StyleProp, type TextStyle } from "react-native";
 import { describe, expect, it, vi } from "vitest";
 import { resolveInlineImageSize } from "./inline-image-size";
 import { colorMarkdownLinkChildren } from "./link-children";
+import { resolveMarkdownTextStyle } from "./heading-style";
 import { MarkdownLinkText } from "./link-text";
+import type { MarkdownStyles } from "./renderer";
 
 vi.stubGlobal("React", React);
 
@@ -68,6 +70,24 @@ describe("resolveInlineImageSize", () => {
       width: 16,
       height: 16,
     });
+  });
+});
+
+describe("Markdown heading text", () => {
+  it("replaces prose anywhere-wrapping only inside heading ancestors", () => {
+    const styles = {
+      text: { overflowWrap: "anywhere" },
+      textgroup: {},
+      heading_text: { overflowWrap: "break-word", wordBreak: "keep-all" },
+    } as MarkdownStyles;
+    const headingParent = [{ type: "heading3" }] as never[];
+    const paragraphParent = [{ type: "paragraph" }] as never[];
+
+    expect(resolveMarkdownTextStyle(styles, headingParent)).toEqual([
+      styles.text,
+      styles.heading_text,
+    ]);
+    expect(resolveMarkdownTextStyle(styles, paragraphParent)).toBe(styles.text);
   });
 });
 

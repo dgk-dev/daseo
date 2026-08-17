@@ -67,6 +67,28 @@ function withToolStatus(status: "running" | "completed" | "failed" | "canceled")
 
 const NONE: ReadonlySet<string> = new Set();
 
+interface DisclosureCase {
+  grouping: "block-group" | "adjacent";
+  finalBlockCount: number;
+  intermediateCount: number;
+  workKind: "thought" | "tool_call" | "todo_list" | "activity_log" | "compaction";
+}
+
+function createDisclosureCases(): DisclosureCase[] {
+  const cases: DisclosureCase[] = [];
+  const workKinds = ["thought", "tool_call", "todo_list", "activity_log", "compaction"] as const;
+  for (const grouping of ["block-group", "adjacent"] as const) {
+    for (const finalBlockCount of [1, 2, 3]) {
+      for (const intermediateCount of [0, 1, 2]) {
+        for (const workKind of workKinds) {
+          cases.push({ grouping, finalBlockCount, intermediateCount, workKind });
+        }
+      }
+    }
+  }
+  return cases;
+}
+
 describe("collapseCompletedWork", () => {
   test("shows each user prompt and final answer while folding completed details", () => {
     const items = [
@@ -236,10 +258,11 @@ describe("collapseCompletedWork", () => {
       keepLastTurnExpanded: false,
     });
     expect(result.items.map((entry) => entry.id)).toEqual([items[0]!.id, "final-0", "final-1"]);
-    expect(result.workCountByTurnKey.get("final-1")).toBe(2);
-    // The summary anchors before the first final block but uses the last block
-    // as its turn key so timing/footer lookup remains exact.
-    expect([...result.summaryTurnKeyByAssistantId]).toEqual([["final-0", "final-1"]]);
+    expect(result.workCountByTurnKey.get(messageId)).toBe(2);
+    // The summary anchors before the first final block while the stable
+    // provider message key survives renderer block promotion.
+    expect([...result.summaryTurnKeyByAssistantId]).toEqual([["final-0", messageId]]);
+    expect(result.turnEndAssistantIdByTurnKey.get(messageId)).toBe("final-1");
   });
 
   test("falls back safely for Claude/Grok-style output without block metadata", () => {
@@ -256,6 +279,67 @@ describe("collapseCompletedWork", () => {
     });
     expect(result.items.map((entry) => entry.id)).toEqual([items[0]!.id, "final"]);
     expect(result.summaryTurnKeyByAssistantId.get("final")).toBe("final");
+  });
+
+  test("keeps adjacent provider-split final rows without grouping metadata", () => {
+    const items = [
+      item("user_message"),
+      assistant("commentary", { text: "I will inspect this." }),
+      item("tool_call"),
+      assistant("final-a", { messageId: "provider-final-a", text: "First final section." }),
+      assistant("final-b", { messageId: "provider-final-b", text: "Second final section." }),
+    ];
+    const result = collapseCompletedWork({
+      items,
+      expandedTurnKeys: NONE,
+      keepLastTurnExpanded: false,
+    });
+
+    expect(result.items.map((entry) => entry.id)).toEqual([items[0]!.id, "final-a", "final-b"]);
+    expect(result.workCountByTurnKey.get("provider-final-b")).toBe(2);
+    expect(result.summaryTurnKeyByAssistantId.get("final-a")).toBe("provider-final-b");
+  });
+
+  test("preserves manual expansion when canonical hydration changes renderer row ids", () => {
+    const stableMessageId = "provider-final-message";
+    const liveItems = [
+      item("user_message"),
+      item("tool_call"),
+      assistant("live-final:block:1", {
+        messageId: stableMessageId,
+        blockGroupId: "live-final",
+        blockIndex: 1,
+        turnOutcome: "completed",
+      }),
+    ];
+    const firstProjection = collapseCompletedWork({
+      items: liveItems,
+      expandedTurnKeys: NONE,
+      keepLastTurnExpanded: false,
+    });
+    expect(firstProjection.workCountByTurnKey.get(stableMessageId)).toBe(1);
+    expect(firstProjection.turnEndAssistantIdByTurnKey.get(stableMessageId)).toBe(
+      "live-final:block:1",
+    );
+
+    const canonicalItems = [
+      item("user_message"),
+      item("tool_call"),
+      assistant("canonical-final", {
+        messageId: stableMessageId,
+        turnOutcome: "completed",
+      }),
+    ];
+    const hydratedProjection = collapseCompletedWork({
+      items: canonicalItems,
+      expandedTurnKeys: new Set([stableMessageId]),
+      keepLastTurnExpanded: false,
+    });
+
+    expect(hydratedProjection.items).toBe(canonicalItems);
+    expect(hydratedProjection.turnKeyByTurnEndAssistantId.get("canonical-final")).toBe(
+      stableMessageId,
+    );
   });
 
   test.each(["failed", "canceled"] as const)("keeps a %s turn fully visible", (turnOutcome) => {
@@ -357,6 +441,55 @@ describe("collapseCompletedWork", () => {
     });
     expect(result.items).toBe(items);
     expect(result.workCountByTurnKey.size).toBe(0);
+  });
+  test("preserves lossless disclosure invariants across 90 turn shapes", () => {
+    const cases = createDisclosureCases();
+
+    for (const [caseIndex, testCase] of cases.entries()) {
+      const caseId = caseIndex + 1;
+      const user = item("user_message");
+      const details: StreamItem[] = [];
+      for (let index = 0; index < Math.max(1, testCase.intermediateCount); index += 1) {
+        if (index < testCase.intermediateCount) {
+          details.push(assistant(`case-${caseId}-intermediate-${index}`));
+        }
+        details.push(item(testCase.workKind));
+      }
+      const finalBlocks = Array.from({ length: testCase.finalBlockCount }, (_, index) =>
+        assistant(`case-${caseId}-final-${index}`, {
+          text: `Final ${index}`,
+          messageId:
+            testCase.grouping === "block-group"
+              ? `case-${caseId}-message`
+              : `case-${caseId}-message-${index}`,
+          ...(testCase.grouping === "block-group"
+            ? { blockGroupId: `case-${caseId}-group`, blockIndex: index }
+            : {}),
+          ...(index === testCase.finalBlockCount - 1 ? { turnOutcome: "completed" as const } : {}),
+        }),
+      );
+      const items = [user, ...details, ...finalBlocks];
+      const collapsed = collapseCompletedWork({
+        items,
+        expandedTurnKeys: NONE,
+        keepLastTurnExpanded: false,
+      });
+      const turnKey = finalBlocks.at(-1)!.messageId!;
+
+      expect(collapsed.items).toEqual([user, ...finalBlocks]);
+      expect(collapsed.items.every((entry) => items.includes(entry))).toBe(true);
+      expect(collapsed.workCountByTurnKey.get(turnKey)).toBe(details.length);
+      expect(collapsed.summaryTurnKeyByAssistantId.get(finalBlocks[0]!.id)).toBe(turnKey);
+
+      const expanded = collapseCompletedWork({
+        items,
+        expandedTurnKeys: new Set([turnKey]),
+        keepLastTurnExpanded: false,
+      });
+      expect(expanded.items).toBe(items);
+    }
+
+    expect(cases).toHaveLength(90);
   });
 });
 

@@ -9,6 +9,7 @@ import {
   hydrateStreamState,
   mergeToolCallDetail,
   reduceStreamUpdate,
+  replaceWithCanonicalStream,
   type AgentToolCallItem,
   type StreamItem,
   isAgentToolCallItem,
@@ -121,6 +122,136 @@ describe("user message identity", () => {
         messageId: "provider-1",
       },
     ]);
+  });
+});
+
+describe("canonical replacement turn outcomes", () => {
+  const firstTimestamp = new Date("2026-08-17T01:00:00.000Z");
+
+  function user(id: string, text: string, seconds: number): StreamItem {
+    return {
+      kind: "user_message",
+      id,
+      messageId: id,
+      text,
+      timestamp: new Date(firstTimestamp.getTime() + seconds * 1000),
+    };
+  }
+
+  function assistant(input: {
+    id: string;
+    text: string;
+    seconds: number;
+    messageId?: string;
+    turnOutcome?: "completed" | "failed" | "canceled";
+  }): StreamItem {
+    return {
+      kind: "assistant_message",
+      id: input.id,
+      text: input.text,
+      timestamp: new Date(firstTimestamp.getTime() + input.seconds * 1000),
+      ...(input.messageId ? { messageId: input.messageId } : {}),
+      ...(input.turnOutcome ? { turnOutcome: input.turnOutcome } : {}),
+    };
+  }
+
+  it("keeps a canceled outcome when canonical hydration merges provider blocks", () => {
+    const previousTail = [
+      user("user-1", "Inspect this", 0),
+      assistant({
+        id: "before-tool",
+        messageId: "shared-assistant",
+        text: "I will inspect it.",
+        seconds: 1,
+      }),
+      assistant({
+        id: "final:block:1",
+        messageId: "shared-assistant",
+        text: "Final paragraph two.",
+        seconds: 3,
+        turnOutcome: "canceled",
+      }),
+    ];
+    const canonical = [
+      user("user-1", "Inspect this", 0),
+      assistant({
+        id: "canonical-before",
+        messageId: "shared-assistant",
+        text: "I will inspect it.",
+        seconds: 1,
+      }),
+      assistant({
+        id: "canonical-final",
+        messageId: "shared-assistant",
+        text: "Final paragraph one.\n\nFinal paragraph two.",
+        seconds: 3,
+      }),
+    ];
+
+    const result = replaceWithCanonicalStream({
+      canonical,
+      previousTail,
+      previousHead: [],
+      sendingClientMessageIds: [],
+      preserveContinuity: false,
+      canonicalCoverage: { epoch: "epoch-1", endSeq: 3 },
+    });
+    const messages = result.tail.filter(
+      (item): item is Extract<StreamItem, { kind: "assistant_message" }> =>
+        item.kind === "assistant_message",
+    );
+
+    expect(messages.map((message) => message.turnOutcome)).toEqual([undefined, "canceled"]);
+  });
+
+  it("does not transfer an outcome by generic text across a partial page", () => {
+    const previousTail = [
+      user("user-1", "Continue", 0),
+      assistant({ id: "answer-1", text: "Done.", seconds: 1, turnOutcome: "failed" }),
+    ];
+    const canonical = [assistant({ id: "unrelated-answer", text: "Done.", seconds: 20 })];
+
+    const result = replaceWithCanonicalStream({
+      canonical,
+      previousTail,
+      previousHead: [],
+      sendingClientMessageIds: [],
+      preserveContinuity: false,
+      canonicalCoverage: { epoch: "epoch-1", endSeq: 1 },
+    });
+    const message = result.tail[0];
+
+    expect(message?.kind === "assistant_message" ? message.turnOutcome : undefined).toBeUndefined();
+  });
+
+  it("matches repeated prompts to the nearest canonical turn", () => {
+    const previousTail = [
+      user("user-1", "Continue", 0),
+      assistant({ id: "answer-1", text: "Done.", seconds: 1, turnOutcome: "completed" }),
+      user("user-2", "Continue", 10),
+      assistant({ id: "answer-2", text: "Done.", seconds: 11, turnOutcome: "failed" }),
+    ];
+    const canonical = [
+      user("canonical-user-1", "Continue", 0),
+      assistant({ id: "canonical-answer-1", text: "Done.", seconds: 1 }),
+      user("canonical-user-2", "Continue", 10),
+      assistant({ id: "canonical-answer-2", text: "Done.", seconds: 11 }),
+    ];
+
+    const result = replaceWithCanonicalStream({
+      canonical,
+      previousTail,
+      previousHead: [],
+      sendingClientMessageIds: [],
+      preserveContinuity: false,
+      canonicalCoverage: { epoch: "epoch-1", endSeq: 4 },
+    });
+    const messages = result.tail.filter(
+      (item): item is Extract<StreamItem, { kind: "assistant_message" }> =>
+        item.kind === "assistant_message",
+    );
+
+    expect(messages.map((message) => message.turnOutcome)).toEqual(["completed", "failed"]);
   });
 });
 

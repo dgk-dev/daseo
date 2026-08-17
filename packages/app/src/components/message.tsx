@@ -63,6 +63,7 @@ import Svg, { Defs, LinearGradient as SvgLinearGradient, Rect, Stop } from "reac
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 import { MarkdownRenderer, type MarkdownStyles } from "@/components/markdown/renderer";
+import { resolveMarkdownTextStyle } from "@/components/markdown/heading-style";
 import type { TaskActivity, TodoEntry, UserMessageImageAttachment } from "@/types/stream";
 import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import type { ToolCallDetail } from "@getpaseo/protocol/agent-types";
@@ -1371,7 +1372,7 @@ const MemoizedMarkdownBlock = React.memo(function MemoizedMarkdownBlock({
 
 interface MarkdownInheritedTextProps {
   inheritedStyles: TextStyle;
-  textStyle: TextStyle;
+  textStyle: StyleProp<TextStyle>;
   style?: StyleProp<TextStyle>;
   monoSurface?: boolean;
   copyTag?: MarkdownCopyInlineTag;
@@ -1568,14 +1569,14 @@ export const AssistantMessage = memo(function AssistantMessage({
       text: (
         node: ASTNode,
         _children: ReactNode[],
-        _parent: ASTNode[],
+        parent: ASTNode[],
         styles: MarkdownStyles,
         inheritedStyles: TextStyle = {},
       ) => (
         <MarkdownInheritedText
           key={node.key}
           inheritedStyles={inheritedStyles}
-          textStyle={styles.text}
+          textStyle={resolveMarkdownTextStyle(styles, parent)}
         >
           {node.content}
         </MarkdownInheritedText>
@@ -1583,14 +1584,14 @@ export const AssistantMessage = memo(function AssistantMessage({
       textgroup: (
         node: ASTNode,
         children: ReactNode[],
-        _parent: ASTNode[],
+        parent: ASTNode[],
         styles: MarkdownStyles,
         inheritedStyles: TextStyle = {},
       ) => (
         <MarkdownInheritedText
           key={node.key}
           inheritedStyles={inheritedStyles}
-          textStyle={styles.textgroup}
+          textStyle={resolveMarkdownTextStyle(styles, parent, styles.textgroup)}
         >
           {children}
         </MarkdownInheritedText>

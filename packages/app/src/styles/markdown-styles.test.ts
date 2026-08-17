@@ -70,6 +70,45 @@ describe("createMarkdownStyles", () => {
     });
   });
 
+  it("lets Korean and CJK headings wrap to their full measured height", () => {
+    const styles = createMarkdownStyles(darkTheme);
+    const compactStyles = createCompactMarkdownStyles(darkTheme);
+
+    for (const key of [
+      "heading1",
+      "heading2",
+      "heading3",
+      "heading4",
+      "heading5",
+      "heading6",
+    ] as const) {
+      expect(styles[key]).toMatchObject({
+        flexDirection: "row",
+        flexWrap: "wrap",
+        alignItems: "flex-start",
+        alignContent: "flex-start",
+        alignSelf: "stretch",
+        flexShrink: 1,
+        minWidth: 0,
+        width: "100%",
+        maxWidth: "100%",
+        overflow: "visible",
+      });
+    }
+    expect(styles.heading_text).toMatchObject({
+      flexShrink: 1,
+      minWidth: 0,
+      maxWidth: "100%",
+      wordBreak: "keep-all",
+      overflowWrap: "break-word",
+    });
+    expect(compactStyles.heading3).toMatchObject({
+      flexWrap: "wrap",
+      width: "100%",
+      lineHeight: Math.round(darkTheme.fontSize.base * 1.4),
+    });
+  });
+
   it("uses the mono font-size token directly for inline and block code", () => {
     const styles = createMarkdownStyles(darkTheme);
     const compactStyles = createCompactMarkdownStyles(darkTheme);

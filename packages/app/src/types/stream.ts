@@ -599,6 +599,153 @@ function preserveReplacementHead(
   };
 }
 
+interface AssistantTurnOutcomeDescriptor {
+  assistant: AssistantMessageItem;
+  user: UserMessageItem | null;
+}
+
+function collectAssistantTurnOutcomes(
+  items: readonly StreamItem[],
+): AssistantTurnOutcomeDescriptor[] {
+  const outcomes: AssistantTurnOutcomeDescriptor[] = [];
+  let currentUser: UserMessageItem | null = null;
+  for (const item of items) {
+    if (item.kind === "user_message") {
+      currentUser = item;
+      continue;
+    }
+    if (item.kind === "assistant_message" && item.turnOutcome) {
+      outcomes.push({ assistant: item, user: currentUser });
+    }
+  }
+  return outcomes;
+}
+
+function scoreMatchingUser(previous: UserMessageItem, candidate: UserMessageItem): number {
+  if (previous.messageId && previous.messageId === candidate.messageId) return 120;
+  if (previous.clientMessageId && previous.clientMessageId === candidate.clientMessageId)
+    return 120;
+  if (previous.id === candidate.id) return 100;
+  if (previous.text !== candidate.text) return 0;
+  return previous.timestamp.getTime() === candidate.timestamp.getTime() ? 80 : 50;
+}
+
+function findMatchingCanonicalUserIndex(
+  items: readonly StreamItem[],
+  previous: UserMessageItem,
+): number {
+  let bestIndex = -1;
+  let bestScore = 0;
+  let bestTimestampDistance = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    if (item?.kind !== "user_message") continue;
+    const score = scoreMatchingUser(previous, item);
+    const timestampDistance = Math.abs(item.timestamp.getTime() - previous.timestamp.getTime());
+    if (score > bestScore || (score === bestScore && timestampDistance < bestTimestampDistance)) {
+      bestIndex = index;
+      bestScore = score;
+      bestTimestampDistance = timestampDistance;
+    }
+  }
+  return bestIndex;
+}
+
+function getAssistantIndexesInTurn(items: readonly StreamItem[], userIndex: number): number[] {
+  const indexes: number[] = [];
+  const start = userIndex >= 0 ? userIndex + 1 : 0;
+  for (let index = start; index < items.length; index += 1) {
+    const item = items[index]!;
+    if (userIndex >= 0 && item.kind === "user_message") break;
+    if (item.kind === "assistant_message") indexes.push(index);
+  }
+  return indexes;
+}
+
+function scoreMatchingAssistant(
+  previous: AssistantMessageItem,
+  candidate: AssistantMessageItem,
+): number {
+  if (
+    previous.timelineCursor &&
+    candidate.timelineCursor &&
+    previous.timelineCursor.epoch === candidate.timelineCursor.epoch &&
+    previous.timelineCursor.seq === candidate.timelineCursor.seq
+  ) {
+    return 140;
+  }
+  if (previous.id === candidate.id) return 130;
+  const sameText = previous.text === candidate.text;
+  const containsText =
+    previous.text.length > 0 &&
+    (candidate.text.includes(previous.text) || previous.text.includes(candidate.text));
+  if (previous.messageId && previous.messageId === candidate.messageId) {
+    if (sameText) return 120;
+    if (containsText) return 110;
+    return 90;
+  }
+  if (sameText && previous.timestamp.getTime() === candidate.timestamp.getTime()) return 100;
+  if (sameText) return 70;
+  return containsText ? 50 : 0;
+}
+
+function findOutcomeTargetIndex(input: {
+  canonical: readonly StreamItem[];
+  descriptor: AssistantTurnOutcomeDescriptor;
+  claimedIndexes: ReadonlySet<number>;
+}): number {
+  const userIndex = input.descriptor.user
+    ? findMatchingCanonicalUserIndex(input.canonical, input.descriptor.user)
+    : -1;
+  const assistantIndexes = getAssistantIndexesInTurn(input.canonical, userIndex).filter(
+    (index) => !input.claimedIndexes.has(index),
+  );
+  let bestIndex = -1;
+  let bestScore = 0;
+  for (const index of assistantIndexes) {
+    const candidate = input.canonical[index];
+    if (candidate?.kind !== "assistant_message") continue;
+    const score = scoreMatchingAssistant(input.descriptor.assistant, candidate);
+    if (score >= bestScore) {
+      bestIndex = index;
+      bestScore = score;
+    }
+  }
+  // A matched user boundary is stronger evidence than provider-specific text
+  // chunking, so its final assistant is the safe fallback after projection.
+  if (bestIndex < 0 && userIndex >= 0) return assistantIndexes.at(-1) ?? -1;
+  // A partial canonical page without the prior user boundary needs strong
+  // provider identity; repeated generic text such as “Done” is not enough.
+  if (userIndex < 0 && bestScore < 90) return -1;
+  return bestIndex;
+}
+
+function preserveAssistantTurnOutcomes(
+  previous: readonly StreamItem[],
+  canonical: StreamItem[],
+): StreamItem[] {
+  const descriptors = collectAssistantTurnOutcomes(previous);
+  if (descriptors.length === 0) return canonical;
+
+  let next = canonical;
+  const claimedIndexes = new Set<number>();
+  for (const descriptor of descriptors) {
+    const targetIndex = findOutcomeTargetIndex({
+      canonical: next,
+      descriptor,
+      claimedIndexes,
+    });
+    if (targetIndex < 0) continue;
+    const target = next[targetIndex];
+    if (!target || target.kind !== "assistant_message") continue;
+    claimedIndexes.add(targetIndex);
+    if (target.turnOutcome === descriptor.assistant.turnOutcome) continue;
+    if (next === canonical) next = [...canonical];
+    next[targetIndex] = { ...target, turnOutcome: descriptor.assistant.turnOutcome };
+  }
+  return next;
+}
+
 export function replaceWithCanonicalStream(
   input: CanonicalStreamReplacementInput,
 ): CanonicalStreamReplacementResult {
@@ -660,8 +807,12 @@ export function replaceWithCanonicalStream(
   }
   nextHead = [...retainedTailMessages, ...nextHead];
 
-  const replacement = preserveReplacementHead(
+  const outcomePreservedTail = preserveAssistantTurnOutcomes(
+    [...input.previousTail, ...input.previousHead],
     nextTail,
+  );
+  const replacement = preserveReplacementHead(
+    outcomePreservedTail,
     nextHead,
     input.preserveContinuity,
     sendingClientMessageIds,
