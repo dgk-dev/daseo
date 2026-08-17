@@ -41,9 +41,12 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
    phones open real desktop tabs, continuously discover tabs created by Mac UI or agent
    browser tools, refresh URL/title/navigation/loading state, and close the authoritative
    Mac tab. The desktop workspace layout—not only currently mounted webviews—is the tab-list
-   SSOT; listing materializes every persisted browser guest without parking the visible guest,
-   and mobile mirrors the authoritative active browser. Mobile viewers reconcile on focus and
-   every two seconds; transient disconnects or host hydration preserve local viewers. Workspace
+   SSOT; listing materializes every persisted browser guest without parking the visible guest.
+   Newly discovered browsers sit directly after the current mobile tab in host order. Desktop
+   active-browser state seeds an otherwise empty mobile selection, but subsequent mobile tab
+   choices remain local so background refresh cannot pull an open agent back to a browser. Mobile
+   viewers reconcile on focus and every two seconds; transient disconnects or host hydration
+   preserve local viewers. Workspace
    header ⋯ menu, tabs-row ∨ menu, and pinned globe launcher expose `New browser` when the feature
    flag is on. Key files: `packages/app/src/screens/workspace/workspace-screen.tsx`,
    `packages/app/src/desktop/browser/automation/handler.ts`, `resident-webviews.ts`, and

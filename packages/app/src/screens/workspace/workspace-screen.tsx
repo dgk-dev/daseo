@@ -2064,6 +2064,7 @@ function WorkspaceScreenContent({
       !client ||
       !supportsRemoteBrowser ||
       !hasHydratedWorkspaceLayoutStore ||
+      !hasHydratedAgents ||
       !normalizedWorkspaceId
     ) {
       return;
@@ -2100,6 +2101,7 @@ function WorkspaceScreenContent({
     };
   }, [
     client,
+    hasHydratedAgents,
     hasHydratedWorkspaceLayoutStore,
     isConnected,
     isRouteFocused,

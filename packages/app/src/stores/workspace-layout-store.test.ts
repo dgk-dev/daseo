@@ -425,6 +425,64 @@ describe("workspace-layout-store actions", () => {
     expect(layout.focusedPaneId).toBe("main");
   });
 
+  it("opens a new focused tab directly after the current tab", () => {
+    const workspaceKey = createWorkspaceKey();
+    const store = workspaceLayoutStore.getState();
+
+    const firstTabId = store.openTabFocused(workspaceKey, {
+      kind: "file",
+      path: "/repo/worktree/a.ts",
+    });
+    const secondTabId = store.openTabFocused(workspaceKey, {
+      kind: "file",
+      path: "/repo/worktree/b.ts",
+    });
+    const thirdTabId = store.openTabFocused(workspaceKey, {
+      kind: "file",
+      path: "/repo/worktree/c.ts",
+    });
+    store.focusTab(workspaceKey, firstTabId!);
+
+    const browserTabId = store.openTabFocused(workspaceKey, {
+      kind: "browser",
+      browserId: "11111111-1111-4111-8111-111111111111",
+    });
+    const layout = workspaceLayoutStore.getState().layoutByWorkspace[workspaceKey];
+    const pane = findPaneById(layout.root, "main")!;
+
+    expect(pane.tabIds).toEqual([firstTabId, browserTabId, secondTabId, thirdTabId]);
+    expect(pane.focusedTabId).toBe(browserTabId);
+  });
+
+  it("opens a background tab directly after the current tab without stealing focus", () => {
+    const workspaceKey = createWorkspaceKey();
+    const store = workspaceLayoutStore.getState();
+
+    const firstTabId = store.openTabFocused(workspaceKey, {
+      kind: "file",
+      path: "/repo/worktree/a.ts",
+    });
+    const secondTabId = store.openTabFocused(workspaceKey, {
+      kind: "file",
+      path: "/repo/worktree/b.ts",
+    });
+    const thirdTabId = store.openTabFocused(workspaceKey, {
+      kind: "file",
+      path: "/repo/worktree/c.ts",
+    });
+    store.focusTab(workspaceKey, secondTabId!);
+
+    const setupTabId = store.openTabInBackground(workspaceKey, {
+      kind: "setup",
+      workspaceId: "ws-main",
+    });
+    const layout = workspaceLayoutStore.getState().layoutByWorkspace[workspaceKey];
+    const pane = findPaneById(layout.root, "main")!;
+
+    expect(pane.tabIds).toEqual([firstTabId, secondTabId, setupTabId, thirdTabId]);
+    expect(pane.focusedTabId).toBe(secondTabId);
+  });
+
   it("openTabInBackground on an existing target is a no-op", () => {
     const workspaceKey = createWorkspaceKey();
     const store = workspaceLayoutStore.getState();

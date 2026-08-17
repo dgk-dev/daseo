@@ -10,6 +10,7 @@ vi.mock("@react-native-async-storage/async-storage", () => ({
 import { adoptWorkspaceBrowser, useBrowserStore } from "@/desktop/browser/store";
 import {
   collectAllTabs,
+  findPaneById,
   getFocusedBrowserId,
   useWorkspaceLayoutStore,
 } from "@/stores/workspace-layout-store";
@@ -111,7 +112,7 @@ describe("reconcileRemoteBrowserTabs", () => {
     });
   });
 
-  test("mirrors the authoritative desktop active browser", () => {
+  test("seeds the authoritative desktop browser only when mobile has no selection", () => {
     reconcileRemoteBrowserTabs({
       serverId: SERVER_ID,
       workspaceId: WORKSPACE_ID,
@@ -121,14 +122,59 @@ describe("reconcileRemoteBrowserTabs", () => {
       getFocusedBrowserId(useWorkspaceLayoutStore.getState().layoutByWorkspace[WORKSPACE_KEY]),
     ).toBe(BROWSER_ONE);
 
+    useWorkspaceLayoutStore.getState().focusTab(WORKSPACE_KEY, `browser_${BROWSER_TWO}`);
     reconcileRemoteBrowserTabs({
       serverId: SERVER_ID,
       workspaceId: WORKSPACE_ID,
-      tabs: [remote(BROWSER_ONE), remote(BROWSER_TWO, { isActive: true })],
+      tabs: [remote(BROWSER_ONE, { isActive: true }), remote(BROWSER_TWO)],
     });
     expect(
       getFocusedBrowserId(useWorkspaceLayoutStore.getState().layoutByWorkspace[WORKSPACE_KEY]),
     ).toBe(BROWSER_TWO);
+  });
+
+  test("keeps a user-selected agent open while desktop browser state refreshes", () => {
+    const agentTabId = useWorkspaceLayoutStore.getState().openTabFocused(WORKSPACE_KEY, {
+      kind: "agent",
+      agentId: "agent-1",
+    });
+
+    reconcileRemoteBrowserTabs({
+      serverId: SERVER_ID,
+      workspaceId: WORKSPACE_ID,
+      tabs: [remote(BROWSER_ONE, { isActive: true })],
+    });
+
+    const layout = useWorkspaceLayoutStore.getState().layoutByWorkspace[WORKSPACE_KEY];
+    expect(findPaneById(layout.root, layout.focusedPaneId)?.focusedTabId).toBe(agentTabId);
+  });
+
+  test("places discovered browser tabs directly after the current tab in host order", () => {
+    const layoutStore = useWorkspaceLayoutStore.getState();
+    const agentTabId = layoutStore.openTabFocused(WORKSPACE_KEY, {
+      kind: "agent",
+      agentId: "agent-1",
+    });
+    const tailTabId = layoutStore.openTabFocused(WORKSPACE_KEY, {
+      kind: "draft",
+      draftId: "draft-tail",
+    });
+    layoutStore.focusTab(WORKSPACE_KEY, agentTabId!);
+
+    reconcileRemoteBrowserTabs({
+      serverId: SERVER_ID,
+      workspaceId: WORKSPACE_ID,
+      tabs: [remote(BROWSER_ONE), remote(BROWSER_TWO)],
+    });
+
+    const layout = useWorkspaceLayoutStore.getState().layoutByWorkspace[WORKSPACE_KEY];
+    expect(findPaneById(layout.root, layout.focusedPaneId)?.tabIds).toEqual([
+      agentTabId,
+      `browser_${BROWSER_ONE}`,
+      `browser_${BROWSER_TWO}`,
+      tailTabId,
+    ]);
+    expect(findPaneById(layout.root, layout.focusedPaneId)?.focusedTabId).toBe(agentTabId);
   });
 
   test("deduplicates replayed host entries and keeps the newest state", () => {

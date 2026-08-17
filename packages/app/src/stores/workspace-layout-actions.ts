@@ -83,6 +83,7 @@ interface InsertTabIntoPaneInput {
   paneId: string;
   tab: WorkspaceTab;
   focusTabId?: string | null;
+  insertAfterTabId?: string | null;
 }
 
 interface InsertSplitInternalInput {
@@ -731,10 +732,18 @@ function insertTabIntoPane(
   return replaceNodeAtPath(root, panePath, (node) => {
     invariant(node.kind === "pane", "Expected pane while inserting tab");
     const existingIndex = node.pane.tabs.findIndex((tab) => tab.tabId === input.tab.tabId);
+    const insertAfterIndex = input.insertAfterTabId
+      ? node.pane.tabs.findIndex((tab) => tab.tabId === input.insertAfterTabId)
+      : -1;
+    const insertionIndex = insertAfterIndex >= 0 ? insertAfterIndex + 1 : node.pane.tabs.length;
     const nextTabs =
       existingIndex >= 0
         ? node.pane.tabs.map((tab, index) => (index === existingIndex ? input.tab : tab))
-        : [...node.pane.tabs, input.tab];
+        : [
+            ...node.pane.tabs.slice(0, insertionIndex),
+            input.tab,
+            ...node.pane.tabs.slice(insertionIndex),
+          ];
     return {
       kind: "pane",
       pane: normalizePaneAfterTabChange({
@@ -1104,6 +1113,7 @@ function insertNewTabIntoFocusedPane(input: {
         paneId: focusedPane.id,
         tab: nextTab,
         focusTabId: input.focus ? tabId : preservedFocusTabId,
+        insertAfterTabId: focusedPane.focusedTabId,
       }),
       focusedPaneId: input.focus ? focusedPane.id : layout.focusedPaneId,
       parentTabIdByTabId: input.layout.parentTabIdByTabId,

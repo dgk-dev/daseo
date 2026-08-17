@@ -3,8 +3,13 @@ import {
   useBrowserStore,
   type BrowserRecord,
 } from "@/desktop/browser/store";
-import { collectAllTabs, useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
-import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
+import {
+  collectAllTabs,
+  findPaneById,
+  useWorkspaceLayoutStore,
+  type WorkspaceLayout,
+} from "@/stores/workspace-layout-store";
+import { buildWorkspaceTabPersistenceKey, type WorkspaceTab } from "@/workspace-tabs/model";
 
 export interface RemoteBrowserTabInfo {
   browserId: string;
@@ -34,11 +39,57 @@ function browserStateChanged(existing: BrowserRecord, remote: RemoteBrowserTabIn
   );
 }
 
-function focusAuthoritativeBrowser(input: {
+function groupLocalBrowserTabs(layout: WorkspaceLayout | undefined) {
+  const localTabs = layout
+    ? collectAllTabs(layout.root).filter(
+        (tab): tab is WorkspaceTab & { target: { kind: "browser"; browserId: string } } =>
+          tab.target.kind === "browser",
+      )
+    : [];
+  const localByBrowserId = new Map<string, typeof localTabs>();
+  for (const tab of localTabs) {
+    const grouped = localByBrowserId.get(tab.target.browserId) ?? [];
+    grouped.push(tab);
+    localByBrowserId.set(tab.target.browserId, grouped);
+  }
+  return localByBrowserId;
+}
+
+function placeAddedTabsAfterInitialFocus(input: {
   workspaceKey: string;
+  initialPaneId: string | null;
+  initialFocusedTabId: string | null;
+  addedTabIds: readonly string[];
+}): void {
+  if (!input.initialPaneId || !input.initialFocusedTabId || input.addedTabIds.length === 0) {
+    return;
+  }
+
+  const layoutStore = useWorkspaceLayoutStore.getState();
+  const layout = layoutStore.layoutByWorkspace[input.workspaceKey];
+  const pane = layout ? findPaneById(layout.root, input.initialPaneId) : null;
+  if (!pane) return;
+
+  const addedSet = new Set(input.addedTabIds);
+  const orderedAddedTabIds = input.addedTabIds.filter((tabId) => pane.tabIds.includes(tabId));
+  const retainedTabIds = pane.tabIds.filter((tabId) => !addedSet.has(tabId));
+  const anchorIndex = retainedTabIds.indexOf(input.initialFocusedTabId);
+  if (anchorIndex < 0 || orderedAddedTabIds.length === 0) return;
+
+  layoutStore.reorderTabsInPane(input.workspaceKey, input.initialPaneId, [
+    ...retainedTabIds.slice(0, anchorIndex + 1),
+    ...orderedAddedTabIds,
+    ...retainedTabIds.slice(anchorIndex + 1),
+  ]);
+}
+
+function seedInitialAuthoritativeBrowser(input: {
+  workspaceKey: string;
+  shouldSeedFocus: boolean;
   remoteTabs: readonly RemoteBrowserTabInfo[];
   localTabIdByBrowserId: ReadonlyMap<string, string>;
 }): void {
+  if (!input.shouldSeedFocus) return;
   const activeBrowserId = input.remoteTabs.find((tab) => tab.isActive)?.browserId;
   if (!activeBrowserId) return;
   const activeTabId = input.localTabIdByBrowserId.get(activeBrowserId);
@@ -68,19 +119,13 @@ export function reconcileRemoteBrowserTabs(input: {
   const layoutStore = useWorkspaceLayoutStore.getState();
   const browserStore = useBrowserStore.getState();
   const layout = layoutStore.layoutByWorkspace[workspaceKey];
-  const localTabs = layout
-    ? collectAllTabs(layout.root).filter((tab) => tab.target.kind === "browser")
-    : [];
-  const localByBrowserId = new Map<string, typeof localTabs>();
-  for (const tab of localTabs) {
-    const browserId = tab.target.kind === "browser" ? tab.target.browserId : "";
-    const grouped = localByBrowserId.get(browserId) ?? [];
-    grouped.push(tab);
-    localByBrowserId.set(browserId, grouped);
-  }
+  const initialFocusedPane = layout ? findPaneById(layout.root, layout.focusedPaneId) : null;
+  const initialFocusedTabId = initialFocusedPane?.focusedTabId ?? null;
+  const localByBrowserId = groupLocalBrowserTabs(layout);
 
   const remoteIds = new Set(remoteTabs.map((tab) => tab.browserId));
   const localTabIdByBrowserId = new Map<string, string>();
+  const addedTabIds: string[] = [];
   let added = 0;
   let removed = 0;
   let updated = 0;
@@ -111,7 +156,10 @@ export function reconcileRemoteBrowserTabs(input: {
         kind: "browser",
         browserId: remote.browserId,
       });
-      if (tabId) localTabIdByBrowserId.set(remote.browserId, tabId);
+      if (tabId) {
+        localTabIdByBrowserId.set(remote.browserId, tabId);
+        addedTabIds.push(tabId);
+      }
       added += 1;
       continue;
     }
@@ -132,7 +180,18 @@ export function reconcileRemoteBrowserTabs(input: {
     useBrowserStore.getState().removeBrowser(browserId);
   }
 
-  focusAuthoritativeBrowser({ workspaceKey, remoteTabs, localTabIdByBrowserId });
+  placeAddedTabsAfterInitialFocus({
+    workspaceKey,
+    initialPaneId: initialFocusedPane?.id ?? null,
+    initialFocusedTabId,
+    addedTabIds,
+  });
+  seedInitialAuthoritativeBrowser({
+    workspaceKey,
+    shouldSeedFocus: initialFocusedTabId === null,
+    remoteTabs,
+    localTabIdByBrowserId,
+  });
 
   return { added, removed, updated };
 }
