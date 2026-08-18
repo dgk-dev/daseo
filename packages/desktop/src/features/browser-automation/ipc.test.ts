@@ -1,7 +1,11 @@
 import type { Rectangle } from "electron";
 import { describe, expect, test, vi } from "vitest";
 import type { FullPageCaptureImage } from "./full-page-capture.js";
-import { adaptWebContents, HostSnapshotEngineRegistry } from "./ipc.js";
+import {
+  adaptWebContents,
+  HostSnapshotEngineRegistry,
+  preparePersistentBrowserDialogMonitoring,
+} from "./ipc.js";
 import type { IsolatedKeyboardInputEvent } from "./trusted-input.js";
 
 class FakeImage implements FullPageCaptureImage {
@@ -547,6 +551,35 @@ describe("browser automation IPC adapter", () => {
     expect(contents.debugger.commands).not.toContainEqual({
       command: "Page.handleJavaScriptDialog",
       params: { accept: false },
+    });
+  });
+
+  test("persistent monitoring dismisses a background dialog and reports it on the next command", async () => {
+    const contents = new FakeWebContents(33);
+    const tab = adaptWebContents(contents);
+    preparePersistentBrowserDialogMonitoring(contents);
+    await flushMicrotasks();
+
+    contents.debugger.emitMessage("Page.javascriptDialogOpening", {
+      type: "confirm",
+      message: "Background request?",
+    });
+    await flushMicrotasks();
+
+    expect(contents.debugger.commands).toContainEqual({
+      command: "Page.handleJavaScriptDialog",
+      params: { accept: false },
+    });
+    await expect(tab.captureDialogs?.(async () => "next-command")).resolves.toEqual({
+      result: "next-command",
+      dialogs: [
+        {
+          type: "confirm",
+          message: "Background request?",
+          action: "dismissed",
+          timestamp: expect.any(Number),
+        },
+      ],
     });
   });
 

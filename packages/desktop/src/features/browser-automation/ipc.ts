@@ -19,6 +19,10 @@ import {
 import { executeAutomationCommand } from "./service.js";
 import { startScreencast, stopScreencast } from "./screencast.js";
 import {
+  clearPaseoBrowserAutomationActivity,
+  markPaseoBrowserAutomationActivity,
+} from "./activity.js";
+import {
   captureFullPage as captureFullPageImage,
   type FullPageCaptureImage,
 } from "./full-page-capture.js";
@@ -29,6 +33,7 @@ import {
   getPaseoBrowserWebContentsForHostWindow,
   getWorkspaceActivePaseoBrowserIdForHostWindow,
   getPaseoBrowserWorkspaceId,
+  getPaseoBrowserTargetMetadata,
 } from "../browser-webviews/index.js";
 
 const MAX_CONSOLE_MESSAGES_PER_TAB = 200;
@@ -117,6 +122,22 @@ interface BrowserAutomationWebContents extends ConsoleMessageEmitter {
   sendInputEvent(event: IsolatedKeyboardInputEvent): void;
 }
 
+export function preparePersistentBrowserDialogMonitoring(
+  contents: BrowserAutomationWebContents,
+): void {
+  const contentsId = contents.id;
+  observeConsoleMessages(contents, contentsId);
+  const monitor = getDialogMonitor(contents, contentsId, getCdpQueue(contentsId));
+  void monitor.start().catch((error) => {
+    if (!contents.isDestroyed()) {
+      console.warn("[browser-automation] Persistent dialog monitoring unavailable", {
+        contentsId,
+        error,
+      });
+    }
+  });
+}
+
 export function adaptWebContents(contents: BrowserAutomationWebContents): TabContents {
   const contentsId = contents.id;
   observeConsoleMessages(contents, contentsId);
@@ -130,11 +151,26 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
     canGoForward: () => contents.canGoForward(),
     isLoading: () => contents.isLoading(),
     isDestroyed: () => contents.isDestroyed(),
-    executeJavaScript: (code: string) => contents.executeJavaScript(code),
-    loadURL: (url: string) => contents.loadURL(url),
-    goBack: () => contents.goBack(),
-    goForward: () => contents.goForward(),
-    reload: () => contents.reload(),
+    executeJavaScript: (code: string) => {
+      markPaseoBrowserAutomationActivity(contentsId);
+      return contents.executeJavaScript(code);
+    },
+    loadURL: (url: string) => {
+      markPaseoBrowserAutomationActivity(contentsId);
+      return contents.loadURL(url);
+    },
+    goBack: () => {
+      markPaseoBrowserAutomationActivity(contentsId);
+      contents.goBack();
+    },
+    goForward: () => {
+      markPaseoBrowserAutomationActivity(contentsId);
+      contents.goForward();
+    },
+    reload: () => {
+      markPaseoBrowserAutomationActivity(contentsId);
+      contents.reload();
+    },
     capturePage: (captureOptions) => contents.capturePage(undefined, captureOptions),
     captureFullPage: (options) =>
       cdpQueue.run(async () => {
@@ -159,16 +195,28 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
         );
       }),
     invalidate: () => contents.invalidate(),
-    sendInputEvent: (event) => contents.sendInputEvent(event),
+    sendInputEvent: (event) => {
+      markPaseoBrowserAutomationActivity(contentsId);
+      contents.sendInputEvent(event);
+    },
     getConsoleMessages: () => consoleMessagesByContentsId.get(contentsId) ?? [],
-    captureDialogs: (task) => dialogMonitor.capture(task),
-    sendDebugCommand: (command: string, params?: Record<string, unknown>) =>
-      cdpQueue.run(async () => {
+    captureDialogs: async (task) => {
+      markPaseoBrowserAutomationActivity(contentsId);
+      try {
+        return await dialogMonitor.capture(task);
+      } finally {
+        markPaseoBrowserAutomationActivity(contentsId);
+      }
+    },
+    sendDebugCommand: (command: string, params?: Record<string, unknown>) => {
+      markPaseoBrowserAutomationActivity(contentsId);
+      return cdpQueue.run(async () => {
         if (!contents.debugger.isAttached()) {
           contents.debugger.attach("1.3");
         }
         return contents.debugger.sendCommand(command, params ?? {});
-      }),
+      });
+    },
     startScreencast: (options, onFrame) =>
       cdpQueue.run(() => startScreencast(contents, options, onFrame)),
     stopScreencast: () => cdpQueue.run(() => stopScreencast(contents)),
@@ -201,6 +249,7 @@ function observeConsoleMessages(contents: BrowserAutomationWebContents, contents
     consoleMessagesByContentsId.delete(contentsId);
     cdpQueuesByContentsId.delete(contentsId);
     dialogMonitorsByContentsId.delete(contentsId);
+    clearPaseoBrowserAutomationActivity(contentsId);
   });
 }
 
@@ -220,9 +269,11 @@ function getDialogMonitor(
 
 class DialogMonitor {
   private enabled = false;
+  private persistent = false;
   private listenerRegistered = false;
   private detachGeneration = 0;
   private readonly activeCollectors: DialogCollector[] = [];
+  private readonly pendingDialogs: BrowserAutomationDialogEvent[] = [];
 
   public constructor(
     private readonly contents: BrowserAutomationWebContents,
@@ -249,6 +300,7 @@ class DialogMonitor {
       return { result: await task(), dialogs: [] };
     }
     this.activeCollectors.push(collector);
+    this.recordDialogs(collector, this.pendingDialogs.splice(0));
     try {
       const result = await task();
       this.recordPromptShimDialogs(await this.drainPromptShim());
@@ -264,6 +316,11 @@ class DialogMonitor {
     }
   }
 
+  public async start(): Promise<void> {
+    this.persistent = true;
+    await this.enable();
+  }
+
   private async enable(): Promise<void> {
     if (this.enabled) {
       return;
@@ -274,13 +331,18 @@ class DialogMonitor {
     if (!this.listenerRegistered) {
       this.listenerRegistered = true;
       this.contents.debugger.on("message", (_event, method, params) => {
-        if (method !== "Page.javascriptDialogOpening") {
+        if (
+          method !== "Page.javascriptDialogOpening" ||
+          (this.activeCollectors.length === 0 && !this.persistent)
+        ) {
           return;
         }
-        if (this.activeCollectors.length === 0) {
-          return;
-        }
-        void this.handleOpening(params ?? {});
+        void this.handleOpening(params ?? {}).catch((error) => {
+          console.warn("[browser-automation] Failed to handle JavaScript dialog", {
+            contentsId: this.contentsId,
+            error,
+          });
+        });
       });
       this.contents.debugger.on("detach", () => {
         this.enabled = false;
@@ -293,8 +355,12 @@ class DialogMonitor {
 
   private async handleOpening(params: Record<string, unknown>): Promise<void> {
     const event = handledDialogEvent(params);
-    for (const collector of this.activeCollectors) {
-      this.recordDialogs(collector, [event]);
+    if (this.activeCollectors.length === 0) {
+      this.recordPendingDialog(event);
+    } else {
+      for (const collector of this.activeCollectors) {
+        this.recordDialogs(collector, [event]);
+      }
     }
     await this.sendDialogResponseCommand("Page.handleJavaScriptDialog", {
       accept: dialogAcceptValue(event.type),
@@ -338,6 +404,13 @@ class DialogMonitor {
       }
       collector.dialogs.push(dialog);
     }
+  }
+
+  private recordPendingDialog(dialog: BrowserAutomationDialogEvent): void {
+    if (this.pendingDialogs.length >= MAX_DIALOGS_PER_COMMAND) {
+      this.pendingDialogs.shift();
+    }
+    this.pendingDialogs.push(dialog);
   }
 
   private recordPromptShimDialogs(dialogs: BrowserAutomationDialogEvent[]): void {
@@ -425,6 +498,7 @@ function createRegistry(hostWebContentsId: number): BrowserRegistry {
       return contents ? adaptWebContents(contents) : null;
     },
     getBrowserWorkspaceId: getPaseoBrowserWorkspaceId,
+    getBrowserTargetMetadata: getPaseoBrowserTargetMetadata,
     getWorkspaceActiveBrowserId(workspaceId: string): string | null {
       return getWorkspaceActivePaseoBrowserIdForHostWindow(workspaceId, hostWebContentsId);
     },

@@ -526,6 +526,14 @@ export const en = {
         selectorLoading: "Wait for the page to finish loading",
         selectorFailed: "Couldn't start element selector",
       },
+      popups: {
+        show: "Show pop-ups ({{count}})",
+        returnToPage: "Return to page",
+        previous: "Previous pop-up",
+        next: "Next pop-up",
+        close: "Close pop-up",
+        closeFailed: "Unable to close pop-up",
+      },
       annotate: {
         title: "Annotate element",
         placeholder: "Message to the agent about this element…",

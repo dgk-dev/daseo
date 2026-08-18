@@ -528,6 +528,14 @@ export const ar: TranslationResources = {
         selectorLoading: "انتظر حتى ينتهي تحميل الصفحة",
         selectorFailed: "تعذّر بدء محدد العنصر",
       },
+      popups: {
+        show: "عرض النوافذ المنبثقة ({{count}})",
+        returnToPage: "العودة إلى الصفحة",
+        previous: "النافذة المنبثقة السابقة",
+        next: "النافذة المنبثقة التالية",
+        close: "إغلاق النافذة المنبثقة",
+        closeFailed: "تعذّر إغلاق النافذة المنبثقة",
+      },
       annotate: {
         title: "التعليق على العنصر",
         placeholder: "رسالة إلى الوكيل حول هذا العنصر…",

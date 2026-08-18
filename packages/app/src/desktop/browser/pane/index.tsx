@@ -11,7 +11,16 @@ import {
 } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
-import { ArrowLeft, ArrowRight, CornerDownLeft, RotateCw } from "lucide-react-native";
+import {
+  ArrowLeft,
+  ArrowRight,
+  ChevronLeft,
+  ChevronRight,
+  CornerDownLeft,
+  PanelsTopLeft,
+  RotateCw,
+  X,
+} from "lucide-react-native";
 import type { BrowserStreamFrame } from "@getpaseo/protocol/binary-frames/index";
 import { Button } from "@/components/ui/button";
 import { useRetainedPanelActive } from "@/components/retained-panel";
@@ -20,6 +29,7 @@ import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-
 import { useSessionStore } from "@/stores/session-store";
 import { mapTouchToGuest } from "./remote-viewport";
 import { nextRemoteStreamRetry, shouldAcceptRemoteStreamSequence } from "./remote-stream-retry";
+import { useRemoteBrowserPopupTargets } from "@/desktop/browser/remote-popup-targets";
 
 interface BrowserPaneProps {
   browserId: string;
@@ -65,6 +75,163 @@ interface FrameState {
 }
 
 type StreamStatus = "connecting" | "retrying" | "live" | "stopped";
+type RemoteBrowserClient = ReturnType<typeof useHostRuntimeClient>;
+
+interface RemotePopupController {
+  targets: ReturnType<typeof useRemoteBrowserPopupTargets>;
+  selected: ReturnType<typeof useRemoteBrowserPopupTargets>[number] | null;
+  activeBrowserId: string;
+  error: string | null;
+  toggle(): void;
+  previous(): void;
+  next(): void;
+  close(): void;
+}
+
+function useRemotePopupController(input: {
+  browserId: string;
+  serverId: string;
+  workspaceId: string;
+  client: RemoteBrowserClient;
+  closeFailedLabel: string;
+}): RemotePopupController {
+  const targets = useRemoteBrowserPopupTargets({
+    serverId: input.serverId,
+    workspaceId: input.workspaceId,
+    rootBrowserId: input.browserId,
+  });
+  const [selectedBrowserId, setSelectedBrowserId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const selected = targets.find((target) => target.browserId === selectedBrowserId) ?? null;
+  const selectedIndex = selected
+    ? targets.findIndex((target) => target.browserId === selected.browserId)
+    : -1;
+
+  useEffect(() => {
+    setSelectedBrowserId((current) =>
+      current && targets.some((target) => target.browserId === current) ? current : null,
+    );
+  }, [targets]);
+  useEffect(() => setError(null), [selectedBrowserId]);
+
+  const toggle = useCallback(() => {
+    setSelectedBrowserId((current) => (current ? null : (targets.at(-1)?.browserId ?? null)));
+  }, [targets]);
+  const previous = useCallback(() => {
+    if (targets.length < 2) return;
+    const index = Math.max(0, selectedIndex);
+    setSelectedBrowserId(targets[(index - 1 + targets.length) % targets.length]?.browserId ?? null);
+  }, [selectedIndex, targets]);
+  const next = useCallback(() => {
+    if (targets.length < 2) return;
+    const index = Math.max(0, selectedIndex);
+    setSelectedBrowserId(targets[(index + 1) % targets.length]?.browserId ?? null);
+  }, [selectedIndex, targets]);
+  const close = useCallback(() => {
+    if (!input.client || !selected) return;
+    void input.client
+      .closeRemoteBrowserTab({ workspaceId: input.workspaceId, browserId: selected.browserId })
+      .then((result) => {
+        if (result.ok) setSelectedBrowserId(null);
+        else setError(result.error?.message ?? input.closeFailedLabel);
+        return undefined;
+      })
+      .catch(() => {
+        setError(input.closeFailedLabel);
+      });
+  }, [input.client, input.closeFailedLabel, input.workspaceId, selected]);
+
+  return {
+    targets,
+    selected,
+    activeBrowserId: selected?.browserId ?? input.browserId,
+    error,
+    toggle,
+    previous,
+    next,
+    close,
+  };
+}
+
+function RemotePopupToolbarToggle({
+  popup,
+  foreground,
+  mutedColor,
+  accent,
+}: {
+  popup: RemotePopupController;
+  foreground: string;
+  mutedColor: string;
+  accent: string;
+}) {
+  const { t } = useTranslation();
+  if (popup.targets.length === 0) return null;
+  return (
+    <Pressable
+      onPress={popup.toggle}
+      style={styles.toolbarButton}
+      accessibilityRole="button"
+      accessibilityLabel={
+        popup.selected
+          ? t("workspace.browser.popups.returnToPage")
+          : t("workspace.browser.popups.show", { count: popup.targets.length })
+      }
+    >
+      <View style={styles.popupIndicator}>
+        <PanelsTopLeft size={16} color={popup.selected ? accent : foreground} />
+        <Text style={[styles.popupCount, { color: mutedColor }]}>{popup.targets.length}</Text>
+      </View>
+    </Pressable>
+  );
+}
+
+function RemotePopupDetails({
+  popup,
+  foreground,
+  mutedColor,
+}: {
+  popup: RemotePopupController;
+  foreground: string;
+  mutedColor: string;
+}) {
+  const { t } = useTranslation();
+  if (!popup.selected) return null;
+  return (
+    <View style={styles.popupControlsRow}>
+      {popup.targets.length > 1 ? (
+        <>
+          <Pressable
+            onPress={popup.previous}
+            style={styles.popupControlButton}
+            accessibilityRole="button"
+            accessibilityLabel={t("workspace.browser.popups.previous")}
+          >
+            <ChevronLeft size={16} color={foreground} />
+          </Pressable>
+          <Pressable
+            onPress={popup.next}
+            style={styles.popupControlButton}
+            accessibilityRole="button"
+            accessibilityLabel={t("workspace.browser.popups.next")}
+          >
+            <ChevronRight size={16} color={foreground} />
+          </Pressable>
+        </>
+      ) : null}
+      <Text numberOfLines={1} style={[styles.popupTitle, { color: mutedColor }]}>
+        {popup.selected.title || popup.selected.url}
+      </Text>
+      <Pressable
+        onPress={popup.close}
+        style={styles.popupControlButton}
+        accessibilityRole="button"
+        accessibilityLabel={t("workspace.browser.popups.close")}
+      >
+        <X size={16} color={foreground} />
+      </Pressable>
+    </View>
+  );
+}
 
 export function BrowserPane({
   browserId,
@@ -82,6 +249,14 @@ export function BrowserPane({
   const supportsStream = useSessionStore(
     (state) => state.sessions[serverId]?.serverInfo?.features?.browserRemoteStream === true,
   );
+  const popup = useRemotePopupController({
+    browserId,
+    serverId,
+    workspaceId,
+    client,
+    closeFailedLabel: t("workspace.browser.popups.closeFailed"),
+  });
+  const activeBrowserId = popup.activeBrowserId;
 
   const [frame, setFrame] = useState<FrameState | null>(null);
   const [status, setStatus] = useState<StreamStatus>("connecting");
@@ -108,9 +283,11 @@ export function BrowserPane({
       if (!client) {
         return;
       }
-      void client.sendBrowserRemoteInput({ browserId, workspaceId, input }).catch(() => undefined);
+      void client
+        .sendBrowserRemoteInput({ browserId: activeBrowserId, workspaceId, input })
+        .catch(() => undefined);
     },
-    [browserId, client, workspaceId],
+    [activeBrowserId, client, workspaceId],
   );
 
   useEffect(() => {
@@ -118,7 +295,7 @@ export function BrowserPane({
     lastSequenceRef.current = -1;
     setFrame(null);
     setStatus("connecting");
-  }, [browserId]);
+  }, [activeBrowserId]);
 
   useEffect(() => {
     if (!client || !supportsStream) {
@@ -171,7 +348,7 @@ export function BrowserPane({
     const unsubscribeFrames = client.onBrowserStreamFrame((streamFrame: BrowserStreamFrame) => {
       if (
         disposed ||
-        streamFrame.browserId !== browserId ||
+        streamFrame.browserId !== activeBrowserId ||
         !shouldAcceptRemoteStreamSequence(lastSequenceRef.current, streamFrame.meta.seq)
       ) {
         return;
@@ -196,7 +373,7 @@ export function BrowserPane({
       watchInFlight = true;
       const result = await client
         .watchBrowserStream({
-          browserId,
+          browserId: activeBrowserId,
           workspaceId,
           viewerId,
           maxWidth: STREAM_MAX_DIMENSION,
@@ -227,7 +404,7 @@ export function BrowserPane({
       clearFirstFrameTimer();
       try {
         await client.unwatchBrowserStream({
-          browserId,
+          browserId: activeBrowserId,
           workspaceId,
           viewerId,
         });
@@ -252,13 +429,21 @@ export function BrowserPane({
       unsubscribeFrames();
       void client
         .unwatchBrowserStream({
-          browserId,
+          browserId: activeBrowserId,
           workspaceId,
           viewerId,
         })
         .catch(() => undefined);
     };
-  }, [browserId, client, reconnectGeneration, shouldWatch, supportsStream, viewerId, workspaceId]);
+  }, [
+    activeBrowserId,
+    client,
+    reconnectGeneration,
+    shouldWatch,
+    supportsStream,
+    viewerId,
+    workspaceId,
+  ]);
 
   const flushScrollDelta = useCallback(() => {
     const gesture = scrollGestureRef.current;
@@ -458,6 +643,12 @@ export function BrowserPane({
         >
           <RotateCw size={16} color={foreground} />
         </Pressable>
+        <RemotePopupToolbarToggle
+          popup={popup}
+          foreground={foreground}
+          mutedColor={mutedColor}
+          accent={theme.colors.accent}
+        />
         <TextInput
           style={[styles.urlInput, { color: foreground, borderColor: theme.colors.border }]}
           value={urlText}
@@ -479,6 +670,12 @@ export function BrowserPane({
           <CornerDownLeft size={18} color={foreground} />
         </Pressable>
       </View>
+      <RemotePopupDetails popup={popup} foreground={foreground} mutedColor={mutedColor} />
+      {popup.error ? (
+        <View style={styles.popupErrorRow}>
+          <Text style={styles.popupErrorText}>{popup.error}</Text>
+        </View>
+      ) : null}
 
       <View style={styles.viewport} onLayout={handleContainerLayout} {...panResponder.panHandlers}>
         {frameSource ? (
@@ -547,6 +744,48 @@ const styles = StyleSheet.create((theme) => ({
   toolbarButton: {
     padding: theme.spacing[2],
     borderRadius: theme.borderRadius.lg,
+  },
+  popupIndicator: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+  },
+  popupCount: {
+    fontSize: theme.fontSize.xs,
+    fontWeight: theme.fontWeight.normal,
+  },
+  popupControlsRow: {
+    minHeight: 36,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+    paddingHorizontal: theme.spacing[2],
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+    backgroundColor: theme.colors.surface0,
+  },
+  popupControlButton: {
+    width: 32,
+    height: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: theme.borderRadius.md,
+  },
+  popupTitle: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: theme.fontSize.xs,
+    fontWeight: theme.fontWeight.normal,
+  },
+  popupErrorRow: {
+    paddingHorizontal: theme.spacing[2],
+    paddingVertical: theme.spacing[1],
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+  },
+  popupErrorText: {
+    color: theme.colors.palette.red[500],
+    fontSize: theme.fontSize.xs,
   },
   urlInput: {
     flex: 1,

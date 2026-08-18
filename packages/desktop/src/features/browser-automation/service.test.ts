@@ -309,10 +309,20 @@ class FakeTab implements TabContents {
 
 class FakeRegistry implements BrowserRegistry {
   private readonly tabs = new Map<string, { workspaceId: string; tab: FakeTab }>();
+  private readonly targetMetadata = new Map<
+    string,
+    { kind: "tab" | "popup"; rootBrowserId?: string; openerBrowserId?: string }
+  >();
   private readonly activeBrowserIdsByWorkspace = new Map<string, string>();
 
-  public register(browserId: string, workspaceId: string, tab: FakeTab): void {
+  public register(
+    browserId: string,
+    workspaceId: string,
+    tab: FakeTab,
+    metadata?: { kind: "tab" | "popup"; rootBrowserId?: string; openerBrowserId?: string },
+  ): void {
     this.tabs.set(browserId, { workspaceId, tab });
+    if (metadata) this.targetMetadata.set(browserId, metadata);
   }
 
   public setActiveBrowser(workspaceId: string, browserId: string): void {
@@ -335,6 +345,10 @@ class FakeRegistry implements BrowserRegistry {
 
   public getBrowserWorkspaceId(browserId: string): string | null {
     return this.tabs.get(browserId)?.workspaceId ?? null;
+  }
+
+  public getBrowserTargetMetadata(browserId: string) {
+    return this.targetMetadata.get(browserId) ?? { kind: "tab" as const };
   }
 
   public getWorkspaceActiveBrowserId(workspaceId: string): string | null {
@@ -542,6 +556,43 @@ describe("executeAutomationCommand", () => {
             canGoBack: true,
             canGoForward: false,
           },
+        ],
+      },
+    });
+  });
+
+  test("list tabs reports popup ownership and logical activity", () => {
+    const registry = new FakeRegistry();
+    registry.register(BROWSER_A, WORKSPACE_A, new FakeTab(1, "https://app.test", "App"));
+    registry.register(BROWSER_B, WORKSPACE_A, new FakeTab(2, "https://login.test", "Sign in"), {
+      kind: "popup",
+      rootBrowserId: BROWSER_A,
+      openerBrowserId: BROWSER_A,
+    });
+    registry.setActiveBrowser(WORKSPACE_A, BROWSER_B);
+
+    const result = executeAutomationCommand(
+      automationRequest({ command: "list_tabs", args: {} }, { requestId: "req-popups" }),
+      registry,
+    );
+
+    expect(result).toEqual({
+      requestId: "req-popups",
+      ok: true,
+      result: {
+        command: "list_tabs",
+        tabs: [
+          expect.objectContaining({ browserId: BROWSER_A, isActive: false }),
+          expect.objectContaining({
+            browserId: BROWSER_B,
+            workspaceId: WORKSPACE_A,
+            kind: "popup",
+            rootBrowserId: BROWSER_A,
+            openerBrowserId: BROWSER_A,
+            url: "https://login.test",
+            title: "Sign in",
+            isActive: true,
+          }),
         ],
       },
     });

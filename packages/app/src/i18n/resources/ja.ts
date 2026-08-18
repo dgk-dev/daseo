@@ -532,6 +532,14 @@ export const ja: TranslationResources = {
         selectorLoading: "ページの読み込みが完了するまでお待ちください",
         selectorFailed: "要素セレクターを開始できませんでした",
       },
+      popups: {
+        show: "ポップアップを表示（{{count}}）",
+        returnToPage: "元のページに戻る",
+        previous: "前のポップアップ",
+        next: "次のポップアップ",
+        close: "ポップアップを閉じる",
+        closeFailed: "ポップアップを閉じられません",
+      },
       annotate: {
         title: "要素に注釈を付ける",
         placeholder: "この要素についてエージェントへのメッセージ…",

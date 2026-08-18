@@ -7,12 +7,14 @@ log.initialize({ spyRendererConsole: true });
 import { inheritLoginShellEnv } from "./login-shell-env.js";
 
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import {
   app,
   autoUpdater as electronAutoUpdater,
+  BaseWindow,
   BrowserWindow,
   clipboard,
   Menu,
@@ -23,6 +25,7 @@ import {
   screen,
   session,
   webContents,
+  WebContentsView,
 } from "electron";
 import { registerDaemonManager } from "./daemon/daemon-manager.js";
 import { parsePassthroughCliArgsFromArgv, runPassthroughCli } from "./daemon/cli/passthrough.js";
@@ -53,17 +56,29 @@ import {
   decideBrowserWindowOpenRequest,
   getPaseoBrowserIdForWebContents,
   getPaseoBrowserWebContentsForHostWindow,
+  getPaseoBrowserWorkspaceId,
+  getPaseoBrowserTargetMetadata,
   getPaseoBrowserWebviewRegistry,
   listRegisteredPaseoBrowserIds,
   isPaseoBrowserWebviewAttach,
-  preparePaseoBrowserWebContents,
   PendingBrowserWindowOpenRequests,
+  preparePaseoBrowserWebContents,
   registerBrowserWebviewNavigationGuards,
+  registerManagedPaseoBrowserTarget,
+  unregisterPaseoBrowser,
   unregisterPaseoBrowserFromHost,
   registerAttachedPaseoBrowser,
   setWorkspaceActivePaseoBrowserId,
   unregisterPaseoBrowserHost,
 } from "./features/browser-webviews/index.js";
+import {
+  BROWSER_POPUP_TARGETS_EVENT,
+  BrowserPopupTargetManager,
+  type BrowserPopupContentsEvent,
+  type BrowserPopupContentsPort,
+  type BrowserPopupHostViewPort,
+  type BrowserPopupViewPort,
+} from "./features/browser-webviews/popup-targets.js";
 import {
   clearPaseoBrowserProfile,
   getLegacyPaseoBrowserProfileSession,
@@ -88,7 +103,12 @@ import {
 } from "./daemon/quit-lifecycle.js";
 import { runDesktopStartup } from "./desktop-startup.js";
 import { autoUpdateInstalledSkills } from "./integrations/skills/index.js";
-import { registerBrowserAutomationIpc } from "./features/browser-automation/ipc.js";
+import {
+  adaptWebContents,
+  preparePersistentBrowserDialogMonitoring,
+  registerBrowserAutomationIpc,
+} from "./features/browser-automation/ipc.js";
+import { wasPaseoBrowserRecentlyAutomated } from "./features/browser-automation/activity.js";
 import { BrowserKeyboard } from "./features/browser-keyboard/index.js";
 import { installAppUpdateOnQuit } from "./features/auto-updater.js";
 import {
@@ -169,6 +189,162 @@ function readActiveBrowserInput(
 const browserKeyboard = new BrowserKeyboard(getPaseoBrowserWebviewRegistry());
 browserKeyboard.registerIpc();
 
+interface ElectronBrowserPopupViewPort extends BrowserPopupViewPort {
+  readonly nativeView: WebContentsView;
+}
+
+function adaptBrowserPopupContents(contents: Electron.WebContents): BrowserPopupContentsPort {
+  return {
+    id: contents.id,
+    isDestroyed: () => contents.isDestroyed(),
+    getURL: () => contents.getURL(),
+    getTitle: () => contents.getTitle(),
+    isLoading: () => contents.isLoading(),
+    canGoBack: () => contents.canGoBack(),
+    canGoForward: () => contents.canGoForward(),
+    focus: () => contents.focus(),
+    close: () => contents.close(),
+    subscribe: (event: BrowserPopupContentsEvent, listener: () => void) => {
+      if (event === "destroyed") contents.on("destroyed", listener);
+      else if (event === "did-start-loading") contents.on("did-start-loading", listener);
+      else if (event === "did-stop-loading") contents.on("did-stop-loading", listener);
+      else if (event === "did-navigate") contents.on("did-navigate", listener);
+      else if (event === "did-navigate-in-page") contents.on("did-navigate-in-page", listener);
+      else if (event === "page-title-updated") contents.on("page-title-updated", listener);
+      else contents.on("focus", listener);
+    },
+  };
+}
+
+function createBrowserPopupViewPort(contents: Electron.WebContents): ElectronBrowserPopupViewPort {
+  const nativeView = new WebContentsView({ webContents: contents });
+  return {
+    nativeView,
+    contents: adaptBrowserPopupContents(contents),
+    setBounds: (bounds) => nativeView.setBounds(bounds),
+  };
+}
+
+interface BrowserPopupParkingHost {
+  window: BaseWindow;
+  references: number;
+}
+
+const browserPopupParkingHosts = new WeakMap<BrowserWindow, BrowserPopupParkingHost>();
+
+function acquireBrowserPopupParkingHost(mainWindow: BrowserWindow): BrowserPopupParkingHost {
+  const existing = browserPopupParkingHosts.get(mainWindow);
+  if (existing && !existing.window.isDestroyed()) {
+    existing.references += 1;
+    return existing;
+  }
+  // A WebContentsView with setVisible(false) receives a 0x0 renderer viewport. Park all
+  // background targets for one app window in a shared, never-shown BaseWindow instead.
+  const parkingHost = {
+    window: new BaseWindow({
+      show: false,
+      width: 4096,
+      height: 4096,
+      focusable: false,
+      skipTaskbar: true,
+    }),
+    references: 1,
+  };
+  browserPopupParkingHosts.set(mainWindow, parkingHost);
+  return parkingHost;
+}
+
+function releaseBrowserPopupParkingHost(
+  mainWindow: BrowserWindow,
+  parkingHost: BrowserPopupParkingHost,
+): void {
+  parkingHost.references -= 1;
+  if (parkingHost.references > 0) return;
+  if (!parkingHost.window.isDestroyed()) parkingHost.window.destroy();
+  if (browserPopupParkingHosts.get(mainWindow) === parkingHost) {
+    browserPopupParkingHosts.delete(mainWindow);
+  }
+}
+
+function createBrowserPopupHostViewPort(mainWindow: BrowserWindow): BrowserPopupHostViewPort {
+  let parkingHost: BrowserPopupParkingHost | null = null;
+  const getParkingHost = () => {
+    parkingHost ??= acquireBrowserPopupParkingHost(mainWindow);
+    return parkingHost;
+  };
+  return {
+    addChildView: (view) => {
+      const nativeView = (view as ElectronBrowserPopupViewPort).nativeView;
+      nativeView.setVisible(true);
+      getParkingHost().window.contentView.addChildView(nativeView);
+    },
+    setChildViewVisible: (view, visible) => {
+      const nativeView = (view as ElectronBrowserPopupViewPort).nativeView;
+      const parkedWindow = getParkingHost().window;
+      parkedWindow.contentView.removeChildView(nativeView);
+      if (!mainWindow.isDestroyed()) {
+        mainWindow.contentView.removeChildView(nativeView);
+      }
+      if (visible && !mainWindow.isDestroyed()) {
+        mainWindow.contentView.addChildView(nativeView);
+      } else if (!parkedWindow.isDestroyed()) {
+        parkedWindow.contentView.addChildView(nativeView);
+      }
+      nativeView.setVisible(true);
+    },
+    removeChildView: (view) => {
+      const nativeView = (view as ElectronBrowserPopupViewPort).nativeView;
+      if (!mainWindow.isDestroyed()) {
+        mainWindow.contentView.removeChildView(nativeView);
+      }
+      if (parkingHost && !parkingHost.window.isDestroyed()) {
+        parkingHost.window.contentView.removeChildView(nativeView);
+      }
+      nativeView.setVisible(false);
+      if (parkingHost) {
+        releaseBrowserPopupParkingHost(mainWindow, parkingHost);
+        parkingHost = null;
+      }
+    },
+  };
+}
+
+const browserPopupTargets = new BrowserPopupTargetManager({
+  createBrowserId: randomUUID,
+  onRegisterTarget: (target) => {
+    registerManagedPaseoBrowserTarget({
+      browserId: target.browserId,
+      workspaceId: target.workspaceId,
+      webContentsId: target.webContentsId,
+      hostWebContentsId: target.hostWebContentsId,
+      metadata: {
+        kind: "popup",
+        rootBrowserId: target.rootBrowserId,
+        openerBrowserId: target.openerBrowserId,
+      },
+    });
+    const contents = webContents.fromId(target.webContentsId);
+    const hostContents = webContents.fromId(target.hostWebContentsId);
+    if (contents && hostContents && !contents.isDestroyed() && !hostContents.isDestroyed()) {
+      browserKeyboard.attach({ contents, hostContents });
+    }
+    log.info("[browser-popup] registered", target);
+  },
+  onUnregisterTarget: (browserId) => {
+    unregisterPaseoBrowser(browserId);
+    log.info("[browser-popup] unregistered", { browserId });
+  },
+  onSetActiveTarget: ({ browserId, workspaceId, hostWebContentsId }) => {
+    setWorkspaceActivePaseoBrowserId({ browserId, workspaceId, hostWebContentsId });
+  },
+  onSnapshot: (snapshot) => {
+    const hostContents = webContents.fromId(snapshot.hostWebContentsId);
+    if (hostContents && !hostContents.isDestroyed()) {
+      hostContents.send(BROWSER_POPUP_TARGETS_EVENT, snapshot);
+    }
+  },
+});
+
 function showBrowserWebviewContextMenu(
   win: BrowserWindow,
   contents: Electron.WebContents,
@@ -208,21 +384,27 @@ function getBrowserPopupWindowOptions(
 ): Electron.BrowserWindowConstructorOptions {
   return {
     parent: mainWindow,
-    show: true,
+    show: false,
     autoHideMenuBar: true,
     webPreferences: {
       partition: PASEO_BROWSER_PROFILE_PARTITION,
+      preload: getBrowserKeyboardPreloadPath(),
       nodeIntegration: false,
-      nodeIntegrationInSubFrames: false,
+      nodeIntegrationInSubFrames: true,
       nodeIntegrationInWorker: false,
       contextIsolation: true,
       sandbox: true,
       webSecurity: true,
       webviewTag: false,
       allowRunningInsecureContent: false,
+      backgroundThrottling: false,
     },
   };
 }
+
+type BrowserPopupCreateWindowOptions = Electron.BrowserWindowConstructorOptions & {
+  webContents?: Electron.WebContents;
+};
 
 function installBrowserWindowOpenHandler(input: {
   contents: Electron.WebContents;
@@ -244,9 +426,78 @@ function installBrowserWindowOpenHandler(input: {
       return { action: "deny" };
     }
     if (decision.kind === "popup") {
+      if (
+        !browserPopupTargets.tryAdmit({
+          rootWebContentsId: sourceContents.id,
+          hostWebContentsId: mainWindow.webContents.id,
+        })
+      ) {
+        log.warn("[browser-popup] denied by popup resource limits", {
+          rootWebContentsId: sourceContents.id,
+          openerWebContentsId: contents.id,
+        });
+        return { action: "deny" };
+      }
+
+      const previousFocusedContents = webContents.getFocusedWebContents();
+      const requestActivation =
+        disposition !== "background-tab" &&
+        mainWindow.isFocused() &&
+        contents.isFocused() &&
+        !wasPaseoBrowserRecentlyAutomated(contents.id);
       return {
         action: "allow",
+        outlivesOpener: false,
         overrideBrowserWindowOptions: getBrowserPopupWindowOptions(mainWindow),
+        createWindow: (rawOptions: Electron.BrowserWindowConstructorOptions) => {
+          const options = rawOptions as BrowserPopupCreateWindowOptions;
+          const popupContents = options.webContents;
+          if (!popupContents || popupContents.isDestroyed()) {
+            throw new Error("Electron did not provide popup WebContents for in-browser adoption");
+          }
+          if (popupContents.session !== getPaseoBrowserProfileSession(session)) {
+            popupContents.close();
+            throw new Error("Popup WebContents did not inherit the Paseo browser profile");
+          }
+
+          preparePaseoBrowserWebContents(popupContents);
+          adaptWebContents(popupContents);
+          preparePersistentBrowserDialogMonitoring(popupContents);
+          registerBrowserWebviewNavigationGuards(popupContents);
+          popupContents.on("context-menu", (_event, params) => {
+            showBrowserWebviewContextMenu(mainWindow, popupContents, params);
+          });
+          const popupView = createBrowserPopupViewPort(popupContents);
+          const popupBrowserId = browserPopupTargets.adopt({
+            rootWebContentsId: sourceContents.id,
+            openerWebContentsId: contents.id,
+            hostWebContentsId: mainWindow.webContents.id,
+            disposition,
+            view: popupView,
+            hostView: createBrowserPopupHostViewPort(mainWindow),
+            initialBounds: { width: options.width, height: options.height },
+            requestActivation,
+          });
+          installBrowserWindowOpenHandler({
+            contents: popupContents,
+            sourceContents,
+            mainWindow,
+          });
+          log.info("[browser-popup] adopted", {
+            popupBrowserId,
+            rootWebContentsId: sourceContents.id,
+            openerWebContentsId: contents.id,
+            disposition,
+            requestActivation,
+          });
+
+          setImmediate(() => {
+            if (previousFocusedContents && !previousFocusedContents.isDestroyed()) {
+              previousFocusedContents.focus();
+            }
+          });
+          return popupContents;
+        },
       };
     }
 
@@ -260,19 +511,6 @@ function installBrowserWindowOpenHandler(input: {
       pendingBrowserWindowOpenRequests.add(sourceContents.id, decision.url);
     }
     return { action: "deny" };
-  });
-
-  contents.on("did-create-window", (popupWindow) => {
-    const popupContents = popupWindow.webContents;
-    registerBrowserWebviewNavigationGuards(popupContents);
-    popupContents.on("context-menu", (_event, params) => {
-      showBrowserWebviewContextMenu(popupWindow, popupContents, params);
-    });
-    installBrowserWindowOpenHandler({
-      contents: popupContents,
-      sourceContents,
-      mainWindow,
-    });
   });
 }
 
@@ -418,6 +656,12 @@ ipcMain.handle("paseo:browser:register-attached", (event, rawInput: unknown) => 
     throw new Error("Attached browser guest disappeared after registration");
   }
   browserKeyboard.attach({ contents: guest, hostContents: event.sender });
+  browserPopupTargets.bindRoot({
+    rootWebContentsId: guest.id,
+    rootBrowserId: input.browserId,
+    workspaceId: input.workspaceId,
+    hostWebContentsId: event.sender.id,
+  });
   log.info("[browser-webview] registered", {
     browserId: input.browserId,
     webContentsId: input.webContentsId,
@@ -438,6 +682,10 @@ ipcMain.handle("paseo:browser:unregister-workspace-browser", async (event, brows
       event.sender.id,
       normalizedBrowserId,
     );
+    browserPopupTargets.closeRoot({
+      rootBrowserId: normalizedBrowserId,
+      hostWebContentsId: event.sender.id,
+    });
     unregisterPaseoBrowserFromHost(event.sender.id, normalizedBrowserId);
     // COMPAT(browserProfile): added in v0.1.108; remove after 2027-01-15.
     const legacyProfile = hasOtherHost
@@ -465,6 +713,147 @@ ipcMain.handle("paseo:browser:set-workspace-active-browser", (event, rawInput: u
   if (input) {
     setWorkspaceActivePaseoBrowserId({ ...input, hostWebContentsId: event.sender.id });
   }
+});
+
+ipcMain.handle("paseo:browser:list-popup-targets", (event, rootBrowserId: unknown) => {
+  if (typeof rootBrowserId !== "string" || rootBrowserId.trim().length === 0) {
+    return null;
+  }
+  return browserPopupTargets.getSnapshot({
+    rootBrowserId: rootBrowserId.trim(),
+    hostWebContentsId: event.sender.id,
+  });
+});
+
+ipcMain.handle("paseo:browser:present-popup-target", (event, rawInput: unknown): boolean => {
+  if (!rawInput || typeof rawInput !== "object" || Array.isArray(rawInput)) {
+    return false;
+  }
+  const input = rawInput as Record<string, unknown>;
+  const rootBrowserId = typeof input.rootBrowserId === "string" ? input.rootBrowserId.trim() : "";
+  const popupBrowserId =
+    typeof input.popupBrowserId === "string" ? input.popupBrowserId.trim() : null;
+  const visible = input.visible === true;
+  if (!rootBrowserId || (visible && !popupBrowserId)) {
+    return false;
+  }
+  const rawBounds = visible ? normalizeBrowserCaptureRect(input.bounds) : null;
+  if (visible && !rawBounds) {
+    return false;
+  }
+  const mainWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return false;
+  }
+  const [contentWidth, contentHeight] = mainWindow.getContentSize();
+  const bounds = rawBounds
+    ? {
+        x: Math.min(rawBounds.x, Math.max(0, contentWidth - 1)),
+        y: Math.min(rawBounds.y, Math.max(0, contentHeight - 1)),
+        width: Math.max(1, Math.min(rawBounds.width, contentWidth - rawBounds.x)),
+        height: Math.max(1, Math.min(rawBounds.height, contentHeight - rawBounds.y)),
+      }
+    : undefined;
+  return browserPopupTargets.setPresentation({
+    rootBrowserId,
+    hostWebContentsId: event.sender.id,
+    popupBrowserId,
+    visible,
+    ...(bounds ? { bounds } : {}),
+    focus: input.focus === true,
+  });
+});
+
+ipcMain.handle("paseo:browser:close-popup-target", (event, rawInput: unknown): boolean => {
+  if (!rawInput || typeof rawInput !== "object" || Array.isArray(rawInput)) {
+    return false;
+  }
+  const input = rawInput as Record<string, unknown>;
+  const browserId = typeof input.browserId === "string" ? input.browserId.trim() : "";
+  const workspaceId = typeof input.workspaceId === "string" ? input.workspaceId.trim() : "";
+  if (!browserId || !workspaceId || getPaseoBrowserWorkspaceId(browserId) !== workspaceId) {
+    return false;
+  }
+  return browserPopupTargets.closeTarget({
+    browserId,
+    hostWebContentsId: event.sender.id,
+  });
+});
+
+ipcMain.handle("paseo:browser:resize-popup-target", (event, rawInput: unknown) => {
+  if (!rawInput || typeof rawInput !== "object" || Array.isArray(rawInput)) {
+    return null;
+  }
+  const input = rawInput as Record<string, unknown>;
+  const browserId = typeof input.browserId === "string" ? input.browserId.trim() : "";
+  const workspaceId = typeof input.workspaceId === "string" ? input.workspaceId.trim() : "";
+  const width = input.width;
+  const height = input.height;
+  if (
+    !browserId ||
+    !workspaceId ||
+    getPaseoBrowserWorkspaceId(browserId) !== workspaceId ||
+    typeof width !== "number" ||
+    !Number.isFinite(width) ||
+    width <= 0 ||
+    typeof height !== "number" ||
+    !Number.isFinite(height) ||
+    height <= 0
+  ) {
+    return null;
+  }
+  return browserPopupTargets.resizeTarget({
+    browserId,
+    hostWebContentsId: event.sender.id,
+    width,
+    height,
+  });
+});
+
+ipcMain.handle("paseo:browser:popup-target-action", async (event, rawInput: unknown) => {
+  if (!rawInput || typeof rawInput !== "object" || Array.isArray(rawInput)) {
+    return false;
+  }
+  const input = rawInput as Record<string, unknown>;
+  const browserId = typeof input.browserId === "string" ? input.browserId.trim() : "";
+  const action = typeof input.action === "string" ? input.action : "";
+  if (!browserId || getPaseoBrowserTargetMetadata(browserId).kind !== "popup") {
+    return false;
+  }
+  const contents = getPaseoBrowserWebContentsForHostWindow(browserId, event.sender.id);
+  if (!contents) {
+    return false;
+  }
+  if (action === "back") {
+    if (contents.canGoBack()) contents.goBack();
+    return true;
+  }
+  if (action === "forward") {
+    if (contents.canGoForward()) contents.goForward();
+    return true;
+  }
+  if (action === "reload") {
+    contents.reload();
+    return true;
+  }
+  if (action === "stop") {
+    contents.stop();
+    return true;
+  }
+  if (action === "navigate" && typeof input.url === "string") {
+    const url = input.url.trim();
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+    await contents.loadURL(url);
+    return true;
+  }
+  return false;
 });
 
 ipcMain.handle("paseo:browser:focus", (event, browserId: unknown): boolean => {
@@ -740,6 +1129,7 @@ async function createWindow(
   mainWindow.on("closed", () => {
     pendingOpenProjectStore.delete(webContentsId);
     agentNavigationInbox.removeWindow(webContentsId);
+    browserPopupTargets.closeHost(webContentsId);
     unregisterPaseoBrowserHost(webContentsId);
     browserKeyboard.detachHost(webContentsId);
   });
@@ -782,8 +1172,10 @@ async function createWindow(
   });
   mainWindow.webContents.on("did-attach-webview", (_event, contents) => {
     preparePaseoBrowserWebContents(contents);
+    adaptWebContents(contents);
     contents.once("destroyed", () => {
       pendingBrowserWindowOpenRequests.delete(contents.id);
+      browserPopupTargets.closeRootByWebContents(contents.id);
     });
     installBrowserWindowOpenHandler({
       contents,

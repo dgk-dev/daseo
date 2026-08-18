@@ -69,7 +69,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "List browser tabs",
       description:
-        "List open Paseo browser tabs for this agent's workspace across connected browser automation hosts. Use returned browserId values with tab-scoped tools.",
+        "List open Paseo browser targets for this agent's workspace across connected browser automation hosts. Popups include kind=popup with rootBrowserId and openerBrowserId; use every returned browserId with tab-scoped tools without bringing it to the foreground.",
       inputSchema: {},
     },
     async () => {
@@ -649,7 +649,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Resize browser viewport",
       description:
-        "Resize a Paseo browser tab's resident webview viewport. Use browserId from browser_new_tab or browser_list_tabs.",
+        "Resize a Paseo browser tab or parked popup viewport. A popup currently visible inside the user's pane keeps its pane bounds and reports the actual size. Use browserId from browser_new_tab or browser_list_tabs.",
       inputSchema: {
         browserId: BrowserAutomationBrowserIdSchema,
         width: z.number().int().positive(),
@@ -681,7 +681,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Close browser tab",
       description:
-        "Close a Paseo browser tab, remove its resident webview, and unregister it from the browser automation host. Use browserId from browser_new_tab or browser_list_tabs.",
+        "Close a Paseo browser tab or popup target and unregister it from the browser automation host. Use browserId from browser_new_tab or browser_list_tabs.",
       inputSchema: {
         browserId: BrowserAutomationBrowserIdSchema,
       },
@@ -875,11 +875,15 @@ function summarizeBrowserSuccess(
     }
     const tabLines = payload.result.tabs.map((tab) => {
       const active = tab.isActive ? " active" : "";
-      return `- browserId=${tab.browserId}${active} title=${JSON.stringify(tab.title || "Untitled")} url=${tab.url}`;
+      const ownership =
+        tab.kind === "popup"
+          ? ` popup rootBrowserId=${tab.rootBrowserId ?? "unknown"} openerBrowserId=${tab.openerBrowserId ?? "unknown"}`
+          : "";
+      return `- browserId=${tab.browserId}${active}${ownership} title=${JSON.stringify(tab.title || "Untitled")} url=${tab.url}`;
     });
     return withDialogs(
       [
-        `Found ${count} Paseo browser tab${count === 1 ? "" : "s"}. Use these browserId values for tab-scoped browser tools.`,
+        `Found ${count} Paseo browser target${count === 1 ? "" : "s"}. Use these browserId values for target-scoped browser tools.`,
         ...tabLines,
       ].join("\n"),
     );

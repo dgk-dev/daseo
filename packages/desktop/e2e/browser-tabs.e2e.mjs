@@ -193,8 +193,36 @@ async function waitForDesktopStatus(page) {
 }
 
 async function startTargetPage() {
-  const server = createServer((_request, response) => {
+  const server = createServer(async (request, response) => {
+    const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    if (requestUrl.pathname === "/popup") {
+      const label = requestUrl.searchParams.get("label") ?? "Popup";
+      response.end(`<!doctype html>
+        <html>
+          <head><title>${label}</title></head>
+          <body>
+            <h1 id="popup-title">${label}</h1>
+            <button id="notify-opener" onclick="window.opener.postMessage('popup-ready:${label}', '*')">Notify opener</button>
+            <button id="alert-popup" onclick="window.alert('popup-alert')">Show alert</button>
+            <button id="schedule-confirm" onclick="setTimeout(() => window.confirm('delayed-confirm'), 100)">Schedule confirm</button>
+            <button id="open-nested" onclick="window.__nestedPopup = window.open('/popup?label=Nested', 'nested-popup', 'width=420,height=320')">Open nested</button>
+            <button id="close-popup" onclick="window.close()">Close popup</button>
+            <script>console.info('popup-console:${label}')</script>
+          </body>
+        </html>`);
+      return;
+    }
+    if (requestUrl.pathname === "/post-popup") {
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      response.end(`<!doctype html>
+        <html>
+          <head><title>POST popup</title></head>
+          <body><h1>POST popup</h1><p id="post-body">${body}</p><button id="close-popup" onclick="window.close()">Close popup</button></body>
+        </html>`);
+      return;
+    }
     response.end(`<!doctype html>
       <html>
         <head><title>Desktop browser target</title></head>
@@ -202,6 +230,17 @@ async function startTargetPage() {
           <button id="bridge-target" onclick="this.textContent = 'Clicked'">Bridge target</button>
           <label for="typing-target">Typing target</label>
           <input id="typing-target" />
+          <button id="open-human-popup" onclick="window.__humanPopup = window.open('/popup?label=Human', 'human-popup', 'width=520,height=420')">Open human popup</button>
+          <form id="post-popup-form" action="/post-popup" method="post" target="post-popup">
+            <input name="token" value="safe-value" />
+            <button id="open-post-popup" type="submit">Open POST popup</button>
+          </form>
+          <p id="opener-message">No popup message</p>
+          <script>
+            window.addEventListener('message', (event) => {
+              document.querySelector('#opener-message').textContent = event.data;
+            });
+          </script>
         </body>
       </html>`);
   });
@@ -366,6 +405,71 @@ async function clickGuestElement(page, client, browserId, selector) {
   );
 }
 
+async function clickGuestElementAsHuman(page, browserId, selector) {
+  const target = await page.evaluate(
+    async ({ id, selectorValue }) => {
+      const webview = document.querySelector(`[data-paseo-browser-id="${id}"]`);
+      if (!(webview instanceof HTMLElement) || typeof webview.executeJavaScript !== "function") {
+        return null;
+      }
+      const elementRect = await webview.executeJavaScript(`(() => {
+        const element = document.querySelector(${JSON.stringify(selectorValue)});
+        if (!(element instanceof HTMLElement)) return null;
+        const rect = element.getBoundingClientRect();
+        return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      })()`);
+      const webviewRect = webview.getBoundingClientRect();
+      return elementRect
+        ? {
+            x: webviewRect.x + elementRect.x + elementRect.width / 2,
+            y: webviewRect.y + elementRect.y + elementRect.height / 2,
+          }
+        : null;
+    },
+    { id: browserId, selectorValue: selector },
+  );
+  assert(target, `Guest element ${selector} was unavailable for human input`);
+  await page.mouse.click(target.x, target.y);
+}
+
+async function waitForPopupTabs(client, rootBrowserId, expectedCount) {
+  const deadline = Date.now() + 5_000;
+  let lastTabs = [];
+  while (Date.now() < deadline) {
+    const listed = await callBrowserTool(client, "browser_list_tabs");
+    lastTabs = listed.tabs;
+    const popups = listed.tabs.filter(
+      (tab) => tab.kind === "popup" && tab.rootBrowserId === rootBrowserId,
+    );
+    if (popups.length === expectedCount) return { listed, popups };
+    await delay(50);
+  }
+  throw new Error(
+    `Timed out waiting for ${expectedCount} popup targets under ${rootBrowserId}: ${JSON.stringify(lastTabs)}`,
+  );
+}
+
+async function readPopupTargets(page, rootBrowserId) {
+  return await page.evaluate(
+    (id) => window.paseoDesktop?.browser?.listPopupTargets?.(id) ?? null,
+    rootBrowserId,
+  );
+}
+
+async function waitForPopupVisibility(page, rootBrowserId, popupBrowserId, expectedVisible) {
+  const deadline = Date.now() + 5_000;
+  let lastSnapshot = null;
+  while (Date.now() < deadline) {
+    lastSnapshot = await readPopupTargets(page, rootBrowserId);
+    const popup = lastSnapshot?.targets?.find((target) => target.browserId === popupBrowserId);
+    if (popup?.isVisible === expectedVisible) return popup;
+    await delay(50);
+  }
+  throw new Error(
+    `Timed out waiting for popup ${popupBrowserId} visibility=${expectedVisible}: ${JSON.stringify(lastSnapshot)}`,
+  );
+}
+
 async function selectDeviceSize(page, label) {
   await page.locator('[aria-label="Device size"]').click();
   const item = page.getByText(label, { exact: true });
@@ -397,6 +501,359 @@ function recordViewportMismatch(failures, label, actual, expected) {
   failures.push(
     `${label}: expected ${expected.width}x${expected.height}, received ${actual.width}x${actual.height}`,
   );
+}
+
+async function capturePopupStreamFrame(page, popupBrowserId, workspaceId) {
+  return await page.evaluate(
+    async ({ targetBrowserId, targetWorkspaceId }) => {
+      const browser = window.paseoDesktop?.browser;
+      if (!browser?.executeAutomationCommand || !browser.onStreamFrame) return null;
+      let dispose = () => {};
+      const framePromise = new Promise((resolve) => {
+        dispose = browser.onStreamFrame((frame) => {
+          if (frame?.browserId !== targetBrowserId) return;
+          resolve({
+            width: frame.width,
+            height: frame.height,
+            dataLength: frame.dataBase64.length,
+          });
+        });
+      });
+      const started = await browser.executeAutomationCommand({
+        type: "browser.automation.execute.request",
+        requestId: "popup-stream-start",
+        workspaceId: targetWorkspaceId,
+        command: { command: "stream_start", args: { browserId: targetBrowserId, quality: 40 } },
+      });
+      const frame = started?.ok
+        ? await Promise.race([
+            framePromise,
+            new Promise((resolve) => setTimeout(() => resolve(null), 5_000)),
+          ])
+        : null;
+      await browser.executeAutomationCommand({
+        type: "browser.automation.execute.request",
+        requestId: "popup-stream-stop",
+        workspaceId: targetWorkspaceId,
+        command: { command: "stream_stop", args: { browserId: targetBrowserId } },
+      });
+      dispose();
+      return frame;
+    },
+    { targetBrowserId: popupBrowserId, targetWorkspaceId: workspaceId },
+  );
+}
+
+async function ensureHumanPopupPresented({ page, originalDeck, rootBrowserId, popupBrowserId }) {
+  const snapshot = await readPopupTargets(page, rootBrowserId);
+  const alreadyVisible = snapshot?.targets?.find(
+    (target) => target.browserId === popupBrowserId,
+  )?.isVisible;
+  if (!alreadyVisible) {
+    // CDP mouse injection does not focus the native BrowserWindow on every CI host. The
+    // activation decision itself is covered by the manager unit test; this path still proves
+    // that a physically created popup can be presented without an OS child window.
+    await originalDeck.getByRole("button", { name: "Show pop-ups (1)" }).click();
+  }
+  await waitForPopupVisibility(page, rootBrowserId, popupBrowserId, true);
+}
+
+async function runPopupRegression({
+  page,
+  client,
+  browserId,
+  originalDeck,
+  targetUrl,
+  artifactDir,
+}) {
+  const agentOpen = await callBrowserTool(client, "browser_evaluate", {
+    browserId,
+    function:
+      "() => Boolean(window.__agentPopup = window.open('/popup?label=Agent', 'agent-popup', 'width=520,height=420'))",
+  });
+  assert(JSON.parse(agentOpen.resultJson) === true, "Agent popup did not return a WindowProxy");
+
+  let popupState = await waitForPopupTabs(client, browserId, 1);
+  const agentPopup = popupState.popups[0];
+  assert(agentPopup, "Agent popup was not registered");
+  assert(agentPopup.openerBrowserId === browserId, "Agent popup lost its direct opener");
+  assert(agentPopup.isActive === false, "Agent popup stole the user's active browser target");
+  await waitForPopupVisibility(page, browserId, agentPopup.browserId, false);
+  await originalDeck
+    .getByRole("button", { name: "Show pop-ups (1)" })
+    .waitFor({ state: "visible", timeout: 5_000 });
+
+  const popupSnapshot = await callBrowserTool(client, "browser_snapshot", {
+    browserId: agentPopup.browserId,
+  });
+  const notifyRef = popupSnapshot.snapshot.match(/button "Notify opener" \[ref=(@e\d+)\]/)?.[1];
+  assert(notifyRef, `Popup snapshot did not expose its controls: ${popupSnapshot.snapshot}`);
+  const popupHitTest = await callBrowserTool(client, "browser_evaluate", {
+    browserId: agentPopup.browserId,
+    function: `() => {
+      const element = document.querySelector('#notify-opener');
+      const rect = element?.getBoundingClientRect();
+      const point = rect ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : null;
+      const hit = point ? document.elementFromPoint(point.x, point.y) : null;
+      return {
+        hidden: document.hidden,
+        visibilityState: document.visibilityState,
+        innerWidth,
+        innerHeight,
+        rect: rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null,
+        hitId: hit?.id ?? null,
+      };
+    }`,
+  });
+  const hiddenPopupHitTest = JSON.parse(popupHitTest.resultJson);
+  assert(
+    hiddenPopupHitTest.innerWidth === 520 && hiddenPopupHitTest.innerHeight === 420,
+    `Background popup lost its viewport: ${popupHitTest.resultJson}`,
+  );
+  assert(
+    hiddenPopupHitTest.hitId === "notify-opener",
+    `Background popup lost DOM hit testing: ${popupHitTest.resultJson}`,
+  );
+  const popupScreenshot = await callBrowserTool(client, "browser_screenshot", {
+    browserId: agentPopup.browserId,
+  });
+  assert(
+    popupScreenshot.width === 520 && popupScreenshot.height === 420,
+    `Background popup screenshot lost its viewport: ${JSON.stringify(popupScreenshot)}`,
+  );
+  const popupStreamFrame = await capturePopupStreamFrame(
+    page,
+    agentPopup.browserId,
+    "desktop-browser-original",
+  );
+  assert(
+    popupStreamFrame?.width === 520 &&
+      popupStreamFrame?.height === 420 &&
+      popupStreamFrame?.dataLength > 0,
+    `Background popup stream produced no real frame: ${JSON.stringify(popupStreamFrame)}`,
+  );
+  await callBrowserTool(client, "browser_resize", {
+    browserId: agentPopup.browserId,
+    width: 640,
+    height: 480,
+  });
+  const resizedPopupViewport = await callBrowserTool(client, "browser_evaluate", {
+    browserId: agentPopup.browserId,
+    function: "() => ({ width: innerWidth, height: innerHeight })",
+  });
+  assert(
+    resizedPopupViewport.resultJson === '{"width":640,"height":480}',
+    `Background popup resize did not reach Chromium: ${resizedPopupViewport.resultJson}`,
+  );
+  await callBrowserTool(client, "browser_click", {
+    browserId: agentPopup.browserId,
+    ref: notifyRef,
+  });
+  const alertSnapshot = await callBrowserTool(client, "browser_snapshot", {
+    browserId: agentPopup.browserId,
+  });
+  const alertRef = alertSnapshot.snapshot.match(/button "Show alert" \[ref=(@e\d+)\]/)?.[1];
+  assert(alertRef, `Popup snapshot did not expose its alert control: ${alertSnapshot.snapshot}`);
+  const alertResponse = await client.callTool({
+    name: "browser_click",
+    args: { browserId: agentPopup.browserId, ref: alertRef },
+  });
+  assert(
+    alertResponse.structuredContent?.dialogs?.some(
+      (dialog) =>
+        dialog.type === "alert" && dialog.message === "popup-alert" && dialog.action === "accepted",
+    ),
+    `Popup alert was not captured and handled: ${JSON.stringify(alertResponse.structuredContent)}`,
+  );
+  const delayedSnapshot = await callBrowserTool(client, "browser_snapshot", {
+    browserId: agentPopup.browserId,
+  });
+  const delayedRef = delayedSnapshot.snapshot.match(
+    /button "Schedule confirm" \[ref=(@e\d+)\]/,
+  )?.[1];
+  assert(
+    delayedRef,
+    `Popup snapshot did not expose delayed dialog control: ${delayedSnapshot.snapshot}`,
+  );
+  await callBrowserTool(client, "browser_click", {
+    browserId: agentPopup.browserId,
+    ref: delayedRef,
+  });
+  await delay(200);
+  const afterDelayedDialog = await client.callTool({
+    name: "browser_snapshot",
+    args: { browserId: agentPopup.browserId },
+  });
+  assert(
+    afterDelayedDialog.structuredContent?.dialogs?.some(
+      (dialog) =>
+        dialog.type === "confirm" &&
+        dialog.message === "delayed-confirm" &&
+        dialog.action === "dismissed",
+    ),
+    `Background popup dialog was not queued for the agent: ${JSON.stringify(afterDelayedDialog.structuredContent)}`,
+  );
+  await callBrowserTool(client, "browser_wait", {
+    browserId,
+    text: "popup-ready:Agent",
+    timeoutMs: 5_000,
+  });
+  const popupLogs = await callBrowserTool(client, "browser_logs", {
+    browserId: agentPopup.browserId,
+  });
+  assert(
+    popupLogs.console.some((entry) => entry.message.includes("popup-console:Agent")),
+    "Popup console logs were not available to the agent",
+  );
+
+  await callBrowserTool(client, "browser_evaluate", {
+    browserId,
+    function:
+      "() => Boolean(window.__agentPopup === window.open('/popup?label=Reused', 'agent-popup', 'width=600,height=440'))",
+  });
+  await callBrowserTool(client, "browser_wait", {
+    browserId: agentPopup.browserId,
+    url: "label=Reused",
+    timeoutMs: 5_000,
+  });
+  popupState = await waitForPopupTabs(client, browserId, 1);
+  assert(
+    popupState.popups[0]?.browserId === agentPopup.browserId,
+    "Named popup reuse created a second target",
+  );
+
+  await callBrowserTool(client, "browser_evaluate", {
+    browserId: agentPopup.browserId,
+    function:
+      "() => Boolean(window.__nestedPopup = window.open('/popup?label=Nested', 'nested-popup', 'width=420,height=320'))",
+  });
+  popupState = await waitForPopupTabs(client, browserId, 2);
+  const nestedPopup = popupState.popups.find(
+    (target) => target.openerBrowserId === agentPopup.browserId,
+  );
+  assert(nestedPopup, "Nested popup did not retain its direct popup opener");
+
+  await callBrowserTool(client, "browser_evaluate", {
+    browserId,
+    function: "() => { document.querySelector('#post-popup-form').requestSubmit(); return true; }",
+  });
+  popupState = await waitForPopupTabs(client, browserId, 3);
+  const postPopup = popupState.popups.find((target) => target.title === "POST popup");
+  assert(postPopup, `POST popup was not registered: ${JSON.stringify(popupState.popups)}`);
+  const postSnapshot = await callBrowserTool(client, "browser_snapshot", {
+    browserId: postPopup.browserId,
+  });
+  assert(
+    postSnapshot.snapshot.includes("token=safe-value"),
+    `POST body was not preserved in the adopted popup: ${postSnapshot.snapshot}`,
+  );
+
+  await originalDeck.getByRole("button", { name: "Show pop-ups (3)" }).click();
+  await waitForPopupVisibility(page, browserId, postPopup.browserId, true);
+  await page.screenshot({ path: path.join(artifactDir, "popup-presented.png") });
+  const urlInput = originalDeck.getByRole("textbox", { name: "Browser URL" });
+  assert(
+    (await urlInput.inputValue()).includes("/post-popup"),
+    "Selecting the popup did not update the browser URL bar",
+  );
+  popupState = await waitForPopupTabs(client, browserId, 3);
+  assert(
+    popupState.popups.find((target) => target.browserId === postPopup.browserId)?.isActive === true,
+    "Visible popup was not the active browser target",
+  );
+
+  await page.getByTestId("sidebar-command-center-search").click();
+  await page.getByTestId("command-center-panel").waitFor({ state: "visible", timeout: 5_000 });
+  await waitForPopupVisibility(page, browserId, postPopup.browserId, false);
+  await page.keyboard.press("Escape");
+  await page.getByTestId("command-center-panel").waitFor({ state: "hidden", timeout: 5_000 });
+  await waitForPopupVisibility(page, browserId, postPopup.browserId, true);
+
+  await originalDeck.getByRole("button", { name: "Previous pop-up" }).click();
+  await waitForPopupVisibility(page, browserId, nestedPopup.browserId, true);
+  await callBrowserTool(client, "browser_evaluate", {
+    browserId: nestedPopup.browserId,
+    function: "() => { setTimeout(() => window.close(), 0); return true; }",
+  });
+  await waitForPopupTabs(client, browserId, 2);
+  const nestedClosed = await callBrowserTool(client, "browser_evaluate", {
+    browserId: agentPopup.browserId,
+    function: "() => window.__nestedPopup?.closed ?? null",
+  });
+  assert(
+    JSON.parse(nestedClosed.resultJson) === true,
+    "window.close did not close the nested target",
+  );
+
+  await originalDeck.getByRole("button", { name: "Show pop-ups (2)" }).click();
+  await waitForPopupVisibility(page, browserId, postPopup.browserId, true);
+  await originalDeck.getByRole("button", { name: "Close pop-up" }).click();
+  await waitForPopupTabs(client, browserId, 1);
+
+  await callBrowserTool(client, "browser_close_tab", { browserId: agentPopup.browserId });
+  await waitForPopupTabs(client, browserId, 0);
+  const namedClosed = await callBrowserTool(client, "browser_evaluate", {
+    browserId,
+    function: "() => window.__agentPopup?.closed ?? null",
+  });
+  assert(JSON.parse(namedClosed.resultJson) === true, "Agent close did not close the WindowProxy");
+
+  await delay(1_100);
+  await page.bringToFront();
+  await page.evaluate((id) => window.paseoDesktop?.browser?.focus?.(id), browserId);
+  await clickGuestElementAsHuman(page, browserId, "#open-human-popup");
+  popupState = await waitForPopupTabs(client, browserId, 1);
+  const humanPopup = popupState.popups[0];
+  assert(humanPopup, "Human popup was not registered");
+  await ensureHumanPopupPresented({
+    page,
+    originalDeck,
+    rootBrowserId: browserId,
+    popupBrowserId: humanPopup.browserId,
+  });
+  await originalDeck.getByRole("button", { name: "Return to page" }).click();
+  await waitForPopupVisibility(page, browserId, humanPopup.browserId, false);
+  await callBrowserTool(client, "browser_close_tab", { browserId: humanPopup.browserId });
+  await waitForPopupTabs(client, browserId, 0);
+
+  await page.evaluate(async (id) => {
+    const webview = document.querySelector(`[data-paseo-browser-id="${id}"]`);
+    if (!(webview instanceof HTMLElement) || typeof webview.executeJavaScript !== "function") {
+      throw new Error("Browser webview unavailable for delayed popup");
+    }
+    await webview.executeJavaScript(
+      "setTimeout(() => window.open('/popup?label=Background', 'background-popup', 'width=480,height=360'), 300); true",
+    );
+  }, browserId);
+  await urlInput.click();
+  await urlInput.fill("focus-continuity-sentinel");
+  popupState = await waitForPopupTabs(client, browserId, 1);
+  const backgroundPopup = popupState.popups[0];
+  assert(backgroundPopup, "Delayed background popup was not registered");
+  await waitForPopupVisibility(page, browserId, backgroundPopup.browserId, false);
+  assert(
+    (await urlInput.inputValue()) === "focus-continuity-sentinel",
+    "Background popup interrupted the host URL input",
+  );
+  assert(
+    await urlInput.evaluate((input) => input === document.activeElement),
+    "Background popup stole DOM focus",
+  );
+  await callBrowserTool(client, "browser_close_tab", { browserId: backgroundPopup.browserId });
+  await waitForPopupTabs(client, browserId, 0);
+  await urlInput.fill(targetUrl);
+
+  return {
+    opener: "passed",
+    post: "passed",
+    namedReuse: "passed",
+    nested: "passed",
+    close: "passed",
+    agentControl: "passed",
+    humanPresentation: "passed",
+    backgroundFocus: "passed",
+    overlayContainment: "passed",
+  };
 }
 
 async function runRegression({ page, client, serverId, targetUrl, callerAgentId, artifactDir }) {
@@ -455,6 +912,15 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId,
     browserId,
   );
   assert(focusedGuest === true, "Electron did not focus the registered browser guest");
+
+  const popupReport = await runPopupRegression({
+    page,
+    client,
+    browserId,
+    originalDeck,
+    targetUrl,
+    artifactDir,
+  });
 
   const deviceSizeMenuPainted = await selectDeviceSize(page, "iPhone SE · 375×667");
   assert(deviceSizeMenuPainted, "Device size menu did not paint above the browser surface");
@@ -860,6 +1326,7 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId,
     snapshot: "passed",
     click: "passed",
     localPageSelectors: "passed",
+    popupTargets: popupReport,
   };
 }
 
@@ -940,6 +1407,15 @@ async function main() {
     await waitForPort(cdpPort, "Electron CDP", desktop);
 
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+    for (const context of browser.contexts()) {
+      const observeElectronHandledDialog = (targetPage) => {
+        // Electron's per-target CDP monitor owns popup dialog policy. Registering a
+        // Playwright observer prevents its default auto-dismiss session from racing that owner.
+        targetPage.on("dialog", () => {});
+      };
+      context.on("page", observeElectronHandledDialog);
+      for (const targetPage of context.pages()) observeElectronHandledDialog(targetPage);
+    }
     const page = await waitForAppPage(browser, expoPort);
     const status = await waitForDesktopStatus(page);
 

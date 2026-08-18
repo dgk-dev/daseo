@@ -228,6 +228,51 @@ describe("browser automation protocol integration", () => {
     ).toBe("browser.remote.close.response");
   });
 
+  test("remote browser tab state preserves optional popup ownership", () => {
+    const popupBrowserId = "22222222-2222-4222-8222-222222222222";
+    const parsed = SessionOutboundMessageSchema.parse({
+      type: "browser.remote.list.response",
+      payload: {
+        requestId: "list-popup",
+        ok: true,
+        tabs: [
+          {
+            browserId: popupBrowserId,
+            workspaceId: "workspace-1",
+            kind: "popup",
+            rootBrowserId: browserId,
+            openerBrowserId: browserId,
+            url: "https://login.example.com",
+            title: "Sign in",
+            isActive: false,
+            isLoading: false,
+          },
+        ],
+      },
+    });
+
+    expect(parsed).toEqual({
+      type: "browser.remote.list.response",
+      payload: {
+        requestId: "list-popup",
+        ok: true,
+        tabs: [
+          {
+            browserId: popupBrowserId,
+            workspaceId: "workspace-1",
+            kind: "popup",
+            rootBrowserId: browserId,
+            openerBrowserId: browserId,
+            url: "https://login.example.com",
+            title: "Sign in",
+            isActive: false,
+            isLoading: false,
+          },
+        ],
+      },
+    });
+  });
+
   test("remote browser tab state rejects malformed host identifiers", () => {
     expect(() =>
       SessionOutboundMessageSchema.parse({

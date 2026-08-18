@@ -45,35 +45,53 @@ afterEach(() => {
 });
 
 describe("Daseo macOS package metadata", () => {
-  test("keeps Paseo's Electron identity while showing Daseo to the user", () => {
+  test("keeps Paseo's Electron identity while separating product and build versions", () => {
     const { appPath, plistPath } = createPaseoAppFixture();
 
     patchDaseoMacBundleMetadata({
       appPath,
-      displayVersion: "0.4.0-beta.2-local.7",
+      displayVersion: "0.4.1",
+      buildVersion: "4001",
     });
 
     expect(readPlistValue(plistPath, "CFBundleName")).toBe("Paseo");
     expect(readPlistValue(plistPath, "CFBundleDisplayName")).toBe("Daseo");
     expect(readPlistValue(plistPath, "CFBundleExecutable")).toBe("Paseo");
-    expect(readPlistValue(plistPath, "CFBundleShortVersionString")).toBe("0.4.0-beta.2-local.7");
-    expect(readPlistValue(plistPath, "CFBundleVersion")).toBe("0.4.0-beta.2-local.7");
+    expect(readPlistValue(plistPath, "CFBundleShortVersionString")).toBe("0.4.1");
+    expect(readPlistValue(plistPath, "CFBundleVersion")).toBe("4001");
   });
 
   test("applies the safe metadata contract from the packaging command", () => {
     const { appPath, plistPath } = createPaseoAppFixture();
     const scriptPath = fileURLToPath(new URL("./daseo-app-package.mjs", import.meta.url));
 
-    execFileSync(process.execPath, [scriptPath, appPath, "0.4.0-beta.2-local.7"]);
+    execFileSync(process.execPath, [scriptPath, appPath, "0.4.1", "4001"]);
 
     expect(readPlistValue(plistPath, "CFBundleName")).toBe("Paseo");
     expect(readPlistValue(plistPath, "CFBundleDisplayName")).toBe("Daseo");
-    expect(readPlistValue(plistPath, "CFBundleShortVersionString")).toBe("0.4.0-beta.2-local.7");
+    expect(readPlistValue(plistPath, "CFBundleShortVersionString")).toBe("0.4.1");
+    expect(readPlistValue(plistPath, "CFBundleVersion")).toBe("4001");
+  });
+
+  test("rejects a display version reused as the macOS build number", () => {
+    const { appPath } = createPaseoAppFixture();
+
+    expect(() =>
+      patchDaseoMacBundleMetadata({
+        appPath,
+        displayVersion: "0.4.1",
+        buildVersion: "0.4.1-local.1",
+      }),
+    ).toThrow("Invalid macOS build version");
   });
 
   test("writes localized bundle names and marks the display name localized", () => {
     const { appPath, plistPath } = createPaseoAppFixture();
-    patchDaseoMacBundleMetadata({ appPath, displayVersion: "0.4.0-test" });
+    patchDaseoMacBundleMetadata({
+      appPath,
+      displayVersion: "0.4.1",
+      buildVersion: "4001",
+    });
     for (const locale of ["en", "ko"]) {
       const strings = path.join(
         appPath,

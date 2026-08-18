@@ -6,7 +6,7 @@ import {
   isAllowedBrowserWebviewUrl,
   PendingBrowserWindowOpenRequests,
 } from "./window-open.js";
-import { PaseoBrowserWebviewRegistry } from "./registry.js";
+import { PaseoBrowserWebviewRegistry, type BrowserTargetMetadata } from "./registry.js";
 
 export {
   BROWSER_NEW_TAB_REQUEST_EVENT,
@@ -108,6 +108,29 @@ export function unregisterPaseoBrowserHost(hostWebContentsId: number): void {
 
 export function getPaseoBrowserWorkspaceId(browserId: string): string | null {
   return browserRegistry.getWorkspaceId(browserId);
+}
+
+export function getPaseoBrowserTargetMetadata(browserId: string): BrowserTargetMetadata {
+  return browserRegistry.getTargetMetadata(browserId);
+}
+
+export function registerManagedPaseoBrowserTarget(input: {
+  browserId: string;
+  workspaceId: string;
+  webContentsId: number;
+  hostWebContentsId: number;
+  metadata: BrowserTargetMetadata;
+}): void {
+  browserRegistry.registerWebContents({
+    webContentsId: input.webContentsId,
+    browserId: input.browserId,
+    hostWebContentsId: input.hostWebContentsId,
+  });
+  browserRegistry.registerWorkspace({
+    browserId: input.browserId,
+    workspaceId: input.workspaceId,
+  });
+  browserRegistry.registerTargetMetadata(input.browserId, input.metadata);
 }
 
 export function listRegisteredPaseoBrowserIdsForWorkspace(workspaceId: string): string[] {

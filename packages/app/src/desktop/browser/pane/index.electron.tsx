@@ -15,9 +15,12 @@ import {
   ArrowRight,
   Camera,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Maximize,
   Monitor,
   MousePointer2,
+  PanelsTopLeft,
   RotateCw,
   Smartphone,
   Tablet,
@@ -49,6 +52,7 @@ import { WORKSPACE_SECONDARY_HEADER_HEIGHT } from "@/constants/layout";
 import {
   getDesktopHost,
   isElectronRuntime,
+  type DesktopBrowserPopupTarget,
   type DesktopBrowserShortcutEvent,
 } from "@/desktop/host";
 import {
@@ -60,6 +64,7 @@ import {
 } from "@/desktop/browser/store";
 import {
   applyInactiveBrowserWebviewViewport,
+  measureBrowserPresentationBounds,
   prepareBrowserWebview,
   presentBrowserWebview,
   rememberBrowserWebviewSize,
@@ -67,6 +72,8 @@ import {
   removeResidentBrowserWebview,
   takeResidentBrowserWebview,
 } from "../resident-webviews";
+import { selectAvailablePopupTarget, useDesktopBrowserPopupTargets } from "../popup-targets";
+import { hasActiveWebOverlay, subscribeWebOverlayActivity } from "@/lib/overlay-root";
 import {
   createElementSelectorController,
   type BrowserElementSelection,
@@ -149,6 +156,7 @@ const DEVICE_SIZE_PRESETS: readonly DeviceSizePreset[] = [
 ];
 
 const RESPONSIVE_DEVICE_LABEL_KEY = "workspace.browser.devices.responsive";
+const EMPTY_BROWSER_POPUP_TARGETS: DesktopBrowserPopupTarget[] = [];
 
 function formatDevicePresetLabel(preset: DeviceSizePreset, responsiveLabel: string): string {
   const name = preset.id === "responsive" ? responsiveLabel : preset.name;
@@ -435,6 +443,7 @@ function ToolbarButton({
   children,
   active,
   disabled,
+  tooltipEnabled = true,
   onPress,
   style,
 }: {
@@ -442,6 +451,7 @@ function ToolbarButton({
   children: ReactNode;
   active?: boolean;
   disabled?: boolean;
+  tooltipEnabled?: boolean;
   onPress: () => void;
   style: (state: { hovered?: boolean; pressed?: boolean }) => StyleProp<ViewStyle>;
 }) {
@@ -450,7 +460,7 @@ function ToolbarButton({
     [active, disabled],
   );
   return (
-    <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
+    <Tooltip delayDuration={0} enabledOnDesktop={tooltipEnabled} enabledOnMobile={false}>
       <TooltipTrigger asChild disabled={disabled}>
         <Pressable
           accessibilityRole="button"
@@ -601,6 +611,22 @@ export function BrowserPane({
   const updateBrowser = useBrowserStore((state) => state.updateBrowser);
   const setBrowserViewport = useBrowserStore((state) => state.setBrowserViewport);
   const browserViewport = browser?.viewport ?? RESPONSIVE_BROWSER_VIEWPORT;
+  const popupTargetState = useDesktopBrowserPopupTargets(browserId);
+  const popupTargets = popupTargetState.snapshot?.targets ?? EMPTY_BROWSER_POPUP_TARGETS;
+  const [selectedPopupBrowserId, setSelectedPopupBrowserId] = useState<string | null>(null);
+  const selectedPopup =
+    popupTargets.find((target) => target.browserId === selectedPopupBrowserId) ?? null;
+  const activeCanGoBack = selectedPopup?.canGoBack ?? browser?.canGoBack ?? false;
+  const activeCanGoForward = selectedPopup?.canGoForward ?? browser?.canGoForward ?? false;
+  const activeIsLoading = selectedPopup?.isLoading ?? browser?.isLoading ?? false;
+  const selectedPopupRef = useRef<DesktopBrowserPopupTarget | null>(selectedPopup);
+  selectedPopupRef.current = selectedPopup;
+  const popupFocusRequestRef = useRef<string | null>(null);
+  const lastHandledPopupActivationRevisionRef = useRef(-1);
+  const lastHandledPopupFocusRevisionRef = useRef(-1);
+  const [webOverlayActive, setWebOverlayActive] = useState(() => hasActiveWebOverlay());
+  const webOverlayActiveRef = useRef(webOverlayActive);
+  webOverlayActiveRef.current = webOverlayActive;
   const browserViewportRef = useRef(browserViewport);
   browserViewportRef.current = browserViewport;
   const isPresented = useRetainedPanelActive();
@@ -634,6 +660,7 @@ export function BrowserPane({
   );
   const annotationCaptureGenerationRef = useRef(0);
   const [draftUrl, setDraftUrl] = useState(browser?.url ?? "https://example.com");
+  const [popupActionError, setPopupActionError] = useState<string | null>(null);
   const workspaceAttachmentScopeKey = useMemo(
     () => buildBrowserAttachmentScopeKey({ cwd, serverId, workspaceId }),
     [cwd, serverId, workspaceId],
@@ -680,10 +707,53 @@ export function BrowserPane({
     };
   }, []);
 
+  useEffect(() => subscribeWebOverlayActivity(setWebOverlayActive), []);
+
   useEffect(() => {
-    const nextUrl = browser?.url ?? "https://example.com";
+    setSelectedPopupBrowserId((current) =>
+      selectAvailablePopupTarget({ selectedBrowserId: current, targets: popupTargets }),
+    );
+  }, [popupTargets]);
+
+  useEffect(() => {
+    const snapshot = popupTargetState.snapshot;
+    if (
+      !snapshot?.activationBrowserId ||
+      snapshot.revision <= lastHandledPopupActivationRevisionRef.current
+    ) {
+      return;
+    }
+    lastHandledPopupActivationRevisionRef.current = snapshot.revision;
+    if (!isPresentedRef.current || !isInteractive) {
+      return;
+    }
+    popupFocusRequestRef.current = snapshot.activationBrowserId;
+    setSelectedPopupBrowserId(snapshot.activationBrowserId);
+    onFocusPane?.();
+  }, [isInteractive, onFocusPane, popupTargetState.snapshot]);
+
+  useEffect(() => {
+    const snapshot = popupTargetState.snapshot;
+    if (
+      !snapshot?.focusedBrowserId ||
+      snapshot.revision <= lastHandledPopupFocusRevisionRef.current
+    ) {
+      return;
+    }
+    lastHandledPopupFocusRevisionRef.current = snapshot.revision;
+    if (isPresentedRef.current) {
+      onFocusPane?.();
+    }
+  }, [onFocusPane, popupTargetState.snapshot]);
+
+  useEffect(() => {
+    const nextUrl = selectedPopup?.url ?? browser?.url ?? "https://example.com";
     setDraftUrl((current) => (current === nextUrl ? current : nextUrl));
-  }, [browser?.url]);
+  }, [browser?.url, selectedPopup?.url]);
+
+  useEffect(() => {
+    setPopupActionError(null);
+  }, [selectedPopupBrowserId]);
 
   const updateBrowserRef = useRef(updateBrowser);
   updateBrowserRef.current = updateBrowser;
@@ -724,6 +794,53 @@ export function BrowserPane({
     }
   }, []);
 
+  const syncBrowserSurface = useCallback(
+    (webview: ElectronWebview, host: HTMLElement, clip: HTMLElement) => {
+      const popup = selectedPopupRef.current;
+      const browserHost = getDesktopHost()?.browser;
+      const shouldShowPopup =
+        isPresentedRef.current && popup !== null && !webOverlayActiveRef.current;
+      if (popup) {
+        releaseResidentBrowserWebview(browserIdRef.current, webview);
+        const bounds = shouldShowPopup ? measureBrowserPresentationBounds(host, clip) : null;
+        const focus = popupFocusRequestRef.current === popup.browserId;
+        popupFocusRequestRef.current = null;
+        void browserHost
+          ?.presentPopupTarget?.({
+            rootBrowserId: browserIdRef.current,
+            popupBrowserId: popup.browserId,
+            visible: bounds !== null,
+            ...(bounds ? { bounds } : {}),
+            ...(focus && bounds ? { focus: true } : {}),
+          })
+          .catch((error) => {
+            console.error("[browser-popup] failed to present popup target", error);
+          });
+        return;
+      }
+
+      void browserHost
+        ?.presentPopupTarget?.({
+          rootBrowserId: browserIdRef.current,
+          popupBrowserId: null,
+          visible: false,
+        })
+        .catch((error) => {
+          console.error("[browser-popup] failed to hide popup targets", error);
+        });
+      const currentViewport =
+        useBrowserStore.getState().browsersById[browserIdRef.current]?.viewport ??
+        browserViewportRef.current;
+      if (isPresentedRef.current) {
+        presentBrowserWebview(browserIdRef.current, webview, host, clip, currentViewport);
+      } else {
+        applyInactiveBrowserWebviewViewport(browserIdRef.current, webview, currentViewport);
+        releaseResidentBrowserWebview(browserIdRef.current, webview);
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     if (!isElectronRuntime()) {
       return;
@@ -752,26 +869,15 @@ export function BrowserPane({
       });
     }
     releaseResidentBrowserWebview(browserId, webview);
-    if (isPresentedRef.current) {
-      presentBrowserWebview(browserId, webview, host, clip, browserViewportRef.current);
-    } else {
-      applyInactiveBrowserWebviewViewport(browserId, webview, browserViewportRef.current);
-    }
+    syncBrowserSurface(webview, host, clip);
     const sizeObserver =
       typeof ResizeObserver === "undefined"
         ? null
         : new ResizeObserver(() => {
-            if (!isPresentedRef.current) {
-              return;
+            syncBrowserSurface(webview, host, clip);
+            if (isPresentedRef.current && !selectedPopupRef.current) {
+              rememberResolvedBrowserWebviewSize(browserIdRef.current, webview);
             }
-            presentBrowserWebview(
-              browserIdRef.current,
-              webview,
-              host,
-              clip,
-              browserViewportRef.current,
-            );
-            rememberResolvedBrowserWebviewSize(browserIdRef.current, webview);
           });
 
     const handleStartLoading = () => {
@@ -898,6 +1004,11 @@ export function BrowserPane({
       webview.removeEventListener("dom-ready", handleDomReady);
       webview.removeEventListener("focus", handleWebviewFocus);
       webview.removeEventListener("mousedown", handleWebviewFocus);
+      void getDesktopHost()?.browser?.presentPopupTarget?.({
+        rootBrowserId: browserIdRef.current,
+        popupBrowserId: null,
+        visible: false,
+      });
       const browserStillExists = Boolean(
         useBrowserStore.getState().browsersById[browserIdRef.current],
       );
@@ -916,34 +1027,81 @@ export function BrowserPane({
 
   useEffect(() => {
     const webview = webviewRef.current;
-    if (!webview) {
-      return;
-    }
-    if (!isPresented) {
-      releaseResidentBrowserWebview(browserId, webview);
-      return;
-    }
     const host = webviewHostRef.current;
     const clip = webviewClipRef.current;
-    if (host && clip) {
-      presentBrowserWebview(browserId, webview, host, clip, browserViewport);
+    if (!webview || !host || !clip) {
+      return;
     }
-    if (browserViewport.mode === "fixed") {
+    syncBrowserSurface(webview, host, clip);
+    if (!isPresented || selectedPopup) {
+      return;
+    }
+    const currentViewport =
+      useBrowserStore.getState().browsersById[browserId]?.viewport ?? browserViewport;
+    if (currentViewport.mode === "fixed") {
       rememberBrowserWebviewSize({
         browserId,
-        width: browserViewport.width,
-        height: browserViewport.height,
+        width: currentViewport.width,
+        height: currentViewport.height,
       });
     } else {
       rememberResolvedBrowserWebviewSize(browserId, webview);
     }
-  }, [browserId, browserViewport, isPresented]);
+  }, [
+    browserId,
+    browserViewport,
+    isPresented,
+    selectedPopup,
+    syncBrowserSurface,
+    webOverlayActive,
+  ]);
+
+  const runPopupTargetAction = useCallback(
+    async (
+      popupBrowserId: string,
+      action: "back" | "forward" | "reload" | "stop" | "navigate",
+      url?: string,
+    ): Promise<boolean> => {
+      const popupTargetAction = getDesktopHost()?.browser?.popupTargetAction;
+      if (!popupTargetAction) {
+        setPopupActionError(browserErrorLabels.failedToLoad);
+        return false;
+      }
+      try {
+        const succeeded = await popupTargetAction({
+          browserId: popupBrowserId,
+          action,
+          ...(url ? { url } : {}),
+        });
+        setPopupActionError(succeeded ? null : browserErrorLabels.failedToLoad);
+        return succeeded;
+      } catch (error) {
+        setPopupActionError(
+          getLoadUrlRejectionMessage(error, browserErrorLabels.failedToLoad) ??
+            browserErrorLabels.failedToLoad,
+        );
+        return false;
+      }
+    },
+    [browserErrorLabels.failedToLoad],
+  );
 
   const navigate = useCallback(
     (nextUrl: string) => {
       const normalizedUrl = normalizeWorkspaceBrowserUrl(nextUrl);
       const webview = webviewRef.current;
+      const popup = selectedPopupRef.current;
       const unsafeNavigationMessage = getUnsafeNavigationMessage(normalizedUrl, browserErrorLabels);
+      setDraftUrl((current) => (current === normalizedUrl ? current : normalizedUrl));
+      if (popup) {
+        if (unsafeNavigationMessage) {
+          setPopupActionError(unsafeNavigationMessage);
+          return;
+        }
+        void runPopupTargetAction(popup.browserId, "navigate", normalizedUrl);
+        return;
+      }
+
       const previousUrl = browserRef.current?.url ?? initialUrlRef.current;
       pendingNavigationUrlRef.current = unsafeNavigationMessage ? null : normalizedUrl;
       updateBrowserRef.current(browserIdRef.current, {
@@ -952,7 +1110,6 @@ export function BrowserPane({
         ...(normalizedUrl !== previousUrl ? { faviconUrl: null } : {}),
         lastError: null,
       });
-      setDraftUrl((current) => (current === normalizedUrl ? current : normalizedUrl));
       if (unsafeNavigationMessage) {
         updateBrowserRef.current(browserIdRef.current, {
           isLoading: false,
@@ -977,27 +1134,42 @@ export function BrowserPane({
         webview.setAttribute("src", normalizedUrl);
       }
     },
-    [browserErrorLabels],
+    [browserErrorLabels, runPopupTargetAction],
   );
 
   const handleBack = useCallback(() => {
+    const popup = selectedPopupRef.current;
+    if (popup) {
+      void runPopupTargetAction(popup.browserId, "back");
+      return;
+    }
     webviewRef.current?.goBack?.();
     syncNavigationState();
-  }, [syncNavigationState]);
+  }, [runPopupTargetAction, syncNavigationState]);
 
   const handleForward = useCallback(() => {
+    const popup = selectedPopupRef.current;
+    if (popup) {
+      void runPopupTargetAction(popup.browserId, "forward");
+      return;
+    }
     webviewRef.current?.goForward?.();
     syncNavigationState();
-  }, [syncNavigationState]);
+  }, [runPopupTargetAction, syncNavigationState]);
 
   const handleRefresh = useCallback(() => {
+    const popup = selectedPopupRef.current;
+    if (popup) {
+      void runPopupTargetAction(popup.browserId, popup.isLoading ? "stop" : "reload");
+      return;
+    }
     if (browser?.isLoading) {
       webviewRef.current?.stop?.();
       updateBrowser(browserId, { isLoading: false });
       return;
     }
     webviewRef.current?.reload?.();
-  }, [browser?.isLoading, browserId, updateBrowser]);
+  }, [browser?.isLoading, browserId, runPopupTargetAction, updateBrowser]);
 
   useEffect(() => {
     if (!isElectronRuntime() || !isInteractive) {
@@ -1035,7 +1207,8 @@ export function BrowserPane({
         return;
       }
       if (payload.browserId) {
-        if (payload.browserId !== browserIdRef.current) {
+        const activeTargetId = selectedPopupRef.current?.browserId ?? browserIdRef.current;
+        if (payload.browserId !== activeTargetId) {
           return;
         }
         focusUrlBar();
@@ -1256,7 +1429,7 @@ export function BrowserPane({
     setSelectorMode(null);
   }, []);
 
-  const currentPageUrl = browser?.url ?? null;
+  const currentPageUrl = selectedPopup ? null : (browser?.url ?? null);
   const annotationMarkers = useMemo<BrowserAnnotationMarker[]>(() => {
     if (!currentPageUrl) {
       return [];
@@ -1313,8 +1486,14 @@ export function BrowserPane({
     startElementSelector("screenshot");
   }, [cancelElementSelector, selectorActive, startElementSelector]);
 
+  useEffect(() => {
+    if (selectedPopup && selectorActive) {
+      cancelElementSelector();
+    }
+  }, [cancelElementSelector, selectedPopup, selectorActive]);
+
   const handleOpenDevTools = useCallback(() => {
-    const currentBrowserId = browserIdRef.current;
+    const currentBrowserId = selectedPopupRef.current?.browserId ?? browserIdRef.current;
     const openDevTools = getDesktopHost()?.browser?.openDevTools;
     if (typeof openDevTools !== "function") {
       console.warn("[browser-pane] openDevTools bridge missing", { browserId: currentBrowserId });
@@ -1344,17 +1523,17 @@ export function BrowserPane({
     ({ hovered, pressed }: { hovered?: boolean; pressed?: boolean }) => [
       styles.iconButton,
       (hovered || pressed) && styles.iconButtonHovered,
-      !browser?.canGoBack && styles.iconButtonDisabled,
+      !activeCanGoBack && styles.iconButtonDisabled,
     ],
-    [browser?.canGoBack],
+    [activeCanGoBack],
   );
   const forwardIconButtonStyle = useCallback(
     ({ hovered, pressed }: { hovered?: boolean; pressed?: boolean }) => [
       styles.iconButton,
       (hovered || pressed) && styles.iconButtonHovered,
-      !browser?.canGoForward && styles.iconButtonDisabled,
+      !activeCanGoForward && styles.iconButtonDisabled,
     ],
-    [browser?.canGoForward],
+    [activeCanGoForward],
   );
   const annotateIconButtonStyle = useCallback(
     ({ hovered, pressed }: { hovered?: boolean; pressed?: boolean }) => [
@@ -1372,6 +1551,64 @@ export function BrowserPane({
     ],
     [selectorMode],
   );
+
+  const selectedPopupIndex = selectedPopup
+    ? popupTargets.findIndex((target) => target.browserId === selectedPopup.browserId)
+    : -1;
+
+  const activatePopupTarget = useCallback(
+    (popupBrowserId: string) => {
+      popupFocusRequestRef.current = popupBrowserId;
+      setSelectedPopupBrowserId(popupBrowserId);
+      onFocusPane?.();
+    },
+    [onFocusPane],
+  );
+
+  const handleTogglePopupTarget = useCallback(() => {
+    if (selectedPopupRef.current) {
+      setSelectedPopupBrowserId(null);
+      return;
+    }
+    const latest = popupTargets.at(-1);
+    if (latest) {
+      activatePopupTarget(latest.browserId);
+    }
+  }, [activatePopupTarget, popupTargets]);
+
+  const handlePreviousPopupTarget = useCallback(() => {
+    if (popupTargets.length < 2) return;
+    const currentIndex = Math.max(0, selectedPopupIndex);
+    const previousIndex = (currentIndex - 1 + popupTargets.length) % popupTargets.length;
+    const previous = popupTargets[previousIndex];
+    if (previous) activatePopupTarget(previous.browserId);
+  }, [activatePopupTarget, popupTargets, selectedPopupIndex]);
+
+  const handleNextPopupTarget = useCallback(() => {
+    if (popupTargets.length < 2) return;
+    const currentIndex = Math.max(0, selectedPopupIndex);
+    const next = popupTargets[(currentIndex + 1) % popupTargets.length];
+    if (next) activatePopupTarget(next.browserId);
+  }, [activatePopupTarget, popupTargets, selectedPopupIndex]);
+
+  const handleClosePopupTarget = useCallback(() => {
+    const popup = selectedPopupRef.current;
+    const closePopupTarget = getDesktopHost()?.browser?.closePopupTarget;
+    if (!popup || !closePopupTarget) {
+      setPopupActionError(t("workspace.browser.popups.closeFailed"));
+      return;
+    }
+    void closePopupTarget({ browserId: popup.browserId, workspaceId })
+      .then((closed) => {
+        if (!closed) {
+          setPopupActionError(t("workspace.browser.popups.closeFailed"));
+        }
+        return undefined;
+      })
+      .catch(() => {
+        setPopupActionError(t("workspace.browser.popups.closeFailed"));
+      });
+  }, [t, workspaceId]);
 
   const selectedDeviceSizeId = useMemo(
     () => deviceSizeIdForViewport(browserViewport),
@@ -1452,7 +1689,8 @@ export function BrowserPane({
         <View style={styles.chromeLeft}>
           <ToolbarButton
             label={t("workspace.browser.controls.back")}
-            disabled={!browser?.canGoBack}
+            disabled={!activeCanGoBack}
+            tooltipEnabled={!selectedPopup}
             onPress={handleBack}
             style={backIconButtonStyle}
           >
@@ -1460,7 +1698,8 @@ export function BrowserPane({
           </ToolbarButton>
           <ToolbarButton
             label={t("workspace.browser.controls.forward")}
-            disabled={!browser?.canGoForward}
+            disabled={!activeCanGoForward}
+            tooltipEnabled={!selectedPopup}
             onPress={handleForward}
             style={forwardIconButtonStyle}
           >
@@ -1468,10 +1707,11 @@ export function BrowserPane({
           </ToolbarButton>
           <ToolbarButton
             label={
-              browser?.isLoading
+              activeIsLoading
                 ? t("workspace.browser.controls.stopLoading")
                 : t("workspace.browser.controls.refresh")
             }
+            tooltipEnabled={!selectedPopup}
             onPress={handleRefresh}
             style={baseIconButtonStyle}
           >
@@ -1494,13 +1734,67 @@ export function BrowserPane({
           />
         </View>
         <View style={styles.chromeRight}>
-          <DeviceSizeMenu
-            selectedId={selectedDeviceSizeId}
-            onSelect={handleSelectDeviceSize}
-            triggerStyle={baseIconButtonStyle}
-          />
+          {!selectedPopup ? (
+            <DeviceSizeMenu
+              selectedId={selectedDeviceSizeId}
+              onSelect={handleSelectDeviceSize}
+              triggerStyle={baseIconButtonStyle}
+            />
+          ) : null}
+          {popupTargets.length > 0 ? (
+            <ToolbarButton
+              label={
+                selectedPopup
+                  ? t("workspace.browser.popups.returnToPage")
+                  : t("workspace.browser.popups.show", { count: popupTargets.length })
+              }
+              active={selectedPopup !== null}
+              tooltipEnabled={!selectedPopup}
+              onPress={handleTogglePopupTarget}
+              style={baseIconButtonStyle}
+            >
+              <View style={styles.popupTargetIndicator}>
+                <PanelsTopLeft
+                  size={16}
+                  color={selectedPopup ? theme.colors.accent : theme.colors.foregroundMuted}
+                />
+                <Text style={styles.popupTargetCount}>{popupTargets.length}</Text>
+              </View>
+            </ToolbarButton>
+          ) : null}
+          {selectedPopup && popupTargets.length > 1 ? (
+            <>
+              <ToolbarButton
+                label={t("workspace.browser.popups.previous")}
+                tooltipEnabled={false}
+                onPress={handlePreviousPopupTarget}
+                style={baseIconButtonStyle}
+              >
+                <ChevronLeft size={16} color={theme.colors.foregroundMuted} />
+              </ToolbarButton>
+              <ToolbarButton
+                label={t("workspace.browser.popups.next")}
+                tooltipEnabled={false}
+                onPress={handleNextPopupTarget}
+                style={baseIconButtonStyle}
+              >
+                <ChevronRight size={16} color={theme.colors.foregroundMuted} />
+              </ToolbarButton>
+            </>
+          ) : null}
+          {selectedPopup ? (
+            <ToolbarButton
+              label={t("workspace.browser.popups.close")}
+              tooltipEnabled={false}
+              onPress={handleClosePopupTarget}
+              style={baseIconButtonStyle}
+            >
+              <X size={16} color={theme.colors.foregroundMuted} />
+            </ToolbarButton>
+          ) : null}
           <ToolbarButton
             label={t("workspace.browser.controls.openDevTools")}
+            tooltipEnabled={!selectedPopup}
             onPress={handleOpenDevTools}
             style={baseIconButtonStyle}
           >
@@ -1513,6 +1807,8 @@ export function BrowserPane({
                 : t("workspace.browser.controls.annotateElement")
             }
             active={selectorMode === "annotate"}
+            disabled={selectedPopup !== null}
+            tooltipEnabled={!selectedPopup}
             onPress={handleToggleElementSelector}
             style={annotateIconButtonStyle}
           >
@@ -1530,6 +1826,8 @@ export function BrowserPane({
                 : t("workspace.browser.controls.screenshotElement")
             }
             active={selectorMode === "screenshot"}
+            disabled={selectedPopup !== null}
+            tooltipEnabled={!selectedPopup}
             onPress={handleToggleScreenshot}
             style={screenshotIconButtonStyle}
           >
@@ -1542,10 +1840,10 @@ export function BrowserPane({
           </ToolbarButton>
         </View>
       </View>
-      {browser?.lastError ? (
+      {(selectedPopup ? popupActionError : browser?.lastError) ? (
         <View style={styles.errorRow}>
           <Text numberOfLines={1} style={errorTextStyle}>
-            {browser.lastError}
+            {selectedPopup ? popupActionError : browser?.lastError}
           </Text>
         </View>
       ) : null}
@@ -1760,6 +2058,16 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[1],
+  },
+  popupTargetIndicator: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+  },
+  popupTargetCount: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.xs,
+    fontWeight: theme.fontWeight.normal,
   },
   toolbarTooltipText: {
     fontSize: theme.fontSize.xs,

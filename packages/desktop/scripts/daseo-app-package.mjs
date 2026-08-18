@@ -36,21 +36,26 @@ function writeLocalizedBundleName(appPath) {
   }
 }
 
-export function patchDaseoMacBundleMetadata({ appPath, displayVersion }) {
+export function patchDaseoMacBundleMetadata({ appPath, displayVersion, buildVersion }) {
+  if (!/^\d+(?:\.\d+){0,2}$/.test(buildVersion)) {
+    throw new Error(`Invalid macOS build version: ${buildVersion}`);
+  }
   const plistPath = path.join(appPath, "Contents", "Info.plist");
 
   setPlistValue(plistPath, "CFBundleName", "Paseo");
   setPlistValue(plistPath, "CFBundleDisplayName", "Daseo");
   setPlistValue(plistPath, "CFBundleShortVersionString", displayVersion);
-  setPlistValue(plistPath, "CFBundleVersion", displayVersion);
+  setPlistValue(plistPath, "CFBundleVersion", buildVersion);
   ensurePlistValue(plistPath, "LSHasLocalizedDisplayName", "bool", "true");
   writeLocalizedBundleName(appPath);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  const [appPath, displayVersion] = process.argv.slice(2);
-  if (!appPath || !displayVersion) {
-    throw new Error("Usage: daseo-app-package.mjs <app-path> <display-version>");
+  const [appPath, displayVersion, buildVersion] = process.argv.slice(2);
+  if (!appPath || !displayVersion || !buildVersion) {
+    throw new Error(
+      "Usage: daseo-app-package.mjs <app-path> <display-version> <mac-build-version>",
+    );
   }
-  patchDaseoMacBundleMetadata({ appPath, displayVersion });
+  patchDaseoMacBundleMetadata({ appPath, displayVersion, buildVersion });
 }

@@ -315,6 +315,39 @@ describe("PaseoBrowserWebviewRegistry", () => {
     expect(registry.getActiveBrowserIdForHostWindow(101)).toBe("browser-a");
   });
 
+  it("keeps popup target ownership metadata separate from workspace identity", () => {
+    const registry = new PaseoBrowserWebviewRegistry();
+    registry.registerWebContents({
+      webContentsId: 31,
+      browserId: "popup-a",
+      hostWebContentsId: 101,
+    });
+    registry.registerWorkspace({ browserId: "popup-a", workspaceId: "workspace-a" });
+    registry.registerTargetMetadata("popup-a", {
+      kind: "popup",
+      rootBrowserId: "browser-root",
+      openerBrowserId: "browser-root",
+    });
+
+    expect(registry.getWorkspaceId("popup-a")).toBe("workspace-a");
+    expect(registry.getTargetMetadata("popup-a")).toEqual({
+      kind: "popup",
+      rootBrowserId: "browser-root",
+      openerBrowserId: "browser-root",
+    });
+
+    registry.unregisterBrowser("popup-a");
+
+    expect(registry.getTargetMetadata("popup-a")).toEqual({ kind: "tab" });
+  });
+
+  it("defaults ordinary registered workspace browsers to tab metadata", () => {
+    const registry = new PaseoBrowserWebviewRegistry();
+    registry.registerWorkspace({ browserId: "browser-a", workspaceId: "workspace-a" });
+
+    expect(registry.getTargetMetadata("browser-a")).toEqual({ kind: "tab" });
+  });
+
   it("reports when another host still owns the same browser", () => {
     const registry = new PaseoBrowserWebviewRegistry();
     registry.registerWebContents({

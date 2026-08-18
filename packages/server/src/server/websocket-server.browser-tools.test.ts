@@ -53,6 +53,7 @@ interface QueuedBrowserRequests {
 
 const harnesses: BrowserToolsDaemonHarness[] = [];
 const BROWSER_ID = "11111111-1111-4111-8111-111111111111";
+const POPUP_BROWSER_ID = "22222222-2222-4222-8222-222222222222";
 
 afterEach(async () => {
   await Promise.all(harnesses.splice(0).map((harness) => harness.stop()));
@@ -179,6 +180,71 @@ describe("WebSocketServer browser tools wiring", () => {
       },
     });
     await expect(unwatchPromise).resolves.toBeUndefined();
+  });
+
+  it("projects popup ownership through remote list and closes the popup in its workspace", async () => {
+    const harness = await startBrowserToolsDaemonHarness();
+    const browserHost = await harness.connectBrowserHostClient();
+    const remote = await harness.connectRemoteClient();
+
+    const listPromise = remote.listRemoteBrowserTabs({ workspaceId: "workspace-1" });
+    const listRequest = await browserHost.nextBrowserRequest();
+    expect(listRequest).toMatchObject({
+      workspaceId: "workspace-1",
+      command: { command: "list_tabs", args: {} },
+    });
+    const popupTab = {
+      browserId: POPUP_BROWSER_ID,
+      workspaceId: "workspace-1",
+      kind: "popup" as const,
+      rootBrowserId: BROWSER_ID,
+      openerBrowserId: BROWSER_ID,
+      url: "https://login.example.com",
+      title: "Sign in",
+      isActive: false,
+      isLoading: false,
+    };
+    browserHost.respondToBrowserRequest({
+      type: "browser.automation.execute.response",
+      payload: {
+        requestId: listRequest.requestId,
+        ok: true,
+        result: { command: "list_tabs", tabs: [popupTab] },
+      },
+    });
+    await expect(listPromise).resolves.toMatchObject({ ok: true, tabs: [popupTab] });
+
+    const closePromise = remote.closeRemoteBrowserTab({
+      workspaceId: "workspace-1",
+      browserId: POPUP_BROWSER_ID,
+    });
+    const ownershipRequest = await browserHost.nextBrowserRequest();
+    expect(ownershipRequest.command).toEqual({ command: "list_tabs", args: {} });
+    browserHost.respondToBrowserRequest({
+      type: "browser.automation.execute.response",
+      payload: {
+        requestId: ownershipRequest.requestId,
+        ok: true,
+        result: { command: "list_tabs", tabs: [popupTab] },
+      },
+    });
+    const closeRequest = await browserHost.nextBrowserRequest();
+    expect(closeRequest).toMatchObject({
+      workspaceId: "workspace-1",
+      command: { command: "close_tab", args: { browserId: POPUP_BROWSER_ID } },
+    });
+    browserHost.respondToBrowserRequest({
+      type: "browser.automation.execute.response",
+      payload: {
+        requestId: closeRequest.requestId,
+        ok: true,
+        result: { command: "close_tab", browserId: POPUP_BROWSER_ID },
+      },
+    });
+    await expect(closePromise).resolves.toMatchObject({
+      ok: true,
+      browserId: POPUP_BROWSER_ID,
+    });
   });
 
   it("unregisters capable clients on disconnect and clears pending browser commands", async () => {

@@ -4398,6 +4398,9 @@ export const BrowserRemoteOpenResponseSchema = z.object({
 export const BrowserRemoteTabInfoSchema = z.object({
   browserId: BrowserAutomationBrowserIdSchema,
   workspaceId: z.string().optional(),
+  kind: z.enum(["tab", "popup"]).optional(),
+  rootBrowserId: BrowserAutomationBrowserIdSchema.optional(),
+  openerBrowserId: BrowserAutomationBrowserIdSchema.optional(),
   url: z.string(),
   title: z.string(),
   isActive: z.boolean(),

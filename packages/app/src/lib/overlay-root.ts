@@ -91,9 +91,29 @@ interface WebOverlayEntry {
 }
 
 const webOverlayEntries: WebOverlayEntry[] = [];
+const webOverlayActivityListeners = new Set<(active: boolean) => void>();
 let webOverlayOrder = 0;
 let webOverlayListenersAttached = false;
 let webOverlayFocusCheckQueued = false;
+
+export function hasActiveWebOverlay(): boolean {
+  return webOverlayEntries.length > 0;
+}
+
+export function subscribeWebOverlayActivity(listener: (active: boolean) => void): () => void {
+  webOverlayActivityListeners.add(listener);
+  listener(hasActiveWebOverlay());
+  return () => {
+    webOverlayActivityListeners.delete(listener);
+  };
+}
+
+function notifyWebOverlayActivity(): void {
+  const active = hasActiveWebOverlay();
+  for (const listener of webOverlayActivityListeners) {
+    listener(active);
+  }
+}
 
 function getTopWebOverlay(): WebOverlayEntry | undefined {
   return webOverlayEntries.reduce<WebOverlayEntry | undefined>((top, entry) => {
@@ -186,6 +206,7 @@ function detachWebOverlayListeners(): void {
 function addWebOverlay(entry: WebOverlayEntry): () => void {
   webOverlayEntries.push(entry);
   attachWebOverlayListeners();
+  notifyWebOverlayActivity();
 
   const focusFrame = window.requestAnimationFrame(() => {
     const scope = entry.getScope();
@@ -199,6 +220,7 @@ function addWebOverlay(entry: WebOverlayEntry): () => void {
     const index = webOverlayEntries.findIndex((candidate) => candidate.id === entry.id);
     if (index !== -1) webOverlayEntries.splice(index, 1);
     detachWebOverlayListeners();
+    notifyWebOverlayActivity();
     if (entry.restoreFocus && document.contains(entry.restoreFocus)) {
       entry.restoreFocus.focus();
     }

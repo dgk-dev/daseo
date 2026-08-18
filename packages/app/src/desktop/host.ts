@@ -142,6 +142,40 @@ export interface DesktopAttachedBrowserRegistration {
   webContentsId: number;
 }
 
+export interface DesktopBrowserPopupTarget {
+  browserId: string;
+  rootBrowserId: string;
+  openerBrowserId: string;
+  workspaceId: string;
+  url: string;
+  title: string;
+  isLoading: boolean;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  isVisible: boolean;
+  disposition: "default" | "foreground-tab" | "background-tab" | "new-window" | "other";
+  createdAt: number;
+}
+
+export interface DesktopBrowserPopupTargetsSnapshot {
+  revision: number;
+  rootBrowserId: string;
+  workspaceId: string;
+  hostWebContentsId: number;
+  targets: DesktopBrowserPopupTarget[];
+  reason: "bound" | "created" | "updated" | "focused" | "presentation" | "closed";
+  activationBrowserId?: string;
+  focusedBrowserId?: string;
+}
+
+export interface DesktopBrowserPopupPresentation {
+  rootBrowserId: string;
+  popupBrowserId: string | null;
+  visible: boolean;
+  bounds?: { x: number; y: number; width: number; height: number };
+  focus?: boolean;
+}
+
 export interface DesktopBrowserBridge {
   setShortcutPolicy?: (input: BrowserKeyboardPolicy) => Promise<void>;
   readonly profilePartition?: string;
@@ -151,6 +185,20 @@ export interface DesktopBrowserBridge {
     workspaceId: string;
     browserId: string | null;
   }) => Promise<void>;
+  listPopupTargets?: (rootBrowserId: string) => Promise<DesktopBrowserPopupTargetsSnapshot | null>;
+  presentPopupTarget?: (input: DesktopBrowserPopupPresentation) => Promise<boolean>;
+  closePopupTarget?: (input: { browserId: string; workspaceId: string }) => Promise<boolean>;
+  resizePopupTarget?: (input: {
+    browserId: string;
+    workspaceId: string;
+    width: number;
+    height: number;
+  }) => Promise<{ width: number; height: number } | null>;
+  popupTargetAction?: (input: {
+    browserId: string;
+    action: "back" | "forward" | "reload" | "stop" | "navigate";
+    url?: string;
+  }) => Promise<boolean>;
   focus?: (browserId: string) => Promise<boolean>;
   openDevTools?: (browserId: string) => Promise<unknown>;
   clearProfile?: (legacyBrowserIds: string[]) => Promise<void>;

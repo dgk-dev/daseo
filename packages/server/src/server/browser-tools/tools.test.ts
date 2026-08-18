@@ -10,6 +10,7 @@ import type {
 } from "../agent/tools/types.js";
 
 const BROWSER_ID = "11111111-1111-4111-8111-111111111111";
+const POPUP_BROWSER_ID = "22222222-2222-4222-8222-222222222222";
 const BROWSER_ID_MESSAGE =
   "browserId must be a real id returned by browser_new_tab or browser_list_tabs";
 const WAIT_CONDITION_MESSAGE = "browser_wait requires exactly one of text or url";
@@ -579,7 +580,40 @@ describe("registerBrowserTools", () => {
     expect(response.content).toEqual([
       {
         type: "text",
-        text: `Found 1 Paseo browser tab. Use these browserId values for tab-scoped browser tools.\n- browserId=${BROWSER_ID} active title="Example" url=https://example.com`,
+        text: `Found 1 Paseo browser target. Use these browserId values for target-scoped browser tools.\n- browserId=${BROWSER_ID} active title="Example" url=https://example.com`,
+      },
+    ]);
+  });
+
+  test("list tabs explains popup ownership without implying foreground focus", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-popups",
+      ok: true,
+      result: {
+        command: "list_tabs",
+        tabs: [
+          {
+            browserId: POPUP_BROWSER_ID,
+            workspaceId: "wks_workspace_a",
+            kind: "popup",
+            rootBrowserId: BROWSER_ID,
+            openerBrowserId: BROWSER_ID,
+            url: "https://login.example.com",
+            title: "Sign in",
+            isActive: false,
+            isLoading: false,
+          },
+        ],
+      },
+    });
+
+    const response = await harness.execute("browser_list_tabs", {});
+
+    expect(response.content).toEqual([
+      {
+        type: "text",
+        text: `Found 1 Paseo browser target. Use these browserId values for target-scoped browser tools.\n- browserId=${POPUP_BROWSER_ID} popup rootBrowserId=${BROWSER_ID} openerBrowserId=${BROWSER_ID} title="Sign in" url=https://login.example.com`,
       },
     ]);
   });

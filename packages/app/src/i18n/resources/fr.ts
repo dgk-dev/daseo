@@ -532,6 +532,14 @@ export const fr: TranslationResources = {
         selectorLoading: "Attendez la fin du chargement de la page",
         selectorFailed: "Impossible de démarrer le sélecteur d’élément",
       },
+      popups: {
+        show: "Afficher les fenêtres contextuelles ({{count}})",
+        returnToPage: "Revenir à la page",
+        previous: "Fenêtre contextuelle précédente",
+        next: "Fenêtre contextuelle suivante",
+        close: "Fermer la fenêtre contextuelle",
+        closeFailed: "Impossible de fermer la fenêtre contextuelle",
+      },
       annotate: {
         title: "Annoter l'élément",
         placeholder: "Message à l'agent concernant cet élément…",

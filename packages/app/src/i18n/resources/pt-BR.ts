@@ -532,6 +532,14 @@ export const ptBR: TranslationResources = {
         selectorLoading: "Aguarde o carregamento da página terminar",
         selectorFailed: "Não foi possível iniciar o seletor de elemento",
       },
+      popups: {
+        show: "Mostrar pop-ups ({{count}})",
+        returnToPage: "Voltar à página",
+        previous: "Pop-up anterior",
+        next: "Próximo pop-up",
+        close: "Fechar pop-up",
+        closeFailed: "Não foi possível fechar o pop-up",
+      },
       annotate: {
         title: "Anotar elemento",
         placeholder: "Mensagem ao agente sobre este elemento…",

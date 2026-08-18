@@ -6,6 +6,7 @@ import {
 } from "./rpc-schemas.js";
 
 const BROWSER_ID = "11111111-1111-4111-8111-111111111111";
+const POPUP_BROWSER_ID = "22222222-2222-4222-8222-222222222222";
 const FALLBACK_BROWSER_ID = "1777777777777-abcdef";
 const BROWSER_ID_MESSAGE =
   "browserId must be a real id returned by browser_new_tab or browser_list_tabs";
@@ -658,6 +659,66 @@ describe("browser automation execute RPC schemas", () => {
         browserId: BROWSER_ID,
         workspaceId: "workspace-1",
         url: "https://example.com",
+      },
+    });
+  });
+
+  test("list tabs responses preserve optional popup ownership without requiring it from old hosts", () => {
+    const parsed = BrowserAutomationExecuteResponseSchema.parse({
+      type: "browser.automation.execute.response",
+      payload: {
+        requestId: "req-list-tabs",
+        ok: true,
+        result: {
+          command: "list_tabs",
+          tabs: [
+            {
+              browserId: BROWSER_ID,
+              workspaceId: "workspace-1",
+              url: "https://example.com",
+              title: "Root",
+            },
+            {
+              browserId: POPUP_BROWSER_ID,
+              workspaceId: "workspace-1",
+              kind: "popup",
+              rootBrowserId: BROWSER_ID,
+              openerBrowserId: BROWSER_ID,
+              url: "https://login.example.com",
+              title: "Sign in",
+              isActive: true,
+            },
+          ],
+        },
+      },
+    });
+
+    expect(parsed.payload).toEqual({
+      requestId: "req-list-tabs",
+      ok: true,
+      result: {
+        command: "list_tabs",
+        tabs: [
+          {
+            browserId: BROWSER_ID,
+            workspaceId: "workspace-1",
+            url: "https://example.com",
+            title: "Root",
+            isActive: false,
+            isLoading: false,
+          },
+          {
+            browserId: POPUP_BROWSER_ID,
+            workspaceId: "workspace-1",
+            kind: "popup",
+            rootBrowserId: BROWSER_ID,
+            openerBrowserId: BROWSER_ID,
+            url: "https://login.example.com",
+            title: "Sign in",
+            isActive: true,
+            isLoading: false,
+          },
+        ],
       },
     });
   });

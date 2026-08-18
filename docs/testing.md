@@ -126,7 +126,7 @@ npm run build:desktop -- --publish never --linux --x64 --dir
 
 ### Desktop browser regression
 
-The desktop browser E2E launches an isolated real daemon, Metro, and Electron app. It forces workspace LRU eviction to reparent the original tab and replace its guest `WebContents`, then makes one MCP call each for tab listing, snapshot, and click against that original browser id. A final MCP wait proves the real target page received the click.
+The desktop browser E2E launches an isolated real daemon, Metro, and Electron app. It exercises ordinary resident tabs plus real Electron popup adoption: opener messaging, POST bodies, named-window reuse, nested ownership, `window.close()`, hidden screenshots and streams, trusted input, dialogs, viewport resize, in-pane presentation, overlay parking, and background focus containment. It then forces workspace LRU eviction to reparent the original tab and makes MCP listing, snapshot, and click calls against that original browser id. A final MCP wait proves the real target page received the click.
 
 Run it locally with the same command owned by the Ubuntu `desktop-tests` required check:
 

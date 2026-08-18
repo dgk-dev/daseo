@@ -234,6 +234,37 @@ export function applyInactiveBrowserWebviewViewport(
   applyResidentWebviewStyle(webview, trimNonEmpty(browserId));
 }
 
+export function measureBrowserPresentationBounds(
+  anchor: HTMLElement,
+  clip: HTMLElement,
+): { x: number; y: number; width: number; height: number } | null {
+  const anchorBounds = anchor.getBoundingClientRect();
+  const clipBounds = clip.getBoundingClientRect();
+  const left = Math.max(anchorBounds.left, clipBounds.left);
+  const top = Math.max(anchorBounds.top, clipBounds.top);
+  const right = Math.min(
+    anchorBounds.left + anchorBounds.width,
+    clipBounds.left + clipBounds.width,
+  );
+  const bottom = Math.min(
+    anchorBounds.top + anchorBounds.height,
+    clipBounds.top + clipBounds.height,
+  );
+  const surfaceLeft = Math.ceil(left);
+  const surfaceTop = Math.ceil(top);
+  const surfaceRight = Math.floor(right);
+  const surfaceBottom = Math.floor(bottom);
+  if (surfaceRight <= surfaceLeft || surfaceBottom <= surfaceTop) {
+    return null;
+  }
+  return {
+    x: surfaceLeft,
+    y: surfaceTop,
+    width: surfaceRight - surfaceLeft,
+    height: surfaceBottom - surfaceTop,
+  };
+}
+
 export function presentBrowserWebview(
   browserId: string,
   webview: HTMLElement,
@@ -254,28 +285,16 @@ export function presentBrowserWebview(
     surface.appendChild(webview);
   }
   const anchorBounds = anchor.getBoundingClientRect();
-  const clipBounds = clip.getBoundingClientRect();
-  const left = Math.max(anchorBounds.left, clipBounds.left);
-  const top = Math.max(anchorBounds.top, clipBounds.top);
-  const right = Math.min(
-    anchorBounds.left + anchorBounds.width,
-    clipBounds.left + clipBounds.width,
-  );
-  const bottom = Math.min(
-    anchorBounds.top + anchorBounds.height,
-    clipBounds.top + clipBounds.height,
-  );
-  const surfaceLeft = Math.ceil(left);
-  const surfaceTop = Math.ceil(top);
-  const surfaceRight = Math.floor(right);
-  const surfaceBottom = Math.floor(bottom);
-  const hasVisibleArea = surfaceRight > surfaceLeft && surfaceBottom > surfaceTop;
+  const presentationBounds = measureBrowserPresentationBounds(anchor, clip);
+  const surfaceLeft = presentationBounds?.x ?? 0;
+  const surfaceTop = presentationBounds?.y ?? 0;
+  const hasVisibleArea = presentationBounds !== null;
   surface.setAttribute("aria-hidden", "false");
   surface.style.position = "fixed";
   surface.style.left = `${surfaceLeft}px`;
   surface.style.top = `${surfaceTop}px`;
-  surface.style.width = `${Math.max(0, surfaceRight - surfaceLeft)}px`;
-  surface.style.height = `${Math.max(0, surfaceBottom - surfaceTop)}px`;
+  surface.style.width = `${presentationBounds?.width ?? 0}px`;
+  surface.style.height = `${presentationBounds?.height ?? 0}px`;
   surface.style.overflow = "hidden";
   surface.style.opacity = "1";
   surface.style.pointerEvents = hasVisibleArea ? "auto" : "none";

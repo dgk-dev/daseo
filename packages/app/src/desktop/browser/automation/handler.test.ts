@@ -3,7 +3,7 @@ import type { SessionInboundMessage, SessionOutboundMessage } from "@getpaseo/pr
 import { createJSONStorage, type StateStorage } from "zustand/middleware";
 import { mountBrowserAutomationHandler } from "./handler";
 import type { DesktopHostBridge } from "@/desktop/host";
-import { useBrowserStore } from "@/desktop/browser/store";
+import { getBrowserRecord, useBrowserStore } from "@/desktop/browser/store";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 
@@ -72,6 +72,15 @@ class FakeDaemonClient {
 class FakeBrowserBridge {
   public readonly executedRequests: BrowserAutomationExecuteRequest[] = [];
   public readonly unregisteredWorkspaceBrowsers: string[] = [];
+  public readonly closedPopupTargets: Array<{ browserId: string; workspaceId: string }> = [];
+  public readonly resizedPopupTargets: Array<{
+    browserId: string;
+    workspaceId: string;
+    width: number;
+    height: number;
+  }> = [];
+  public closePopupResult = false;
+  public resizePopupResult: { width: number; height: number } | null = null;
   public readonly activeWorkspaceBrowsers: Array<{
     browserId: string | null;
     workspaceId: string;
@@ -91,6 +100,24 @@ class FakeBrowserBridge {
 
   public unregisterWorkspaceBrowser = async (browserId: string): Promise<void> => {
     this.unregisteredWorkspaceBrowsers.push(browserId);
+  };
+
+  public closePopupTarget = async (input: {
+    browserId: string;
+    workspaceId: string;
+  }): Promise<boolean> => {
+    this.closedPopupTargets.push(input);
+    return this.closePopupResult;
+  };
+
+  public resizePopupTarget = async (input: {
+    browserId: string;
+    workspaceId: string;
+    width: number;
+    height: number;
+  }): Promise<{ width: number; height: number } | null> => {
+    this.resizedPopupTargets.push(input);
+    return this.resizePopupResult;
   };
 
   public setWorkspaceActiveBrowser = async (input: {
@@ -433,6 +460,35 @@ describe("mountBrowserAutomationHandler", () => {
     expect(browser.browser.executedRequests).toHaveLength(1);
   });
 
+  test("browser_resize delegates ephemeral popup viewport changes to Electron", async () => {
+    const browser = new BrowserAutomationHandlerHarness();
+    const popupId = "22222222-2222-4222-8222-222222222222";
+    browser.browser.resizePopupResult = { width: 1024, height: 768 };
+    browser.mount({ serverId: "server-1" });
+
+    browser.receive(browserResizeRequest(popupId));
+    await flushAsyncWork();
+
+    expect(browser.client.payloadAt(0)).toEqual({
+      requestId: "req-resize",
+      ok: true,
+      result: {
+        command: "resize",
+        browserId: popupId,
+        width: 1024,
+        height: 768,
+      },
+    });
+    expect(browser.browser.resizedPopupTargets).toEqual([
+      {
+        browserId: popupId,
+        workspaceId: "wks_workspace_a",
+        width: 1024,
+        height: 768,
+      },
+    ]);
+  });
+
   test("browser_resize returns not found for a tab outside the request workspace", async () => {
     const browser = new BrowserAutomationHandlerHarness();
     browser.mount({ serverId: "server-1" });
@@ -530,6 +586,35 @@ describe("mountBrowserAutomationHandler", () => {
       kind: "browser",
       browserId: secondId,
     });
+    browser.browser.response = {
+      requestId: "req-list-workspace",
+      ok: true,
+      result: {
+        command: "list_tabs",
+        tabs: [
+          {
+            browserId: firstId,
+            workspaceId: "wks_workspace_a",
+            url: "https://one.example",
+            title: "One",
+            isActive: false,
+            isLoading: false,
+            canGoBack: true,
+            canGoForward: false,
+          },
+          {
+            browserId: secondId,
+            workspaceId: "wks_workspace_a",
+            url: "https://two.example",
+            title: "Two",
+            isActive: true,
+            isLoading: true,
+            canGoBack: false,
+            canGoForward: false,
+          },
+        ],
+      },
+    };
     browser.mount({ serverId: "server-1" });
 
     browser.receive(workspaceBrowserListRequest());
@@ -568,7 +653,125 @@ describe("mountBrowserAutomationHandler", () => {
       { browserId: firstId, workspaceId: "wks_workspace_a", url: "https://one.example" },
       { browserId: secondId, workspaceId: "wks_workspace_a", url: "https://two.example" },
     ]);
-    expect(browser.browser.executedRequests).toEqual([]);
+    expect(browser.browser.executedRequests).toEqual([workspaceBrowserListRequest()]);
+  });
+
+  test("workspace list_tabs places live popup targets after their owning root", async () => {
+    const browser = new BrowserAutomationHandlerHarness();
+    const workspaceKey = buildWorkspaceTabPersistenceKey({
+      serverId: "server-1",
+      workspaceId: "wks_workspace_a",
+    });
+    if (!workspaceKey) throw new Error("Expected workspace key");
+    const rootId = useBrowserStore.getState().createBrowser({ initialUrl: "https://app.example" });
+    const popupId = "22222222-2222-4222-8222-222222222222";
+    useWorkspaceLayoutStore.getState().openTabFocused(workspaceKey, {
+      kind: "browser",
+      browserId: rootId,
+    });
+    browser.browser.response = {
+      requestId: "req-list-workspace",
+      ok: true,
+      result: {
+        command: "list_tabs",
+        tabs: [
+          {
+            browserId: rootId,
+            workspaceId: "wks_workspace_a",
+            url: "https://app.example",
+            title: "App",
+            isActive: false,
+            isLoading: false,
+          },
+          {
+            browserId: popupId,
+            workspaceId: "wks_workspace_a",
+            kind: "popup",
+            rootBrowserId: rootId,
+            openerBrowserId: rootId,
+            url: "https://login.example/consent",
+            title: "Consent",
+            isActive: true,
+            isLoading: false,
+            canGoBack: false,
+            canGoForward: false,
+          },
+        ],
+      },
+    };
+    browser.mount({ serverId: "server-1" });
+
+    browser.receive(workspaceBrowserListRequest());
+    await flushAsyncWork();
+
+    expect(browser.client.payloadAt(0)).toEqual({
+      requestId: "req-list-workspace",
+      ok: true,
+      result: {
+        command: "list_tabs",
+        tabs: [
+          {
+            browserId: rootId,
+            workspaceId: "wks_workspace_a",
+            url: "https://app.example",
+            title: "App",
+            isActive: false,
+            isLoading: false,
+            canGoBack: false,
+            canGoForward: false,
+          },
+          {
+            browserId: popupId,
+            workspaceId: "wks_workspace_a",
+            kind: "popup",
+            rootBrowserId: rootId,
+            openerBrowserId: rootId,
+            url: "https://login.example/consent",
+            title: "Consent",
+            isActive: true,
+            isLoading: false,
+            canGoBack: false,
+            canGoForward: false,
+          },
+        ],
+      },
+    });
+  });
+
+  test("browser_close_tab closes an ephemeral popup without deleting its root layout tab", async () => {
+    const browser = new BrowserAutomationHandlerHarness();
+    const workspaceKey = buildWorkspaceTabPersistenceKey({
+      serverId: "server-1",
+      workspaceId: "wks_workspace_a",
+    });
+    if (!workspaceKey) throw new Error("Expected workspace key");
+    const rootId = useBrowserStore.getState().createBrowser({ initialUrl: "https://app.example" });
+    const rootTabId = useWorkspaceLayoutStore.getState().openTabFocused(workspaceKey, {
+      kind: "browser",
+      browserId: rootId,
+    });
+    const popupId = "22222222-2222-4222-8222-222222222222";
+    browser.browser.closePopupResult = true;
+    browser.mount({ serverId: "server-1" });
+
+    browser.receive(browserCloseTabRequest(popupId));
+    await flushAsyncWork();
+
+    expect(browser.client.payloadAt(0)).toEqual({
+      requestId: "req-close-tab",
+      ok: true,
+      result: { command: "close_tab", browserId: popupId },
+    });
+    expect(browser.browser.closedPopupTargets).toEqual([
+      { browserId: popupId, workspaceId: "wks_workspace_a" },
+    ]);
+    expect(
+      useWorkspaceLayoutStore
+        .getState()
+        .getWorkspaceTabs(workspaceKey)
+        .map((tab) => tab.tabId),
+    ).toContain(rootTabId);
+    expect(getBrowserRecord(rootId)).not.toBeNull();
   });
 
   test("non-new-tab requests send the desktop bridge response", async () => {

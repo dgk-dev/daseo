@@ -111,6 +111,28 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
       ipcRenderer.invoke("paseo:browser:unregister-workspace-browser", browserId),
     setWorkspaceActiveBrowser: (input: { workspaceId: string; browserId: string | null }) =>
       ipcRenderer.invoke("paseo:browser:set-workspace-active-browser", input),
+    listPopupTargets: (rootBrowserId: string) =>
+      ipcRenderer.invoke("paseo:browser:list-popup-targets", rootBrowserId),
+    presentPopupTarget: (input: {
+      rootBrowserId: string;
+      popupBrowserId: string | null;
+      visible: boolean;
+      bounds?: { x: number; y: number; width: number; height: number };
+      focus?: boolean;
+    }) => ipcRenderer.invoke("paseo:browser:present-popup-target", input),
+    closePopupTarget: (input: { browserId: string; workspaceId: string }) =>
+      ipcRenderer.invoke("paseo:browser:close-popup-target", input),
+    resizePopupTarget: (input: {
+      browserId: string;
+      workspaceId: string;
+      width: number;
+      height: number;
+    }) => ipcRenderer.invoke("paseo:browser:resize-popup-target", input),
+    popupTargetAction: (input: {
+      browserId: string;
+      action: "back" | "forward" | "reload" | "stop" | "navigate";
+      url?: string;
+    }) => ipcRenderer.invoke("paseo:browser:popup-target-action", input),
     focus: (browserId: string) => ipcRenderer.invoke("paseo:browser:focus", browserId),
     openDevTools: (browserId: string) =>
       ipcRenderer.invoke("paseo:browser:open-devtools", browserId),

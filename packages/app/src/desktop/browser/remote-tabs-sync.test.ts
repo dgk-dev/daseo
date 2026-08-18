@@ -16,6 +16,10 @@ import {
 } from "@/stores/workspace-layout-store";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import { reconcileRemoteBrowserTabs, type RemoteBrowserTabInfo } from "./remote-tabs-sync";
+import {
+  getRemoteBrowserPopupTargets,
+  useRemoteBrowserPopupTargetsStore,
+} from "./remote-popup-targets";
 
 const SERVER_ID = "server-1";
 const WORKSPACE_ID = "workspace-1";
@@ -61,6 +65,7 @@ describe("reconcileRemoteBrowserTabs", () => {
     useWorkspaceLayoutStore.getState().purgeWorkspace(WORKSPACE_KEY);
     useWorkspaceLayoutStore.getState().purgeWorkspace(OTHER_WORKSPACE_KEY);
     useBrowserStore.setState({ browsersById: {} });
+    useRemoteBrowserPopupTargetsStore.setState({ targetsByScope: {} });
   });
 
   test("discovers host tabs and removes a stale persisted mobile viewer", () => {
@@ -205,6 +210,59 @@ describe("reconcileRemoteBrowserTabs", () => {
     const otherLayout = useWorkspaceLayoutStore.getState().layoutByWorkspace[OTHER_WORKSPACE_KEY];
     expect(otherLayout && collectAllTabs(otherLayout.root)).toHaveLength(1);
     expect(useBrowserStore.getState().browsersById[BROWSER_TWO]).toBeDefined();
+  });
+
+  test("keeps popup targets nested under their root browser on mobile", () => {
+    const popupId = BROWSER_TWO;
+    const result = reconcileRemoteBrowserTabs({
+      serverId: SERVER_ID,
+      workspaceId: WORKSPACE_ID,
+      tabs: [
+        remote(BROWSER_ONE),
+        remote(popupId, {
+          kind: "popup",
+          rootBrowserId: BROWSER_ONE,
+          openerBrowserId: BROWSER_ONE,
+          title: "Sign in",
+          isActive: true,
+        }),
+      ],
+    });
+
+    expect(result).toEqual({ added: 1, removed: 0, updated: 1 });
+    expect(browserIdsInLayout()).toEqual([BROWSER_ONE]);
+    expect(useBrowserStore.getState().browsersById[popupId]).toBeUndefined();
+    expect(
+      getRemoteBrowserPopupTargets({
+        serverId: SERVER_ID,
+        workspaceId: WORKSPACE_ID,
+        rootBrowserId: BROWSER_ONE,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        browserId: popupId,
+        rootBrowserId: BROWSER_ONE,
+        openerBrowserId: BROWSER_ONE,
+        isActive: true,
+      }),
+    ]);
+    expect(
+      getFocusedBrowserId(useWorkspaceLayoutStore.getState().layoutByWorkspace[WORKSPACE_KEY]),
+    ).toBe(BROWSER_ONE);
+
+    reconcileRemoteBrowserTabs({
+      serverId: SERVER_ID,
+      workspaceId: WORKSPACE_ID,
+      tabs: [remote(BROWSER_ONE, { isActive: true })],
+    });
+    expect(
+      getRemoteBrowserPopupTargets({
+        serverId: SERVER_ID,
+        workspaceId: WORKSPACE_ID,
+        rootBrowserId: BROWSER_ONE,
+      }),
+    ).toEqual([]);
+    expect(browserIdsInLayout()).toEqual([BROWSER_ONE]);
   });
 
   test("an authoritative empty host list clears mobile browser tabs only", () => {

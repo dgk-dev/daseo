@@ -69,6 +69,11 @@ export interface BrowserRegistry {
   getTabContents(browserId: string): TabContents | null;
   getBrowserWorkspaceId(browserId: string): string | null;
   getWorkspaceActiveBrowserId(workspaceId: string): string | null;
+  getBrowserTargetMetadata?(browserId: string): {
+    kind: "tab" | "popup";
+    rootBrowserId?: string;
+    openerBrowserId?: string;
+  };
 }
 
 export type AutomationCommandPayload = BrowserAutomationExecuteResponse["payload"];
@@ -255,10 +260,22 @@ function tabInfoFromContents(
   contents: TabContents,
   activeBrowserId: string | null,
   workspaceId: string | null,
+  metadata?: {
+    kind: "tab" | "popup";
+    rootBrowserId?: string;
+    openerBrowserId?: string;
+  },
 ) {
   return {
     browserId,
     ...(workspaceId ? { workspaceId } : {}),
+    ...(metadata?.kind === "popup"
+      ? {
+          kind: "popup" as const,
+          ...(metadata.rootBrowserId ? { rootBrowserId: metadata.rootBrowserId } : {}),
+          ...(metadata.openerBrowserId ? { openerBrowserId: metadata.openerBrowserId } : {}),
+        }
+      : {}),
     url: contents.getURL(),
     title: contents.getTitle(),
     isActive: activeBrowserId === browserId,
@@ -724,6 +741,7 @@ function executeListTabs(
           contents,
           activeBrowserId,
           registry.getBrowserWorkspaceId(browserId),
+          registry.getBrowserTargetMetadata?.(browserId),
         ),
       );
     }

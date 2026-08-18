@@ -528,6 +528,14 @@ export const zhCN: TranslationResources = {
         selectorLoading: "请等待页面加载完成",
         selectorFailed: "无法启动元素选择器",
       },
+      popups: {
+        show: "显示弹出窗口（{{count}}）",
+        returnToPage: "返回原页面",
+        previous: "上一个弹出窗口",
+        next: "下一个弹出窗口",
+        close: "关闭弹出窗口",
+        closeFailed: "无法关闭弹出窗口",
+      },
       annotate: {
         title: "标注元素",
         placeholder: "给智能体关于此元素的留言…",

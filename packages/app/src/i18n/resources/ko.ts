@@ -529,6 +529,14 @@ export const ko: TranslationResources = {
         selectorLoading: "페이지 로딩이 끝날 때까지 기다려 주세요.",
         selectorFailed: "요소 선택기를 시작할 수 없습니다.",
       },
+      popups: {
+        show: "팝업 보기 ({{count}})",
+        returnToPage: "원래 페이지로 돌아가기",
+        previous: "이전 팝업",
+        next: "다음 팝업",
+        close: "팝업 닫기",
+        closeFailed: "팝업을 닫을 수 없습니다",
+      },
       annotate: {
         title: "요소에 주석 달기",
         placeholder: "이 요소에 관해 에이전트에게 보낼 메시지…",

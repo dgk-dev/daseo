@@ -10,10 +10,14 @@ import {
   type WorkspaceLayout,
 } from "@/stores/workspace-layout-store";
 import { buildWorkspaceTabPersistenceKey, type WorkspaceTab } from "@/workspace-tabs/model";
+import { replaceRemoteBrowserPopupTargets } from "@/desktop/browser/remote-popup-targets";
 
 export interface RemoteBrowserTabInfo {
   browserId: string;
   workspaceId?: string;
+  kind?: "tab" | "popup";
+  rootBrowserId?: string;
+  openerBrowserId?: string;
   url: string;
   title: string;
   isActive: boolean;
@@ -113,9 +117,33 @@ export function reconcileRemoteBrowserTabs(input: {
   });
   if (!workspaceKey) return { added: 0, removed: 0, updated: 0 };
 
+  replaceRemoteBrowserPopupTargets({
+    serverId: input.serverId,
+    workspaceId: input.workspaceId,
+    tabs: input.tabs,
+  });
+
   // Broker output is expected to be unique, but normalize defensively so a
-  // reconnect/replayed host response cannot create duplicate mobile viewers.
-  const remoteTabs = [...new Map(input.tabs.map((tab) => [tab.browserId, tab])).values()];
+  // reconnect/replayed host response cannot create duplicate mobile viewers. Popup
+  // targets remain nested under their root browser instead of becoming workspace tabs.
+  const activePopupRootIds = new Set(
+    input.tabs.flatMap((tab) =>
+      tab.kind === "popup" && tab.rootBrowserId && tab.isActive ? [tab.rootBrowserId] : [],
+    ),
+  );
+  const remoteTabs = [
+    ...new Map(
+      input.tabs
+        .filter((tab) => tab.kind !== "popup")
+        .map((tab) => [
+          tab.browserId,
+          {
+            ...tab,
+            isActive: tab.isActive || activePopupRootIds.has(tab.browserId),
+          },
+        ]),
+    ).values(),
+  ];
   const layoutStore = useWorkspaceLayoutStore.getState();
   const browserStore = useBrowserStore.getState();
   const layout = layoutStore.layoutByWorkspace[workspaceKey];

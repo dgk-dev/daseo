@@ -331,6 +331,9 @@ export const BrowserAutomationCommandSchema = z.discriminatedUnion("command", [
 export const BrowserAutomationTabInfoSchema = z.object({
   browserId: BrowserAutomationBrowserIdSchema,
   workspaceId: z.string().min(1).optional(),
+  kind: z.enum(["tab", "popup"]).optional(),
+  rootBrowserId: BrowserAutomationBrowserIdSchema.optional(),
+  openerBrowserId: BrowserAutomationBrowserIdSchema.optional(),
   url: z.string(),
   title: z.string(),
   isActive: z.boolean().default(false),

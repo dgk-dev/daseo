@@ -8,10 +8,17 @@ export interface BrowserWebContentsRegistration {
   hostWebContentsId: number;
 }
 
+export interface BrowserTargetMetadata {
+  kind: "tab" | "popup";
+  rootBrowserId?: string;
+  openerBrowserId?: string;
+}
+
 export class PaseoBrowserWebviewRegistry {
   private readonly registrationsByWebContentsId = new Map<number, BrowserWebContentsRegistration>();
   private readonly webContentsIdsByHostAndBrowserId = new Map<string, number>();
   private readonly workspaceIdsByBrowserId = new Map<string, string>();
+  private readonly targetMetadataByBrowserId = new Map<string, BrowserTargetMetadata>();
   private readonly activeBrowserIdsByHostWindow = new Map<number, Map<string, string>>();
 
   public registerWebContents(input: {
@@ -80,6 +87,17 @@ export class PaseoBrowserWebviewRegistry {
 
   public registerWorkspace(input: BrowserWorkspaceRegistration): void {
     this.workspaceIdsByBrowserId.set(input.browserId, input.workspaceId);
+    if (!this.targetMetadataByBrowserId.has(input.browserId)) {
+      this.targetMetadataByBrowserId.set(input.browserId, { kind: "tab" });
+    }
+  }
+
+  public registerTargetMetadata(browserId: string, metadata: BrowserTargetMetadata): void {
+    this.targetMetadataByBrowserId.set(browserId, { ...metadata });
+  }
+
+  public getTargetMetadata(browserId: string): BrowserTargetMetadata {
+    return this.targetMetadataByBrowserId.get(browserId) ?? { kind: "tab" };
   }
 
   public unregisterBrowser(browserId: string): void {
@@ -92,6 +110,7 @@ export class PaseoBrowserWebviewRegistry {
       }
     }
     this.workspaceIdsByBrowserId.delete(browserId);
+    this.targetMetadataByBrowserId.delete(browserId);
     this.deleteActiveBrowserReferences(browserId);
   }
 

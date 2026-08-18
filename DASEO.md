@@ -6,16 +6,16 @@ Mac app and Android APK. Logo: **DΛ**.
 
 This file is the fork's source of truth. When asked to "apply Paseo updates to Daseo",
 merge upstream `main` into this branch, keep every delta listed below working, rebuild
-both artifacts from the same commit, and update this file if the delta set changes.
+each changed platform from the task commit, and update this file if the delta set changes.
 
 ## Identity
 
-|              | Paseo (upstream)                 | Daseo (this fork)                                                               |
-| ------------ | -------------------------------- | ------------------------------------------------------------------------------- |
-| Repo         | `getpaseo/paseo`                 | `dgk-dev/daseo`, branch `local/patched-desktop`                                 |
-| Mac app      | Paseo.app (App Store / releases) | `/Applications/Daseo.app`, stable locally signed build, version `0.4.0-local.N` |
-| Android      | `sh.paseo` (Play)                | `sh.paseo.dgk` ("Daseo"), sideloaded APK, parallel-installable                  |
-| Display name | Paseo                            | Daseo (display only)                                                            |
+|              | Paseo (upstream)                 | Daseo (this fork)                                                       |
+| ------------ | -------------------------------- | ----------------------------------------------------------------------- |
+| Repo         | `getpaseo/paseo`                 | `dgk-dev/daseo`, branch `local/patched-desktop`                         |
+| Mac app      | Paseo.app (App Store / releases) | `/Applications/Daseo.app`, stable locally signed Daseo SemVer build     |
+| Android      | `sh.paseo` (Play)                | `sh.paseo.dgk` ("Daseo"), matching product SemVer, parallel-installable |
+| Display name | Paseo                            | Daseo (display only)                                                    |
 
 **Deliberately unchanged** to stay upstream-compatible and preserve state: internal
 identifiers (`productName`, Electron userData path, `~/.paseo`, `paseo` CLI, Mac bundle IDs,
@@ -135,12 +135,31 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     record stay outside git. `packages/desktop/scripts/daseo-code-sign.mjs` fails closed when the
     identity is absent; never substitute ad-hoc (`codesign --sign -`) signing because its changing
     cdhash makes macOS treat every Daseo update as a new privacy subject.
+14. **Workspace-owned in-browser popups** — Electron adopts Chromium's original popup
+    `WebContents` into a workspace/browser target graph instead of showing an OS child window.
+    OAuth, POST, named-window reuse, direct opener relationships, recursive popups,
+    `postMessage`, and `window.close()` retain browser semantics. Background and agent-created
+    targets stay in non-focusable native parking windows with paintable viewports; users see them
+    inside the opener browser, while agents and mobile clients can snapshot, input, debug, stream,
+    resize, or close each target by its own browser id. Key files:
+    `packages/desktop/src/features/browser-webviews/popup-targets.ts`,
+    `packages/app/src/desktop/browser/{popup-targets,remote-popup-targets}.ts`, and
+    `packages/desktop/e2e/browser-tabs.e2e.mjs`.
+
+## Product version policy
+
+- Mac and Android share one Daseo product SemVer. Any shipped platform change advances it.
+- Do not rebuild an unchanged platform only to match a number. Its next real release jumps to the
+  current product version.
+- Platform build numbers remain independent: Android `versionCode` and macOS `CFBundleVersion`
+  increase only when that platform ships.
+- `0.4.0-local.23` was the final `local.N` artifact. New releases use ordinary SemVer.
 
 ## Build & ship (Mac mini)
 
 - Before either platform build, run `npm run brand:check`; generated DΛ assets must match the
   canonical mark and manifest. Mac: build with `npm run build:desktop -- --publish never --mac --arm64 --dir`, then run
-  `node packages/desktop/scripts/daseo-app-package.mjs packages/desktop/release/mac-arm64/Paseo.app <local-version>`
+  `node packages/desktop/scripts/daseo-app-package.mjs packages/desktop/release/mac-arm64/Paseo.app <product-version> <mac-build-version>`
   followed by
   `node packages/desktop/scripts/daseo-code-sign.mjs packages/desktop/release/mac-arm64/Paseo.app`.
   The signer requires the stable `Daseo Local Code Signing` identity and intentionally refuses an
@@ -157,5 +176,6 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
   download (omit the architecture property to retain a universal fallback). Artifacts live in
   `~/paseo-builds/`, served at `https://mac.tail29eaf5.ts.net/`; install over Wi-Fi ADB
   (`phone install`) when available.
-- Both artifacts must come from the same commit. Push with the `dgk-dev` GitHub account,
-  then switch `gh` back to `ax-dfcorp`.
+- Every artifact records its own source commit. When both platforms change together, build both
+  from the same commit. Push with the `dgk-dev` GitHub account, then switch `gh` back to
+  `ax-dfcorp`.

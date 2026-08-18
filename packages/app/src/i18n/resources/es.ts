@@ -532,6 +532,14 @@ export const es: TranslationResources = {
         selectorLoading: "Espera a que la página termine de cargar",
         selectorFailed: "No se pudo iniciar el selector de elementos",
       },
+      popups: {
+        show: "Mostrar ventanas emergentes ({{count}})",
+        returnToPage: "Volver a la página",
+        previous: "Ventana emergente anterior",
+        next: "Ventana emergente siguiente",
+        close: "Cerrar ventana emergente",
+        closeFailed: "No se pudo cerrar la ventana emergente",
+      },
       annotate: {
         title: "Anotar elemento",
         placeholder: "Mensaje al agente sobre este elemento…",
