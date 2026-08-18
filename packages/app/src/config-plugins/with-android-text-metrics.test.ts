@@ -22,7 +22,6 @@ interface AndroidStyles {
 function createStyles(): AndroidStyles {
   return {
     resources: {
-      $: { "xmlns:tools": "http://schemas.android.com/tools" },
       style: [
         {
           $: { name: "AppTheme", parent: "Theme.AppCompat.DayNight.NoActionBar" },
@@ -51,6 +50,9 @@ describe("withAndroidTextMetrics", () => {
 
     configureAndroidTextMetrics(styles);
 
+    expect(styles.resources.$).toEqual({
+      "xmlns:tools": "http://schemas.android.com/tools",
+    });
     const appTheme = findStyle(styles, "AppTheme");
     expect(findItem(appTheme, "android:textViewStyle")).toEqual({
       _: "@style/PaseoTextViewStyle",

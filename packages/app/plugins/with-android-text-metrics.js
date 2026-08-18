@@ -5,6 +5,7 @@ const TEXT_VIEW_STYLE_NAME = "PaseoTextViewStyle";
 const TEXT_VIEW_STYLE_PARENT = "Widget.AppCompat.TextView";
 const TEXT_VIEW_STYLE_ITEM = "android:textViewStyle";
 const USE_BOUNDS_FOR_WIDTH_ITEM = "android:useBoundsForWidth";
+const TOOLS_NAMESPACE = "http://schemas.android.com/tools";
 
 function findStyle(resources, name) {
   return resources.style?.find((style) => style.$?.name === name);
@@ -30,6 +31,9 @@ function configureAndroidTextMetrics(styles) {
   if (!resources) {
     throw new Error("Could not configure Android text metrics without style resources");
   }
+
+  resources.$ ??= {};
+  resources.$["xmlns:tools"] ??= TOOLS_NAMESPACE;
 
   const appTheme = findStyle(resources, APP_THEME_NAME);
   if (!appTheme) {
