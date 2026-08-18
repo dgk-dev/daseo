@@ -25,6 +25,12 @@ Prerelease metadata is ignored, so `0.1.102-beta.1` and `0.1.102` both produce `
 
 The formula reserves three digits each for minor and patch. If either reaches `1000`, change the formula before cutting that release.
 
+## Android 15+ text measurement
+
+Keep `with-android-text-metrics` enabled for every app variant while Paseo uses React Native 0.81. Android 15 changed `TextView` to render with visual glyph bounds for apps targeting API 35+, but this React Native line still measures advance width. Near a wrap boundary, Android can draw one more line than Yoga measured and clip that line—most visibly on folded devices, high-density tablets, and non-Latin headings.
+
+The config plugin restores the pre-15 width policy for React Native `TextView`s through the generated app theme. Do not replace it with trailing spaces, fixed heights, larger line heights, or a manual edit under the generated `android/` directory. Remove the override only after React Native issue [#56402](https://github.com/facebook/react-native/issues/56402) ships a stable fix and API 35/36 native tests pass at narrow and wide widths.
+
 ## Prerequisites (local dev)
 
 Local Android builds run on macOS (or Linux) and need the Android toolchain, pinned in `.tool-versions` (`java 21`, `android-sdk 21.0`) and wired up by `.mise.toml` (which derives `ANDROID_HOME` and the command-line tool paths from the `android-sdk` entry). With [mise](https://mise.jdx.dev):

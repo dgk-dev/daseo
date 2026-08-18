@@ -6,29 +6,37 @@ import { createMarkdownStyles } from "@/styles/markdown-styles";
 import { darkTheme } from "@/styles/theme";
 
 const HEADING_DATA_SET = { testid: "heading" };
-const MARKDOWN_STYLES = createMarkdownStyles(darkTheme);
-const HEADING_CONTAINER_STYLE: ViewStyle = {
-  flexDirection: MARKDOWN_STYLES.heading3.flexDirection,
-  flexWrap: MARKDOWN_STYLES.heading3.flexWrap,
-  alignItems: MARKDOWN_STYLES.heading3.alignItems,
-  alignContent: MARKDOWN_STYLES.heading3.alignContent,
-  alignSelf: MARKDOWN_STYLES.heading3.alignSelf,
-  flexShrink: MARKDOWN_STYLES.heading3.flexShrink,
-  minWidth: MARKDOWN_STYLES.heading3.minWidth,
-  width: MARKDOWN_STYLES.heading3.width,
-  maxWidth: MARKDOWN_STYLES.heading3.maxWidth,
-  overflow: MARKDOWN_STYLES.heading3.overflow,
-};
-const HEADING_TEXT_STYLE: TextStyle[] = [
-  {
-    color: MARKDOWN_STYLES.heading3.color,
-    fontSize: MARKDOWN_STYLES.heading3.fontSize,
-    fontWeight: MARKDOWN_STYLES.heading3.fontWeight,
-    lineHeight: MARKDOWN_STYLES.heading3.lineHeight,
-  },
-  MARKDOWN_STYLES.text,
-  MARKDOWN_STYLES.heading_text,
-];
+
+function resolveHeadingStyles(): {
+  container: ViewStyle;
+  text: TextStyle[];
+} {
+  const markdownStyles = createMarkdownStyles(darkTheme);
+  return {
+    container: {
+      flexDirection: markdownStyles.heading3.flexDirection,
+      flexWrap: markdownStyles.heading3.flexWrap,
+      alignItems: markdownStyles.heading3.alignItems,
+      alignContent: markdownStyles.heading3.alignContent,
+      alignSelf: markdownStyles.heading3.alignSelf,
+      flexShrink: markdownStyles.heading3.flexShrink,
+      minWidth: markdownStyles.heading3.minWidth,
+      width: markdownStyles.heading3.width,
+      maxWidth: markdownStyles.heading3.maxWidth,
+      overflow: markdownStyles.heading3.overflow,
+    },
+    text: [
+      {
+        color: markdownStyles.heading3.color,
+        fontSize: markdownStyles.heading3.fontSize,
+        fontWeight: markdownStyles.heading3.fontWeight,
+        lineHeight: markdownStyles.heading3.lineHeight,
+      },
+      markdownStyles.text,
+      markdownStyles.heading_text,
+    ],
+  };
+}
 
 function findTextNode(root: Element, text: string): Text {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -46,7 +54,7 @@ function getLineRects(root: Element, text: string): DOMRect[] {
   return [...range.getClientRects()].filter((rect) => rect.width > 0 && rect.height > 0);
 }
 
-describe("Markdown CJK heading layout", () => {
+describe("Markdown CJK heading layout on web", () => {
   let root: Root | null = null;
   let container: HTMLDivElement | null = null;
 
@@ -60,14 +68,15 @@ describe("Markdown CJK heading layout", () => {
   });
 
   async function renderHeading(width: number) {
+    const headingStyles = resolveHeadingStyles();
     container = document.createElement("div");
     container.style.width = `${width}px`;
     document.body.appendChild(container);
     root = createRoot(container);
     await act(async () => {
       root?.render(
-        <View style={HEADING_CONTAINER_STYLE} dataSet={HEADING_DATA_SET}>
-          <RNText style={HEADING_TEXT_STYLE}>적용 결과</RNText>
+        <View style={headingStyles.container} dataSet={HEADING_DATA_SET}>
+          <RNText style={headingStyles.text}>적용 결과</RNText>
         </View>,
       );
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
