@@ -4913,6 +4913,60 @@ test("native steering keeps one foreground turn and records an explicit steering
   }
 });
 
+test("native steering can target a provider-owned autonomous turn", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-autonomous-steer-"));
+  const turnId = "autonomous-steer-1";
+  const session = new SteerableControlledSession(
+    { provider: "codex", cwd: workdir },
+    turnId,
+    async () => undefined,
+  );
+  const client = new (class extends TestAgentClient {
+    override readonly capabilities = session.capabilities;
+
+    override async createSession(): Promise<AgentSession> {
+      return session;
+    }
+  })();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: new AgentStorage(join(workdir, "agents"), logger),
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000126",
+  });
+
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    session.pushEvent({ type: "turn_started", provider: "codex", turnId });
+    await vi.waitFor(() => {
+      expect(manager.getAgent(agent.id)).toMatchObject({
+        lifecycle: "running",
+        activeForegroundTurnId: null,
+        activeTurnId: turnId,
+      });
+    });
+
+    await expect(
+      manager.trySteerAgentRun(agent.id, "scheduled context", {
+        clientMessageId: "client-autonomous-steer-1",
+      }),
+    ).resolves.toBe(true);
+
+    expect(session.steerCalls).toEqual([
+      {
+        prompt: "scheduled context",
+        expectedTurnId: turnId,
+        options: { clientMessageId: "client-autonomous-steer-1" },
+      },
+    ]);
+    session.pushEvent({ type: "turn_completed", provider: "codex", turnId });
+  } finally {
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
 test("replaceAgentRun does not emit idle or resolve waiters between interrupted and replacement runs", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-replace-run-"));
   const storagePath = join(workdir, "agents");

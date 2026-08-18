@@ -7,7 +7,11 @@ import type { AgentSessionConfig } from "../agent/agent-sdk-types.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
 import { curateAgentActivity } from "../agent/activity-curator.js";
 import { ensureAgentLoaded } from "../agent/agent-loading.js";
-import { formatSystemNotificationPrompt } from "../agent/agent-prompt.js";
+import {
+  formatSystemNotificationPrompt,
+  startAgentRun,
+  type AgentRunController,
+} from "../agent/agent-prompt.js";
 import { resolveCreateAgentTitles } from "../agent/create-agent-title.js";
 import { type BoundCreateAgentCommand, formatProviderModel } from "../agent/create-agent/create.js";
 import type { PersistedWorkspaceRecord } from "../workspace-registry.js";
@@ -195,18 +199,17 @@ function buildRunOutput(params: {
   return null;
 }
 
-type ScheduleAgentManager = Pick<
-  AgentManager,
-  | "createAgent"
-  | "getAgent"
-  | "getRegisteredProviderIds"
-  | "hasInFlightRun"
-  | "hydrateTimelineFromProvider"
-  | "resumeAgentFromPersistence"
-  | "runAgent"
-  | "waitForAgentEvent"
-  | "waitForAgentClose"
->;
+type ScheduleAgentManager = AgentRunController &
+  Pick<
+    AgentManager,
+    | "createAgent"
+    | "getRegisteredProviderIds"
+    | "hydrateTimelineFromProvider"
+    | "resumeAgentFromPersistence"
+    | "runAgent"
+    | "waitForAgentEvent"
+    | "waitForAgentClose"
+  >;
 
 interface ScheduleWorkspaceCreateInput {
   cwd: string;
@@ -843,14 +846,24 @@ export class ScheduleService {
       if (this.agentManager.hasInFlightRun(agent.id)) {
         throw new Error(`Agent ${agent.id} already has an active run`);
       }
-      const result = await this.agentManager.runAgent(agent.id, wrappedPrompt);
-      const timelineText = curateAgentActivity(result.timeline);
+      await startAgentRun(this.agentManager, agent.id, wrappedPrompt, this.logger, {
+        replaceRunning: true,
+      });
+      const waitResult = await this.agentManager.waitForAgentEvent(agent.id, {
+        waitForActive: true,
+      });
+      if (waitResult.permission) {
+        throw new Error(`Scheduled agent ${agent.id} is waiting for permission`);
+      }
+      if (waitResult.status === "error") {
+        throw new Error(waitResult.lastMessage ?? `Scheduled agent ${agent.id} failed`);
+      }
       return {
         agentId: agent.id,
         output: buildRunOutput({
           output: null,
-          timelineText,
-          finalText: result.finalText,
+          timelineText: "",
+          finalText: waitResult.lastMessage ?? "",
         }),
       };
     }

@@ -463,6 +463,40 @@ describe("ScheduleService", () => {
     );
   });
 
+  test("delivers agent-target schedules through the shared run coordinator", async () => {
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    const agent = await manager.createAgent({ provider: "claude", cwd: tempDir }, undefined, {
+      workspaceId: undefined,
+    });
+    const streamAgent = vi.spyOn(manager, "streamAgent");
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      now: () => now,
+    });
+    const schedule = await service.create({
+      prompt: "Check scheduled work",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: { type: "agent", agentId: agent.id },
+    });
+
+    await service.runOnce(schedule.id);
+
+    expect(streamAgent).toHaveBeenCalledTimes(1);
+    expect(streamAgent.mock.calls[0]).toEqual([
+      agent.id,
+      expect.stringContaining(`Schedule fired (id=${schedule.id}, run=`),
+      undefined,
+    ]);
+  });
+
   test("titles scheduled new agents from the schedule prompt", async () => {
     const manager = new AgentManager({
       logger: createTestLogger(),

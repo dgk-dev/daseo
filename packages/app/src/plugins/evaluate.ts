@@ -1,5 +1,6 @@
 import * as React from "react";
 import * as ReactJsxRuntime from "react/jsx-runtime";
+// oxlint-disable-next-line no-restricted-imports -- plugin runtime replaces raw TextInput below.
 import * as ReactNative from "react-native";
 // eslint-disable-next-line no-restricted-imports -- plugin bundles receive TanStack's real runtime, not Paseo's query wrappers.
 import * as ReactQuery from "@tanstack/react-query";
@@ -16,6 +17,9 @@ import { createPluginContext, type PluginRegistrationCollector } from "@paseo/pl
 import type { EvaluatedPlugin } from "./types";
 import type { ComponentType } from "react";
 import { resolvePluginIcon } from "./icons";
+import { EditingTextInput } from "@/components/ui/text-input";
+
+const PluginReactNative = { ...ReactNative, TextInput: EditingTextInput };
 
 const CONTRIBUTION_ID = /^[a-z][a-z0-9-]*$/;
 
@@ -90,7 +94,7 @@ export function evaluatePluginClientBundle(id: string, bundle: string): Evaluate
   const runtimeRequire = (name: string): unknown => {
     if (name === "react") return React;
     if (name === "react/jsx-runtime") return ReactJsxRuntime;
-    if (name === "react-native") return ReactNative;
+    if (name === "react-native") return PluginReactNative;
     if (name === "@paseo/plugin") return { defineAttachmentSource, defineRpc, useRpc };
     if (name === "@tanstack/react-query") return ReactQuery;
     if (name === "zod") return Zod;

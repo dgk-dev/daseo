@@ -2095,7 +2095,7 @@ export class AgentManager {
       return false;
     }
 
-    let activeTurnId = agent.activeForegroundTurnId;
+    let activeTurnId = agent.activeForegroundTurnId ?? agent.activeTurnId;
     if (!activeTurnId && this.runs.hasRun(agentId)) {
       const startAbort = new AbortController();
       const startTimeout = setTimeout(
@@ -2111,12 +2111,12 @@ export class AgentManager {
       } finally {
         clearTimeout(startTimeout);
       }
-      activeTurnId = agent.activeForegroundTurnId;
+      activeTurnId = agent.activeForegroundTurnId ?? agent.activeTurnId;
     }
     if (!activeTurnId) return false;
 
     const result = await agent.session.steerTurn(prompt, activeTurnId, options);
-    if (result.turnId !== activeTurnId || agent.activeForegroundTurnId !== activeTurnId) {
+    if (result.turnId !== activeTurnId || agent.activeTurnId !== activeTurnId) {
       throw new Error(`Agent ${agentId} active turn changed before steering was accepted`);
     }
     if (options?.clientMessageId) {

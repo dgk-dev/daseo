@@ -2012,6 +2012,11 @@ class ClaudeAgentSession implements AgentSession {
   private query: Query | null = null;
   private childProcess: ChildProcess | null = null;
   private input: AsyncMessageInput<SDKUserMessage> | null = null;
+  /** The exact SDK query/input pair that owns the current foreground or autonomous turn. */
+  private activeSteeringQuery: Query | null = null;
+  private activeSteeringInput: AsyncMessageInput<SDKUserMessage> | null = null;
+  /** Steers accepted by the SDK input but not yet observed as read by Claude. */
+  private readonly queuedSteerUuids = new Set<string>();
   private claudeSessionId: string | null;
   private persistence: AgentPersistenceHandle | null;
   private currentMode: PermissionMode;
@@ -2224,9 +2229,11 @@ class ClaudeAgentSession implements AgentSession {
 
     try {
       await this.ensureQuery();
-      if (!this.input) {
+      if (!this.query || !this.input) {
         throw new Error("Claude session input stream not initialized");
       }
+      this.activeSteeringQuery = this.query;
+      this.activeSteeringInput = this.input;
       this.startQueryPump();
       this.input.push(sdkMessage);
       setTimeout(() => {
@@ -2251,19 +2258,35 @@ class ClaudeAgentSession implements AgentSession {
     if (this.closed) {
       throw new Error("Claude session is closed");
     }
-    if (this.activeForegroundTurnId !== expectedTurnId) {
+    const activeTurnId = this.activeForegroundTurnId ?? this.autonomousTurn?.id;
+    if (this.compacting || activeTurnId !== expectedTurnId) {
       throw new Error("Claude turn ended before steering was accepted");
+    }
+
+    // Capture both ends before creating or delivering the message. There is no
+    // await below, so a finished turn cannot redirect this steer into a later one.
+    const query = this.activeSteeringQuery;
+    const input = this.activeSteeringInput;
+    if (!query || !input || this.query !== query || this.input !== input) {
+      throw new Error("Claude active turn is not accepting steering input");
     }
     const sdkMessage = this.toSdkUserMessage(prompt);
     sdkMessage.priority = "next";
-
-    await this.ensureQuery();
-    if (!this.input) {
-      throw new Error("Claude session input stream not initialized");
+    if (
+      (this.activeForegroundTurnId ?? this.autonomousTurn?.id) !== expectedTurnId ||
+      this.activeSteeringQuery !== query ||
+      this.activeSteeringInput !== input ||
+      this.query !== query ||
+      this.input !== input
+    ) {
+      throw new Error("Claude turn ended before steering was accepted");
     }
-    this.input.push(sdkMessage);
+    if (sdkMessage.uuid) {
+      this.queuedSteerUuids.add(sdkMessage.uuid);
+    }
+    input.push(sdkMessage);
     setTimeout(() => {
-      if (this.activeForegroundTurnId === expectedTurnId) {
+      if ((this.activeForegroundTurnId ?? this.autonomousTurn?.id) === expectedTurnId) {
         this.emitSubmittedUserMessage(sdkMessage, expectedTurnId, options?.clientMessageId, true);
       }
     }, 0);
@@ -2546,6 +2569,9 @@ class ClaudeAgentSession implements AgentSession {
     this.subscribers.clear();
     this.activeForegroundTurnId = null;
     this.autonomousTurn = null;
+    this.activeSteeringQuery = null;
+    this.activeSteeringInput = null;
+    this.queuedSteerUuids.clear();
     this.cancelCurrentTurn = null;
     this.turnState = "idle";
     this.sidechainTracker.clear();
@@ -3419,6 +3445,8 @@ class ClaudeAgentSession implements AgentSession {
     }
     this.notifySubscribers(event);
     this.activeForegroundTurnId = null;
+    this.activeSteeringQuery = null;
+    this.activeSteeringInput = null;
     this.cancelCurrentTurn = null;
     this.activeTurnHasAssistantText = false;
     this.syncTurnState("foreground turn terminal");
@@ -3434,11 +3462,15 @@ class ClaudeAgentSession implements AgentSession {
     if (terminalSeen) {
       if (this.activeForegroundTurnId) {
         this.activeForegroundTurnId = null;
+        this.activeSteeringQuery = null;
+        this.activeSteeringInput = null;
         this.cancelCurrentTurn = null;
         this.activeTurnHasAssistantText = false;
         this.syncTurnState("foreground turn terminal");
       } else if (this.autonomousTurn) {
         this.autonomousTurn = null;
+        this.activeSteeringQuery = null;
+        this.activeSteeringInput = null;
         this.activeTurnHasAssistantText = false;
         this.syncTurnState("autonomous turn terminal");
       }
@@ -3452,6 +3484,8 @@ class ClaudeAgentSession implements AgentSession {
     this.autonomousTurn = {
       id: this.createTurnId("autonomous"),
     };
+    this.activeSteeringQuery = this.query;
+    this.activeSteeringInput = this.input;
     this.activeTurnHasAssistantText = false;
     this.contextUsage.beginTurn();
     this.notifySubscribers({ type: "turn_started", provider: "claude" });
@@ -3464,6 +3498,8 @@ class ClaudeAgentSession implements AgentSession {
     }
     this.notifySubscribers({ type: "turn_completed", provider: "claude" });
     this.autonomousTurn = null;
+    this.activeSteeringQuery = null;
+    this.activeSteeringInput = null;
     this.activeTurnHasAssistantText = false;
     this.syncTurnState("autonomous turn completed");
   }
@@ -3667,13 +3703,20 @@ class ClaudeAgentSession implements AgentSession {
     );
   }
 
+  private shouldStartAutonomousTurn(message: SDKMessage): boolean {
+    if (this.activeForegroundTurnId || this.pendingInterruptAbort) {
+      return false;
+    }
+    return this.isAssistantishMessage(message);
+  }
+
   private async routeSdkMessageFromPump(message: SDKMessage): Promise<void> {
     if (this.shouldSuppressStaleResult(message)) {
       return;
     }
 
     const isForeground = Boolean(this.activeForegroundTurnId);
-    if (!isForeground && this.isAssistantishMessage(message)) {
+    if (this.shouldStartAutonomousTurn(message)) {
       this.startAutonomousTurn();
     }
     if (!isForeground && !this.autonomousTurn && message.type === "result") {
@@ -3809,6 +3852,8 @@ class ClaudeAgentSession implements AgentSession {
     this.queryRestartNeeded = false;
     this.autonomousTurn = null;
     this.activeForegroundTurnId = null;
+    this.activeSteeringQuery = null;
+    this.activeSteeringInput = null;
     this.syncTurnState("missing resumed conversation");
     return true;
   }
@@ -3828,6 +3873,7 @@ class ClaudeAgentSession implements AgentSession {
       return;
     }
     this.pendingInterruptAbort = true;
+    await this.discardQueuedSteers(queryToInterrupt);
     try {
       await this.awaitWithTimeout(
         queryToInterrupt.interrupt(),
@@ -3835,6 +3881,25 @@ class ClaudeAgentSession implements AgentSession {
       );
     } catch (error) {
       this.logger.warn({ err: error }, "Failed to interrupt active turn");
+    }
+  }
+
+  private async discardQueuedSteers(query: Query): Promise<void> {
+    const uuids = [...this.queuedSteerUuids];
+    this.queuedSteerUuids.clear();
+    if (uuids.length === 0) return;
+    const cancelAsyncMessage = (
+      query as Query & {
+        cancelAsyncMessage?: (uuid: string) => Promise<boolean>;
+      }
+    ).cancelAsyncMessage;
+    if (!cancelAsyncMessage) return;
+    for (const uuid of uuids) {
+      try {
+        await cancelAsyncMessage.call(query, uuid);
+      } catch (error) {
+        this.logger.warn({ err: error }, "Failed to discard a queued Claude steer");
+      }
     }
   }
 
@@ -3852,6 +3917,7 @@ class ClaudeAgentSession implements AgentSession {
 
     const events: AgentStreamEvent[] = [];
     this.appendTaskStateEvent(message, events);
+    this.forgetReadSteer(message);
 
     // Subagent identity and lifecycle are announced by Claude Code's task protocol, so they are
     // read rather than inferred from sidechain frames. `task_started` precedes the child's first
@@ -3916,6 +3982,12 @@ class ClaudeAgentSession implements AgentSession {
     return events;
   }
 
+  private forgetReadSteer(message: unknown): void {
+    const lifecycle = readClaudeCommandLifecycle(message);
+    if (!lifecycle || lifecycle.state === "queued") return;
+    this.queuedSteerUuids.delete(lifecycle.commandUuid);
+  }
+
   private appendTaskStateEvent(message: SDKMessage, events: AgentStreamEvent[]): void {
     const item = this.taskState.observe(message);
     if (item) events.push({ type: "timeline", provider: "claude", item });
@@ -3928,24 +4000,23 @@ class ClaudeAgentSession implements AgentSession {
     message: SDKMessage,
     parentToolUseId: string,
   ): AgentStreamEvent[] {
+    const canonicalSubagentId = this.taskProtocolSource.resolveSubagentId(parentToolUseId);
     // Once a CLI announces its tasks it announces all of them, so a frame for one that was never
     // declared is work the filter already rejected — a workflow child, ambient housekeeping, a
     // grandchild announced in someone else's session. Attributing it anyway materializes exactly
     // what the filter prevents: a nameless descriptor stuck running, plus a timeline no surface
     // can open, both held for the session's lifetime.
-    if (
-      this.taskProtocolSource.announcesTasks &&
-      !this.taskProtocolSource.isDeclared(parentToolUseId)
-    ) {
+    if (this.taskProtocolSource.announcesTasks && !canonicalSubagentId) {
       return [];
     }
     // The child's own frames are the only place its model appears; the task protocol does not
     // announce it. Read per frame rather than snapshotting, since a provider can swap models
     // mid-flight on overload or refusal fallback.
+    const routedId = canonicalSubagentId ?? parentToolUseId;
     const runtimeEvents = foldSubagentObservations(
-      this.taskProtocolSource.observeSidechainFrame(message, parentToolUseId),
+      this.taskProtocolSource.observeSidechainFrame(message, routedId),
     ).map((event): AgentStreamEvent => ({ type: "provider_subagent", provider: "claude", event }));
-    return [...runtimeEvents, ...this.sidechainTracker.handleMessage(message, parentToolUseId)];
+    return [...runtimeEvents, ...this.sidechainTracker.handleMessage(message, routedId)];
   }
 
   /**
@@ -6028,6 +6099,26 @@ function readClaudeCommandPromptName(text: string): string | null {
     return null;
   }
   return commandMessage.startsWith("/") ? commandMessage : `/${commandMessage}`;
+}
+
+interface ClaudeCommandLifecycle {
+  commandUuid: string;
+  state: "queued" | "started" | "completed";
+}
+
+function readClaudeCommandLifecycle(message: unknown): ClaudeCommandLifecycle | null {
+  const record = toObjectRecord(message);
+  if (record?.type !== "command_lifecycle") return null;
+  if (
+    typeof record.command_uuid !== "string" ||
+    !["queued", "started", "completed"].includes(String(record.state))
+  ) {
+    return null;
+  }
+  return {
+    commandUuid: record.command_uuid,
+    state: record.state as ClaudeCommandLifecycle["state"],
+  };
 }
 
 function extractClaudeUserText(messageRaw: unknown): string | null {

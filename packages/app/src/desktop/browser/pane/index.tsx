@@ -4,7 +4,6 @@ import {
   PanResponder,
   Pressable,
   Text,
-  TextInput,
   View,
   type GestureResponderEvent,
   type LayoutChangeEvent,
@@ -23,6 +22,10 @@ import {
 } from "lucide-react-native";
 import type { BrowserStreamFrame } from "@getpaseo/protocol/binary-frames/index";
 import { Button } from "@/components/ui/button";
+import {
+  EditingTextInput as TextInput,
+  type EditingTextInputHandle,
+} from "@/components/ui/text-input";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { useAppVisible } from "@/hooks/use-app-visible";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
@@ -261,6 +264,7 @@ export function BrowserPane({
   const [frame, setFrame] = useState<FrameState | null>(null);
   const [status, setStatus] = useState<StreamStatus>("connecting");
   const [urlText, setUrlText] = useState("");
+  const urlInputRef = useRef<EditingTextInputHandle | null>(null);
   const [reconnectGeneration, setReconnectGeneration] = useState(0);
   const [viewerId] = useState(createViewerId);
   const containerSizeRef = useRef({ width: 0, height: 0 });
@@ -571,6 +575,7 @@ export function BrowserPane({
       sendInput({ kind: "text", text: trimmed });
       sendInput({ kind: "key", key: "Enter" });
     }
+    urlInputRef.current?.replaceText("");
     setUrlText("");
   }, [sendInput, urlText]);
 
@@ -650,8 +655,9 @@ export function BrowserPane({
           accent={theme.colors.accent}
         />
         <TextInput
+          ref={urlInputRef}
           style={[styles.urlInput, { color: foreground, borderColor: theme.colors.border }]}
-          value={urlText}
+          initialValue={urlText}
           onChangeText={setUrlText}
           onSubmitEditing={handleSubmitUrl}
           placeholder={t("workspace.browser.controls.enterUrl")}

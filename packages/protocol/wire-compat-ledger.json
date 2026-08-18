@@ -1,0 +1,55 @@
+{
+  "protocolVersion": 1,
+  "baseline": "v0.4.2",
+  "roots": {
+    "src/messages.ts#WSInboundMessageSchema": {
+      "digest": "sha256:9df53fabf99f5d8264498e83d51575d5d8dd53c910708f28560da6084512e500",
+      "declarationCount": 329
+    },
+    "src/messages.ts#WSOutboundMessageSchema": {
+      "digest": "sha256:4a3d6cac43e86cfbe7b5faa009073444257aa5992a6151b12fa3e93ce29e3b90",
+      "declarationCount": 454
+    },
+    "src/connection-offer.ts#ConnectionOfferSchema": {
+      "digest": "sha256:6062abeae86e1685f2f28dd5e1553572d1de2b3d0855dff5b12edb383c42be6b",
+      "declarationCount": 2
+    },
+    "src/host-connection-schema.ts#DirectTcpHostConnectionSchema": {
+      "digest": "sha256:77702e392b075ff29270b28fb2af830a89bf8c94056ce8cdf5875586a707d02a",
+      "declarationCount": 1
+    },
+    "src/client-capabilities.ts#CLIENT_CAPS": {
+      "digest": "sha256:204dd187dcaf8ee36c9f594e294f6a4e9652e95b28b2e58ca59a88bc779c94e6",
+      "declarationCount": 1
+    },
+    "src/binary-frames/demux.ts#decodeBinaryFrame": {
+      "digest": "sha256:7508c2252948506f8e2d85f198faff9a9b4f16e0f816e429ec1164c7a64c332e",
+      "declarationCount": 41
+    },
+    "src/binary-frames/browser-stream.ts#encodeBrowserStreamFrame": {
+      "digest": "sha256:7a7d88d4838d7426efb9d9630cb6f4163eb66a7e09f7bafa2c1355fc55337990",
+      "declarationCount": 17
+    },
+    "src/binary-frames/browser-stream.ts#decodeBrowserStreamFrame": {
+      "digest": "sha256:8a52d85dc11ab1369d22394a4b7126eb2989c9f3be79b4901fe86aaf283b9eb1",
+      "declarationCount": 15
+    },
+    "src/binary-frames/file-transfer.ts#encodeFileTransferFrame": {
+      "digest": "sha256:159c1c3fcef2dc77e4325f9ab0831233d05865d9c098485fa2df88cceddc7b2c",
+      "declarationCount": 14
+    },
+    "src/binary-frames/file-transfer.ts#decodeFileTransferFrame": {
+      "digest": "sha256:84ef9378a70886b4e8c09b8aec191b90f99587b43837bd2fbba4ee91914a00a4",
+      "declarationCount": 18
+    },
+    "src/binary-frames/terminal.ts#encodeTerminalStreamFrame": {
+      "digest": "sha256:71105a602210a012d29d2bea55a24f15b7df8978404439febaee588ae6396aab",
+      "declarationCount": 7
+    },
+    "src/binary-frames/terminal.ts#decodeTerminalStreamFrame": {
+      "digest": "sha256:0beae739c931534ed951fb10fb03a2a82a6182d75b67e168987236ad7debb3e8",
+      "declarationCount": 5
+    }
+  },
+  "compatibleChanges": []
+}

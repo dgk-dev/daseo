@@ -54,6 +54,12 @@ A shim that exists for old-app or old-daemon support carries a comment naming it
 
 When a tag's condition is met, delete the shim and the tag in the same change.
 
+## Wire ledger
+
+`npm run wire:compat` hashes the declaration closure rooted at the WebSocket envelopes, connection offers, client capabilities, and binary frame codecs. Formatting and comments do not move a digest. A shape change must either retain the released digest or add a digest-scoped compatibility rationale to `packages/protocol/wire-compat-ledger.json`. Removing or narrowing released surface is not an additive change and remains forbidden.
+
+The ledger complements semantic old-payload tests. It detects an unreviewed declaration change; it cannot prove that a new field is safe or that a capability gate emits the right legacy value.
+
 ## QA
 
-Tests don't fully cover compatibility. If you touched `packages/protocol`, say in the pull request why an older app still parses your message and why an older daemon still satisfies your app. See [qa.md](qa.md).
+Run the wire ledger and the focused semantic compatibility tests after touching `packages/protocol`. State why an older app still parses the message and why an older daemon still satisfies the app. See [qa.md](qa.md).

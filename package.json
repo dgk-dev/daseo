@@ -76,6 +76,7 @@
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "knip": "knip",
+    "wire:compat": "npm run wire:compat --workspace=@getpaseo/protocol",
     "acp:version-drift": "node scripts/check-acp-catalog-version-drift.mjs",
     "acp:version-drift:check": "node scripts/check-acp-catalog-version-drift.mjs --fail-on-drift",
     "acp:version-drift:update": "node scripts/check-acp-catalog-version-drift.mjs --update",

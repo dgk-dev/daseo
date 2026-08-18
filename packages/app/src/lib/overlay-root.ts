@@ -97,6 +97,10 @@ let webOverlayOrder = 0;
 let webOverlayListenersAttached = false;
 let webOverlayFocusCheckQueued = false;
 
+interface RemoveWebOverlayOptions {
+  restoreFocus?: boolean;
+}
+
 export function hasActiveWebOverlay(): boolean {
   return webOverlayEntries.length > 0;
 }
@@ -222,7 +226,7 @@ export function shouldRestoreWebOverlayFocus(input: {
   );
 }
 
-function addWebOverlay(entry: WebOverlayEntry): () => void {
+function addWebOverlay(entry: WebOverlayEntry): (options?: RemoveWebOverlayOptions) => void {
   const registeredScope = entry.getScope();
   webOverlayEntries.push(entry);
   attachWebOverlayListeners();
@@ -235,7 +239,7 @@ function addWebOverlay(entry: WebOverlayEntry): () => void {
     }
   });
 
-  return () => {
+  return (options) => {
     window.cancelAnimationFrame(focusFrame);
     const index = webOverlayEntries.findIndex((candidate) => candidate.id === entry.id);
     if (index !== -1) webOverlayEntries.splice(index, 1);
@@ -243,6 +247,7 @@ function addWebOverlay(entry: WebOverlayEntry): () => void {
     notifyWebOverlayActivity();
     const activeElement = document.activeElement;
     if (
+      options?.restoreFocus !== false &&
       entry.restoreFocus &&
       shouldRestoreWebOverlayFocus({
         activeElementIsDocumentBody: !activeElement || activeElement === document.body,
@@ -276,11 +281,15 @@ export function useWebOverlayRegistration({ active, layer, onKeyDown }: WebOverl
   const layerRef = useRef(layer);
   const keyHandlerRef = useRef(onKeyDown);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
-  const removeEntryRef = useRef<(() => void) | null>(null);
+  const removeEntryRef = useRef<((options?: RemoveWebOverlayOptions) => void) | null>(null);
+  const detachedRemoveEntryRef = useRef<((options?: RemoveWebOverlayOptions) => void) | null>(null);
+  const registeredRef = useRef(false);
   const activeRef = useRef(registrationActive);
+  const logicalActiveRef = useRef(active);
   const wasActiveRef = useRef(false);
 
   activeRef.current = registrationActive;
+  logicalActiveRef.current = active;
   layerRef.current = layer;
   keyHandlerRef.current = onKeyDown;
   if (registrationActive && !wasActiveRef.current && typeof document !== "undefined") {
@@ -296,12 +305,21 @@ export function useWebOverlayRegistration({ active, layer, onKeyDown }: WebOverl
       typeof window !== "undefined" &&
       typeof document !== "undefined";
     if (!shouldRegister) {
-      removeEntryRef.current?.();
-      removeEntryRef.current = null;
+      const shouldRestoreFocus = !logicalActiveRef.current;
+      if (registeredRef.current || shouldRestoreFocus) {
+        const removeEntry = removeEntryRef.current ?? detachedRemoveEntryRef.current;
+        removeEntry?.({ restoreFocus: shouldRestoreFocus });
+      }
+      registeredRef.current = false;
+      if (shouldRestoreFocus) {
+        removeEntryRef.current = null;
+        detachedRemoveEntryRef.current = null;
+      }
       return;
     }
-    if (removeEntryRef.current) return;
+    if (registeredRef.current) return;
 
+    detachedRemoveEntryRef.current = null;
     const entry: WebOverlayEntry = {
       id: idRef.current,
       order: ++webOverlayOrder,
@@ -311,12 +329,20 @@ export function useWebOverlayRegistration({ active, layer, onKeyDown }: WebOverl
       restoreFocus: restoreFocusRef.current,
     };
     removeEntryRef.current = addWebOverlay(entry);
+    registeredRef.current = true;
   }, []);
 
   const setScope = useCallback(
     (node: unknown) => {
       scopeRef.current =
         typeof HTMLElement !== "undefined" && node instanceof HTMLElement ? node : null;
+      if (!scopeRef.current && activeRef.current) {
+        const removeEntry = removeEntryRef.current;
+        removeEntry?.({ restoreFocus: false });
+        detachedRemoveEntryRef.current = removeEntry;
+        removeEntryRef.current = null;
+        registeredRef.current = false;
+      }
       // Host refs attach before descendant layout effects and autofocus. Register
       // here so the previous overlay cannot redirect that pending focus.
       syncRegistration();
@@ -326,11 +352,18 @@ export function useWebOverlayRegistration({ active, layer, onKeyDown }: WebOverl
 
   useLayoutEffect(() => {
     syncRegistration();
-    return () => {
-      removeEntryRef.current?.();
-      removeEntryRef.current = null;
-    };
   }, [registrationActive, syncRegistration]);
+
+  useLayoutEffect(
+    () => () => {
+      const removeEntry = removeEntryRef.current ?? detachedRemoveEntryRef.current;
+      removeEntry?.();
+      removeEntryRef.current = null;
+      detachedRemoveEntryRef.current = null;
+      registeredRef.current = false;
+    },
+    [],
+  );
 
   return setScope;
 }
