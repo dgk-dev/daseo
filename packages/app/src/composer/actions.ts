@@ -16,6 +16,8 @@ import { createUserMessage, generateMessageId, type UserMessageItem } from "@/ty
 import type { MessageSubmissionRejectionOutcome } from "@/composer/submission/model";
 import type { PickedImageAttachmentInput } from "@/hooks/image-attachment-picker";
 import { i18n } from "@/i18n/i18next";
+import { composerOutboxStore, type ComposerOutboxRecord } from "@/composer/outbox/store";
+import { retainAttachmentForGarbageCollection } from "@/attachments/gc-retention";
 
 export interface QueuedComposerMessage {
   id: string;
@@ -48,10 +50,11 @@ export interface ComposerSendClient {
     text: string,
     options: {
       messageId: string;
+      commandId: string;
       images: Array<{ data: string; mimeType: string }>;
       attachments: ReturnType<typeof splitComposerAttachmentsForSubmit>["attachments"];
     },
-  ) => Promise<void>;
+  ) => Promise<{ receiptStatus?: "in_flight" | "accepted" | "rejected" } | void>;
   uploadFile: (input: { fileName: string; mimeType: string; bytes: Uint8Array }) => Promise<{
     requestId: string;
     file: {
@@ -81,6 +84,31 @@ export interface QueueWriter {
   write: (
     updater: (prev: Map<string, QueuedComposerMessage[]>) => Map<string, QueuedComposerMessage[]>,
   ) => void;
+}
+
+export interface ComposerOutboxWriter {
+  enqueue(input: {
+    id: string;
+    serverId: string;
+    agentId: string;
+    text: string;
+    attachments: ComposerAttachment[];
+    intent: ComposerOutboxRecord["intent"];
+    steering?: boolean;
+  }): Promise<ComposerOutboxRecord>;
+  mark(input: {
+    serverId: string;
+    id: string;
+    intent?: ComposerOutboxRecord["intent"];
+    status: ComposerOutboxRecord["status"];
+    lastError?: string | null;
+    incrementAttempt?: boolean;
+  }): Promise<ComposerOutboxRecord | null>;
+  remove(serverId: string, id: string): Promise<boolean>;
+}
+
+function isDeliveryUnknownError(error: unknown): error is Error {
+  return error instanceof Error && error.name === "AgentCommandDeliveryUnknownError";
 }
 
 export async function pickAndPersistImages(input: {
@@ -179,6 +207,7 @@ export function cancelComposerAgent(input: CancelComposerAgentInput): Promise<vo
 
 export interface DispatchComposerAgentMessageInput {
   client: ComposerSendClient;
+  serverId: string;
   agentId: string;
   text: string;
   attachments: ComposerAttachment[];
@@ -188,6 +217,9 @@ export interface DispatchComposerAgentMessageInput {
   ) => Promise<Array<{ data: string; mimeType: string }> | undefined>;
   submission: MessageSubmissionWriter;
   steering?: boolean;
+  clientMessageId?: string;
+  outbox?: ComposerOutboxWriter;
+  preserveRejectedOutbox?: boolean;
 }
 
 export async function dispatchComposerAgentMessage(
@@ -196,7 +228,29 @@ export async function dispatchComposerAgentMessage(
   const wirePayload = splitComposerAttachmentsForSubmit(input.attachments, {
     format: input.attachmentSubmitFormat,
   });
-  const clientMessageId = generateMessageId();
+  const clientMessageId = input.clientMessageId ?? generateMessageId();
+  const outbox = input.outbox ?? composerOutboxStore;
+  const retainedAttachmentIds = input.attachments.flatMap((attachment) => {
+    if (attachment.kind === "image") return [attachment.metadata.id];
+    if (attachment.kind === "browser_element" && attachment.attachment.screenshot) {
+      return [attachment.attachment.screenshot.id];
+    }
+    return [];
+  });
+  const releaseRetention = retainedAttachmentIds.map(retainAttachmentForGarbageCollection);
+  try {
+    await outbox.enqueue({
+      id: clientMessageId,
+      serverId: input.serverId,
+      agentId: input.agentId,
+      text: input.text,
+      attachments: input.attachments,
+      intent: "dispatch",
+      steering: input.steering,
+    });
+  } finally {
+    for (const release of releaseRetention) release();
+  }
   const userMessage = createUserMessage({
     clientMessageId,
     text: input.text,
@@ -208,13 +262,49 @@ export async function dispatchComposerAgentMessage(
   input.submission.begin(input.agentId, userMessage);
   try {
     const imagesData = await input.encodeImages(wirePayload.images);
-    await input.client.sendAgentMessage(input.agentId, input.text, {
+    await outbox.mark({
+      serverId: input.serverId,
+      id: clientMessageId,
+      status: "pending",
+      incrementAttempt: true,
+    });
+    const result = await input.client.sendAgentMessage(input.agentId, input.text, {
       messageId: clientMessageId,
+      commandId: clientMessageId,
       images: imagesData ?? [],
       attachments: wirePayload.attachments,
     });
+    if (result?.receiptStatus === "in_flight") {
+      await outbox.mark({
+        serverId: input.serverId,
+        id: clientMessageId,
+        status: "in_flight",
+        lastError: null,
+      });
+      return;
+    }
+    await outbox.remove(input.serverId, clientMessageId);
     input.submission.accept(input.agentId, clientMessageId);
   } catch (error) {
+    if (isDeliveryUnknownError(error)) {
+      await outbox.mark({
+        serverId: input.serverId,
+        id: clientMessageId,
+        status: "delivery_unknown",
+        lastError: error.message,
+      });
+      return;
+    }
+    if (input.preserveRejectedOutbox) {
+      await outbox.mark({
+        serverId: input.serverId,
+        id: clientMessageId,
+        status: "rejected",
+        lastError: error instanceof Error ? error.message : "Command rejected",
+      });
+    } else {
+      await outbox.remove(input.serverId, clientMessageId);
+    }
     const outcome = input.submission.reject(input.agentId, clientMessageId);
     if (outcome === "accepted") return;
     throw error;
@@ -222,17 +312,21 @@ export async function dispatchComposerAgentMessage(
 }
 
 export interface QueueComposerMessageInput {
+  serverId: string;
   agentId: string;
   text: string;
   attachments: ComposerAttachment[];
   queue: QueueWriter;
+  outbox?: ComposerOutboxWriter;
 }
 
 export interface QueueComposerMessageResult {
   queued: QueuedComposerMessage | null;
 }
 
-export function queueComposerMessage(input: QueueComposerMessageInput): QueueComposerMessageResult {
+export async function queueComposerMessage(
+  input: QueueComposerMessageInput,
+): Promise<QueueComposerMessageResult> {
   const trimmed = input.text.trim();
   if (!trimmed && input.attachments.length === 0) {
     return { queued: null };
@@ -242,6 +336,14 @@ export function queueComposerMessage(input: QueueComposerMessageInput): QueueCom
     text: trimmed,
     attachments: input.attachments,
   };
+  await (input.outbox ?? composerOutboxStore).enqueue({
+    id: item.id,
+    serverId: input.serverId,
+    agentId: input.agentId,
+    text: item.text,
+    attachments: item.attachments,
+    intent: "queued",
+  });
   input.queue.write((prev) => {
     const next = new Map(prev);
     next.set(input.agentId, [...(prev.get(input.agentId) ?? []), item]);
@@ -251,9 +353,11 @@ export function queueComposerMessage(input: QueueComposerMessageInput): QueueCom
 }
 
 export interface EditQueuedComposerMessageInput {
+  serverId: string;
   agentId: string;
   messageId: string;
   queue: QueueWriter;
+  outbox?: ComposerOutboxWriter;
 }
 
 export interface EditQueuedComposerMessageResult {
@@ -261,11 +365,12 @@ export interface EditQueuedComposerMessageResult {
   attachments: UserComposerAttachment[];
 }
 
-export function editQueuedComposerMessage(
+export async function editQueuedComposerMessage(
   input: EditQueuedComposerMessageInput,
-): EditQueuedComposerMessageResult | null {
+): Promise<EditQueuedComposerMessageResult | null> {
   const item = input.queue.read(input.agentId).find((q) => q.id === input.messageId);
   if (!item) return null;
+  await (input.outbox ?? composerOutboxStore).remove(input.serverId, input.messageId);
   input.queue.write((prev) => {
     const next = new Map(prev);
     next.set(
@@ -281,10 +386,16 @@ export function editQueuedComposerMessage(
 }
 
 export interface SendQueuedComposerMessageNowInput {
+  serverId: string;
   agentId: string;
   messageId: string;
   queue: QueueWriter;
-  submitMessage: (input: { text: string; attachments: ComposerAttachment[] }) => Promise<void>;
+  outbox?: ComposerOutboxWriter;
+  submitMessage: (input: {
+    text: string;
+    attachments: ComposerAttachment[];
+    clientMessageId: string;
+  }) => Promise<void>;
   failedToSendMessage?: string;
 }
 
@@ -298,6 +409,13 @@ export async function sendQueuedComposerMessageNow(
 ): Promise<SendQueuedComposerMessageNowResult> {
   const item = input.queue.read(input.agentId).find((q) => q.id === input.messageId);
   if (!item) return { status: "missing" };
+  const outbox = input.outbox ?? composerOutboxStore;
+  await outbox.mark({
+    serverId: input.serverId,
+    id: item.id,
+    intent: "dispatch",
+    status: "pending",
+  });
   input.queue.write((prev) => {
     const next = new Map(prev);
     next.set(
@@ -307,9 +425,28 @@ export async function sendQueuedComposerMessageNow(
     return next;
   });
   try {
-    await input.submitMessage({ text: item.text, attachments: item.attachments });
+    await input.submitMessage({
+      text: item.text,
+      attachments: item.attachments,
+      clientMessageId: item.id,
+    });
     return { status: "submitted" };
   } catch (error) {
+    await outbox.enqueue({
+      id: item.id,
+      serverId: input.serverId,
+      agentId: input.agentId,
+      text: item.text,
+      attachments: item.attachments,
+      intent: "queued",
+    });
+    await outbox.mark({
+      serverId: input.serverId,
+      id: item.id,
+      intent: "queued",
+      status: "queued",
+      lastError: error instanceof Error ? error.message : "Failed to send queued message",
+    });
     input.queue.write((prev) => {
       const next = new Map(prev);
       next.set(input.agentId, [item, ...(prev.get(input.agentId) ?? [])]);

@@ -34,6 +34,9 @@ describe("wire compatibility ledger", () => {
     const ledger = structuredClone(readWireLedger());
     const root = Object.keys(current)[0];
     ledger.roots[root].digest = "sha256:released-shape";
+    ledger.compatibleChanges = ledger.compatibleChanges.filter(
+      (change: { root: string }) => change.root !== root,
+    );
 
     expect(checkWireLedger(ledger, current)).toEqual([
       `${root} changed to ${current[root].digest} (${current[root].declarationCount} declarations) without a digest-scoped compatibility rationale`,

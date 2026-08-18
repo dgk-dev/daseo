@@ -338,8 +338,26 @@ export interface DaemonClientTrace {
   endSection(): void;
 }
 
+export type AgentCommandReceiptStatus = "in_flight" | "accepted" | "rejected";
+
+export interface SendAgentMessageResult {
+  commandId: string;
+  receiptStatus: AgentCommandReceiptStatus;
+}
+
+export class AgentCommandDeliveryUnknownError extends Error {
+  readonly commandId: string;
+
+  constructor(commandId: string, cause: unknown) {
+    super("The command may have reached the host, but its receipt was not observed.", { cause });
+    this.name = "AgentCommandDeliveryUnknownError";
+    this.commandId = commandId;
+  }
+}
+
 export interface SendMessageOptions {
   messageId?: string;
+  commandId?: string;
   images?: Array<{ data: string; mimeType: string }>;
   attachments?: SendAgentMessageRequest["attachments"];
 }
@@ -1652,6 +1670,7 @@ export class DaemonClient {
     timeout?: number;
     select: (msg: SessionOutboundMessage) => T | null;
     options?: { skipQueue?: boolean };
+    onSent?: () => void;
   }): Promise<T> {
     const timeout = params.timeout ?? DEFAULT_SESSION_RPC_TIMEOUT_MS;
     const { promise, cancel } = this.waitForWithCancel<RpcWaitResult<T>>(
@@ -1679,6 +1698,7 @@ export class DaemonClient {
 
     try {
       await this.sendSessionMessageOrThrow(params.message);
+      params.onSent?.();
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       cancel(err);
@@ -2943,39 +2963,64 @@ export class DaemonClient {
     agentId: string,
     text: string,
     options?: SendMessageOptions,
-  ): Promise<void> {
+  ): Promise<SendAgentMessageResult> {
     const requestId = this.createRequestId();
     const messageId = options?.messageId ?? crypto.randomUUID();
+    const commandId = options?.commandId ?? messageId;
     const message = SessionInboundMessageSchema.parse({
       type: "send_agent_message_request",
       requestId,
       agentId,
       text,
       ...(messageId ? { messageId } : {}),
+      commandId,
       ...(options?.images ? { images: options.images } : {}),
       ...(options?.attachments ? { attachments: options.attachments } : {}),
     });
-    const payload = await this.sendRequest({
-      requestId,
-      message,
-      options: { skipQueue: true },
-      select: (msg) => {
-        if (msg.type !== "send_agent_message_response") {
-          return null;
-        }
-        if (msg.payload.requestId !== requestId) {
-          return null;
-        }
-        return msg.payload;
-      },
-    });
-    if (!payload.accepted) {
+    let sent = false;
+    let payload: Extract<
+      SessionOutboundMessage,
+      { type: "send_agent_message_response" }
+    >["payload"];
+    try {
+      payload = await this.sendRequest({
+        requestId,
+        message,
+        options: { skipQueue: true },
+        onSent: () => {
+          sent = true;
+        },
+        select: (msg) => {
+          if (msg.type !== "send_agent_message_response") {
+            return null;
+          }
+          if (msg.payload.requestId !== requestId) {
+            return null;
+          }
+          return msg.payload;
+        },
+      });
+    } catch (error) {
+      if (sent && !(error instanceof DaemonRpcError)) {
+        throw new AgentCommandDeliveryUnknownError(commandId, error);
+      }
+      throw error;
+    }
+    if (!payload.accepted || payload.receiptStatus === "rejected") {
       throw new Error(payload.error ?? "sendAgentMessage rejected");
     }
+    return {
+      commandId: payload.commandId ?? commandId,
+      receiptStatus: payload.receiptStatus ?? "accepted",
+    };
   }
 
-  async sendMessage(agentId: string, text: string, options?: SendMessageOptions): Promise<void> {
-    await this.sendAgentMessage(agentId, text, options);
+  async sendMessage(
+    agentId: string,
+    text: string,
+    options?: SendMessageOptions,
+  ): Promise<SendAgentMessageResult> {
+    return await this.sendAgentMessage(agentId, text, options);
   }
 
   async rewindAgent(

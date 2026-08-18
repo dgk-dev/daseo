@@ -1,6 +1,7 @@
 import { afterEach, expect, expectTypeOf, test, vi } from "vitest";
 import { z } from "zod";
 import {
+  AgentCommandDeliveryUnknownError,
   DaemonClient,
   type DaemonClientTrace,
   type DaemonTransport,
@@ -182,6 +183,75 @@ afterEach(async () => {
   clients.length = 0;
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+test("sendAgentMessage returns a durable command receipt", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "command_receipt_test",
+    transportFactory: () => mock.transport,
+    reconnect: { enabled: false },
+  });
+  clients.push(client);
+  const connect = client.connect();
+  mock.triggerOpen();
+  await connect;
+
+  const sending = client.sendAgentMessage("agent-1", "hello", {
+    messageId: "message-1",
+    commandId: "command-1",
+  });
+  const request = parseSentFrame(mock.sent.at(-1));
+  expect(request).toMatchObject({
+    type: "send_agent_message_request",
+    agentId: "agent-1",
+    messageId: "message-1",
+    commandId: "command-1",
+  });
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "send_agent_message_response",
+      payload: {
+        requestId: request.requestId,
+        agentId: "agent-1",
+        accepted: true,
+        error: null,
+        commandId: "command-1",
+        receiptStatus: "accepted",
+      },
+    }),
+  );
+
+  await expect(sending).resolves.toEqual({
+    commandId: "command-1",
+    receiptStatus: "accepted",
+  });
+});
+
+test("sendAgentMessage classifies disconnect after write as delivery unknown", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "command_unknown_test",
+    transportFactory: () => mock.transport,
+    reconnect: { enabled: false },
+  });
+  clients.push(client);
+  const connect = client.connect();
+  mock.triggerOpen();
+  await connect;
+
+  const sending = client.sendAgentMessage("agent-1", "hello", {
+    messageId: "message-1",
+    commandId: "command-unknown",
+  });
+  expect(parseSentFrame(mock.sent.at(-1))).toMatchObject({ commandId: "command-unknown" });
+  mock.triggerClose({ code: 1006, reason: "network lost" });
+
+  const error = await sending.catch((cause: unknown) => cause);
+  expect(error).toBeInstanceOf(AgentCommandDeliveryUnknownError);
+  expect(error).toMatchObject({ commandId: "command-unknown" });
 });
 
 test("traces WebSocket frames, message types, and JSON parse duration", async () => {

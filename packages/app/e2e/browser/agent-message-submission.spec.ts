@@ -932,6 +932,37 @@ test.describe("Agent message submission", () => {
     }
   });
 
+  test("restores an image-bearing queued message after a full app reload", async ({ page }) => {
+    const prompt = "Keep this queued image across reload.";
+    const agent = await seedMockAgentWorkspace({
+      repoPrefix: "submission-durable-queue-",
+      title: "Durable queued message",
+      model: "one-minute-stream",
+    });
+    try {
+      await openAgentRoute(page, agent);
+      await expectComposerVisible(page);
+      await submitMessage(page, "Keep running while the durable message waits.");
+      await expectAgentReadyToInterrupt(page);
+      await attachImageFromMenu(page, IMAGE);
+      await fillComposerDraft(page, prompt);
+      await composerLocator(page).press("Enter");
+      await expect(page.getByRole("button", { name: "Send queued message now" })).toHaveCount(1);
+
+      await page.reload();
+      await expectComposerVisible(page);
+      await expect(page.getByRole("button", { name: "Send queued message now" })).toHaveCount(1);
+      await expect(page.getByText(prompt, { exact: true })).toBeVisible();
+
+      await cancelAgent(page);
+      const restored = page.getByTestId("user-message").filter({ hasText: prompt });
+      await expect(restored).toHaveCount(1);
+      await expect(restored.getByRole("button", { name: "Open image attachment" })).toBeVisible();
+    } finally {
+      await agent.cleanup();
+    }
+  });
+
   test("shows every agent surface idle after interrupting a submitted turn", async ({ page }) => {
     const title = "Interrupted submission";
     const agent = await seedMockAgentWorkspace({

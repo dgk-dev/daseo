@@ -3,6 +3,8 @@ import { z } from "zod";
 import {
   AgentSnapshotPayloadSchema,
   AgentTimelineItemPayloadSchema,
+  SendAgentMessageRequestSchema,
+  SendAgentMessageResponseMessageSchema,
   ServerInfoStatusPayloadSchema,
   WSHelloMessageSchema,
 } from "./messages.js";
@@ -151,6 +153,61 @@ describe("wire schema compatibility", () => {
       text: "new context",
       messageId: "provider-message",
       clientMessageId: "client-message",
+    });
+  });
+
+  test("durable command receipt fields remain optional for old peers", () => {
+    expect(
+      SendAgentMessageRequestSchema.parse({
+        type: "send_agent_message_request",
+        requestId: "request-legacy",
+        agentId: "agent-1",
+        text: "legacy",
+        attachments: [],
+      }),
+    ).not.toHaveProperty("commandId");
+    expect(
+      SendAgentMessageResponseMessageSchema.parse({
+        type: "send_agent_message_response",
+        payload: {
+          requestId: "request-legacy",
+          agentId: "agent-1",
+          accepted: true,
+          error: null,
+        },
+      }).payload,
+    ).toEqual({
+      requestId: "request-legacy",
+      agentId: "agent-1",
+      accepted: true,
+      error: null,
+    });
+
+    const currentResponse = SendAgentMessageResponseMessageSchema.parse({
+      type: "send_agent_message_response",
+      payload: {
+        requestId: "request-current",
+        agentId: "agent-1",
+        accepted: true,
+        error: null,
+        commandId: "command-1",
+        receiptStatus: "accepted",
+      },
+    });
+    const legacyResponse = z.object({
+      type: z.literal("send_agent_message_response"),
+      payload: z.object({
+        requestId: z.string(),
+        agentId: z.string(),
+        accepted: z.boolean(),
+        error: z.string().nullable(),
+      }),
+    });
+    expect(legacyResponse.parse(currentResponse).payload).toEqual({
+      requestId: "request-current",
+      agentId: "agent-1",
+      accepted: true,
+      error: null,
     });
   });
 

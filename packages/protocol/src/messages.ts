@@ -1300,7 +1300,9 @@ export const SendAgentMessageRequestSchema = z.object({
   /** Accepts full ID, unique prefix, or exact full title (server resolves). */
   agentId: z.string(),
   text: z.string(),
-  messageId: z.string().optional(), // Client-provided ID for deduplication
+  messageId: z.string().optional(), // Client-provided presentation identity
+  // COMPAT(durableCommandReceipts): added in v0.5.0, remove after 2027-02-18.
+  commandId: z.string().min(1).optional(),
   images: z.array(ImageAttachmentSchema).optional(),
   attachments: AgentAttachmentsSchema,
 });
@@ -3325,6 +3327,8 @@ export const ServerInfoStatusPayloadSchema = z
         selectiveAgentTimeline: z.boolean().optional(),
         // COMPAT(canonicalSubmittedPrompts): added in v0.2.6, remove gate after 2027-01-30.
         canonicalSubmittedPrompts: z.boolean().optional(),
+        // COMPAT(durableCommandReceipts): added in v0.5.0, remove after 2027-02-18.
+        durableCommandReceipts: z.boolean().optional(),
         // COMPAT(agentTurnIdentity): accept peers that observed pre-release v0.2.6 through 2027-01-31.
         agentTurnIdentity: z.boolean().optional(),
         // COMPAT(stableProjectIdentity): added in v0.1.109, remove gate after 2027-01-15.
@@ -4326,6 +4330,9 @@ export const SendAgentMessageResponseMessageSchema = z.object({
     agentId: z.string(),
     accepted: z.boolean(),
     error: z.string().nullable(),
+    // COMPAT(durableCommandReceipts): added in v0.5.0, remove after 2027-02-18.
+    commandId: z.string().optional(),
+    receiptStatus: z.enum(["in_flight", "accepted", "rejected"]).optional(),
   }),
 });
 

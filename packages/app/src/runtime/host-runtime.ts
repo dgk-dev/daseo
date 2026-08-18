@@ -56,6 +56,7 @@ import { mountBrowserAutomationDaemonClientHandler } from "@/desktop/browser/aut
 import { schedulesQueryBaseKey } from "@/schedules/aggregated-schedules";
 import { dispatchComposerAgentMessage, sendQueuedComposerMessageNow } from "@/composer/actions";
 import { createMessageSubmissionWriter } from "@/composer/submission/writer";
+import { ComposerOutboxStore, composerOutboxStore } from "@/composer/outbox/store";
 import { resolveComposerAttachmentSubmitFormat } from "@/composer/attachments/submit";
 import { encodeImages } from "@/utils/encode-images";
 import { DirectorySync, type RefreshAgentDirectoryResult } from "@/runtime/directory-sync";
@@ -1362,22 +1363,28 @@ export class HostRuntimeStore {
   private connectionStatusStartedAtByServer = new Map<string, number>();
   private directoryBootstrapInFlight = new Map<string, Promise<void>>();
   private queuedAgentDrainInFlight = new Set<string>();
+  private outboxRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private directorySyncByServer = new Map<string, DirectorySync>();
   private configuredOverrideBootstrapInFlight: Promise<void> | null = null;
   private bootPromise: Promise<void> | null = null;
   private storage: HostRuntimeStorage;
   private replicaCache: ReplicaCache;
   private readonly revokePushNotifications: typeof revokePushNotifications;
+  private readonly composerOutbox: ComposerOutboxStore;
 
   constructor(input?: {
     deps?: HostRuntimeControllerDeps;
     storage?: HostRuntimeStorage;
     revokePushNotifications?: typeof revokePushNotifications;
+    composerOutbox?: ComposerOutboxStore;
   }) {
     this.deps = input?.deps ?? createDefaultDeps();
     this.storage = input?.storage ?? AsyncStorage;
     this.replicaCache = new ReplicaCache(input?.storage ?? replicaCacheStorage);
     this.revokePushNotifications = input?.revokePushNotifications ?? revokePushNotifications;
+    this.composerOutbox =
+      input?.composerOutbox ??
+      (process.env.NODE_ENV === "test" ? new ComposerOutboxStore() : composerOutboxStore);
   }
 
   // --- Host registry ---
@@ -1414,7 +1421,7 @@ export class HostRuntimeStore {
 
   private async runBoot(): Promise<void> {
     const override = readConfiguredLocalDaemonOverride();
-    await this.loadFromStorage();
+    await Promise.all([this.loadFromStorage(), this.composerOutbox.hydrate()]);
     this.markHostRegistryLoaded();
 
     let isE2E: string | null = null;
@@ -1614,6 +1621,7 @@ export class HostRuntimeStore {
     rekeyMap(this.directoryBootstrapInFlight, oldServerId, newServerId);
     this.replicaCache.reconcileServerId(oldServerId, newServerId);
     projectIconCache.reconcileServerId(oldServerId, newServerId);
+    void this.composerOutbox.rekeyServerId(oldServerId, newServerId);
     this.directorySyncByServer.get(oldServerId)?.dispose();
     this.directorySyncByServer.delete(oldServerId);
     const directory = new DirectorySync(
@@ -1988,6 +1996,9 @@ export class HostRuntimeStore {
       this.lastConnectionStatusByServer.delete(serverId);
       this.connectionStatusStartedAtByServer.delete(serverId);
       this.directoryBootstrapInFlight.delete(serverId);
+      const outboxTimer = this.outboxRetryTimers.get(serverId);
+      if (outboxTimer) clearTimeout(outboxTimer);
+      this.outboxRetryTimers.delete(serverId);
       this.directorySyncByServer.get(serverId)?.dispose();
       this.directorySyncByServer.delete(serverId);
       this.clearHostReplica(serverId);
@@ -2098,6 +2109,7 @@ export class HostRuntimeStore {
       snapshot.connectionStatus === "online" && previousStatus !== "online";
     if (didTransitionOnline) {
       useSessionStore.getState().bumpHistorySyncGeneration(serverId);
+      void this.restoreQueuedOutboxProjection(serverId);
       // Checkout git data is push-driven; pushes emitted while disconnected are gone for
       // good (the daemon dedupes by snapshot fingerprint). Mark the caches stale so active
       // queries refetch now and evicted ones on their next mount.
@@ -2149,6 +2161,124 @@ export class HostRuntimeStore {
     this.directoryBootstrapInFlight.set(serverId, bootstrap);
   }
 
+  private async restoreQueuedOutboxProjection(serverId: string): Promise<void> {
+    const records = await this.composerOutbox.list({ serverId, intent: "queued" });
+    if (records.length === 0) return;
+    useSessionStore.getState().setQueuedMessages(serverId, (previous) => {
+      const next = new Map(previous);
+      for (const record of records) {
+        const current = next.get(record.agentId) ?? [];
+        if (current.some((message) => message.id === record.id)) continue;
+        next.set(record.agentId, [
+          ...current,
+          { id: record.id, text: record.text, attachments: record.attachments },
+        ]);
+      }
+      return next;
+    });
+  }
+
+  drainComposerOutbox(serverId: string): void {
+    void this.restoreQueuedOutboxProjection(serverId);
+    const session = useSessionStore.getState().sessions[serverId];
+    const client = session?.client;
+    if (!client?.isConnected) return;
+    if (session.serverInfo?.features?.durableCommandReceipts !== true) {
+      void (async () => {
+        const unsupported = await this.composerOutbox.list({ serverId, intent: "dispatch" });
+        for (const record of unsupported) {
+          await this.composerOutbox.mark({
+            serverId,
+            id: record.id,
+            intent: "queued",
+            status: "queued",
+            lastError: "Host does not support safe command receipt replay",
+          });
+        }
+        await this.restoreQueuedOutboxProjection(serverId);
+      })();
+      return;
+    }
+    const existingTimer = this.outboxRetryTimers.get(serverId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      this.outboxRetryTimers.delete(serverId);
+    }
+
+    void (async () => {
+      const records = await this.composerOutbox.list({ serverId, intent: "dispatch" });
+      for (const record of records) {
+        if (record.status === "rejected") continue;
+        const drainKey = `outbox:${serverId}:${record.id}`;
+        if (this.queuedAgentDrainInFlight.has(drainKey)) continue;
+        this.queuedAgentDrainInFlight.add(drainKey);
+        try {
+          const supportsForgeAttachments =
+            useSessionStore.getState().sessions[serverId]?.serverInfo?.features?.forgeSearch ===
+            true;
+          const baseSubmission = createMessageSubmissionWriter(serverId);
+          await dispatchComposerAgentMessage({
+            client,
+            serverId,
+            agentId: record.agentId,
+            text: record.text,
+            attachments: record.attachments,
+            attachmentSubmitFormat: resolveComposerAttachmentSubmitFormat({
+              supportsForgeAttachments,
+            }),
+            encodeImages,
+            submission: {
+              ...baseSubmission,
+              begin: (agentId, message) => {
+                const active =
+                  useSessionStore.getState().sessions[serverId]?.messageSubmissions.get(agentId) ??
+                  [];
+                if (active.some((submission) => submission.clientMessageId === record.id)) return;
+                baseSubmission.begin(agentId, message);
+              },
+            },
+            steering: record.steering,
+            clientMessageId: record.id,
+            outbox: this.composerOutbox,
+            preserveRejectedOutbox: true,
+          });
+        } catch (error) {
+          await this.composerOutbox.mark({
+            serverId,
+            id: record.id,
+            intent: "queued",
+            status: "queued",
+            lastError: toErrorMessage(error),
+          });
+          await this.restoreQueuedOutboxProjection(serverId);
+        } finally {
+          this.queuedAgentDrainInFlight.delete(drainKey);
+        }
+      }
+
+      const remaining = (
+        await this.composerOutbox.list({
+          serverId,
+          intent: "dispatch",
+        })
+      ).filter((record) => record.status !== "rejected");
+      if (remaining.length === 0) return;
+      const attempt = Math.max(...remaining.map((record) => record.attemptCount));
+      const delayMs = Math.min(30_000, 1_000 * 2 ** Math.min(attempt, 5));
+      const timer = setTimeout(() => {
+        if (this.outboxRetryTimers.get(serverId) !== timer) return;
+        this.outboxRetryTimers.delete(serverId);
+        this.drainComposerOutbox(serverId);
+      }, delayMs);
+      this.outboxRetryTimers.set(serverId, timer);
+    })().catch((error) => {
+      console.error("[HostRuntime] composer outbox drain failed", {
+        serverId,
+        error: toErrorMessage(error),
+      });
+    });
+  }
+
   drainQueuedAgentMessage(serverId: string, agentId: string): void {
     const drainKey = `${serverId}:${agentId}`;
     if (this.queuedAgentDrainInFlight.has(drainKey)) return;
@@ -2162,18 +2292,21 @@ export class HostRuntimeStore {
     this.queuedAgentDrainInFlight.add(drainKey);
     const next = queue[0];
     void sendQueuedComposerMessageNow({
+      serverId,
       agentId,
+      outbox: this.composerOutbox,
       messageId: next.id,
       queue: {
         read: (queuedAgentId) =>
           useSessionStore.getState().sessions[serverId]?.queuedMessages.get(queuedAgentId) ?? [],
         write: (update) => useSessionStore.getState().setQueuedMessages(serverId, update),
       },
-      submitMessage: async ({ text, attachments }) => {
+      submitMessage: async ({ text, attachments, clientMessageId }) => {
         const supportsForgeAttachments =
           useSessionStore.getState().sessions[serverId]?.serverInfo?.features?.forgeSearch === true;
         await dispatchComposerAgentMessage({
           client,
+          serverId,
           agentId,
           text,
           attachments,
@@ -2182,6 +2315,8 @@ export class HostRuntimeStore {
           }),
           encodeImages,
           submission: createMessageSubmissionWriter(serverId),
+          clientMessageId,
+          outbox: this.composerOutbox,
         });
       },
     })

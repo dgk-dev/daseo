@@ -23,6 +23,7 @@ import { DownloadTokenStore } from "./file-download/token-store.js";
 import { StructuredAgentFallbackError } from "./agent/agent-response-loop.js";
 import type { StoredAgentRecord } from "./agent/agent-storage.js";
 import type { AgentManagerEvent } from "./agent/agent-manager.js";
+import { AgentCommandReceiptStore } from "./agent/agent-command-receipt-store.js";
 import type { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
 import { createPersistedProjectRecord } from "./workspace-registry.js";
 import { deriveProjectKey } from "./project-key.js";
@@ -283,6 +284,7 @@ interface SessionForTestOptions {
   scopes?: readonly string[];
   agentManager?: { [K in keyof SessionOptions["agentManager"]]?: unknown };
   agentStorage?: { [K in keyof SessionOptions["agentStorage"]]?: unknown };
+  agentCommandReceiptStore?: SessionOptions["agentCommandReceiptStore"];
   github?: Partial<ForgeService & GitHubService>;
   checkoutDiffManager?: { scheduleRefreshForCwd: ReturnType<typeof vi.fn> };
   workspaceGitService?: {
@@ -380,6 +382,7 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
       list: vi.fn().mockResolvedValue([]),
       ...options.agentStorage,
     }),
+    agentCommandReceiptStore: options.agentCommandReceiptStore,
     projectRegistry: {
       list: vi.fn().mockResolvedValue([]),
       get: vi.fn(),
@@ -425,6 +428,87 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
   };
   return new Session(sessionOptions);
 }
+
+async function* emptyAgentStream(): AsyncGenerator<never> {
+  yield* [];
+}
+
+describe("durable agent command receipts", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(() => {
+    for (const directory of tempDirs.splice(0)) {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("executes one provider turn for duplicate command delivery", async () => {
+    const paseoHome = mkdtempSync(join(tmpdir(), "paseo-command-session-"));
+    tempDirs.push(paseoHome);
+    const messages: SessionOutboundMessage[] = [];
+    const streamAgent = vi.fn(emptyAgentStream);
+    const snapshot = {
+      id: "agent-1",
+      provider: "codex",
+      lifecycle: "idle",
+      activeForegroundTurnId: null,
+      persistence: null,
+    };
+    const manager = {
+      listAgents: vi.fn(() => [snapshot]),
+      listProviderSubagentActivity: vi.fn(() => []),
+      subscribe: vi.fn(() => () => {}),
+      getAgent: vi.fn(() => snapshot),
+      waitForAgentClose: vi.fn().mockResolvedValue(undefined),
+      tryRunOutOfBand: vi.fn(() => false),
+      hasInFlightRun: vi.fn(() => false),
+      streamAgent,
+      waitForAgentRunStart: vi.fn().mockResolvedValue(undefined),
+      hasCanonicalSubmittedPrompt: vi.fn().mockResolvedValue(false),
+    };
+    const session = createSessionForTest({
+      paseoHome,
+      messages,
+      agentManager: manager,
+      agentStorage: {
+        get: vi.fn().mockResolvedValue(undefined),
+        list: vi.fn().mockResolvedValue([]),
+      },
+      agentCommandReceiptStore: new AgentCommandReceiptStore(paseoHome, pino({ level: "silent" })),
+    });
+
+    const send = async (requestId: string, text = "do it") => {
+      await session.handleMessage({
+        type: "send_agent_message_request",
+        requestId,
+        agentId: "agent-1",
+        text,
+        messageId: "message-1",
+        commandId: "command-1",
+        attachments: [],
+      });
+      return messages.find(
+        (
+          message,
+        ): message is Extract<SessionOutboundMessage, { type: "send_agent_message_response" }> =>
+          message.type === "send_agent_message_response" && message.payload.requestId === requestId,
+      );
+    };
+
+    await expect(send("request-1")).resolves.toMatchObject({
+      payload: { accepted: true, commandId: "command-1", receiptStatus: "accepted" },
+    });
+    await expect(send("request-2")).resolves.toMatchObject({
+      payload: { accepted: true, commandId: "command-1", receiptStatus: "accepted" },
+    });
+    expect(streamAgent).toHaveBeenCalledTimes(1);
+
+    await expect(send("request-3", "different payload")).resolves.toMatchObject({
+      payload: { accepted: false, commandId: "command-1", receiptStatus: "rejected" },
+    });
+    expect(streamAgent).toHaveBeenCalledTimes(1);
+  });
+});
 
 test("routes plugin management requests and catalog notifications", async () => {
   const messages: SessionOutboundMessage[] = [];

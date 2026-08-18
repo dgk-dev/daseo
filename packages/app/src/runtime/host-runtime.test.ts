@@ -22,6 +22,7 @@ import {
   type HostRuntimeStorage,
 } from "./host-runtime";
 import { ReplicaCache } from "./replica-cache";
+import { ComposerOutboxStore } from "@/composer/outbox/store";
 
 class FakeDaemonClient {
   private state: ConnectionState = { status: "idle" };
@@ -44,6 +45,10 @@ class FakeDaemonClient {
   private fetchWaiters = new Set<() => void>();
   private agentListenerWaiters = new Set<() => void>();
   private sentMessageWaiters = new Set<() => void>();
+
+  get isConnected(): boolean {
+    return this.state.status === "connected";
+  }
 
   on(
     type: "agent_update",
@@ -90,6 +95,8 @@ class FakeDaemonClient {
     if (response) await response;
     const failure = this.sendAgentMessageFailures.shift();
     if (failure) throw failure;
+    const commandId = args[2]?.commandId ?? args[2]?.messageId ?? "test-command";
+    return { commandId, receiptStatus: "accepted" };
   }
 
   async waitForSentMessages(count: number): Promise<void> {
@@ -2734,6 +2741,78 @@ describe("HostRuntimeStore", () => {
         headRefName: "fix",
       },
     ]);
+    sessionStore.clearSession(host.serverId);
+  });
+
+  it("restores queued records and reconciles pending commands from durable outbox", async () => {
+    const host = makeHost({ serverId: "srv_durable_outbox" });
+    const fakeClient = new FakeDaemonClient();
+    fakeClient.setConnectionState({ status: "connected" });
+    const outbox = new ComposerOutboxStore();
+    await outbox.enqueue({
+      id: "queued-after-restart",
+      serverId: host.serverId,
+      agentId: "agent-queued",
+      text: "wait until idle",
+      attachments: [],
+      intent: "queued",
+      now: 1,
+    });
+    await outbox.enqueue({
+      id: "pending-after-restart",
+      serverId: host.serverId,
+      agentId: "agent-pending",
+      text: "reconcile me",
+      attachments: [],
+      intent: "dispatch",
+      now: 2,
+    });
+    const store = new HostRuntimeStore({
+      composerOutbox: outbox,
+      deps: {
+        createClient: () => fakeClient as unknown as DaemonClient,
+        connectToDaemon: async () => ({
+          client: fakeClient as unknown as DaemonClient,
+          serverId: host.serverId,
+          hostname: null,
+        }),
+        getClientId: async () => "cid_durable_outbox",
+      },
+    });
+    const sessionStore = useSessionStore.getState();
+    sessionStore.initializeSession(host.serverId, fakeClient as unknown as DaemonClient, 1);
+    sessionStore.updateSessionServerInfo(host.serverId, {
+      serverId: host.serverId,
+      hostname: null,
+      version: "0.5.0",
+      features: {
+        canonicalSubmittedPrompts: true,
+        durableCommandReceipts: true,
+      },
+    });
+
+    store.drainComposerOutbox(host.serverId);
+    await fakeClient.waitForSentMessages(1);
+    await vi.waitFor(async () => {
+      expect(await outbox.list({ serverId: host.serverId, intent: "dispatch" })).toEqual([]);
+    });
+
+    expect(fakeClient.sentAgentMessages).toMatchObject([
+      [
+        "agent-pending",
+        "reconcile me",
+        {
+          messageId: "pending-after-restart",
+          commandId: "pending-after-restart",
+        },
+      ],
+    ]);
+    await vi.waitFor(() => {
+      expect(
+        useSessionStore.getState().sessions[host.serverId]?.queuedMessages.get("agent-queued"),
+      ).toEqual([{ id: "queued-after-restart", text: "wait until idle", attachments: [] }]);
+    });
+    expect(await outbox.list({ serverId: host.serverId, intent: "queued" })).toHaveLength(1);
     sessionStore.clearSession(host.serverId);
   });
 

@@ -1267,7 +1267,13 @@ export function Composer({
   const { pickFiles } = useFilePicker();
   const agentIdRef = useRef(agentId);
   const sendAgentMessageRef = useRef<
-    ((agentId: string, text: string, attachments: ComposerAttachment[]) => Promise<void>) | null
+    | ((
+        agentId: string,
+        text: string,
+        attachments: ComposerAttachment[],
+        clientMessageId?: string,
+      ) => Promise<void>)
+    | null
   >(null);
   const onSubmitMessageRef = useRef(onSubmitMessage);
 
@@ -1319,7 +1325,7 @@ export function Composer({
   }, [focusInput, onFocusInput]);
 
   const submitMessage = useCallback(
-    async (text: string, submitAttachments: ComposerAttachment[]) => {
+    async (text: string, submitAttachments: ComposerAttachment[], clientMessageId?: string) => {
       onMessageSent?.();
       if (onSubmitMessageRef.current) {
         await onSubmitMessageRef.current({ text, attachments: submitAttachments, cwd });
@@ -1328,7 +1334,12 @@ export function Composer({
       if (!sendAgentMessageRef.current) {
         throw new Error(t("workspace.terminal.hostDisconnected"));
       }
-      await sendAgentMessageRef.current(agentIdRef.current, text, submitAttachments);
+      await sendAgentMessageRef.current(
+        agentIdRef.current,
+        text,
+        submitAttachments,
+        clientMessageId,
+      );
     },
     [cwd, onMessageSent, t],
   );
@@ -1342,6 +1353,7 @@ export function Composer({
       targetAgentId: string,
       text: string,
       sendAttachments: ComposerAttachment[],
+      clientMessageId?: string,
     ) => {
       if (!client) {
         throw new Error(t("workspace.terminal.hostDisconnected"));
@@ -1351,6 +1363,7 @@ export function Composer({
         targetAgent?.status === "running" && targetAgent.capabilities.supportsSteering === true;
       await dispatchComposerAgentMessage({
         client,
+        serverId,
         agentId: targetAgentId,
         text,
         attachments: sendAttachments,
@@ -1360,6 +1373,7 @@ export function Composer({
         encodeImages,
         submission: createMessageSubmissionWriter(serverId),
         steering,
+        clientMessageId,
       });
       onAttentionPromptSend?.();
     };
@@ -1393,8 +1407,9 @@ export function Composer({
   );
 
   const queueMessage = useCallback(
-    (queuedMessage: string, queuedAttachments: ComposerAttachment[]) => {
-      const result = queueComposerMessage({
+    async (queuedMessage: string, queuedAttachments: ComposerAttachment[]) => {
+      const result = await queueComposerMessage({
+        serverId,
         agentId,
         text: queuedMessage,
         attachments: queuedAttachments,
@@ -1412,6 +1427,7 @@ export function Composer({
       clearSentAttachments,
       queueWriter,
       resetSuppression,
+      serverId,
       setSelectedAttachments,
       replaceUserInput,
     ],
@@ -1434,9 +1450,8 @@ export function Composer({
         // Parent-managed submits are still valid submit paths even when the
         // transport is disconnected, because the parent decides the failure mode.
         canSubmit: Boolean(sendAgentMessageRef.current || onSubmitMessageRef.current),
-        queueMessage: ({ message: queuedText, attachments: queuedAttachments }) => {
-          queueMessage(queuedText, queuedAttachments);
-        },
+        queueMessage: ({ message: queuedText, attachments: queuedAttachments }) =>
+          queueMessage(queuedText, queuedAttachments),
         submitMessage: async ({ message: submitText, attachments: submitAttachments }) => {
           if (submitBehavior !== "preserve-and-lock") {
             beginSubmit(submitAttachments);
@@ -1757,16 +1772,19 @@ export function Composer({
 
   const handleEditQueuedMessage = useCallback(
     (id: string) => {
-      const result = editQueuedComposerMessage({
+      void editQueuedComposerMessage({
+        serverId,
         agentId,
         messageId: id,
         queue: queueWriter,
+      }).then((result) => {
+        if (!result) return undefined;
+        replaceUserInput(result.text);
+        setSelectedAttachments(result.attachments);
+        return undefined;
       });
-      if (!result) return;
-      replaceUserInput(result.text);
-      setSelectedAttachments(result.attachments);
     },
-    [agentId, queueWriter, replaceUserInput, setSelectedAttachments],
+    [agentId, queueWriter, replaceUserInput, serverId, setSelectedAttachments],
   );
 
   const handleSendQueuedNow = useCallback(
@@ -1775,18 +1793,19 @@ export function Composer({
       // Reuse the regular send path; steer-capable providers accept this into
       // the active turn, while other providers preserve their legacy behavior.
       const result = await sendQueuedComposerMessageNow({
+        serverId,
         agentId,
         messageId: id,
         queue: queueWriter,
-        submitMessage: ({ text, attachments: queuedAttachments }) =>
-          submitMessage(text, queuedAttachments),
+        submitMessage: ({ text, attachments: queuedAttachments, clientMessageId }) =>
+          submitMessage(text, queuedAttachments, clientMessageId),
         failedToSendMessage: t("composer.errors.failedToSend"),
       });
       if (result.status === "failed") {
         setSendError(result.errorMessage);
       }
     },
-    [agentId, queueWriter, submitMessage, t],
+    [agentId, queueWriter, serverId, submitMessage, t],
   );
 
   const handleQueue = useCallback(
@@ -1799,7 +1818,7 @@ export function Composer({
       if (clientSlashCommand && runClientSlashCommand(clientSlashCommand)) {
         return;
       }
-      queueMessage(payload.text, outgoingAttachments);
+      void queueMessage(payload.text, outgoingAttachments);
     },
     [attachments, buildOutgoingAttachments, queueMessage, runClientSlashCommand],
   );

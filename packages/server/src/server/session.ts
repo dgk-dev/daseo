@@ -73,6 +73,11 @@ import {
 import { DirectorySyncService } from "./directory-sync/index.js";
 
 import { AgentManager, AgentRunCancellationError } from "./agent/agent-manager.js";
+import {
+  getAgentCommandReceiptStore,
+  hashAgentCommandPayload,
+  type AgentCommandReceiptStore,
+} from "./agent/agent-command-receipt-store.js";
 import { buildTimelinePromptIndex } from "./agent/timeline-prompt-index.js";
 import { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
 import type {
@@ -446,6 +451,7 @@ export interface SessionOptions {
   worktreesRoot?: string;
   agentManager: AgentManager;
   agentStorage: AgentStorage;
+  agentCommandReceiptStore?: AgentCommandReceiptStore;
   projectRegistry: ProjectRegistry;
   workspaceRegistry: WorkspaceRegistry;
   directorySync?: DirectorySyncService;
@@ -601,6 +607,14 @@ function resolveDirectorySync(service: DirectorySyncService | undefined): Direct
   return service ?? new DirectorySyncService();
 }
 
+function resolveAgentCommandReceiptStore(input: {
+  store: AgentCommandReceiptStore | undefined;
+  paseoHome: string;
+  logger: pino.Logger;
+}): AgentCommandReceiptStore {
+  return input.store ?? getAgentCommandReceiptStore(input.paseoHome, input.logger);
+}
+
 function describeRegistryTransition(record: ArchivedRecordSnapshot | null): RegistryTransition {
   if (!record) {
     return "created";
@@ -639,6 +653,7 @@ export class Session {
 
   private agentManager: AgentManager;
   private readonly agentStorage: AgentStorage;
+  private readonly agentCommandReceiptStore: AgentCommandReceiptStore;
   private readonly projectRegistry: ProjectRegistry;
   private readonly workspaceRegistry: WorkspaceRegistry;
   private readonly directorySync: DirectorySyncService;
@@ -725,6 +740,7 @@ export class Session {
       worktreesRoot,
       agentManager,
       agentStorage,
+      agentCommandReceiptStore,
       projectRegistry,
       workspaceRegistry,
       directorySync,
@@ -795,6 +811,11 @@ export class Session {
     });
     this.agentManager = agentManager;
     this.agentStorage = agentStorage;
+    this.agentCommandReceiptStore = resolveAgentCommandReceiptStore({
+      store: agentCommandReceiptStore,
+      paseoHome,
+      logger,
+    });
     this.projectRegistry = projectRegistry;
     this.workspaceRegistry = workspaceRegistry;
     this.directorySync = resolveDirectorySync(directorySync);
@@ -6882,19 +6903,83 @@ export class Session {
           agentId: msg.agentId,
           accepted: false,
           error: resolved.error,
+          ...(msg.commandId
+            ? { commandId: msg.commandId, receiptStatus: "rejected" as const }
+            : {}),
         },
       });
       return;
     }
 
-    try {
-      const agentId = resolved.agentId;
+    const agentId = resolved.agentId;
+    const commandId = msg.commandId;
+    const emitResponse = (input: {
+      accepted: boolean;
+      error: string | null;
+      receiptStatus?: "in_flight" | "accepted" | "rejected";
+    }): void => {
+      this.emit({
+        type: "send_agent_message_response",
+        payload: {
+          requestId: msg.requestId,
+          agentId,
+          accepted: input.accepted,
+          error: input.error,
+          ...(commandId && input.receiptStatus
+            ? { commandId, receiptStatus: input.receiptStatus }
+            : {}),
+        },
+      });
+    };
 
+    if (commandId) {
+      const payloadHash = hashAgentCommandPayload({
+        agentId,
+        text: msg.text,
+        images: msg.images,
+        attachments: msg.attachments,
+      });
+      const admission = await this.agentCommandReceiptStore.admit({
+        commandId,
+        agentId,
+        payloadHash,
+      });
+      if (admission.kind === "conflict") {
+        emitResponse({
+          accepted: false,
+          error: "Command id was already used for a different target or payload",
+          receiptStatus: "rejected",
+        });
+        return;
+      }
+      if (admission.kind === "existing") {
+        let receipt = admission.receipt;
+        if (
+          receipt.status === "in_flight" &&
+          (await this.agentManager.hasCanonicalSubmittedPrompt(agentId, commandId))
+        ) {
+          receipt =
+            (await this.agentCommandReceiptStore.settle({
+              commandId,
+              status: "accepted",
+            })) ?? receipt;
+        }
+        emitResponse({
+          accepted: receipt.status !== "rejected",
+          error: receipt.error ?? null,
+          receiptStatus: receipt.status,
+        });
+        return;
+      }
+    }
+
+    try {
       const prompt = buildAgentPrompt(msg.text, msg.images, msg.attachments);
       this.sessionLogger.trace(
         {
           agentId,
           messageId: msg.messageId,
+          commandId,
           textPrefix: msg.text.slice(0, 80),
         },
         "agent.session.send_agent_message",
@@ -6912,65 +6997,41 @@ export class Session {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         this.handleAgentRunError(agentId, error, "Failed to send agent message");
-        this.emit({
-          type: "send_agent_message_response",
-          payload: {
-            requestId: msg.requestId,
-            agentId,
-            accepted: false,
-            error: message,
-          },
-        });
+        if (commandId) {
+          emitResponse({ accepted: true, error: message, receiptStatus: "in_flight" });
+        } else {
+          emitResponse({ accepted: false, error: message });
+        }
         return;
       }
 
-      if (dispatchResult.outOfBand) {
-        this.emit({
-          type: "send_agent_message_response",
-          payload: {
-            requestId: msg.requestId,
-            agentId,
-            accepted: true,
-            error: null,
-          },
-        });
-        return;
+      if (!dispatchResult.outOfBand) {
+        try {
+          await waitForAgentRunStartWithTimeout(this.agentManager, agentId);
+        } catch (error) {
+          const message = errorToFriendlyMessage(error);
+          if (commandId) {
+            emitResponse({ accepted: true, error: message, receiptStatus: "in_flight" });
+          } else {
+            emitResponse({ accepted: false, error: message });
+          }
+          return;
+        }
       }
 
-      try {
-        await waitForAgentRunStartWithTimeout(this.agentManager, agentId);
-      } catch (error) {
-        this.emit({
-          type: "send_agent_message_response",
-          payload: {
-            requestId: msg.requestId,
-            agentId,
-            accepted: false,
-            error: errorToFriendlyMessage(error),
-          },
-        });
-        return;
+      if (commandId) {
+        await this.agentCommandReceiptStore.settle({ commandId, status: "accepted" });
+        emitResponse({ accepted: true, error: null, receiptStatus: "accepted" });
+      } else {
+        emitResponse({ accepted: true, error: null });
       }
-
-      this.emit({
-        type: "send_agent_message_response",
-        payload: {
-          requestId: msg.requestId,
-          agentId,
-          accepted: true,
-          error: null,
-        },
-      });
     } catch (error) {
-      this.emit({
-        type: "send_agent_message_response",
-        payload: {
-          requestId: msg.requestId,
-          agentId: resolved.agentId,
-          accepted: false,
-          error: errorToFriendlyMessage(error),
-        },
-      });
+      const message = errorToFriendlyMessage(error);
+      if (commandId) {
+        emitResponse({ accepted: true, error: message, receiptStatus: "in_flight" });
+      } else {
+        emitResponse({ accepted: false, error: message });
+      }
     }
   }
 

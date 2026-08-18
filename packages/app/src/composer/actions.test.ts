@@ -11,6 +11,7 @@ import {
   removeSubmittedUserMessage,
   type StreamItem,
 } from "@/types/stream";
+import type { ComposerOutboxRecord } from "@/composer/outbox/store";
 import {
   acceptMessageSubmission,
   beginMessageSubmission,
@@ -34,6 +35,7 @@ import {
   type AttachmentPersister,
   type ComposerCancelClient,
   type ComposerSendClient,
+  type ComposerOutboxWriter,
   type QueueWriter,
   type QueuedComposerMessage,
 } from "./actions";
@@ -179,13 +181,18 @@ interface FakeSendCall {
   text: string;
   options: {
     messageId: string;
+    commandId: string;
     images: Array<{ data: string; mimeType: string }>;
     attachments: AgentAttachment[];
   };
 }
 
 function createFakeSendClient(
-  options: { rejection?: Error; beforeRejection?: (call: FakeSendCall) => void } = {},
+  options: {
+    rejection?: Error;
+    beforeRejection?: (call: FakeSendCall) => void;
+    receiptStatus?: "in_flight" | "accepted" | "rejected";
+  } = {},
 ): ComposerSendClient & { calls: FakeSendCall[] } {
   const calls: FakeSendCall[] = [];
   return {
@@ -197,6 +204,7 @@ function createFakeSendClient(
         options.beforeRejection?.(call);
         throw options.rejection;
       }
+      return { receiptStatus: options.receiptStatus ?? "accepted" };
     },
     uploadFile: async () => ({ requestId: "test", file: null, error: null }),
   };
@@ -285,6 +293,47 @@ function createFakeQueue(
     },
   };
   return fake;
+}
+
+function createFakeOutbox(): ComposerOutboxWriter & {
+  records: Map<string, ComposerOutboxRecord>;
+} {
+  const records = new Map<string, ComposerOutboxRecord>();
+  return {
+    records,
+    async enqueue(input) {
+      const existing = records.get(input.id);
+      if (existing) return existing;
+      const record: ComposerOutboxRecord = {
+        version: 1,
+        ...input,
+        status: input.intent === "queued" ? "queued" : "pending",
+        createdAt: 1,
+        updatedAt: 1,
+        attemptCount: 0,
+        lastError: null,
+      };
+      records.set(record.id, record);
+      return record;
+    },
+    async mark(input) {
+      const existing = records.get(input.id);
+      if (!existing) return null;
+      const record: ComposerOutboxRecord = {
+        ...existing,
+        ...(input.intent ? { intent: input.intent } : {}),
+        status: input.status,
+        updatedAt: existing.updatedAt + 1,
+        attemptCount: existing.attemptCount + (input.incrementAttempt ? 1 : 0),
+        lastError: input.lastError ?? null,
+      };
+      records.set(record.id, record);
+      return record;
+    },
+    async remove(_serverId, id) {
+      return records.delete(id);
+    },
+  };
 }
 
 const passthroughEncodeImages = async (images: AttachmentMetadata[]) =>
@@ -448,6 +497,8 @@ describe("dispatchComposerAgentMessage", () => {
 
     await expect(
       dispatchComposerAgentMessage({
+        serverId: "server",
+        outbox: createFakeOutbox(),
         client,
         agentId: "agent",
         text: "rejected prompt",
@@ -468,6 +519,8 @@ describe("dispatchComposerAgentMessage", () => {
 
     await expect(
       dispatchComposerAgentMessage({
+        serverId: "server",
+        outbox: createFakeOutbox(),
         client,
         agentId: "agent",
         text: "force send",
@@ -480,11 +533,95 @@ describe("dispatchComposerAgentMessage", () => {
     expect(stream.tail.get("agent") ?? []).toEqual([]);
   });
 
+  it("keeps the outbox and optimistic row when delivery becomes unknown", async () => {
+    const deliveryUnknown = new Error("socket closed after write");
+    deliveryUnknown.name = "AgentCommandDeliveryUnknownError";
+    const client = createFakeSendClient({ rejection: deliveryUnknown });
+    const stream = createFakeStream();
+    const outbox = createFakeOutbox();
+
+    await expect(
+      dispatchComposerAgentMessage({
+        serverId: "server",
+        outbox,
+        client,
+        agentId: "agent",
+        text: "uncertain prompt",
+        attachments: [],
+        encodeImages: passthroughEncodeImages,
+        submission: stream,
+        clientMessageId: "message-unknown",
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(outbox.records.get("message-unknown")).toMatchObject({
+      status: "delivery_unknown",
+      attemptCount: 1,
+      lastError: "socket closed after write",
+    });
+    expect(stream.tail.get("agent")?.[0]).toMatchObject({
+      kind: "user_message",
+      clientMessageId: "message-unknown",
+    });
+    expect(readSubmission(stream, "agent").submissions).toMatchObject([
+      { clientMessageId: "message-unknown", rpcSettled: false },
+    ]);
+  });
+
+  it("keeps an in-flight server receipt pending for authoritative reconciliation", async () => {
+    const client = createFakeSendClient({ receiptStatus: "in_flight" });
+    const stream = createFakeStream();
+    const outbox = createFakeOutbox();
+
+    await dispatchComposerAgentMessage({
+      serverId: "server",
+      outbox,
+      client,
+      agentId: "agent",
+      text: "still processing",
+      attachments: [],
+      encodeImages: passthroughEncodeImages,
+      submission: stream,
+      clientMessageId: "message-in-flight",
+    });
+
+    expect(outbox.records.get("message-in-flight")).toMatchObject({ status: "in_flight" });
+    expect(readSubmission(stream, "agent").submissions).toMatchObject([
+      { clientMessageId: "message-in-flight", rpcSettled: false },
+    ]);
+  });
+
+  it("does not clear the composer transaction when durable admission fails", async () => {
+    const client = createFakeSendClient();
+    const stream = createFakeStream();
+    const outbox = createFakeOutbox();
+    outbox.enqueue = async () => {
+      throw new Error("outbox persistence failed");
+    };
+
+    await expect(
+      dispatchComposerAgentMessage({
+        serverId: "server",
+        outbox,
+        client,
+        agentId: "agent",
+        text: "must persist",
+        attachments: [],
+        encodeImages: passthroughEncodeImages,
+        submission: stream,
+      }),
+    ).rejects.toThrow("outbox persistence failed");
+    expect(client.calls).toEqual([]);
+    expect(stream.tail.get("agent") ?? []).toEqual([]);
+  });
+
   it("marks an optimistic active-turn submission as steering", async () => {
     const client = createFakeSendClient();
     const stream = createFakeStream();
 
     await dispatchComposerAgentMessage({
+      serverId: "server",
+      outbox: createFakeOutbox(),
       client,
       agentId: "agent",
       text: "new mid-turn context",
@@ -512,6 +649,8 @@ describe("dispatchComposerAgentMessage", () => {
 
     await expect(
       dispatchComposerAgentMessage({
+        serverId: "server",
+        outbox: createFakeOutbox(),
         client,
         agentId: "agent",
         text: "unknown state",
@@ -528,6 +667,8 @@ describe("dispatchComposerAgentMessage", () => {
     const image = imageWithId("img-2");
 
     await dispatchComposerAgentMessage({
+      serverId: "server",
+      outbox: createFakeOutbox(),
       client,
       agentId: "agent",
       text: "send attachments",
@@ -576,6 +717,8 @@ describe("dispatchComposerAgentMessage", () => {
     const stream = createFakeStream();
 
     await dispatchComposerAgentMessage({
+      serverId: "server",
+      outbox: createFakeOutbox(),
       client,
       agentId: "agent",
       text: "send old attachment",
@@ -610,6 +753,8 @@ describe("dispatchComposerAgentMessage", () => {
     const client = createFakeSendClient();
 
     await dispatchComposerAgentMessage({
+      serverId: "server",
+      outbox: createFakeOutbox(),
       client,
       agentId: "agent",
       text: "next message",
@@ -627,6 +772,8 @@ describe("dispatchComposerAgentMessage", () => {
     const stream = createFakeStream();
 
     await dispatchComposerAgentMessage({
+      serverId: "server",
+      outbox: createFakeOutbox(),
       client,
       agentId: "agent",
       text: "plain message",
@@ -647,6 +794,8 @@ describe("dispatchComposerAgentMessage", () => {
     const review = reviewWorkspaceAttachment("Please simplify this.");
 
     await dispatchComposerAgentMessage({
+      serverId: "server",
+      outbox: createFakeOutbox(),
       client,
       agentId: "agent",
       text: "review this",
@@ -665,6 +814,8 @@ describe("dispatchComposerAgentMessage", () => {
     const browserElement = browserElementWorkspaceAttachment();
 
     await dispatchComposerAgentMessage({
+      serverId: "server",
+      outbox: createFakeOutbox(),
       client,
       agentId: "agent",
       text: "inspect element",
@@ -685,9 +836,11 @@ describe("dispatchComposerAgentMessage", () => {
 });
 
 describe("queueComposerMessage", () => {
-  it("queues a trimmed message under the agent id and returns the new entry", () => {
+  it("queues a trimmed message under the agent id and returns the new entry", async () => {
     const queue = createFakeQueue();
-    const result = queueComposerMessage({
+    const result = await queueComposerMessage({
+      serverId: "server",
+      outbox: createFakeOutbox(),
       agentId: "agent",
       text: "  draft  ",
       attachments: [],
@@ -700,9 +853,11 @@ describe("queueComposerMessage", () => {
     ]);
   });
 
-  it("does not queue an empty message with no attachments", () => {
+  it("does not queue an empty message with no attachments", async () => {
     const queue = createFakeQueue();
-    const result = queueComposerMessage({
+    const result = await queueComposerMessage({
+      serverId: "server",
+      outbox: createFakeOutbox(),
       agentId: "agent",
       text: "   ",
       attachments: [],
@@ -712,11 +867,13 @@ describe("queueComposerMessage", () => {
     expect(queue.state.get("agent")).toBeUndefined();
   });
 
-  it("captures workspace review attachments at queue time alongside user attachments", () => {
+  it("captures workspace review attachments at queue time alongside user attachments", async () => {
     const queue = createFakeQueue();
     const review = reviewWorkspaceAttachment("Initial queued review.");
     const image = imageWithId("img-queue");
-    queueComposerMessage({
+    await queueComposerMessage({
+      serverId: "server",
+      outbox: createFakeOutbox(),
       agentId: "agent",
       text: "queue this",
       attachments: [{ kind: "image", metadata: image }, review],
@@ -731,16 +888,22 @@ describe("queueComposerMessage", () => {
 });
 
 describe("editQueuedComposerMessage", () => {
-  it("returns null and leaves the queue untouched when the message id is missing", () => {
+  it("returns null and leaves the queue untouched when the message id is missing", async () => {
     const queue = createFakeQueue(
       new Map([["agent", [{ id: "other", text: "other", attachments: [] }]]]),
     );
-    const result = editQueuedComposerMessage({ agentId: "agent", messageId: "missing", queue });
+    const result = await editQueuedComposerMessage({
+      serverId: "server",
+      outbox: createFakeOutbox(),
+      agentId: "agent",
+      messageId: "missing",
+      queue,
+    });
     expect(result).toBeNull();
     expect(queue.state.get("agent")).toHaveLength(1);
   });
 
-  it("returns the text and only user attachments, removing the queued entry", () => {
+  it("returns the text and only user attachments, removing the queued entry", async () => {
     const review = reviewWorkspaceAttachment("Queued snapshot.");
     const image = imageWithId("img-queued-edit");
     const queue = createFakeQueue(
@@ -758,7 +921,13 @@ describe("editQueuedComposerMessage", () => {
       ]),
     );
 
-    const result = editQueuedComposerMessage({ agentId: "agent", messageId: "msg-1", queue });
+    const result = await editQueuedComposerMessage({
+      serverId: "server",
+      outbox: createFakeOutbox(),
+      agentId: "agent",
+      messageId: "msg-1",
+      queue,
+    });
     expect(result).toEqual({
       text: "queued draft",
       attachments: [{ kind: "image", metadata: image }],
@@ -770,8 +939,14 @@ describe("editQueuedComposerMessage", () => {
 describe("sendQueuedComposerMessageNow", () => {
   it("returns missing without submitting when the message id is gone", async () => {
     const queue = createFakeQueue();
-    const submitted: Array<{ text: string; attachments: ComposerAttachment[] }> = [];
+    const submitted: Array<{
+      text: string;
+      attachments: ComposerAttachment[];
+      clientMessageId: string;
+    }> = [];
     const result = await sendQueuedComposerMessageNow({
+      serverId: "server",
+      outbox: createFakeOutbox(),
       agentId: "agent",
       messageId: "msg-1",
       queue,
@@ -788,8 +963,14 @@ describe("sendQueuedComposerMessageNow", () => {
     const queue = createFakeQueue(
       new Map([["agent", [{ id: "msg-1", text: "send me", attachments: [review] }]]]),
     );
-    const submitted: Array<{ text: string; attachments: ComposerAttachment[] }> = [];
+    const submitted: Array<{
+      text: string;
+      attachments: ComposerAttachment[];
+      clientMessageId: string;
+    }> = [];
     const result = await sendQueuedComposerMessageNow({
+      serverId: "server",
+      outbox: createFakeOutbox(),
       agentId: "agent",
       messageId: "msg-1",
       queue,
@@ -799,7 +980,9 @@ describe("sendQueuedComposerMessageNow", () => {
     });
     expect(result).toEqual({ status: "submitted" });
     expect(queue.state.get("agent")).toEqual([]);
-    expect(submitted).toEqual([{ text: "send me", attachments: [review] }]);
+    expect(submitted).toEqual([
+      { text: "send me", attachments: [review], clientMessageId: "msg-1" },
+    ]);
   });
 
   it("restores the queued entry to the front and surfaces the error message on failure", async () => {
@@ -815,6 +998,8 @@ describe("sendQueuedComposerMessageNow", () => {
       ]),
     );
     const result = await sendQueuedComposerMessageNow({
+      serverId: "server",
+      outbox: createFakeOutbox(),
       agentId: "agent",
       messageId: "msg-1",
       queue,

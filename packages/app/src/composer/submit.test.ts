@@ -141,6 +141,39 @@ describe("submitAgentInput", () => {
     expect(clearDraft).not.toHaveBeenCalled();
   });
 
+  it("keeps the composer intact when durable queue persistence fails", async () => {
+    const queueError = new Error("outbox unavailable");
+    const queueMessage = vi.fn(async () => {
+      throw queueError;
+    });
+    const setUserInput = vi.fn();
+    const setAttachments = vi.fn();
+    const setSendError = vi.fn();
+    const onSubmitError = vi.fn();
+
+    await expect(
+      submitAgentInput({
+        message: "  queued message  ",
+        attachments: [{ id: "img-1" }],
+        isAgentRunning: true,
+        canSubmit: true,
+        queueMessage,
+        submitMessage: vi.fn(),
+        clearDraft: vi.fn(),
+        setUserInput,
+        setAttachments,
+        setSendError,
+        setIsProcessing: vi.fn(),
+        onSubmitError,
+      }),
+    ).resolves.toBe("failed");
+
+    expect(onSubmitError).toHaveBeenCalledWith(queueError);
+    expect(setUserInput).not.toHaveBeenCalled();
+    expect(setAttachments).not.toHaveBeenCalled();
+    expect(setSendError).toHaveBeenCalledWith("outbox unavailable");
+  });
+
   it("restores the composer when submit fails", async () => {
     const submitError = new Error("No host selected");
     const queueMessage = vi.fn();

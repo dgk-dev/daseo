@@ -482,6 +482,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       ...(serverInfo.capabilities ? { capabilities: serverInfo.capabilities } : {}),
       ...(serverInfo.features ? { features: serverInfo.features } : {}),
     });
+    getHostRuntimeStore().drainComposerOutbox(serverId);
   }, [client, serverId, updateSessionServerInfo]);
 
   useEffect(() => {
@@ -836,6 +837,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
           ...(serverInfo.capabilities ? { capabilities: serverInfo.capabilities } : {}),
           ...(serverInfo.features ? { features: serverInfo.features } : {}),
         });
+        getHostRuntimeStore().drainComposerOutbox(serverId);
         return;
       }
     });

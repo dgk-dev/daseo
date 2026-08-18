@@ -51,5 +51,16 @@
       "declarationCount": 5
     }
   },
-  "compatibleChanges": []
+  "compatibleChanges": [
+    {
+      "root": "src/messages.ts#WSInboundMessageSchema",
+      "digest": "sha256:11b4e50d79d1d73499701901b6565086a6f87aae8788381eaf1e8e072b848953",
+      "rationale": "Adds optional commandId to send_agent_message_request and an optional durableCommandReceipts feature flag. Old daemons ignore both fields and keep parsing the existing request shape."
+    },
+    {
+      "root": "src/messages.ts#WSOutboundMessageSchema",
+      "digest": "sha256:dbe9b56f43a318865501e3202ea4b59ac47ec1a7ba29c78d9e7a99a8278c360c",
+      "rationale": "Adds optional commandId and receiptStatus fields to send_agent_message_response plus an optional feature flag. Old clients ignore the additions and retain accepted/error behavior."
+    }
+  ]
 }

@@ -2138,6 +2138,17 @@ export class AgentManager {
     return true;
   }
 
+  async hasCanonicalSubmittedPrompt(agentId: string, clientMessageId: string): Promise<boolean> {
+    if (this.timelineStore.getSubmittedUserMessage(agentId, clientMessageId)) {
+      return true;
+    }
+    if (!this.durableTimelineStore) return false;
+    const rows = await this.durableTimelineStore.getCommittedRows(agentId);
+    return rows.some(
+      (row) => row.item.type === "user_message" && row.item.clientMessageId === clientMessageId,
+    );
+  }
+
   async appendTimelineItem(agentId: string, item: AgentTimelineItem): Promise<void> {
     const agent = this.requireAgent(agentId);
     item = limitAgentTimelineItemContent(item);

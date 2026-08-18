@@ -9,6 +9,7 @@ import {
   persistAttachmentFromFileUri,
 } from "@/attachments/service";
 import { collectRetainedAttachmentIds } from "@/attachments/gc-retention";
+import { composerOutboxStore } from "@/composer/outbox/store";
 import { useCreateFlowStore } from "@/stores/create-flow-store";
 import { useSessionStore, type SessionState } from "@/stores/session-store";
 import { useWorkspaceAttachmentsStore } from "@/attachments/workspace-attachments-store";
@@ -146,6 +147,9 @@ async function runAttachmentGc(): Promise<void> {
     referencedIds.add(id);
   }
   for (const id of collectRetainedAttachmentIds()) {
+    referencedIds.add(id);
+  }
+  for (const id of await composerOutboxStore.collectAttachmentIds()) {
     referencedIds.add(id);
   }
 

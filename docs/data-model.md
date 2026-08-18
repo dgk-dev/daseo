@@ -47,6 +47,7 @@ $PASEO_HOME/
 ├── config.json                          # Daemon configuration
 ├── server-id                            # Stable daemon identifier (plain text, "srv_<base64url>")
 ├── daemon-keypair.json                  # E2EE keypair for relay (mode 0600)
+├── agent-command-receipts.json          # Idempotent mobile command admission receipts
 ├── paseo.pid                            # Daemon PID lock file
 ├── daemon.log                           # Default log file (path configurable)
 ├── agents/
@@ -461,7 +462,13 @@ Simple set of Expo push notification tokens. Loaded with permissive parsing (fil
 
 ---
 
-## 7. Daemon meta files
+## 7. Agent command receipts
+
+**Path:** `$PASEO_HOME/agent-command-receipts.json`
+
+The daemon writes an `in_flight` receipt before dispatching a command that carries `commandId`. A repeated ID with the same agent and payload returns the existing receipt; reuse with a different target or payload is rejected. `accepted` and `rejected` receipts are retained for 30 days under a bounded 4,096-record budget. `in_flight` receipts are not evicted because a crash can leave provider delivery ambiguous.
+
+## 8. Daemon meta files
 
 These small files are not validated as full Zod schemas but are persisted under `$PASEO_HOME` for daemon identity and runtime coordination.
 
@@ -500,6 +507,12 @@ Right-sidebar client state splits on whether it is determined by the directory o
   createModalDraft: DraftRecord | null
 }
 ```
+
+### Composer Outbox
+
+**AsyncStorage key:** `@paseo:composer-outbox` (version 1)
+
+Every direct or intentionally queued composer message is persisted with its stable command ID, host, agent, text, attachment references, dispatch intent, attempt count, and receipt state before the visible draft is cleared. Reconnect replay is automatic only when the daemon advertises durable command receipts. Against older daemons, an uncertain direct send returns to the visible queue instead of being replayed blindly.
 
 ### Attachment Store (Web)
 
