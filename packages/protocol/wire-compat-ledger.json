@@ -54,13 +54,13 @@
   "compatibleChanges": [
     {
       "root": "src/messages.ts#WSInboundMessageSchema",
-      "digest": "sha256:2eba197975e8f0eb45f36dbcf5f1d77b8292577133a8e4cacd0bf40ba5a5fdab",
-      "rationale": "Adds optional commandId plus new device pairing list/revoke RPC request variants. Existing request fields and variants remain unchanged, and older daemons ignore commandId while rejecting unknown new RPCs normally."
+      "digest": "sha256:5e57415cf09a0795598d5272f1e2268bf8b03f9458231194b3adecbb75826f37",
+      "rationale": "Adds optional commandId plus new device pairing list/revoke RPC request variants. Existing request fields and variants remain unchanged; older daemons ignore commandId and optional push device/cursor metadata while rejecting unknown new RPCs normally."
     },
     {
       "root": "src/messages.ts#WSOutboundMessageSchema",
-      "digest": "sha256:54f9701dd9b152730697c4e68ccf836c18f3d8be67269491c7cda4eed68938e0",
-      "rationale": "Adds optional command receipt and pairing-offer expiry fields, optional server feature flags, and new device pairing response variants. Older clients ignore all additions and retain existing response shapes."
+      "digest": "sha256:bf354617c8bfd7edf6739fecee2ba4e2ed06f89f0e9ce9cdd30571ff67e24b75",
+      "rationale": "Adds optional command receipt and pairing-offer expiry fields, optional server feature flags, and new device pairing response variants. Older clients ignore all additions, including the new push catch-up event variant, and retain existing response shapes."
     },
     {
       "root": "src/connection-offer.ts#ConnectionOfferSchema",

@@ -1,7 +1,8 @@
 import { collectRetainedAttachmentIds } from "@/attachments/gc-retention";
 import { getAttachmentStore } from "@/attachments/store";
 import type { AttachmentMetadata, SaveAttachmentInput } from "@/attachments/types";
-import { resolveAgentImageMimeType } from "@/attachments/file-types";
+import { encodeImageAttachmentForSend } from "@/attachments/image-send-encoder";
+import { assertImageSourceBudget, estimateDataUrlBytes } from "@/attachments/image-budget";
 
 const activePersistence = new Set<Promise<AttachmentMetadata>>();
 const persistedDuringGarbageCollection = new Set<string>();
@@ -9,6 +10,13 @@ let pendingGarbageCollections = 0;
 let garbageCollectionTail: Promise<void> = Promise.resolve();
 let persistenceBarrier: Promise<void> | null = null;
 let releasePersistenceBarrier: (() => void) | null = null;
+
+function sourceByteSize(input: SaveAttachmentInput): number | null {
+  if (input.source.kind === "blob") return input.source.blob.size;
+  if (input.source.kind === "bytes") return input.source.bytes.byteLength;
+  if (input.source.kind === "data_url") return estimateDataUrlBytes(input.source.dataUrl);
+  return null;
+}
 
 async function waitForPersistenceBarrier(): Promise<void> {
   const barrier = persistenceBarrier;
@@ -20,10 +28,17 @@ async function waitForPersistenceBarrier(): Promise<void> {
 }
 
 async function persistAttachment(input: SaveAttachmentInput): Promise<AttachmentMetadata> {
+  assertImageSourceBudget({ byteSize: sourceByteSize(input), label: input.fileName });
   await waitForPersistenceBarrier();
   const pending = (async () => {
     const store = await getAttachmentStore();
     const attachment = await store.save(input);
+    try {
+      assertImageSourceBudget({ byteSize: attachment.byteSize, label: attachment.fileName });
+    } catch (error) {
+      await store.delete({ attachment }).catch(() => undefined);
+      throw error;
+    }
     if (pendingGarbageCollections > 0) {
       persistedDuringGarbageCollection.add(attachment.id);
     }
@@ -104,20 +119,11 @@ export async function encodeAttachmentsForSend(
   return await Promise.all(
     attachments.map(async (attachment) => {
       try {
-        const mimeType = resolveAgentImageMimeType(attachment.mimeType);
-        if (!mimeType) {
-          throw new Error(
-            `Unsupported image format '${attachment.mimeType}'. Use PNG, JPEG, GIF, or WebP.`,
-          );
-        }
-        const data = await store.encodeBase64({ attachment });
-        if (!data.trim()) {
+        const encoded = await encodeImageAttachmentForSend({ attachment, store });
+        if (!encoded.data.trim()) {
           throw new Error("Attachment bytes are empty.");
         }
-        return {
-          data,
-          mimeType,
-        };
+        return encoded;
       } catch (error) {
         const detail = error instanceof Error ? ` ${error.message}` : "";
         throw new Error(

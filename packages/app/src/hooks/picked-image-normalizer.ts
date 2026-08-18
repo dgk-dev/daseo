@@ -1,3 +1,5 @@
+import { assertImageSourceBudget } from "@/attachments/image-budget";
+
 export type PickedImageSource = { kind: "file_uri"; uri: string } | { kind: "blob"; blob: Blob };
 
 export interface PickedImageAttachmentInput {
@@ -11,6 +13,9 @@ export interface ExpoImagePickerAssetLike {
   mimeType?: string | null;
   fileName?: string | null;
   file?: File | null;
+  fileSize?: number | null;
+  width?: number | null;
+  height?: number | null;
 }
 
 export type ExportPickedImageAsPng = (uri: string) => Promise<string>;
@@ -91,6 +96,12 @@ export async function normalizePickedImageAssetsWith(
 ): Promise<PickedImageAttachmentInput[]> {
   return await Promise.all(
     assets.map(async (asset) => {
+      assertImageSourceBudget({
+        byteSize: asset.file?.size ?? asset.fileSize,
+        width: asset.width,
+        height: asset.height,
+        label: asset.fileName,
+      });
       const supportedFormat = pickedAssetSupportedFormat(asset);
       if (supportedFormat) {
         return {

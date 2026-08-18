@@ -1153,20 +1153,19 @@ export class HostRuntimeController {
     }
   }
 
+  private detachPreviousActiveClient(): DaemonClient | null {
+    this.unsubscribeClientStatus?.();
+    this.unsubscribeClientStatus = null;
+    this.unsubscribeClientHandlers?.();
+    this.unsubscribeClientHandlers = null;
+    const previousClient = this.activeClient;
+    this.activeClient = null;
+    return previousClient;
+  }
+
   private async disposePreviousActiveClient(): Promise<void> {
-    if (this.unsubscribeClientStatus) {
-      this.unsubscribeClientStatus();
-      this.unsubscribeClientStatus = null;
-    }
-    if (this.unsubscribeClientHandlers) {
-      this.unsubscribeClientHandlers();
-      this.unsubscribeClientHandlers = null;
-    }
-    if (this.activeClient) {
-      const previousClient = this.activeClient;
-      this.activeClient = null;
-      await previousClient.close().catch(() => undefined);
-    }
+    const previousClient = this.detachPreviousActiveClient();
+    await previousClient?.close().catch(() => undefined);
   }
 
   private buildAgentDirectoryStatusPatch(): Partial<HostRuntimeSnapshotPatch> {
@@ -1209,13 +1208,6 @@ export class HostRuntimeController {
       return;
     }
 
-    await this.disposePreviousActiveClient();
-
-    if (!this.isSwitchStillValid(requestVersion, expectedProbeVersion)) {
-      await this.abortSwitchWithClient(existingClient);
-      return;
-    }
-
     const nextGeneration = this.snapshot.clientGeneration + 1;
     if (existingClient) {
       existingClient.setReconnectEnabled(true);
@@ -1234,6 +1226,29 @@ export class HostRuntimeController {
       return;
     }
 
+    try {
+      if (!existingClient) {
+        await client.connect();
+      }
+    } catch (error) {
+      await client.close().catch(() => undefined);
+      if (!this.isCurrentSwitchRequest(requestVersion)) return;
+      if (!this.activeClient) {
+        const message = toErrorMessage(error);
+        this.applyConnectionEvent({ type: "connect_failed", message });
+        this.updateSnapshot({
+          ...toSnapshotConnectionPatch(this.connectionMachineState, this.connectionEpoch),
+        });
+      }
+      return;
+    }
+
+    if (!this.isSwitchStillValid(requestVersion, expectedProbeVersion)) {
+      await client.close().catch(() => undefined);
+      return;
+    }
+
+    const previousClient = this.detachPreviousActiveClient();
     this.activeClient = client;
     this.unsubscribeClientHandlers =
       this.deps.mountClientHandlers?.({ client, host: this.host, connection }) ?? null;
@@ -1269,23 +1284,7 @@ export class HostRuntimeController {
       this.updateSnapshot(patch);
     });
 
-    try {
-      if (!existingClient) {
-        await client.connect();
-      }
-    } catch (error) {
-      if (!this.isCurrentSwitchRequest(requestVersion) || this.activeClient !== client) {
-        return;
-      }
-      const message = toErrorMessage(error);
-      this.applyConnectionEvent({
-        type: "connect_failed",
-        message,
-      });
-      this.updateSnapshot({
-        ...toSnapshotConnectionPatch(this.connectionMachineState, this.connectionEpoch),
-      });
-    }
+    await previousClient?.close().catch(() => undefined);
   }
 
   adoptReconciledServerId(newServerId: string): void {

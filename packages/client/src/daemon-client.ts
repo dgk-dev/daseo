@@ -1880,10 +1880,20 @@ export class DaemonClient {
     });
   }
 
-  registerPushToken(token: string): void {
+  registerPushToken(
+    token: string,
+    metadata?: {
+      deviceId?: string;
+      platform?: string;
+      appVersion?: string;
+      preferences?: Record<string, boolean>;
+      notificationCursor?: { epoch: string; seq: number };
+    },
+  ): void {
     this.sendSessionMessage({
       type: "register_push_token",
       token,
+      ...metadata,
     });
   }
 

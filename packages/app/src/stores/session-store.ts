@@ -317,6 +317,7 @@ export interface SessionReplica {
   workspaces: Map<string, WorkspaceDescriptor>;
   projects: Map<string, ProjectDescriptor>;
   timeline: SessionReplicaTimeline | null;
+  timelines?: SessionReplicaTimeline[];
 }
 
 export type AgentTimelineState =
@@ -783,19 +784,18 @@ export const useSessionStore = create<SessionStore>()(
             return prev;
           }
           const session = createInitialSessionState(serverId, null);
-          const timeline = replica.timeline;
+          const timelines = replica.timelines ?? (replica.timeline ? [replica.timeline] : []);
           const agentStreamTail = new Map<string, StreamItem[]>();
           const agentTasks = new Map<string, TodoEntry[]>();
-          if (timeline) {
-            agentStreamTail.set(timeline.agentId, timeline.items);
-            const tasks = latestTasksFromStream(timeline.items);
-            if (tasks.length > 0) agentTasks.set(timeline.agentId, tasks);
-          }
           const agentTimelineCursor = new Map<string, AgentTimelineCursorState>();
           const agentTimelineHasOlder = new Map<string, boolean>();
           const agentTimelineHasNewer = new Map<string, boolean>();
           const agentAuthoritativeHistoryApplied = new Map<string, boolean>();
-          if (timeline?.range) {
+          for (const timeline of timelines) {
+            agentStreamTail.set(timeline.agentId, timeline.items);
+            const tasks = latestTasksFromStream(timeline.items);
+            if (tasks.length > 0) agentTasks.set(timeline.agentId, tasks);
+            if (!timeline.range) continue;
             agentTimelineCursor.set(timeline.agentId, timeline.range);
             agentTimelineHasOlder.set(timeline.agentId, timeline.hasOlder);
             agentTimelineHasNewer.set(timeline.agentId, false);

@@ -97,13 +97,14 @@ code imports from `@getpaseo/client`.
 Cross-platform React Native app that connects to one or more daemons.
 
 - Expo Router navigation (`/h/[serverId]/workspace/[workspaceId]`, `/h/[serverId]/agent/[agentId]`, etc.). The `workspaceId` URL segment is an opaque workspace id, not a directly meaningful filesystem path.
-- `HostRuntimeController` manages saved host connections, reconnection, and per-host runtime state
-- `runtime/replica-cache` keeps the complete project, workspace, and active-agent directory plus one short focused timeline tail in AsyncStorage. It restores before navigation becomes ready and leaves remote hydration flags false.
+- `HostRuntimeController` manages saved host connections, reconnection, and per-host runtime state; route migration authenticates the replacement before publishing it and closes the old route only after cutover
+- `runtime/replica-cache` keeps the complete project, workspace, and active-agent directory plus an LRU of up to five recently focused timeline tails in AsyncStorage. It restores before navigation becomes ready and leaves remote hydration flags false.
 - `runtime/directory-sync` owns directory reconciliation. On reconnect it passes the persisted per-entity cursor through `project.list`, `fetch_workspaces`, and `fetch_agents`; the daemon returns each entity's latest projection when its sequence is newer, plus tombstones.
 - `SessionContext` wraps the daemon client for the active session
 - Composer UI and submit/draft behavior live in `packages/app/src/composer/`; screens and panels should integrate it from there instead of dropping composer internals into `components/`, `hooks/`, or `screens/workspace/`
 - Timeline reducers in `timeline/session-stream-reducers.ts` handle compaction, gap detection, sequence-based deduplication
 - Timeline sync correctness is documented in [docs/timeline-sync.md](timeline-sync.md): live streams are for immediacy, `fetch_agent_timeline_request` is authoritative, and catch-up is paged but complete.
+- Image attachments reject sources above 32 MiB or 40 megapixels before provider delivery; native images above 8 MiB are bounded to 4,096 px and re-encoded as JPEG while smaller supported files retain their original bytes
 - Voice features: dictation (STT) and voice agent (realtime)
 
 The replica cache paints stale data immediately while the host connects. Directory cursors are
@@ -392,7 +393,8 @@ $PASEO_HOME/
 ├── schedules/                                  # Scheduled-agent definitions and runs
 ├── config.json                                 # Daemon config (mutable)
 ├── daemon-keypair.json                         # Daemon identity for relay/E2EE
-├── push-tokens.json                            # Mobile push tokens
+├── push-tokens.json                            # Device-scoped mobile push subscriptions
+├── push-events.json                            # Bounded notification epoch/sequence log
 ├── paseo.sock / paseo.pid                      # Local IPC socket and pidfile
 └── daemon.log                                  # Daemon trace logs (rotated)
 ```

@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   getDevicePushTokenAsync: vi.fn(),
   getExpoPushTokenAsync: vi.fn(),
   setNotificationChannelAsync: vi.fn(),
+  addNotificationReceivedListener: vi.fn(),
+  getLastNotificationResponseAsync: vi.fn(),
 }));
 
 vi.mock("@react-native-async-storage/async-storage", () => ({
@@ -38,6 +40,8 @@ vi.mock("expo-notifications", () => ({
   getDevicePushTokenAsync: mocks.getDevicePushTokenAsync,
   getExpoPushTokenAsync: mocks.getExpoPushTokenAsync,
   setNotificationChannelAsync: mocks.setNotificationChannelAsync,
+  addNotificationReceivedListener: mocks.addNotificationReceivedListener,
+  getLastNotificationResponseAsync: mocks.getLastNotificationResponseAsync,
 }));
 
 import { startSubscription } from "./subscriptions";
@@ -52,6 +56,7 @@ function createClient() {
         connectionHandler = handler;
         return vi.fn();
       }),
+      on: vi.fn(() => vi.fn()),
     },
     reconnect: () => connectionHandler?.({ status: "connected" }),
   };
@@ -73,6 +78,8 @@ describe("direct FCM subscriptions", () => {
       .mockImplementation(async () => ({ type: "fcm", data: mocks.deviceToken }));
     mocks.getExpoPushTokenAsync.mockReset();
     mocks.setNotificationChannelAsync.mockReset().mockResolvedValue(null);
+    mocks.addNotificationReceivedListener.mockReset().mockReturnValue({ remove: vi.fn() });
+    mocks.getLastNotificationResponseAsync.mockReset().mockResolvedValue(null);
   });
 
   test("registers the native Android token with an fcm prefix and high-priority channel", async () => {
@@ -83,7 +90,10 @@ describe("direct FCM subscriptions", () => {
     });
 
     await vi.waitFor(() =>
-      expect(harness.client.registerPushToken).toHaveBeenCalledWith("fcm:device-token"),
+      expect(harness.client.registerPushToken).toHaveBeenCalledWith(
+        "fcm:device-token",
+        expect.objectContaining({ deviceId: expect.any(String), platform: "android" }),
+      ),
     );
     expect(mocks.setNotificationChannelAsync).toHaveBeenCalledWith(
       "agent-updates",

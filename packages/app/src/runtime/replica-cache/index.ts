@@ -21,6 +21,7 @@ const STORAGE_KEY = "@paseo:replica-cache";
 const CACHE_VERSION = 6;
 const PERSIST_DELAY_MS = 750;
 const MAX_TIMELINE_ITEMS = 50;
+const MAX_CACHED_TIMELINES_PER_HOST = 5;
 const MAX_CACHE_BYTES = 32 * 1024 * 1024;
 const IsoDateSchema = z.iso.datetime();
 const TimelinePositionSchema = z.strictObject({
@@ -273,6 +274,7 @@ const StoredHostSchema = z.strictObject({
   projects: z.array(StoredProjectSchema),
   emptyProjects: z.array(StoredProjectSchema),
   timeline: StoredTimelineSchema.nullable(),
+  timelines: z.array(StoredTimelineSchema).optional(),
   directorySync: z.unknown().optional(),
 });
 
@@ -284,6 +286,7 @@ const StoredCacheSchema = z.strictObject({
 type StoredAgent = z.infer<typeof StoredAgentSchema>;
 type StoredHost = z.infer<typeof StoredHostSchema>;
 type StoredTimelineItem = z.infer<typeof StoredTimelineItemSchema>;
+type StoredTimeline = z.infer<typeof StoredTimelineSchema>;
 type StoredWorkspace = z.infer<typeof StoredWorkspaceSchema>;
 type StoredProject = z.infer<typeof StoredProjectSchema>;
 
@@ -305,6 +308,11 @@ export interface ReplicaCacheStorage {
 
 interface ReplicaCacheOptions {
   maxBytes?: number;
+}
+
+function previousStoredTimelines(stored: StoredHost | undefined): StoredTimeline[] {
+  if (stored?.timelines && stored.timelines.length > 0) return stored.timelines;
+  return stored?.timeline ? [stored.timeline] : [];
 }
 
 function deserializeTimeline(stored: StoredHost["timeline"]): SessionReplica["timeline"] {
@@ -722,11 +730,19 @@ function deserializeHost(stored: StoredHost): SessionReplica {
   const projects = new Map(
     [...legacyProjects, ...listedProjects].map((project) => [project.projectId, project]),
   );
+  const storedTimelines = [
+    ...(stored.timeline ? [stored.timeline] : []),
+    ...(stored.timelines ?? []).filter((timeline) => timeline.agentId !== stored.timeline?.agentId),
+  ].slice(0, MAX_CACHED_TIMELINES_PER_HOST);
+  const timelines = storedTimelines.map((timeline) => deserializeTimeline(timeline));
   return {
     agents: new Map(agents.map((agent) => [agent.id, agent])),
     workspaces: new Map(workspaces.map((workspace) => [workspace.id, workspace])),
     projects,
-    timeline: deserializeTimeline(stored.timeline),
+    timeline: timelines[0] ?? null,
+    timelines: timelines.filter(
+      (timeline): timeline is SessionReplicaTimeline => timeline !== null,
+    ),
   };
 }
 
@@ -937,9 +953,17 @@ export class ReplicaCache {
     if (previous && replicaInputsEqual(previous, input)) return false;
 
     this.capturedInputs.set(serverId, input);
-    const directorySync = this.storedHosts.get(serverId)?.directorySync;
+    const previousStored = this.storedHosts.get(serverId);
+    const directorySync = previousStored?.directorySync;
+    const serialized = serializeHost(serverId, input, directorySync);
+    const previousTimelines = previousStoredTimelines(previousStored);
+    serialized.timelines = serialized.timeline
+      ? previousTimelines
+          .filter((timeline) => timeline.agentId !== serialized.timeline?.agentId)
+          .slice(0, MAX_CACHED_TIMELINES_PER_HOST - 1)
+      : previousTimelines.slice(0, MAX_CACHED_TIMELINES_PER_HOST);
     this.storedHosts.delete(serverId);
-    this.storedHosts.set(serverId, serializeHost(serverId, input, directorySync));
+    this.storedHosts.set(serverId, serialized);
     return true;
   }
 

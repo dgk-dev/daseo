@@ -95,8 +95,7 @@ recomposition while the runtime still owns the same directory snapshot and timel
 Removing the host from the registry is the destructive boundary: it stops the runtime and clears the
 session and host-scoped setup state together.
 
-The durable replica cache persists synchronization authority only when it can store the complete
-current canonical window losslessly. The stored range describes those exact items: `startSeq` drives
+The durable replica cache keeps up to five recently focused agent timelines per host. It persists synchronization authority for each only when it can store that timeline's complete current canonical window losslessly. The stored range describes those exact items: `startSeq` drives
 older pagination and `endSeq` drives forward catch-up. Restore paints the items immediately, requests
 `after endSeq`, and requests `before startSeq` when the user loads older history.
 

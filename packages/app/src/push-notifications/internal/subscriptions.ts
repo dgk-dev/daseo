@@ -3,14 +3,25 @@ import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
 import { z } from "zod";
-import { readValidatedString } from "@/storage/validated-storage";
+import { readValidatedJson, readValidatedString } from "@/storage/validated-storage";
 import type { RevokePushNotificationsInput, StartPushNotificationsInput } from "./types";
+import { getOrCreateDeviceSigningIdentity } from "@/security/device-identity";
+import { resolveAppVersion } from "@/utils/app-version";
+import { sendOsNotification } from "@/utils/os-notifications";
 
 const STORAGE_PREFIX = "@paseo:expo-push-token:";
 const ExpoPushTokenSchema = z.string().trim().min(1);
+const NotificationCursorSchema = z.object({
+  epoch: z.string(),
+  seq: z.number().int().nonnegative(),
+});
 
 function storageKey(serverId: string): string {
   return `${STORAGE_PREFIX}${serverId}`;
+}
+
+function cursorStorageKey(serverId: string): string {
+  return `@paseo:notification-cursor:${serverId}`;
 }
 
 function usesDirectFcmPush(): boolean {
@@ -75,16 +86,29 @@ async function resolveToken(serverId: string): Promise<string | null> {
 export function startSubscription(input: StartPushNotificationsInput): () => void {
   let stopped = false;
   let token: string | null = null;
+  let deviceId: string | null = null;
+  let notificationCursor: { epoch: string; seq: number } | null = null;
   const register = () => {
-    if (!stopped && token && input.client.isConnected) {
-      input.client.registerPushToken(token);
+    if (!stopped && token && deviceId && input.client.isConnected) {
+      input.client.registerPushToken(token, {
+        deviceId,
+        platform: Platform.OS,
+        appVersion: resolveAppVersion() ?? undefined,
+        ...(notificationCursor ? { notificationCursor } : {}),
+      });
     }
   };
 
-  void resolveToken(input.serverId)
-    .then((resolved) => {
+  void Promise.all([
+    resolveToken(input.serverId),
+    getOrCreateDeviceSigningIdentity(),
+    readValidatedJson(AsyncStorage, cursorStorageKey(input.serverId), NotificationCursorSchema),
+  ])
+    .then(([resolved, identity, cursor]) => {
       if (stopped) return undefined;
       token = resolved;
+      deviceId = identity.deviceId;
+      notificationCursor = cursor;
       register();
       return undefined;
     })
@@ -93,10 +117,58 @@ export function startSubscription(input: StartPushNotificationsInput): () => voi
   const unsubscribe = input.client.subscribeConnectionStatus((state) => {
     if (state.status === "connected") register();
   });
+  const rememberDeliveredNotification = (data: Record<string, unknown> | null | undefined) => {
+    const epoch = data?.paseoNotificationEpoch;
+    const seq = data?.paseoNotificationSeq;
+    if (typeof epoch !== "string" || typeof seq !== "number" || !Number.isInteger(seq)) return;
+    if (notificationCursor?.epoch === epoch && notificationCursor.seq >= seq) return;
+    notificationCursor = { epoch, seq };
+    void AsyncStorage.setItem(cursorStorageKey(input.serverId), JSON.stringify(notificationCursor));
+  };
+  const receivedSubscription = Notifications.addNotificationReceivedListener((notification) => {
+    rememberDeliveredNotification(notification.request.content.data);
+  });
+  void Notifications.getLastNotificationResponseAsync().then((response) => {
+    rememberDeliveredNotification(response?.notification.request.content.data);
+    return undefined;
+  });
+
+  const unsubscribeCatchUp = input.client.on("push.notification.catch_up", (message) => {
+    if (message.type !== "push.notification.catch_up") return;
+    void (async () => {
+      const { epoch, events, quarantinedThroughSeq } = message.payload;
+      let nextSeq = notificationCursor?.epoch === epoch ? notificationCursor.seq : 0;
+      for (const event of events) {
+        if (event.epoch !== epoch || event.seq <= nextSeq) continue;
+        await sendOsNotification({
+          title: event.payload.title,
+          body: event.payload.body,
+          data: event.payload.data,
+        });
+        nextSeq = event.seq;
+        notificationCursor = { epoch, seq: nextSeq };
+        await AsyncStorage.setItem(
+          cursorStorageKey(input.serverId),
+          JSON.stringify(notificationCursor),
+        );
+      }
+      if (events.length === 0 && quarantinedThroughSeq > nextSeq) {
+        notificationCursor = { epoch, seq: quarantinedThroughSeq };
+        await AsyncStorage.setItem(
+          cursorStorageKey(input.serverId),
+          JSON.stringify(notificationCursor),
+        );
+      }
+    })().catch((error) =>
+      console.warn("[PushNotifications] Failed to apply notification catch-up", error),
+    );
+  });
 
   return () => {
     stopped = true;
     unsubscribe();
+    unsubscribeCatchUp();
+    receivedSubscription.remove();
   };
 }
 

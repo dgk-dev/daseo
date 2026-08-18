@@ -32,6 +32,8 @@ class FakeDaemonClient {
   private latencyMeasurementFailure: Error | null = null;
   private latencyMeasurementsRequested: Array<{ timeoutMs?: number }> = [];
   public connectCalls = 0;
+  public closeCalls = 0;
+  public lifecycleEvents: string[] = [];
   public fetchAgentsCalls: FetchAgentsOptions[] = [];
   public fetchAgentsResponses: Array<
     Awaited<ReturnType<DaemonClient["fetchAgents"]>> | ReturnType<DaemonClient["fetchAgents"]>
@@ -79,10 +81,13 @@ class FakeDaemonClient {
 
   async connect(): Promise<void> {
     this.connectCalls += 1;
+    this.lifecycleEvents.push("connect");
     this.setConnectionState({ status: "connected" });
   }
 
   async close(): Promise<void> {
+    this.closeCalls += 1;
+    this.lifecycleEvents.push("close");
     this.setConnectionState({ status: "disconnected", reason: "client_closed" });
   }
 
@@ -1212,6 +1217,67 @@ describe("HostRuntimeController", () => {
     unsubscribe();
   });
 
+  it("keeps the active route online until its authenticated replacement is ready", async () => {
+    const host = makeHost({
+      connections: [
+        { id: "direct:lan:6767", type: "directTcp", endpoint: "lan:6767" },
+        {
+          id: "relay:relay.paseo.sh:443",
+          type: "relay",
+          relayEndpoint: "relay.paseo.sh:443",
+          daemonPublicKeyB64: "pk_test",
+        },
+      ],
+    });
+    const replacementGate = createDeferred<void>();
+    const clients: FakeDaemonClient[] = [];
+    const controller = new HostRuntimeController({
+      host,
+      deps: {
+        createClient: ({ connection }) => {
+          const client = new FakeDaemonClient();
+          if (connection.type === "relay") {
+            const connect = client.connect.bind(client);
+            client.connect = async () => {
+              client.connectCalls += 1;
+              client.lifecycleEvents.push("connect-start");
+              await replacementGate.promise;
+              await connect();
+            };
+          }
+          clients.push(client);
+          return client as unknown as DaemonClient;
+        },
+        connectToDaemon: async ({ host: hostProfile }) => ({
+          client: makeConnectedProbeClient(10) as unknown as DaemonClient,
+          serverId: hostProfile.serverId,
+          hostname: hostProfile.label ?? null,
+        }),
+        getClientId: async () => "cid_make_before_break",
+      },
+    });
+
+    await controller.activateConnection({ connectionId: "direct:lan:6767" });
+    const switching = controller.activateConnection({
+      connectionId: "relay:relay.paseo.sh:443",
+    });
+    await vi.waitFor(() => expect(clients[1]?.connectCalls).toBe(1));
+
+    expect(clients[0]?.closeCalls).toBe(0);
+    expect(controller.getSnapshot()).toMatchObject({
+      activeConnectionId: "direct:lan:6767",
+      connectionStatus: "online",
+    });
+
+    replacementGate.resolve();
+    await switching;
+    expect(controller.getSnapshot()).toMatchObject({
+      activeConnectionId: "relay:relay.paseo.sh:443",
+      connectionStatus: "online",
+    });
+    expect(clients[0]?.closeCalls).toBe(1);
+  });
+
   it("ignores stale switch failures after a newer connection is already online", async () => {
     const host = makeHost({
       connections: [
@@ -1266,14 +1332,7 @@ describe("HostRuntimeController", () => {
     };
 
     const switchDirect = controller.activateConnection({ connectionId: "direct:lan:6767" });
-    await waitUntil(() => {
-      const snapshot = controller.getSnapshot();
-      return (
-        createdClients.length === 1 &&
-        snapshot.activeConnectionId === "direct:lan:6767" &&
-        snapshot.connectionStatus === "connecting"
-      );
-    });
+    await waitUntil(() => createdClients.length === 1 && createdClients[0]?.connectCalls === 1);
 
     const switchRelay = controller.activateConnection({
       connectionId: "relay:relay.paseo.sh:443",

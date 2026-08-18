@@ -2661,12 +2661,40 @@ export const ListCommandsRequestSchema = z.object({
 export const RegisterPushTokenMessageSchema = z.object({
   type: z.literal("register_push_token"),
   token: z.string(),
+  // COMPAT(devicePushMetadata): added in v0.5.0, remove after 2027-02-18.
+  deviceId: z.string().optional(),
+  platform: z.string().optional(),
+  appVersion: z.string().optional(),
+  preferences: z.record(z.string(), z.boolean()).optional(),
+  notificationCursor: z
+    .object({ epoch: z.string(), seq: z.number().int().nonnegative() })
+    .optional(),
 });
 
 export const PushUnregisterRequestSchema = z.object({
   type: z.literal("push.unregister.request"),
   token: z.string(),
   requestId: z.string(),
+});
+
+export const PushNotificationCatchUpSchema = z.object({
+  type: z.literal("push.notification.catch_up"),
+  payload: z.object({
+    epoch: z.string(),
+    quarantinedThroughSeq: z.number().int().nonnegative(),
+    events: z.array(
+      z.object({
+        epoch: z.string(),
+        seq: z.number().int().positive(),
+        notificationId: z.string(),
+        payload: z.object({
+          title: z.string(),
+          body: z.string(),
+          data: z.record(z.string(), z.unknown()).optional(),
+        }),
+      }),
+    ),
+  }),
 });
 
 export const PushUnregisterResponseSchema = z.object({
@@ -6119,6 +6147,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   StatusMessageSchema,
   PongMessageSchema,
   PushUnregisterResponseSchema,
+  PushNotificationCatchUpSchema,
   RpcErrorMessageSchema,
   ArtifactMessageSchema,
   AgentUpdateMessageSchema,

@@ -2492,7 +2492,7 @@ export class Session {
         await this.handleListCommandsRequest(msg);
         return;
       case "register_push_token":
-        this.handleRegisterPushToken(msg.token);
+        this.handleRegisterPushToken(msg);
         return;
       case "device.pairing.list.request": {
         const devices = await this.devicePairingStore.listDevices();
@@ -3998,9 +3998,24 @@ export class Session {
   /**
    * Handle push token registration
    */
-  private handleRegisterPushToken(token: string): void {
-    this.registeredPushToken = token;
-    this.pushNotifications.renew(token);
+  private handleRegisterPushToken(
+    message: Extract<SessionInboundMessage, { type: "register_push_token" }>,
+  ): void {
+    this.registeredPushToken = message.token;
+    const catchUp = this.pushNotifications.renew(
+      message.token,
+      {
+        clientId: this.clientId,
+        ...(message.deviceId ? { deviceId: message.deviceId } : {}),
+        ...(message.platform ? { platform: message.platform } : {}),
+        ...((message.appVersion ?? this.appVersion)
+          ? { appVersion: message.appVersion ?? this.appVersion ?? undefined }
+          : {}),
+        ...(message.preferences ? { preferences: message.preferences } : {}),
+      },
+      message.notificationCursor ?? null,
+    );
+    this.emit({ type: "push.notification.catch_up", payload: catchUp });
     this.sessionLogger.info("Registered push token");
   }
 

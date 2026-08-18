@@ -472,6 +472,39 @@ describe("ReplicaCache", () => {
     ]);
   });
 
+  it("keeps an LRU of recently focused agent timelines", async () => {
+    const storage = new MemoryStorage();
+    const cache = new ReplicaCache(storage);
+    cache.setHosts([SERVER_ID]);
+    seedSession();
+    const store = useSessionStore.getState();
+    store.setAgents(SERVER_ID, (agents) =>
+      new Map(agents).set("agent-2", agent("agent-2", "workspace-1", "/repo/main")),
+    );
+    store.setAgentStreamTail(
+      SERVER_ID,
+      new Map([
+        ["agent-1", [message("message-1", "First cached agent")]],
+        ["agent-2", [message("message-2", "Second cached agent")]],
+      ]),
+    );
+
+    store.setFocusedAgentId(SERVER_ID, "agent-1");
+    await cache.flush();
+    store.setFocusedAgentId(SERVER_ID, "agent-2");
+    await cache.flush();
+    store.clearSession(SERVER_ID);
+
+    const reader = new ReplicaCache(storage);
+    reader.setHosts([SERVER_ID]);
+    await reader.restore();
+
+    const timelines = useSessionStore.getState().sessions[SERVER_ID]?.agentStreamTail;
+    expect(Array.from(timelines?.keys() ?? [])).toEqual(["agent-2", "agent-1"]);
+    expect(timelines?.get("agent-1")).toEqual([message("message-1", "First cached agent")]);
+    expect(timelines?.get("agent-2")).toEqual([message("message-2", "Second cached agent")]);
+  });
+
   it("persists reconciled rows without caching unreconciled local presentations", async () => {
     const storage = new MemoryStorage();
     const cache = new ReplicaCache(storage);
