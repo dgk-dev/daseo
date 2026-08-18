@@ -87,12 +87,12 @@ export async function pickAndPersistImages(input: {
   pickImages: () => Promise<PickedImageAttachmentInput[] | null>;
   persister: Pick<
     AttachmentPersister,
-    "persistFromBlob" | "persistFromFileUri" | "persistFromDataUrl"
+    "persistFromBlob" | "persistFromFileUri" | "persistFromDataUrl" | "deleteAttachments"
   >;
 }): Promise<AttachmentMetadata[]> {
   const result = await input.pickImages();
   if (!result?.length) return [];
-  return await Promise.all(
+  const persisted = await Promise.allSettled(
     result.map(async (picked) => {
       const fileName = picked.fileName ?? null;
       const mimeType = picked.mimeType;
@@ -117,6 +117,17 @@ export async function pickAndPersistImages(input: {
       });
     }),
   );
+  const attachments = persisted.flatMap((entry) =>
+    entry.status === "fulfilled" ? [entry.value] : [],
+  );
+  const failures = persisted.flatMap((entry) =>
+    entry.status === "rejected" ? [entry.reason] : [],
+  );
+  if (failures.length > 0) {
+    await input.persister.deleteAttachments(attachments);
+    throw new AggregateError(failures, "Failed to persist selected image attachments.");
+  }
+  return attachments;
 }
 
 export async function uploadFileAttachments(input: {

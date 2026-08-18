@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { normalizeNativePastedImages, UnsupportedPastedImageError } from "./native-pasted-image";
 
 describe("normalizeNativePastedImages", () => {
-  it("turns pasted native image files into the existing picked-image input", () => {
-    expect(
+  it("turns pasted native image files into the existing picked-image input", async () => {
+    await expect(
       normalizeNativePastedImages([
         {
           fileName: "clipboard.jpg",
@@ -18,7 +18,7 @@ describe("normalizeNativePastedImages", () => {
           uri: "file:///cache/animation.gif",
         },
       ]),
-    ).toEqual([
+    ).resolves.toEqual([
       {
         source: { kind: "file_uri", uri: "file:///cache/clipboard.jpg" },
         mimeType: "image/jpeg",
@@ -32,8 +32,8 @@ describe("normalizeNativePastedImages", () => {
     ]);
   });
 
-  it("rejects non-image content instead of swallowing it as an attachment", () => {
-    expect(() =>
+  it("rejects non-image content instead of swallowing it as an attachment", async () => {
+    await expect(
       normalizeNativePastedImages([
         {
           fileName: "notes.txt",
@@ -42,6 +42,6 @@ describe("normalizeNativePastedImages", () => {
           uri: "file:///cache/notes.txt",
         },
       ]),
-    ).toThrow(UnsupportedPastedImageError);
+    ).rejects.toThrow(UnsupportedPastedImageError);
   });
 });

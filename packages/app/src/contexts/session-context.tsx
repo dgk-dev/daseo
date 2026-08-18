@@ -1101,12 +1101,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
         return;
       }
       const trimmedPrompt = initialPrompt.trim();
-      let imagesData: Array<{ data: string; mimeType: string }> | undefined;
-      try {
-        imagesData = await encodeImages(images);
-      } catch (error) {
-        console.error("[Session] Failed to prepare images for agent creation:", error);
-      }
+      const imagesData = await encodeImages(images);
       await client.createAgent({
         config,
         ...(trimmedPrompt ? { initialPrompt: trimmedPrompt } : {}),

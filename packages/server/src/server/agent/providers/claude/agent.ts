@@ -76,6 +76,7 @@ import {
 } from "./options.js";
 import { renderPromptAttachmentAsText } from "../../prompt-attachments.js";
 import { claudeQuery, type ClaudeOptions, type ClaudeQueryFactory } from "./query.js";
+import { mapClaudeUserImageContent } from "./image-input.js";
 import { realClaudeRewindSdk, revertClaudeConversation, revertClaudeFiles } from "./rewind.js";
 import { normalizeProviderReplayTimestamp } from "../../provider-history-timestamps.js";
 import { claudeProjectDirSync } from "./project-dir.js";
@@ -254,17 +255,6 @@ function toObjectRecord(value: unknown): Record<string, unknown> | undefined {
 
 function isUnknownArray(value: unknown): value is readonly unknown[] {
   return Array.isArray(value);
-}
-
-function isImageMimeType(
-  value: string,
-): value is "image/jpeg" | "image/png" | "image/gif" | "image/webp" {
-  return (
-    value === "image/jpeg" ||
-    value === "image/png" ||
-    value === "image/gif" ||
-    value === "image/webp"
-  );
 }
 
 type TurnState = "idle" | "foreground" | "autonomous";
@@ -3253,16 +3243,7 @@ class ClaudeAgentSession implements AgentSession {
         if (chunk.type === "text") {
           content.push({ type: "text", text: chunk.text });
         } else if (chunk.type === "image") {
-          if (isImageMimeType(chunk.mimeType)) {
-            content.push({
-              type: "image",
-              source: {
-                type: "base64",
-                media_type: chunk.mimeType,
-                data: chunk.data,
-              },
-            });
-          }
+          content.push(mapClaudeUserImageContent(chunk));
         } else {
           content.push({ type: "text", text: renderPromptAttachmentAsText(chunk) });
         }

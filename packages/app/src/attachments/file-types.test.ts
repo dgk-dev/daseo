@@ -5,6 +5,8 @@ import {
   isRasterImageFile,
   isRasterImageMimeType,
   isRasterImagePath,
+  isAgentImageMimeType,
+  AGENT_IMAGE_FILE_EXTENSIONS,
   RASTER_IMAGE_FILE_EXTENSIONS,
   resolveRasterImageMimeType,
 } from "./file-types";
@@ -33,10 +35,15 @@ describe("attachment file types", () => {
     expect(getMimeTypeFromPath("/tmp/export.anything")).toBe("application/octet-stream");
   });
 
-  it("does not offer SVG in the image picker extension list", () => {
+  it("keeps broad raster detection but only offers provider-compatible picker formats", () => {
     expect(new Set(RASTER_IMAGE_FILE_EXTENSIONS)).toEqual(
       new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "heic", "heif", "avif", "tif", "tiff"]),
     );
+    expect(AGENT_IMAGE_FILE_EXTENSIONS).toEqual(["png", "jpg", "jpeg", "gif", "webp"]);
+    expect(isAgentImageMimeType("image/png")).toBe(true);
+    expect(isAgentImageMimeType("image/jpg")).toBe(true);
+    expect(isAgentImageMimeType("image/heic")).toBe(false);
+    expect(isAgentImageMimeType("image/tiff")).toBe(false);
   });
 
   it("uses explicit raster MIME metadata before the filename", () => {

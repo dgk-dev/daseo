@@ -1,6 +1,7 @@
 import { collectRetainedAttachmentIds } from "@/attachments/gc-retention";
 import { getAttachmentStore } from "@/attachments/store";
 import type { AttachmentMetadata, SaveAttachmentInput } from "@/attachments/types";
+import { resolveAgentImageMimeType } from "@/attachments/file-types";
 
 const activePersistence = new Set<Promise<AttachmentMetadata>>();
 const persistedDuringGarbageCollection = new Set<string>();
@@ -100,28 +101,32 @@ export async function encodeAttachmentsForSend(
   }
 
   const store = await getAttachmentStore();
-  const encoded = await Promise.all(
+  return await Promise.all(
     attachments.map(async (attachment) => {
       try {
+        const mimeType = resolveAgentImageMimeType(attachment.mimeType);
+        if (!mimeType) {
+          throw new Error(
+            `Unsupported image format '${attachment.mimeType}'. Use PNG, JPEG, GIF, or WebP.`,
+          );
+        }
         const data = await store.encodeBase64({ attachment });
+        if (!data.trim()) {
+          throw new Error("Attachment bytes are empty.");
+        }
         return {
           data,
-          mimeType: attachment.mimeType,
+          mimeType,
         };
       } catch (error) {
-        console.error("[attachments] Failed to encode attachment for send", {
-          id: attachment.id,
-          error,
-        });
-        return null;
+        const detail = error instanceof Error ? ` ${error.message}` : "";
+        throw new Error(
+          `Failed to read image attachment '${attachment.fileName ?? attachment.id}'. The message was not sent.${detail}`,
+          { cause: error },
+        );
       }
     }),
   );
-
-  const valid = encoded.filter(
-    (entry): entry is { data: string; mimeType: string } => entry !== null,
-  );
-  return valid.length > 0 ? valid : undefined;
 }
 
 export async function resolveAttachmentPreviewUrl(attachment: AttachmentMetadata): Promise<string> {

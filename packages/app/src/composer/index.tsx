@@ -140,11 +140,12 @@ import {
 
 const composerImageAttachmentPersister: Pick<
   AttachmentPersister,
-  "persistFromBlob" | "persistFromDataUrl" | "persistFromFileUri"
+  "persistFromBlob" | "persistFromDataUrl" | "persistFromFileUri" | "deleteAttachments"
 > = {
   persistFromBlob: persistAttachmentFromBlob,
   persistFromDataUrl: persistAttachmentFromDataUrl,
   persistFromFileUri: persistAttachmentFromFileUri,
+  deleteAttachments,
 };
 
 type QueuedMessage = QueuedComposerMessage;
@@ -1168,7 +1169,7 @@ export function Composer({
   const [cursorIndex, setCursorIndex] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isUploadingFile, setIsUploadingFile] = useState(false);
-  const [pendingNativeImagePastes, setPendingNativeImagePastes] = useState(0);
+  const [pendingImagePastes, setPendingImagePastes] = useState(0);
   const [sendError, setSendError] = useState<string | null>(null);
   const [isMessageInputFocused, setIsMessageInputFocused] = useState(false);
   const [isGithubPickerOpen, setIsGithubPickerOpen] = useState(false);
@@ -1509,7 +1510,12 @@ export function Composer({
     addImages(newImages);
   }, [addImages, pickImages]);
 
+  const handleImagePastePendingChange = useCallback((delta: 1 | -1) => {
+    setPendingImagePastes((pending) => Math.max(0, pending + delta));
+  }, []);
+
   const handlePasteImage = useCallback(async () => {
+    handleImagePastePendingChange(1);
     try {
       const newImages = await pickAndPersistImages({
         pickImages: async () => {
@@ -1526,12 +1532,14 @@ export function Composer({
     } catch (error) {
       console.error("[Composer] Failed to paste clipboard image:", error);
       toastErrorRef.current(t("composer.errors.pasteImageFailed"));
+    } finally {
+      handleImagePastePendingChange(-1);
     }
-  }, [addImages, t]);
+  }, [addImages, handleImagePastePendingChange, t]);
 
   const handleNativePasteImages = useCallback(
     (files: readonly NativePastedFile[]) => {
-      setPendingNativeImagePastes((pending) => pending + 1);
+      handleImagePastePendingChange(1);
       void pickAndPersistImages({
         pickImages: async () => normalizeNativePastedImages(files),
         persister: composerImageAttachmentPersister,
@@ -1547,10 +1555,10 @@ export function Composer({
           toastErrorRef.current(t("composer.errors.pasteImageFailed"));
         })
         .finally(() => {
-          setPendingNativeImagePastes((pending) => Math.max(0, pending - 1));
+          handleImagePastePendingChange(-1);
         });
     },
-    [addImages, t],
+    [addImages, handleImagePastePendingChange, t],
   );
 
   const uploadPickedFiles = useCallback(
@@ -2143,7 +2151,7 @@ export function Composer({
   const messageInputContainerRef = useRef<View>(null);
 
   const isSubmitLoadingVisible =
-    isProcessing || isSubmitLoading || isUploadingFile || pendingNativeImagePastes > 0;
+    isProcessing || isSubmitLoading || isUploadingFile || pendingImagePastes > 0;
   const isSubmitDisabled =
     isSubmitLoadingVisible || (waitForGithubAutoAttachOnSubmit && githubAutoAttach.isResolving);
 
@@ -2213,6 +2221,7 @@ export function Composer({
                 onAttachButtonRef={handleAttachButtonRef}
                 onAddImages={addImages}
                 onPasteImages={handleNativePasteImages}
+                onImagePastePendingChange={handleImagePastePendingChange}
                 client={client}
                 isReadyForDictation={isDictationReady}
                 placeholder={messagePlaceholder}

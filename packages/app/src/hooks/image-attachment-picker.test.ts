@@ -103,6 +103,12 @@ describe("image-attachment-picker", () => {
       multiple: true,
       directory: false,
       title: "Attach images",
+      filters: [
+        {
+          name: "Images",
+          extensions: ["png", "jpg", "jpeg", "gif", "webp"],
+        },
+      ],
     });
     expect(result).toEqual([
       {

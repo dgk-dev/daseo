@@ -1,5 +1,5 @@
 import type { DesktopDialogBridge } from "@/desktop/host";
-import { RASTER_IMAGE_FILE_EXTENSIONS, resolveRasterImageMimeType } from "@/attachments/file-types";
+import { AGENT_IMAGE_FILE_EXTENSIONS, resolveRasterImageMimeType } from "@/attachments/file-types";
 import { getFileNameFromPath } from "@/attachments/utils";
 import { i18n } from "@/i18n/i18next";
 import { isAbsolutePath } from "@/utils/path";
@@ -102,7 +102,7 @@ export async function pickImagesWithDesktopDialog(
     filters: [
       {
         name: i18n.t("imageAttachmentPicker.dialogFilterName"),
-        extensions: RASTER_IMAGE_FILE_EXTENSIONS,
+        extensions: AGENT_IMAGE_FILE_EXTENSIONS,
       },
     ],
     title: i18n.t("imageAttachmentPicker.dialogTitle"),

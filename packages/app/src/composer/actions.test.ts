@@ -414,6 +414,30 @@ describe("pickAndPersistImages", () => {
     ]);
     expect(result).toHaveLength(1);
   });
+
+  it("rolls back persisted siblings when one selected image cannot be saved", async () => {
+    const persister = createFakePersister();
+    persister.persistFromFileUri = async () => {
+      throw new Error("unreadable image");
+    };
+    const blob = new Blob(["image"]);
+
+    await expect(
+      pickAndPersistImages({
+        pickImages: async () => [
+          { source: { kind: "blob", blob }, mimeType: "image/png", fileName: "ok.png" },
+          {
+            source: { kind: "file_uri", uri: "/tmp/broken.png" },
+            mimeType: "image/png",
+            fileName: "broken.png",
+          },
+        ],
+        persister,
+      }),
+    ).rejects.toThrow("Failed to persist selected image attachments");
+    expect(persister.deletedBatches).toHaveLength(1);
+    expect(persister.deletedBatches[0]?.map((item) => item.id)).toEqual(["blob-1"]);
+  });
 });
 
 describe("dispatchComposerAgentMessage", () => {

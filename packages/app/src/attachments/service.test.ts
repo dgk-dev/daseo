@@ -93,10 +93,57 @@ describe("attachment service", () => {
     const store = createRecordingStore();
     __setAttachmentStoreForTests(store);
     const attachment = createAttachment({ id: "att_send", mimeType: "image/jpeg" });
+    const legacyJpgAttachment = createAttachment({ id: "att_jpg", mimeType: "image/jpg" });
 
-    await expect(encodeAttachmentsForSend([attachment])).resolves.toEqual([
+    await expect(encodeAttachmentsForSend([attachment, legacyJpgAttachment])).resolves.toEqual([
       { data: "att_send:base64", mimeType: "image/jpeg" },
+      { data: "att_jpg:base64", mimeType: "image/jpeg" },
     ]);
+  });
+
+  it("fails the whole send instead of silently omitting an unreadable image", async () => {
+    const store: AttachmentStore = {
+      ...createRecordingStore(),
+      async encodeBase64() {
+        throw new Error("missing attachment bytes");
+      },
+    };
+    __setAttachmentStoreForTests(store);
+
+    await expect(
+      encodeAttachmentsForSend([
+        createAttachment({ id: "att_missing", fileName: "clipboard.png" }),
+      ]),
+    ).rejects.toThrow("Failed to read image attachment 'clipboard.png'. The message was not sent.");
+  });
+
+  it("rejects an empty encoded image instead of sending an invisible attachment", async () => {
+    const store: AttachmentStore = {
+      ...createRecordingStore(),
+      async encodeBase64() {
+        return "";
+      },
+    };
+    __setAttachmentStoreForTests(store);
+
+    await expect(encodeAttachmentsForSend([createAttachment({ id: "att_empty" })])).rejects.toThrow(
+      "Failed to read image attachment 'att_empty'. The message was not sent.",
+    );
+  });
+
+  it("rejects provider-incompatible formats before silently dropping them", async () => {
+    const store = createRecordingStore();
+    __setAttachmentStoreForTests(store);
+
+    await expect(
+      encodeAttachmentsForSend([
+        createAttachment({
+          id: "att_heic",
+          mimeType: "image/heic",
+          fileName: "camera.heic",
+        }),
+      ]),
+    ).rejects.toThrow("Unsupported image format 'image/heic'. Use PNG, JPEG, GIF, or WebP.");
   });
 
   it("does not collect an attachment persisted while garbage collection is starting", async () => {

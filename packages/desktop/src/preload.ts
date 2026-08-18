@@ -23,6 +23,9 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
     ipcRenderer.invoke("paseo:invoke", command, args),
   getPendingOpenProject: () =>
     ipcRenderer.invoke("paseo:get-pending-open-project") as Promise<string | null>,
+  clipboard: {
+    readImage: () => ipcRenderer.invoke("paseo:clipboard:read-image") as Promise<string | null>,
+  },
   agentNavigation: {
     ready: () =>
       ipcRenderer.invoke("paseo:agent-navigation:ready") as Promise<{

@@ -148,6 +148,15 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     `packages/desktop/src/features/browser-webviews/{popup-targets,focus-policy}.ts`,
     `packages/app/src/desktop/browser/{popup-targets,remote-popup-targets,focus-policy}.ts`, and
     `packages/desktop/e2e/browser-tabs.e2e.mjs`.
+15. **Image-safe composer delivery** — Mac paste reads Electron's native clipboard image as a
+    canonical PNG instead of trusting one Chromium pasteboard flavor, while browser-file fallback
+    and native mobile paste remain available. The composer stays non-sendable until asynchronous
+    persistence finishes; multi-image persistence rolls back atomically; unreadable, empty, or
+    provider-incompatible image bytes fail the send and restore the draft instead of silently
+    reaching an agent as text-only. Desktop selection offers the four portable provider formats,
+    and native pick/paste converts other raster formats to PNG. Key files:
+    `packages/app/src/{attachments,composer,utils/image-attachments-from-files.ts}` and
+    `packages/desktop/src/features/clipboard-image.ts`.
 
 ## Product version policy
 

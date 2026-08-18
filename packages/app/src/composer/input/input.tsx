@@ -32,9 +32,12 @@ import { useVoiceOptional } from "@/contexts/voice-context";
 import { useToast } from "@/contexts/toast-context";
 import { resolveVoiceUnavailableMessage } from "@/utils/server-info-capabilities";
 import {
+  clipboardDataMayContainImage,
   collectImageFilesFromClipboardData,
-  filesToImageAttachments,
+  persistClipboardImageCandidates,
+  withImagePastePending,
 } from "@/utils/image-attachments-from-files";
+import { getDesktopHost } from "@/desktop/host";
 import type { ComposerAttachment } from "@/attachments/types";
 import type { ImageAttachment, MessagePayload } from "@/composer/types";
 import { focusWithRetries } from "@/utils/web-focus";
@@ -109,6 +112,7 @@ export interface MessageInputProps {
   onAttachButtonRef?: (node: View | null) => void;
   onAddImages?: (images: ImageAttachment[]) => void;
   onPasteImages?: (files: readonly NativePastedFile[]) => void;
+  onImagePastePendingChange?: (delta: 1 | -1) => void;
   client: DaemonClient | null;
   /** Dictation start gate from host runtime (socket connected + directory ready). */
   isReadyForDictation?: boolean;
@@ -419,6 +423,8 @@ interface PasteImagesEffectArgs {
   isDictating: boolean;
   isRealtimeVoiceForCurrentAgent: boolean;
   onAddImages: ((images: ImageAttachment[]) => void) | undefined;
+  onPendingChange: ((delta: 1 | -1) => void) | undefined;
+  onPasteError: (message: string) => void;
 }
 
 function usePasteImagesEffect(args: PasteImagesEffectArgs): void {
@@ -429,6 +435,8 @@ function usePasteImagesEffect(args: PasteImagesEffectArgs): void {
     isDictating,
     isRealtimeVoiceForCurrentAgent,
     onAddImages,
+    onPendingChange,
+    onPasteError,
   } = args;
 
   useEffect(() => {
@@ -453,11 +461,19 @@ function usePasteImagesEffect(args: PasteImagesEffectArgs): void {
       if (!isConnected || disabled || isDictating || isRealtimeVoiceForCurrentAgent) return;
 
       const imageFiles = collectImageFilesFromClipboardData(event.clipboardData);
-      if (imageFiles.length === 0) return;
+      if (!clipboardDataMayContainImage(event.clipboardData) && imageFiles.length === 0) return;
 
       event.preventDefault();
 
-      void filesToImageAttachments(imageFiles)
+      const readCanonicalImage = getDesktopHost()?.clipboard?.readImage;
+      void withImagePastePending({
+        onPendingChange,
+        operation: () =>
+          persistClipboardImageCandidates({
+            files: imageFiles,
+            ...(typeof readCanonicalImage === "function" ? { readCanonicalImage } : {}),
+          }),
+      })
         .then((pastedAttachments) => {
           if (disposed || pastedAttachments.length === 0) return;
           onAddImages(pastedAttachments);
@@ -465,6 +481,7 @@ function usePasteImagesEffect(args: PasteImagesEffectArgs): void {
         })
         .catch((error) => {
           console.error("[MessageInput] Failed to process pasted images:", error);
+          onPasteError(error instanceof Error ? error.message : String(error));
         });
     };
 
@@ -480,6 +497,8 @@ function usePasteImagesEffect(args: PasteImagesEffectArgs): void {
     isDictating,
     isRealtimeVoiceForCurrentAgent,
     onAddImages,
+    onPasteError,
+    onPendingChange,
   ]);
 }
 
@@ -1025,6 +1044,7 @@ interface ResolvedMessageInputProps {
   onAttachButtonRef: ((node: View | null) => void) | undefined;
   onAddImages: ((images: ImageAttachment[]) => void) | undefined;
   onPasteImages: ((files: readonly NativePastedFile[]) => void) | undefined;
+  onImagePastePendingChange: ((delta: 1 | -1) => void) | undefined;
   client: DaemonClient | null;
   isReadyForDictation: boolean | undefined;
   placeholder: string | undefined;
@@ -1073,6 +1093,7 @@ function resolveMessageInputProps(props: MessageInputProps): ResolvedMessageInpu
     onAttachButtonRef: props.onAttachButtonRef,
     onAddImages: props.onAddImages,
     onPasteImages: props.onPasteImages,
+    onImagePastePendingChange: props.onImagePastePendingChange,
     client: props.client,
     isReadyForDictation: props.isReadyForDictation,
     placeholder: props.placeholder,
@@ -1129,6 +1150,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       onAttachButtonRef,
       onAddImages,
       onPasteImages,
+      onImagePastePendingChange,
       client,
       isReadyForDictation,
       placeholder,
@@ -1499,6 +1521,14 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
 
     const webTextareaRef = useRef<HTMLElement | null>(null);
 
+    const handlePasteError = useCallback(
+      (message: string) => {
+        console.error("[MessageInput] Image paste failed:", message);
+        toast.error(t("composer.errors.pasteImageFailed"));
+      },
+      [t, toast],
+    );
+
     useLayoutEffect(() => {
       if (isWeb) {
         webTextareaRef.current = getWebTextArea() as HTMLElement | null;
@@ -1512,6 +1542,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       isDictating,
       isRealtimeVoiceForCurrentAgent,
       onAddImages,
+      onPendingChange: onImagePastePendingChange,
+      onPasteError: handlePasteError,
     });
 
     const setBoundedInputHeight = useCallback(
@@ -1641,14 +1673,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       setIsInputFocused(false);
       onFocusChange?.(false);
     }, [onFocusChange]);
-
-    const handlePasteError = useCallback(
-      (message: string) => {
-        console.error("[MessageInput] Native paste failed:", message);
-        toast.error(t("composer.errors.pasteImageFailed"));
-      },
-      [t, toast],
-    );
 
     const attachButtonStyle = useCallback(
       ({ hovered }: { hovered?: boolean }) => [

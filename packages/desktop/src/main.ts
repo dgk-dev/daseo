@@ -51,6 +51,7 @@ import {
 import { registerOpenerHandlers } from "./features/opener.js";
 import { registerEditorTargetHandlers } from "./features/editor-targets/ipc.js";
 import { setupApplicationMenu } from "./features/menu.js";
+import { readClipboardImageDataUrl } from "./features/clipboard-image.js";
 import {
   BROWSER_NEW_TAB_REQUEST_EVENT,
   decideBrowserWindowOpenRequest,
@@ -988,6 +989,10 @@ ipcMain.handle(
       return null;
     }
   },
+);
+
+ipcMain.handle("paseo:clipboard:read-image", (): string | null =>
+  readClipboardImageDataUrl(clipboard),
 );
 
 ipcMain.handle("paseo:browser:copy-element", (_event, payload: unknown): boolean => {

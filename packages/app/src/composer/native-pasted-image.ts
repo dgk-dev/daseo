@@ -1,5 +1,8 @@
 import { resolveRasterImageMimeType } from "@/attachments/file-types";
-import type { PickedImageAttachmentInput } from "@/hooks/image-attachment-picker";
+import {
+  normalizePickedImageAssets,
+  type PickedImageAttachmentInput,
+} from "@/hooks/image-attachment-picker";
 
 export interface NativePastedFile {
   fileName: string;
@@ -15,21 +18,24 @@ export class UnsupportedPastedImageError extends Error {
   }
 }
 
-export function normalizeNativePastedImages(
+export async function normalizeNativePastedImages(
   files: readonly NativePastedFile[],
-): PickedImageAttachmentInput[] {
-  return files.map((file) => {
-    const mimeType = resolveRasterImageMimeType({
-      mimeType: file.type,
-      path: file.fileName,
-    });
-    if (!mimeType) {
+): Promise<PickedImageAttachmentInput[]> {
+  for (const file of files) {
+    if (
+      !resolveRasterImageMimeType({
+        mimeType: file.type,
+        path: file.fileName,
+      })
+    ) {
       throw new UnsupportedPastedImageError(file.fileName);
     }
-    return {
-      source: { kind: "file_uri", uri: file.uri },
-      mimeType,
+  }
+  return await normalizePickedImageAssets(
+    files.map((file) => ({
+      uri: file.uri,
+      mimeType: file.type,
       fileName: file.fileName,
-    };
-  });
+    })),
+  );
 }

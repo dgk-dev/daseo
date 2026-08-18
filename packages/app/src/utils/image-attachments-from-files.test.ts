@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  clipboardDataMayContainImage,
   collectImageFilesFromClipboardData,
   filesToImageAttachments,
+  persistClipboardImageCandidates,
+  readCanonicalDesktopClipboardImage,
+  withImagePastePending,
 } from "./image-attachments-from-files";
 import { __setAttachmentStoreForTests } from "@/attachments/store";
 import type { AttachmentStore } from "@/attachments/types";
@@ -113,8 +117,22 @@ describe("collectImageFilesFromClipboardData", () => {
     expect(files).toEqual([]);
   });
 
+  it("detects file-backed image candidates even when Chromium supplies no usable MIME type", () => {
+    expect(
+      clipboardDataMayContainImage({
+        items: [createClipboardItem({ kind: "file", type: "" })],
+      }),
+    ).toBe(true);
+    expect(
+      clipboardDataMayContainImage({
+        items: [createClipboardItem({ kind: "string", type: "text/plain" })],
+      }),
+    ).toBe(false);
+  });
+
   it("returns an empty array when clipboard data is missing", () => {
     expect(collectImageFilesFromClipboardData(undefined)).toEqual([]);
+    expect(clipboardDataMayContainImage(undefined)).toBe(false);
   });
 });
 
@@ -163,5 +181,82 @@ describe("filesToImageAttachments", () => {
 
     expect(attachment?.storageType).toBe("web-indexeddb");
     expect(attachment?.byteSize).toBe(4 * 1024 * 1024);
+  });
+
+  it("rolls back successfully persisted siblings when one pasted image fails", async () => {
+    const deletedIds: string[] = [];
+    let saves = 0;
+    __setAttachmentStoreForTests({
+      ...createTestStore(),
+      async save(input) {
+        saves += 1;
+        if (saves === 2) {
+          throw new Error("disk full");
+        }
+        return {
+          id: "persisted-before-failure",
+          mimeType: input.mimeType ?? "image/png",
+          storageType: "web-indexeddb",
+          storageKey: "persisted-before-failure",
+          fileName: input.fileName,
+          byteSize: 4,
+          createdAt: 1700000000001,
+        };
+      },
+      async delete({ attachment }) {
+        deletedIds.push(attachment.id);
+      },
+    });
+    const first = new File([new Uint8Array([1])], "first.png", { type: "image/png" });
+    const second = new File([new Uint8Array([2])], "second.png", { type: "image/png" });
+
+    await expect(
+      filesToImageAttachments([
+        { file: first, mimeType: "image/png" },
+        { file: second, mimeType: "image/png" },
+      ]),
+    ).rejects.toThrow("Failed to persist pasted image attachments");
+    expect(deletedIds).toEqual(["persisted-before-failure"]);
+  });
+
+  it("persists Electron's native clipboard image as a canonical PNG", async () => {
+    const attachment = await readCanonicalDesktopClipboardImage(
+      async () => "data:image/png;base64,iVBORw0KGgo=",
+    );
+    expect(attachment).toMatchObject({
+      mimeType: "image/png",
+      fileName: "clipboard.png",
+    });
+  });
+
+  it("falls back to Chromium's pasted file if the native clipboard bridge fails", async () => {
+    const file = new File([new Uint8Array([1, 2, 3])], "fallback.png", {
+      type: "image/png",
+    });
+    const attachments = await persistClipboardImageCandidates({
+      files: [{ file, mimeType: "image/png" }],
+      readCanonicalImage: async () => {
+        throw new Error("IPC unavailable");
+      },
+    });
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0]?.fileName).toBe("fallback.png");
+  });
+
+  it("marks paste processing pending until persistence settles", async () => {
+    let resolvePersistence: (value: string) => void = () => undefined;
+    const persistence = new Promise<string>((resolve) => {
+      resolvePersistence = resolve;
+    });
+    const changes: number[] = [];
+    const result = withImagePastePending({
+      onPendingChange: (delta) => changes.push(delta),
+      operation: () => persistence,
+    });
+
+    expect(changes).toEqual([1]);
+    resolvePersistence("saved");
+    await expect(result).resolves.toBe("saved");
+    expect(changes).toEqual([1, -1]);
   });
 });

@@ -13,11 +13,20 @@ const RASTER_IMAGE_MIME_TYPE_BY_EXTENSION: Record<string, string> = {
 };
 
 const RASTER_IMAGE_MIME_TYPES = new Set(Object.values(RASTER_IMAGE_MIME_TYPE_BY_EXTENSION));
+export type AgentImageMimeType = "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+const AGENT_IMAGE_MIME_TYPES = new Set<AgentImageMimeType>([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
 const GENERIC_FILE_MIME_TYPE = "application/octet-stream";
 
 export const RASTER_IMAGE_FILE_EXTENSIONS = Object.keys(RASTER_IMAGE_MIME_TYPE_BY_EXTENSION).map(
   (extension) => extension.slice(1),
 );
+
+export const AGENT_IMAGE_FILE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp"];
 
 export function getFileExtension(path: string): string {
   const normalizedPath = path.split("#", 1)[0]?.split("?", 1)[0] ?? path;
@@ -64,6 +73,19 @@ export function isRasterImagePath(path: string): boolean {
 
 export function isRasterImageMimeType(mimeType: string | null | undefined): boolean {
   return resolveRasterImageMimeType({ mimeType }) !== null;
+}
+
+export function resolveAgentImageMimeType(
+  mimeType: string | null | undefined,
+): AgentImageMimeType | null {
+  const normalized = resolveRasterImageMimeType({ mimeType });
+  return normalized !== null && AGENT_IMAGE_MIME_TYPES.has(normalized as AgentImageMimeType)
+    ? (normalized as AgentImageMimeType)
+    : null;
+}
+
+export function isAgentImageMimeType(mimeType: string | null | undefined): boolean {
+  return resolveAgentImageMimeType(mimeType) !== null;
 }
 
 export function isRasterImageFile(file: Pick<File, "name" | "type">): boolean {

@@ -220,10 +220,16 @@ export interface DesktopInvokeBridge {
   invoke?: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
 }
 
+export interface DesktopClipboardBridge {
+  /** Read the current native clipboard image as a canonical PNG data URL. */
+  readImage?: () => Promise<string | null>;
+}
+
 export interface DesktopHostBridge {
   platform?: string;
   invoke?: DesktopInvokeBridge["invoke"];
   getPendingOpenProject?: () => Promise<string | null>;
+  clipboard?: DesktopClipboardBridge;
   agentNavigation?: DesktopAgentNavigationBridge;
   events?: DesktopEventsBridge;
   window?: DesktopWindowModuleBridge;
