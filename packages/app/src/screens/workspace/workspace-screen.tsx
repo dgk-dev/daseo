@@ -115,6 +115,7 @@ import {
   useBrowserStore,
 } from "@/desktop/browser/store";
 import { getDesktopHost } from "@/desktop/host";
+import { resolveWorkspaceActiveBrowserId } from "@/desktop/browser/focus-policy";
 import { reconcileRemoteBrowserTabs } from "@/desktop/browser/remote-tabs-sync";
 import { buildProviderCommand } from "@/utils/provider-command-templates";
 import { generateDraftId } from "@/stores/draft-keys";
@@ -335,9 +336,12 @@ function useSyncWorkspaceActiveBrowser(input: {
     }
     void getDesktopHost()?.browser?.setWorkspaceActiveBrowser?.({
       workspaceId: input.workspaceId,
-      browserId: focusedBrowserId,
+      browserId: resolveWorkspaceActiveBrowserId({
+        focusedBrowserId,
+        isRouteFocused: input.isRouteFocused,
+      }),
     });
-  }, [focusedBrowserId, input.workspaceId]);
+  }, [focusedBrowserId, input.isRouteFocused, input.workspaceId]);
 }
 
 function getFallbackTabOptionLabel(

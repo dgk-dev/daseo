@@ -1,3 +1,4 @@
+import { useRetainedPanelActive } from "@/components/retained-panel";
 import {
   createContext,
   createElement,
@@ -203,7 +204,26 @@ function detachWebOverlayListeners(): void {
   webOverlayListenersAttached = false;
 }
 
+export function resolveWebOverlayRegistrationActive(
+  active: boolean,
+  retainedPanelActive: boolean,
+): boolean {
+  return active && retainedPanelActive;
+}
+
+export function shouldRestoreWebOverlayFocus(input: {
+  activeElementIsDocumentBody: boolean;
+  activeElementWithinClosingScope: boolean;
+  restoreTargetConnected: boolean;
+}): boolean {
+  return (
+    input.restoreTargetConnected &&
+    (input.activeElementIsDocumentBody || input.activeElementWithinClosingScope)
+  );
+}
+
 function addWebOverlay(entry: WebOverlayEntry): () => void {
+  const registeredScope = entry.getScope();
   webOverlayEntries.push(entry);
   attachWebOverlayListeners();
   notifyWebOverlayActivity();
@@ -221,7 +241,17 @@ function addWebOverlay(entry: WebOverlayEntry): () => void {
     if (index !== -1) webOverlayEntries.splice(index, 1);
     detachWebOverlayListeners();
     notifyWebOverlayActivity();
-    if (entry.restoreFocus && document.contains(entry.restoreFocus)) {
+    const activeElement = document.activeElement;
+    if (
+      entry.restoreFocus &&
+      shouldRestoreWebOverlayFocus({
+        activeElementIsDocumentBody: !activeElement || activeElement === document.body,
+        activeElementWithinClosingScope: Boolean(
+          registeredScope && activeElement && registeredScope.contains(activeElement),
+        ),
+        restoreTargetConnected: document.contains(entry.restoreFocus),
+      })
+    ) {
       entry.restoreFocus.focus();
     }
   };
@@ -239,23 +269,25 @@ interface WebOverlayRegistration {
  * there and restored to the opener when that overlay closes.
  */
 export function useWebOverlayRegistration({ active, layer, onKeyDown }: WebOverlayRegistration) {
+  const retainedPanelActive = useRetainedPanelActive();
+  const registrationActive = resolveWebOverlayRegistrationActive(active, retainedPanelActive);
   const idRef = useRef(Symbol("web-overlay"));
   const scopeRef = useRef<HTMLElement | null>(null);
   const layerRef = useRef(layer);
   const keyHandlerRef = useRef(onKeyDown);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
   const removeEntryRef = useRef<(() => void) | null>(null);
-  const activeRef = useRef(active);
+  const activeRef = useRef(registrationActive);
   const wasActiveRef = useRef(false);
 
-  activeRef.current = active;
+  activeRef.current = registrationActive;
   layerRef.current = layer;
   keyHandlerRef.current = onKeyDown;
-  if (active && !wasActiveRef.current && typeof document !== "undefined") {
+  if (registrationActive && !wasActiveRef.current && typeof document !== "undefined") {
     restoreFocusRef.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
   }
-  wasActiveRef.current = active;
+  wasActiveRef.current = registrationActive;
 
   const syncRegistration = useCallback(() => {
     const shouldRegister =
@@ -298,7 +330,7 @@ export function useWebOverlayRegistration({ active, layer, onKeyDown }: WebOverl
       removeEntryRef.current?.();
       removeEntryRef.current = null;
     };
-  }, [active, syncRegistration]);
+  }, [registrationActive, syncRegistration]);
 
   return setScope;
 }

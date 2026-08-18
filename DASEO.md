@@ -141,9 +141,12 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     `postMessage`, and `window.close()` retain browser semantics. Background and agent-created
     targets stay in non-focusable native parking windows with paintable viewports; users see them
     inside the opener browser, while agents and mobile clients can snapshot, input, debug, stream,
-    resize, or close each target by its own browser id. Key files:
-    `packages/desktop/src/features/browser-webviews/popup-targets.ts`,
-    `packages/app/src/desktop/browser/{popup-targets,remote-popup-targets}.ts`, and
+    resize, or close each target by its own browser id. User focus is authoritative: Chromium
+    navigation autofocus is disabled for embedded targets, inactive workspaces cannot advertise an
+    active browser, only a trusted pointer in the visible interactive pane may claim physical browser
+    focus, and hidden retained overlays neither trap nor restore focus over a newer input. Key files:
+    `packages/desktop/src/features/browser-webviews/{popup-targets,focus-policy}.ts`,
+    `packages/app/src/desktop/browser/{popup-targets,remote-popup-targets,focus-policy}.ts`, and
     `packages/desktop/e2e/browser-tabs.e2e.mjs`.
 
 ## Product version policy

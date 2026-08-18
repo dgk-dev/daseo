@@ -73,6 +73,7 @@ import {
   takeResidentBrowserWebview,
 } from "../resident-webviews";
 import { selectAvailablePopupTarget, useDesktopBrowserPopupTargets } from "../popup-targets";
+import { shouldClaimBrowserSurfaceFocus } from "../focus-policy";
 import { hasActiveWebOverlay, subscribeWebOverlayActivity } from "@/lib/overlay-root";
 import {
   createElementSelectorController,
@@ -632,6 +633,8 @@ export function BrowserPane({
   const isPresented = useRetainedPanelActive();
   const isPresentedRef = useRef(isPresented);
   isPresentedRef.current = isPresented;
+  const isInteractiveRef = useRef(Boolean(isInteractive));
+  isInteractiveRef.current = Boolean(isInteractive);
   const webviewRef = useRef<ElectronWebview | null>(null);
   const mountedRef = useRef(true);
   const webviewHostRef = useRef<HTMLDivElement | null>(null);
@@ -957,8 +960,22 @@ export function BrowserPane({
       }
     };
     const handleWebviewFocus = () => {
+      if (!isPresentedRef.current || !isInteractiveRef.current) {
+        return;
+      }
       onFocusPane?.();
-      webview.focus?.();
+    };
+    const handleWebviewMouseDown = (event: MouseEvent) => {
+      if (
+        !shouldClaimBrowserSurfaceFocus({
+          isInteractive: isInteractiveRef.current,
+          isPresented: isPresentedRef.current,
+          isTrustedPointerEvent: event.isTrusted,
+        })
+      ) {
+        return;
+      }
+      onFocusPane?.();
       const focusBrowser = getDesktopHost()?.browser?.focus;
       if (typeof focusBrowser === "function") {
         void focusBrowser(browserIdRef.current).catch((error) => {
@@ -977,7 +994,7 @@ export function BrowserPane({
     webview.addEventListener("did-fail-load", handleLoadFailed);
     webview.addEventListener("dom-ready", handleDomReady);
     webview.addEventListener("focus", handleWebviewFocus);
-    webview.addEventListener("mousedown", handleWebviewFocus);
+    webview.addEventListener("mousedown", handleWebviewMouseDown);
 
     if (isPresentedRef.current) {
       rememberResolvedBrowserWebviewSize(browserId, webview);
@@ -1003,7 +1020,7 @@ export function BrowserPane({
       webview.removeEventListener("did-fail-load", handleLoadFailed);
       webview.removeEventListener("dom-ready", handleDomReady);
       webview.removeEventListener("focus", handleWebviewFocus);
-      webview.removeEventListener("mousedown", handleWebviewFocus);
+      webview.removeEventListener("mousedown", handleWebviewMouseDown);
       void getDesktopHost()?.browser?.presentPopupTarget?.({
         rootBrowserId: browserIdRef.current,
         popupBrowserId: null,

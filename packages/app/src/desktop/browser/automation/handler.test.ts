@@ -464,7 +464,7 @@ describe("mountBrowserAutomationHandler", () => {
     const result = newTabResultFrom(browser.client.payloadAt(0));
 
     browser.receive(browserResizeRequest(result.browserId));
-    await flushAsyncWork();
+    await waitForRegistrationTimeout();
 
     expect(browser.client.payloadAt(1)).toEqual({
       requestId: "req-resize",

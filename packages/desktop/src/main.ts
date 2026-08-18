@@ -54,6 +54,7 @@ import { setupApplicationMenu } from "./features/menu.js";
 import {
   BROWSER_NEW_TAB_REQUEST_EVENT,
   decideBrowserWindowOpenRequest,
+  getActivePaseoBrowserWebContentsForHostWindow,
   getPaseoBrowserIdForWebContents,
   getPaseoBrowserWebContentsForHostWindow,
   getPaseoBrowserWorkspaceId,
@@ -109,6 +110,11 @@ import {
   registerBrowserAutomationIpc,
 } from "./features/browser-automation/ipc.js";
 import { wasPaseoBrowserRecentlyAutomated } from "./features/browser-automation/activity.js";
+import {
+  disableFocusOnNavigation,
+  shouldRequestBrowserPopupActivation,
+  shouldRestoreUnexpectedPopupFocus,
+} from "./features/browser-webviews/focus-policy.js";
 import { BrowserKeyboard } from "./features/browser-keyboard/index.js";
 import { installAppUpdateOnQuit } from "./features/auto-updater.js";
 import {
@@ -386,7 +392,7 @@ function getBrowserPopupWindowOptions(
     parent: mainWindow,
     show: false,
     autoHideMenuBar: true,
-    webPreferences: {
+    webPreferences: disableFocusOnNavigation({
       partition: PASEO_BROWSER_PROFILE_PARTITION,
       preload: getBrowserKeyboardPreloadPath(),
       nodeIntegration: false,
@@ -398,7 +404,7 @@ function getBrowserPopupWindowOptions(
       webviewTag: false,
       allowRunningInsecureContent: false,
       backgroundThrottling: false,
-    },
+    }),
   };
 }
 
@@ -440,11 +446,16 @@ function installBrowserWindowOpenHandler(input: {
       }
 
       const previousFocusedContents = webContents.getFocusedWebContents();
-      const requestActivation =
-        disposition !== "background-tab" &&
-        mainWindow.isFocused() &&
-        contents.isFocused() &&
-        !wasPaseoBrowserRecentlyAutomated(contents.id);
+      const authoritativeContents = getActivePaseoBrowserWebContentsForHostWindow(
+        mainWindow.webContents.id,
+      );
+      const requestActivation = shouldRequestBrowserPopupActivation({
+        disposition,
+        hostWindowFocused: mainWindow.isFocused(),
+        openerFocused: contents.isFocused(),
+        openerIsAuthoritativeTarget: authoritativeContents?.id === contents.id,
+        recentlyAutomated: wasPaseoBrowserRecentlyAutomated(contents.id),
+      });
       return {
         action: "allow",
         outlivesOpener: false,
@@ -492,7 +503,18 @@ function installBrowserWindowOpenHandler(input: {
           });
 
           setImmediate(() => {
-            if (previousFocusedContents && !previousFocusedContents.isDestroyed()) {
+            const currentFocusedContents = webContents.getFocusedWebContents();
+            if (
+              previousFocusedContents &&
+              !previousFocusedContents.isDestroyed() &&
+              shouldRestoreUnexpectedPopupFocus({
+                currentFocusedContentsId: currentFocusedContents?.id ?? null,
+                hostWindowFocused: mainWindow.isFocused(),
+                popupContentsId: popupContents.id,
+                previousFocusedContentsId: previousFocusedContents.id,
+                requestActivation,
+              })
+            ) {
               previousFocusedContents.focus();
             }
           });
@@ -864,6 +886,14 @@ ipcMain.handle("paseo:browser:focus", (event, browserId: unknown): boolean => {
   if (!contents) {
     return false;
   }
+  const workspaceId = getPaseoBrowserWorkspaceId(browserId);
+  if (workspaceId) {
+    setWorkspaceActivePaseoBrowserId({
+      hostWebContentsId: event.sender.id,
+      workspaceId,
+      browserId,
+    });
+  }
   contents.focus();
   return true;
 });
@@ -1164,6 +1194,7 @@ async function createWindow(
     webPreferences.webSecurity = true;
     webPreferences.webviewTag = false;
     webPreferences.allowRunningInsecureContent = false;
+    disableFocusOnNavigation(webPreferences);
     delete webPreferences.preload;
     delete params.preload;
     delete (webPreferences as { preloadURL?: string }).preloadURL;

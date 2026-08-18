@@ -213,6 +213,21 @@ async function startTargetPage() {
         </html>`);
       return;
     }
+    if (requestUrl.pathname === "/focus-attempt") {
+      response.end(`<!doctype html>
+        <html>
+          <head><title>Background focus attempt</title></head>
+          <body>
+            <label for="background-autofocus">Background autofocus</label>
+            <input id="background-autofocus" autofocus />
+            <script>
+              window.focus();
+              setTimeout(() => document.querySelector('#background-autofocus').focus(), 250);
+            </script>
+          </body>
+        </html>`);
+      return;
+    }
     if (requestUrl.pathname === "/post-popup") {
       let body = "";
       for await (const chunk of request) body += chunk;
@@ -286,7 +301,7 @@ async function waitForGuestSelector(client, browserId) {
   return false;
 }
 
-async function createCallerAgent(daemonPort) {
+async function createCallerAgent(daemonPort, workspaceId = workspaceIds[0]) {
   const transport = new StreamableHTTPClientTransport(
     new URL(`http://127.0.0.1:${daemonPort}/mcp/agents`),
   );
@@ -296,8 +311,8 @@ async function createCallerAgent(daemonPort) {
       name: "create_agent",
       args: {
         relationship: { kind: "detached" },
-        workspace: { kind: "existing", workspaceId: workspaceIds[0] },
-        title: "Browser desktop browser E2E caller",
+        workspace: { kind: "existing", workspaceId },
+        title: `Browser desktop browser E2E caller ${workspaceId}`,
         provider: "mock/ten-second-stream",
         settings: { modeId: "load-test" },
         initialPrompt: "Remain available while the browser bridge regression runs.",
@@ -311,7 +326,7 @@ async function createCallerAgent(daemonPort) {
     );
     assert(typeof result.agentId === "string", "create_agent returned no caller agent id");
     assert(
-      result.workspaceId === workspaceIds[0],
+      result.workspaceId === workspaceId,
       `MCP caller attached to unexpected workspace ${result.workspaceId}`,
     );
     return result.agentId;
@@ -762,6 +777,32 @@ async function runPopupRegression({
     "Visible popup was not the active browser target",
   );
 
+  await page.evaluate(() => {
+    const input = document.createElement("input");
+    input.id = "visible-popup-focus-sentinel";
+    input.value = "keep-visible-popup-focus";
+    input.style.position = "fixed";
+    input.style.left = "8px";
+    input.style.bottom = "40px";
+    input.style.zIndex = "100000";
+    document.body.appendChild(input);
+    input.focus();
+  });
+  await callBrowserTool(client, "browser_navigate", {
+    browserId: postPopup.browserId,
+    url: new URL("/popup?label=Navigated", targetUrl).toString(),
+  });
+  await callBrowserTool(client, "browser_wait", {
+    browserId: postPopup.browserId,
+    text: "Navigated",
+    timeoutMs: 5_000,
+  });
+  assert(
+    await page.evaluate(() => document.activeElement?.id === "visible-popup-focus-sentinel"),
+    "Visible popup navigation stole focus from the user's host input",
+  );
+  await page.evaluate(() => document.querySelector("#visible-popup-focus-sentinel")?.remove());
+
   await page.getByTestId("sidebar-command-center-search").click();
   await page.getByTestId("command-center-panel").waitFor({ state: "visible", timeout: 5_000 });
   await waitForPopupVisibility(page, browserId, postPopup.browserId, false);
@@ -856,7 +897,15 @@ async function runPopupRegression({
   };
 }
 
-async function runRegression({ page, client, serverId, targetUrl, callerAgentId, artifactDir }) {
+async function runRegression({
+  page,
+  client,
+  backgroundClient,
+  serverId,
+  targetUrl,
+  callerAgentId,
+  artifactDir,
+}) {
   const failures = [];
   const originalWorkspaceId = workspaceIds[0];
   const originalWorkspaceRow = page.getByTestId(
@@ -912,6 +961,122 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId,
     browserId,
   );
   assert(focusedGuest === true, "Electron did not focus the registered browser guest");
+
+  await page.evaluate(() => {
+    document.querySelector("#cross-session-focus-sentinel")?.remove();
+    const input = document.createElement("input");
+    input.id = "cross-session-focus-sentinel";
+    input.value = "keep-user-focus";
+    input.style.position = "fixed";
+    input.style.left = "8px";
+    input.style.bottom = "8px";
+    input.style.zIndex = "100000";
+    document.body.appendChild(input);
+    input.focus();
+  });
+  const backgroundInputSnapshot = await callBrowserTool(client, "browser_snapshot", { browserId });
+  const backgroundInputRef = backgroundInputSnapshot.snapshot.match(
+    /textbox "Typing target" \[ref=(@e\d+)\]/,
+  )?.[1];
+  assert(backgroundInputRef, "Browser snapshot did not expose the background typing target");
+  await callBrowserTool(client, "browser_fill", {
+    browserId,
+    ref: backgroundInputRef,
+    value: "agent-background-input",
+  });
+  assert(
+    await page.evaluate(() => document.activeElement?.id === "cross-session-focus-sentinel"),
+    "Background browser input stole focus from the user's host input",
+  );
+  await callBrowserTool(client, "browser_navigate", {
+    browserId,
+    url: new URL("/focus-attempt", targetUrl).toString(),
+  });
+  await page.waitForTimeout(500);
+  assert(
+    await page.evaluate(() => document.activeElement?.id === "cross-session-focus-sentinel"),
+    "Browser navigation stole focus from the user's host input",
+  );
+  await callBrowserTool(client, "browser_navigate", { browserId, url: targetUrl });
+  await callBrowserTool(client, "browser_wait", {
+    browserId,
+    text: "Bridge target",
+    timeoutMs: 5_000,
+  });
+  await page.evaluate(() => {
+    const input = document.querySelector("#cross-session-focus-sentinel");
+    if (input instanceof HTMLInputElement) {
+      input.value = "keep-cross-workspace-focus";
+      input.focus();
+    }
+  });
+  const backgroundCreated = await callBrowserTool(backgroundClient, "browser_new_tab", {
+    url: new URL("/focus-attempt", targetUrl).toString(),
+  });
+  await page.waitForTimeout(500);
+  assert(
+    await page.evaluate(() => document.activeElement?.id === "cross-session-focus-sentinel"),
+    "A browser tab created by another workspace stole the user's host input focus",
+  );
+  const backgroundSnapshot = await callBrowserTool(backgroundClient, "browser_snapshot", {
+    browserId: backgroundCreated.browserId,
+  });
+  const crossWorkspaceInputRef = backgroundSnapshot.snapshot.match(
+    /textbox "Background autofocus" \[ref=(@e\d+)\]/,
+  )?.[1];
+  assert(crossWorkspaceInputRef, "Background workspace snapshot missed the typing target");
+  await callBrowserTool(backgroundClient, "browser_fill", {
+    browserId: backgroundCreated.browserId,
+    ref: crossWorkspaceInputRef,
+    value: "other-session-input",
+  });
+  assert(
+    await page.evaluate(() => document.activeElement?.id === "cross-session-focus-sentinel"),
+    "Browser input from another workspace stole the user's host input focus",
+  );
+  await callBrowserTool(backgroundClient, "browser_evaluate", {
+    browserId: backgroundCreated.browserId,
+    function:
+      "() => { setTimeout(() => window.open('/popup?label=BackgroundWorkspace', 'background-workspace-popup', 'width=480,height=360'), 1200); return true; }",
+  });
+  const backgroundPopupState = await waitForPopupTabs(
+    backgroundClient,
+    backgroundCreated.browserId,
+    1,
+  );
+  const backgroundPopup = backgroundPopupState.popups[0];
+  assert(backgroundPopup, "Background workspace popup was not registered");
+  assert(
+    backgroundPopup.isActive === false,
+    "A popup from another workspace became the agent's active target",
+  );
+  await waitForPopupVisibility(page, backgroundCreated.browserId, backgroundPopup.browserId, false);
+  assert(
+    await page.evaluate(() => document.activeElement?.id === "cross-session-focus-sentinel"),
+    "A popup from another workspace stole the user's host input focus",
+  );
+  const backgroundPopupSnapshot = await callBrowserTool(backgroundClient, "browser_snapshot", {
+    browserId: backgroundPopup.browserId,
+  });
+  const backgroundPopupRef = backgroundPopupSnapshot.snapshot.match(
+    /button "Notify opener" \[ref=(@e\d+)\]/,
+  )?.[1];
+  assert(backgroundPopupRef, "Background workspace popup snapshot missed its action");
+  await callBrowserTool(backgroundClient, "browser_click", {
+    browserId: backgroundPopup.browserId,
+    ref: backgroundPopupRef,
+  });
+  assert(
+    await page.evaluate(() => document.activeElement?.id === "cross-session-focus-sentinel"),
+    "Popup input from another workspace stole the user's host input focus",
+  );
+  await callBrowserTool(backgroundClient, "browser_close_tab", {
+    browserId: backgroundPopup.browserId,
+  });
+  await callBrowserTool(backgroundClient, "browser_close_tab", {
+    browserId: backgroundCreated.browserId,
+  });
+  await page.evaluate(() => document.querySelector("#cross-session-focus-sentinel")?.remove());
 
   const popupReport = await runPopupRegression({
     page,
@@ -1320,6 +1485,7 @@ async function runRegression({ page, client, serverId, targetUrl, callerAgentId,
     finalWebContentsId: parkedGuest.webContentsId,
     viewport: "passed",
     guestFocus: "passed",
+    crossSessionFocus: "passed",
     overlayPlane: "passed",
     inactiveCapture: "passed",
     list: "passed",
@@ -1352,6 +1518,7 @@ async function main() {
   const children = [];
   let browser = null;
   let client = null;
+  let backgroundClient = null;
 
   try {
     const commonEnv = {
@@ -1428,9 +1595,17 @@ async function main() {
       ),
     );
     client = await experimental_createMCPClient({ transport });
+    const backgroundCallerAgentId = await createCallerAgent(daemonPort, workspaceIds[1]);
+    const backgroundTransport = new StreamableHTTPClientTransport(
+      new URL(
+        `http://127.0.0.1:${daemonPort}/mcp/agents?callerAgentId=${encodeURIComponent(backgroundCallerAgentId)}`,
+      ),
+    );
+    backgroundClient = await experimental_createMCPClient({ transport: backgroundTransport });
     const report = await runRegression({
       page,
       client,
+      backgroundClient,
       serverId: status.serverId,
       targetUrl: target.url,
       callerAgentId,
@@ -1438,13 +1613,14 @@ async function main() {
     });
     writeJson(path.join(artifactDir, "result.json"), report);
     console.log(
-      `Browser desktop browser E2E passed: WebContents ${report.originalWebContentsId} remained ${report.finalWebContentsId}; viewport, inactive capture, focus continuity, list, snapshot, click, local-page selectors passed.`,
+      `Browser desktop browser E2E passed: WebContents ${report.originalWebContentsId} remained ${report.finalWebContentsId}; viewport, inactive capture, cross-session focus continuity, list, snapshot, click, local-page selectors passed.`,
     );
   } catch (error) {
     console.error(`Browser desktop browser E2E failed. Artifacts: ${artifactDir}`);
     console.error(error);
     throw error;
   } finally {
+    await backgroundClient?.close().catch(() => undefined);
     await client?.close().catch(() => undefined);
     await browser?.close().catch(() => undefined);
     for (const child of children.toReversed()) stopProcess(child);
