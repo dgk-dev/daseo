@@ -87,6 +87,7 @@ class FakeBrowserBridge {
   }> = [];
   public response: BrowserAutomationResponsePayload | null = null;
   public thrownError: unknown = null;
+  public unregisterThrownError: unknown = null;
 
   public executeAutomationCommand = async (
     request: BrowserAutomationExecuteRequest,
@@ -100,6 +101,9 @@ class FakeBrowserBridge {
 
   public unregisterWorkspaceBrowser = async (browserId: string): Promise<void> => {
     this.unregisteredWorkspaceBrowsers.push(browserId);
+    if (this.unregisterThrownError) {
+      throw this.unregisterThrownError;
+    }
   };
 
   public closePopupTarget = async (input: {
@@ -405,11 +409,27 @@ describe("mountBrowserAutomationHandler", () => {
         url: "https://example.com",
       }),
     ]);
+    const browserId = browser.resident.ensuredWebviews[0]?.browserId;
+    expect(browserId).toBeTruthy();
+    expect(browserId ? getBrowserRecord(browserId) : null).toBeNull();
+    expect(
+      browserId
+        ? workspaceBrowserTabs(
+            buildWorkspaceTabPersistenceKey({
+              serverId: "server-1",
+              workspaceId: "wks_workspace_a",
+            }) ?? "",
+            browserId,
+          )
+        : [],
+    ).toEqual([]);
+    expect(browser.browser.unregisteredWorkspaceBrowsers).toEqual([browserId]);
   });
 
-  test("browser_new_tab wraps registration bridge errors in a response", async () => {
+  test("browser_new_tab rolls back registration bridge errors without masking them", async () => {
     const browser = new BrowserAutomationHandlerHarness();
     browser.browser.thrownError = new Error("IPC registration check failed");
+    browser.browser.unregisterThrownError = new Error("Registry cleanup also failed");
     browser.mount({ serverId: "server-1" });
 
     browser.receive(browserNewTabRequest());
@@ -429,6 +449,10 @@ describe("mountBrowserAutomationHandler", () => {
         },
       },
     ]);
+    const browserId = browser.resident.ensuredWebviews[0]?.browserId;
+    expect(browserId).toBeTruthy();
+    expect(browserId ? getBrowserRecord(browserId) : null).toBeNull();
+    expect(browser.browser.unregisteredWorkspaceBrowsers).toEqual([browserId]);
   });
 
   test("browser_resize updates resident webview dimensions", async () => {

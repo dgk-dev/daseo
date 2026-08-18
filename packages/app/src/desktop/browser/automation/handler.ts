@@ -566,31 +566,39 @@ async function openBrowserTabForRequest(params: {
       message: "Cannot create a browser tab without a workspace context.",
     });
   }
-  useWorkspaceLayoutStore.getState().openTabInBackground(workspaceKey, {
+  const tabId = useWorkspaceLayoutStore.getState().openTabInBackground(workspaceKey, {
     kind: "browser",
     browserId,
   });
 
-  if (browserHost?.executeAutomationCommand) {
-    ensureResidentBrowserWebview({ browserId, workspaceId, url: normalizedUrl });
-    const registered = await waitForBrowserRegistration({
-      request,
-      browserId,
-      workspaceId,
-      executeAutomationCommand: browserHost.executeAutomationCommand,
-      ...(registrationWaitTimeoutMs !== undefined ? { timeoutMs: registrationWaitTimeoutMs } : {}),
-      ...(registrationPollIntervalMs !== undefined
-        ? { pollIntervalMs: registrationPollIntervalMs }
-        : {}),
-    });
-    if (!registered) {
-      return browserAutomationFailure({
-        requestId: request.requestId,
-        code: "browser_timeout",
-        message: `Timed out waiting for browser tab ${browserId} to register with the browser automation host. Try browser_new_tab again.`,
-        retryable: true,
+  try {
+    if (browserHost?.executeAutomationCommand) {
+      ensureResidentBrowserWebview({ browserId, workspaceId, url: normalizedUrl });
+      const registered = await waitForBrowserRegistration({
+        request,
+        browserId,
+        workspaceId,
+        executeAutomationCommand: browserHost.executeAutomationCommand,
+        ...(registrationWaitTimeoutMs !== undefined
+          ? { timeoutMs: registrationWaitTimeoutMs }
+          : {}),
+        ...(registrationPollIntervalMs !== undefined
+          ? { pollIntervalMs: registrationPollIntervalMs }
+          : {}),
       });
+      if (!registered) {
+        await rollbackFailedBrowserTabOpen({ browserHost, browserId, workspaceKey, tabId });
+        return browserAutomationFailure({
+          requestId: request.requestId,
+          code: "browser_timeout",
+          message: `Timed out waiting for browser tab ${browserId} to register with the browser automation host. Try browser_new_tab again.`,
+          retryable: true,
+        });
+      }
     }
+  } catch (error) {
+    await rollbackFailedBrowserTabOpen({ browserHost, browserId, workspaceKey, tabId });
+    throw error;
   }
 
   return {
@@ -598,6 +606,25 @@ async function openBrowserTabForRequest(params: {
     ok: true,
     result: { command: "new_tab", browserId, workspaceId, url: normalizedUrl },
   };
+}
+
+async function rollbackFailedBrowserTabOpen(input: {
+  browserHost: DesktopHostBridge["browser"] | undefined;
+  browserId: string;
+  workspaceKey: string;
+  tabId: string | null;
+}): Promise<void> {
+  if (input.tabId) {
+    useWorkspaceLayoutStore.getState().closeTab(input.workspaceKey, input.tabId);
+  }
+  useBrowserStore.getState().removeBrowser(input.browserId);
+  removeResidentBrowserWebview(input.browserId);
+  try {
+    await input.browserHost?.unregisterWorkspaceBrowser?.(input.browserId);
+  } catch {
+    // The local stores and guest are already gone. Registry destruction is
+    // best-effort so a cleanup error never masks the original open failure.
+  }
 }
 
 async function waitForBrowserRegistration(params: {
