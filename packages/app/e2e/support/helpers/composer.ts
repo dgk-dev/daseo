@@ -113,6 +113,33 @@ export async function attachImageFromMenu(
   await chooser.setFiles([file]);
 }
 
+export async function pasteImageIntoComposer(
+  page: Page,
+  file: { name: string; mimeType: string; buffer: Buffer },
+): Promise<void> {
+  const composer = page.locator("textarea[data-composer-input]").filter({ visible: true }).first();
+  await expect(composer).toBeVisible();
+  await composer.evaluate(
+    (element, input) => {
+      const bytes = Uint8Array.from(atob(input.base64), (character) => character.charCodeAt(0));
+      const clipboardData = new DataTransfer();
+      clipboardData.items.add(new File([bytes], input.name, { type: input.mimeType }));
+      element.dispatchEvent(
+        new ClipboardEvent("paste", {
+          bubbles: true,
+          cancelable: true,
+          clipboardData,
+        }),
+      );
+    },
+    {
+      name: file.name,
+      mimeType: file.mimeType,
+      base64: file.buffer.toString("base64"),
+    },
+  );
+}
+
 export async function expectAttachmentPill(page: Page, testID: string): Promise<void> {
   await expect(page.getByTestId(testID).first()).toBeVisible({ timeout: 10_000 });
 }

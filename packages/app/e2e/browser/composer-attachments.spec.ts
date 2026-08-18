@@ -7,6 +7,7 @@ import {
   expectAttachmentSheetRowsOnTitleRail,
   openGithubPickerFromMenu,
   attachImageFromMenu,
+  pasteImageIntoComposer,
   expectAttachmentPill,
   removeAttachmentPill,
   openImageLightbox,
@@ -195,6 +196,22 @@ test.describe("Composer attachments", () => {
     await attachImageFromMenu(page, TEST_IMAGE);
 
     await expectAttachmentPill(page, "composer-image-attachment-pill");
+  });
+
+  test("pasted clipboard image persists before the composer can submit", async ({
+    page,
+    withWorkspace,
+  }) => {
+    test.setTimeout(60_000);
+    const workspace = await withWorkspace({ prefix: "attach-paste-" });
+    await workspace.navigateTo();
+    await clickNewChat(page);
+    await expectComposerVisible(page);
+
+    await pasteImageIntoComposer(page, TEST_IMAGE);
+
+    await expectAttachmentPill(page, "composer-image-attachment-pill");
+    await expect(page.getByRole("button", { name: "Send message" })).toBeEnabled();
   });
 
   test("dropped JSON file renders as a file attachment in active chat", async ({
