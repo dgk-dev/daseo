@@ -59,8 +59,8 @@
     },
     {
       "root": "src/messages.ts#WSOutboundMessageSchema",
-      "digest": "sha256:bf354617c8bfd7edf6739fecee2ba4e2ed06f89f0e9ce9cdd30571ff67e24b75",
-      "rationale": "Adds optional command receipt and pairing-offer expiry fields, optional server feature flags, and new device pairing response variants. Older clients ignore all additions, including the new push catch-up event variant, and retain existing response shapes."
+      "digest": "sha256:9733ef1e32c8701607ece2f3b867b01c370fa219729740f2698887ff4ac1bdaf",
+      "rationale": "Adds optional command receipt and pairing-offer expiry fields, optional server feature flags, and new device pairing response variants. Older clients ignore all additions, including the push catch-up event and optional transactional daemon-update result fields, and retain existing response shapes."
     },
     {
       "root": "src/connection-offer.ts#ConnectionOfferSchema",

@@ -64,7 +64,8 @@ $PASEO_HOME/
 │   └── managed-processes/
 │       └── {recordId}.json              # Helper processes owned by Paseo; reconciled on daemon bootstrap
 ├── push-tokens.json                     # Device-scoped push subscriptions
-└── push-events.json                     # Notification epoch/sequence catch-up log
+├── push-events.json                     # Notification epoch/sequence catch-up log
+└── updates/current.json                 # Exact-version daemon update trial state
 ```
 
 The `agents/{sanitized-cwd}/` directory name is derived from the agent's `cwd` by stripping the filesystem root and replacing path separators with `-` (Windows drive letters become a `C-` style prefix). Persistent server stores write atomically by writing a temp file in the target directory and then renaming it into place.
@@ -470,7 +471,13 @@ Each subscription records the token lease plus optional client/device identity, 
 
 The daemon writes an `in_flight` receipt before dispatching a command that carries `commandId`. A repeated ID with the same agent and payload returns the existing receipt; reuse with a different target or payload is rejected. `accepted` and `rejected` receipts are retained for 30 days under a bounded 4,096-record budget. `in_flight` receipts are not evicted because a crash can leave provider delivery ambiguous.
 
-## 8. Daemon meta files
+## 8. Daemon update trial
+
+**Path:** `$PASEO_HOME/updates/current.json`
+
+Headless self-update resolves and preflights one exact npm version, snapshots the small durable stores a new daemon may normalize, installs that exact version, and verifies the installed package before requesting restart. A failed post-install verification reinstalls the exact previous version. A detached 45-second watchdog also restores that package if the target cannot reach readiness at all. The restarted daemon commits the trial only after bootstrap, WebSocket setup, relay initialization, and Hub startup complete with the target version.
+
+## 9. Daemon meta files
 
 These small files are not validated as full Zod schemas but are persisted under `$PASEO_HOME` for daemon identity and runtime coordination.
 

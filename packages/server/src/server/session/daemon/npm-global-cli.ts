@@ -51,6 +51,9 @@ export interface NpmGlobalPaseoInstall {
 
 export interface NpmGlobalPaseoCli {
   inspect(): Promise<NpmGlobalPaseoInstall>;
+  resolveLatestVersion?(): Promise<string>;
+  preflightVersion?(version: string): Promise<CommandResult>;
+  installVersion?(version: string): Promise<CommandResult>;
   installLatest(): Promise<CommandResult>;
 }
 
@@ -136,11 +139,37 @@ export class DefaultNpmGlobalPaseoCli implements NpmGlobalPaseoCli {
     return install;
   }
 
-  installLatest(): Promise<CommandResult> {
-    return this.runCommand("npm", ["install", "-g", `${PASEO_CLI_PACKAGE}@latest`], {
+  async resolveLatestVersion(): Promise<string> {
+    const result = await this.runCommand(
+      "npm",
+      ["view", `${PASEO_CLI_PACKAGE}@latest`, "version", "--json"],
+      { timeout: NPM_PROBE_TIMEOUT_MS, maxBuffer: NPM_MAX_BUFFER_BYTES },
+    );
+    if (result.exitCode !== 0)
+      throw new Error(result.stderr.trim() || "Failed to resolve latest version");
+    const parsed: unknown = JSON.parse(result.stdout);
+    if (typeof parsed !== "string" || !parsed.trim())
+      throw new Error("npm returned an invalid latest version");
+    return parsed.trim();
+  }
+
+  preflightVersion(version: string): Promise<CommandResult> {
+    return this.runCommand(
+      "npm",
+      ["view", `${PASEO_CLI_PACKAGE}@${version}`, "dist.integrity", "--json"],
+      { timeout: NPM_PROBE_TIMEOUT_MS, maxBuffer: NPM_MAX_BUFFER_BYTES },
+    );
+  }
+
+  installVersion(version: string): Promise<CommandResult> {
+    return this.runCommand("npm", ["install", "-g", `${PASEO_CLI_PACKAGE}@${version}`], {
       timeout: NPM_INSTALL_TIMEOUT_MS,
       maxBuffer: NPM_MAX_BUFFER_BYTES,
     });
+  }
+
+  installLatest(): Promise<CommandResult> {
+    return this.installVersion("latest");
   }
 }
 

@@ -169,6 +169,7 @@ import { createConfiguredTerminalManager } from "../terminal/terminal-manager-fa
 import { applyTerminalAgentHookSetting } from "../terminal/agent-hooks/terminal-agent-hook-setting.js";
 import { loadOrCreateDaemonKeyPair } from "./daemon-keypair.js";
 import { getDevicePairingStore } from "./device-pairing-store.js";
+import { commitPreparedDaemonUpdate } from "./session/daemon/daemon-update-trial.js";
 import { createRelayRuntime, type RelayRuntime } from "./relay-runtime.js";
 import type { PushNotificationSender } from "./push/index.js";
 import { getOrCreateServerId } from "./server-id.js";
@@ -1702,6 +1703,12 @@ export async function createPaseoDaemon(
               relayRuntime?.setEnabled(value === true);
             });
             await hubRelationships.start();
+            await commitPreparedDaemonUpdate({
+              paseoHome: config.paseoHome,
+              daemonVersion,
+            }).catch((error) =>
+              logger.warn({ err: error }, "Failed to commit daemon update trial"),
+            );
           };
 
           logAndResolve().then(resolve, reject);

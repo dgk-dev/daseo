@@ -108,6 +108,9 @@ describe("DaemonSelfUpdateSessionController", () => {
           error: null,
           previousVersion: "0.1.15",
           newVersion: "0.1.96",
+          updateId: "update-1",
+          targetVersion: "0.1.96",
+          rolledBack: false,
         },
       },
     ]);
@@ -146,6 +149,9 @@ describe("DaemonSelfUpdateSessionController", () => {
           error: "not an npm global install",
           previousVersion: "0.1.15",
           newVersion: null,
+          updateId: "update-1",
+          targetVersion: null,
+          rolledBack: false,
         },
       },
     ]);

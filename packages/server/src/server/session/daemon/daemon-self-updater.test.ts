@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
   DaemonSelfUpdateInProgressError,
@@ -6,6 +9,7 @@ import {
   type DaemonSelfUpdatePhase,
 } from "./daemon-self-updater.js";
 import type { CommandResult, NpmGlobalPaseoInstall } from "./npm-global-cli.js";
+import { DaemonUpdateTrialStore } from "./daemon-update-trial.js";
 
 interface TestLogger {
   errors: Array<{ obj: object; msg?: string }>;
@@ -86,6 +90,7 @@ async function runUpdate(input: {
   daemonVersion?: string | null;
   desktopManaged?: boolean;
   phases?: DaemonSelfUpdatePhase[];
+  paseoHome?: string;
 }) {
   const logger = createLogger();
   const updater = new DaemonSelfUpdater(input.runtime);
@@ -95,6 +100,7 @@ async function runUpdate(input: {
     desktopManaged: input.desktopManaged ?? false,
     onProgress: (phase) => phases.push(phase),
     logger,
+    paseoHome: input.paseoHome,
   });
   return { result, logger, phases };
 }
@@ -110,6 +116,9 @@ describe("DaemonSelfUpdater", () => {
       success: false,
       error: "This daemon is managed by Paseo Desktop. Update Paseo Desktop on the host.",
       newVersion: null,
+      updateId: null,
+      targetVersion: null,
+      rolledBack: false,
     });
     expect(phases).toEqual([]);
     expect(calls).toEqual([]);
@@ -128,9 +137,91 @@ describe("DaemonSelfUpdater", () => {
       success: true,
       error: null,
       newVersion: "0.1.96",
+      updateId: expect.any(String),
+      targetVersion: "0.1.96",
+      rolledBack: false,
     });
     expect(phases).toEqual(["starting", "downloading", "installing", "complete"]);
     expect(calls).toEqual(["inspect", "installLatest", "inspect"]);
+  });
+
+  test("resolves, preflights, installs, and records one exact target version", async () => {
+    const paseoHome = mkdtempSync(join(tmpdir(), "paseo-exact-update-"));
+    writeFileSync(join(paseoHome, "config.json"), '{"version":1}');
+    const calls: string[] = [];
+    const inspections = [npmGlobalPaseoInstall("0.1.15"), npmGlobalPaseoInstall("0.5.0")];
+    const runtime: DaemonSelfUpdateRuntime = {
+      npm: {
+        async inspect() {
+          calls.push("inspect");
+          return inspections.shift()!;
+        },
+        async resolveLatestVersion() {
+          calls.push("resolve");
+          return "0.5.0";
+        },
+        async preflightVersion(version) {
+          calls.push(`preflight:${version}`);
+          return { exitCode: 0, stdout: "integrity", stderr: "" };
+        },
+        async installVersion(version) {
+          calls.push(`install:${version}`);
+          return { exitCode: 0, stdout: "installed", stderr: "" };
+        },
+        async installLatest() {
+          throw new Error("latest alias must not be installed");
+        },
+      },
+      installOrigin: { resolveCurrentServerPackageRoot: () => npmServerPackageRoot },
+    };
+    try {
+      const { result } = await runUpdate({ runtime, paseoHome });
+      expect(result).toMatchObject({
+        success: true,
+        newVersion: "0.5.0",
+        targetVersion: "0.5.0",
+        updateId: expect.any(String),
+      });
+      expect(calls).toEqual(["inspect", "resolve", "preflight:0.5.0", "install:0.5.0", "inspect"]);
+      await expect(new DaemonUpdateTrialStore(paseoHome).read()).resolves.toMatchObject({
+        status: "installed",
+        previousVersion: "0.1.15",
+        targetVersion: "0.5.0",
+      });
+    } finally {
+      rmSync(paseoHome, { recursive: true, force: true });
+    }
+  });
+
+  test("rolls back to the exact previous version when post-install verification fails", async () => {
+    const installed: string[] = [];
+    const inspections = [npmGlobalPaseoInstall("0.1.15"), npmGlobalPaseoInstall("0.5.1")];
+    const runtime: DaemonSelfUpdateRuntime = {
+      npm: {
+        async inspect() {
+          return inspections.shift()!;
+        },
+        async resolveLatestVersion() {
+          return "0.5.0";
+        },
+        async preflightVersion() {
+          return { exitCode: 0, stdout: "ok", stderr: "" };
+        },
+        async installVersion(version) {
+          installed.push(version);
+          return { exitCode: 0, stdout: "ok", stderr: "" };
+        },
+        async installLatest() {
+          throw new Error("not used");
+        },
+      },
+      installOrigin: { resolveCurrentServerPackageRoot: () => npmServerPackageRoot },
+    };
+
+    const { result } = await runUpdate({ runtime });
+    expect(result).toMatchObject({ success: false, rolledBack: true, targetVersion: "0.5.0" });
+    expect(result.error).toContain("expected 0.5.0");
+    expect(installed).toEqual(["0.5.0", "0.1.15"]);
   });
 
   test("does not run install when npm global cli is missing", async () => {
@@ -162,6 +253,9 @@ describe("DaemonSelfUpdater", () => {
       error:
         "This daemon is not running from the npm global @getpaseo/cli install (global npm has 0.1.15, daemon is 0.1.96).",
       newVersion: null,
+      updateId: null,
+      targetVersion: null,
+      rolledBack: false,
     });
     expect(calls).toEqual(["inspect"]);
   });
@@ -180,6 +274,9 @@ describe("DaemonSelfUpdater", () => {
       success: false,
       error: "This daemon is not running from the npm global @getpaseo/cli install.",
       newVersion: null,
+      updateId: null,
+      targetVersion: null,
+      rolledBack: false,
     });
     expect(calls).toEqual(["inspect"]);
   });
@@ -196,6 +293,9 @@ describe("DaemonSelfUpdater", () => {
       error:
         "The global @getpaseo/cli install is linked; self-update only supports normal npm global installs.",
       newVersion: null,
+      updateId: null,
+      targetVersion: null,
+      rolledBack: false,
     });
   });
 

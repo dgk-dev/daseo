@@ -24,6 +24,7 @@ interface DaemonSelfUpdateRestartIntent {
 export interface DaemonSelfUpdateSessionControllerOptions {
   clientId: string;
   daemonVersion: string | null;
+  paseoHome?: string;
   desktopManaged?: boolean;
   emit: (msg: SessionOutboundMessage) => void;
   emitLifecycleIntent: (intent: DaemonSelfUpdateRestartIntent) => void;
@@ -38,6 +39,7 @@ function isDaemonSelfUpdateMessage(msg: SessionInboundMessage): msg is DaemonUpd
 export class DaemonSelfUpdateSessionController {
   private readonly clientId: string;
   private readonly daemonVersion: string | null;
+  private readonly paseoHome: string | undefined;
   private readonly desktopManaged: boolean;
   private readonly emit: (msg: SessionOutboundMessage) => void;
   private readonly emitLifecycleIntent: (intent: DaemonSelfUpdateRestartIntent) => void;
@@ -47,6 +49,7 @@ export class DaemonSelfUpdateSessionController {
   constructor(options: DaemonSelfUpdateSessionControllerOptions) {
     this.clientId = options.clientId;
     this.daemonVersion = options.daemonVersion;
+    this.paseoHome = options.paseoHome;
     this.desktopManaged = options.desktopManaged === true;
     this.emit = options.emit;
     this.emitLifecycleIntent = options.emitLifecycleIntent;
@@ -70,6 +73,8 @@ export class DaemonSelfUpdateSessionController {
         desktopManaged: this.desktopManaged,
         onProgress: (phase) => this.emitProgress(msg.requestId, phase),
         logger: this.sessionLogger,
+        paseoHome: this.paseoHome,
+        updateId: msg.requestId,
       });
 
       this.emitResponse({
@@ -78,6 +83,9 @@ export class DaemonSelfUpdateSessionController {
         error: result.error,
         previousVersion,
         newVersion: result.newVersion,
+        updateId: result.updateId ?? msg.requestId,
+        targetVersion: result.targetVersion ?? result.newVersion,
+        rolledBack: result.rolledBack ?? false,
       });
       if (!result.success) {
         return;
@@ -109,6 +117,9 @@ export class DaemonSelfUpdateSessionController {
         error: getErrorMessage(error),
         previousVersion,
         newVersion: null,
+        updateId: msg.requestId,
+        targetVersion: null,
+        rolledBack: false,
       });
     }
   }
@@ -129,6 +140,9 @@ export class DaemonSelfUpdateSessionController {
     error: string | null;
     previousVersion: string | null;
     newVersion: string | null;
+    updateId: string | null;
+    targetVersion: string | null;
+    rolledBack: boolean;
   }): void {
     this.emit({
       type: "daemon.update.response",

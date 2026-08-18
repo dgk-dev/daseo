@@ -5939,6 +5939,10 @@ export const DaemonUpdateResponseSchema = z.object({
     error: z.string().nullable(),
     previousVersion: z.string().nullable(),
     newVersion: z.string().nullable(),
+    // COMPAT(transactionalDaemonUpdate): added in v0.5.0, remove after 2027-02-18.
+    updateId: z.string().nullable().optional(),
+    targetVersion: z.string().nullable().optional(),
+    rolledBack: z.boolean().optional(),
   }),
 });
 
