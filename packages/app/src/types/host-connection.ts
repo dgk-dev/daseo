@@ -33,6 +33,13 @@ export interface RelayHostConnection {
   relayEndpoint: string;
   useTls?: boolean;
   daemonPublicKeyB64: string;
+  e2eeV2?: {
+    daemonSigningPublicKeyB64: string;
+    keyEpoch: number;
+    offerId?: string;
+    pairingSecret?: string;
+    expiresAt?: string;
+  };
 }
 
 export type HostConnection =
@@ -127,7 +134,8 @@ function hostConnectionEquals(left: HostConnection, right: HostConnection): bool
     return (
       left.relayEndpoint === right.relayEndpoint &&
       left.useTls === right.useTls &&
-      left.daemonPublicKeyB64 === right.daemonPublicKeyB64
+      left.daemonPublicKeyB64 === right.daemonPublicKeyB64 &&
+      JSON.stringify(left.e2eeV2 ?? null) === JSON.stringify(right.e2eeV2 ?? null)
     );
   }
 
@@ -318,6 +326,15 @@ const StoredHostConnectionSchema = z.discriminatedUnion("type", [
     relayEndpoint: z.string(),
     useTls: z.boolean().optional(),
     daemonPublicKeyB64: z.string(),
+    e2eeV2: z
+      .strictObject({
+        daemonSigningPublicKeyB64: z.string(),
+        keyEpoch: z.number().int().positive(),
+        offerId: z.string().optional(),
+        pairingSecret: z.string().optional(),
+        expiresAt: z.string().datetime().optional(),
+      })
+      .optional(),
   }),
 ]);
 const StoredHostProfileSchema = z.strictObject({
@@ -368,6 +385,7 @@ function normalizeStoredConnection(connection: StoredHostConnection): HostConnec
         relayEndpoint,
         ...(useTls !== undefined ? { useTls } : {}),
         daemonPublicKeyB64,
+        ...(connection.e2eeV2 ? { e2eeV2: connection.e2eeV2 } : {}),
       };
     } catch {
       return null;

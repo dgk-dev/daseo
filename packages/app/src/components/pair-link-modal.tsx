@@ -142,6 +142,17 @@ export function PairLinkModal({ visible, onClose, onCancel, onSaved }: PairLinkM
           relayEndpoint: normalizeHostPort(parsedOffer.relay.endpoint),
           useTls: parsedOffer.relay.useTls,
           daemonPublicKeyB64: parsedOffer.daemonPublicKeyB64,
+          ...(parsedOffer.e2ee
+            ? {
+                e2eeV2: {
+                  daemonSigningPublicKeyB64: parsedOffer.e2ee.daemonSigningPublicKeyB64,
+                  keyEpoch: parsedOffer.e2ee.keyEpoch,
+                  offerId: parsedOffer.e2ee.offerId,
+                  pairingSecret: parsedOffer.e2ee.pairingSecret,
+                  expiresAt: parsedOffer.e2ee.expiresAt,
+                },
+              }
+            : {}),
         },
         { serverId: parsedOffer.serverId },
       );

@@ -71,6 +71,7 @@ import {
   normalizeClientRestartRpcReason,
 } from "./lifecycle-reasons.js";
 import { DirectorySyncService } from "./directory-sync/index.js";
+import { getDevicePairingStore, type DevicePairingStore } from "./device-pairing-store.js";
 
 import { AgentManager, AgentRunCancellationError } from "./agent/agent-manager.js";
 import {
@@ -444,6 +445,7 @@ export interface SessionOptions {
   getTransportBufferedAmount?: () => number | null;
   onLifecycleIntent?: (intent: SessionLifecycleIntent) => void;
   onWorkspaceRecovered?: (workspace: PersistedWorkspaceRecord) => Promise<void>;
+  onDeviceRevoked?: (deviceId: string) => void;
   logger: pino.Logger;
   downloadTokenStore: DownloadTokenStore;
   pushNotifications: PushNotifications;
@@ -452,6 +454,7 @@ export interface SessionOptions {
   agentManager: AgentManager;
   agentStorage: AgentStorage;
   agentCommandReceiptStore?: AgentCommandReceiptStore;
+  devicePairingStore?: DevicePairingStore;
   projectRegistry: ProjectRegistry;
   workspaceRegistry: WorkspaceRegistry;
   directorySync?: DirectorySyncService;
@@ -607,6 +610,27 @@ function resolveDirectorySync(service: DirectorySyncService | undefined): Direct
   return service ?? new DirectorySyncService();
 }
 
+function toPairedDevicePayload(
+  device: import("./device-pairing-store.js").PairedDevice,
+): Omit<import("./device-pairing-store.js").PairedDevice, "signingPublicKeyB64"> {
+  const { signingPublicKeyB64: _signingPublicKeyB64, ...payload } = device;
+  return payload;
+}
+
+function optionalDeviceRevocationHandler(
+  handler: ((deviceId: string) => void) | undefined,
+): ((deviceId: string) => void) | null {
+  return handler ?? null;
+}
+
+function resolveDevicePairingStore(input: {
+  store: DevicePairingStore | undefined;
+  paseoHome: string;
+  logger: pino.Logger;
+}): DevicePairingStore {
+  return input.store ?? getDevicePairingStore(input.paseoHome, input.logger);
+}
+
 function resolveAgentCommandReceiptStore(input: {
   store: AgentCommandReceiptStore | undefined;
   paseoHome: string;
@@ -646,6 +670,7 @@ export class Session {
   private readonly onWorkspaceRecovered:
     | ((workspace: PersistedWorkspaceRecord) => Promise<void>)
     | null;
+  private readonly onDeviceRevoked: ((deviceId: string) => void) | null;
   private readonly sessionLogger: pino.Logger;
   private readonly paseoHome: string;
   private readonly projectIcons: ProjectIconReader;
@@ -654,6 +679,7 @@ export class Session {
   private agentManager: AgentManager;
   private readonly agentStorage: AgentStorage;
   private readonly agentCommandReceiptStore: AgentCommandReceiptStore;
+  private readonly devicePairingStore: DevicePairingStore;
   private readonly projectRegistry: ProjectRegistry;
   private readonly workspaceRegistry: WorkspaceRegistry;
   private readonly directorySync: DirectorySyncService;
@@ -733,6 +759,7 @@ export class Session {
       getTransportBufferedAmount,
       onLifecycleIntent,
       onWorkspaceRecovered,
+      onDeviceRevoked,
       logger,
       downloadTokenStore,
       pushNotifications,
@@ -741,6 +768,7 @@ export class Session {
       agentManager,
       agentStorage,
       agentCommandReceiptStore,
+      devicePairingStore,
       projectRegistry,
       workspaceRegistry,
       directorySync,
@@ -788,6 +816,7 @@ export class Session {
     this.getTransportBufferedAmount = getTransportBufferedAmount ?? (() => 0);
     this.onLifecycleIntent = onLifecycleIntent ?? null;
     this.onWorkspaceRecovered = onWorkspaceRecovered ?? null;
+    this.onDeviceRevoked = optionalDeviceRevocationHandler(onDeviceRevoked);
     this.pushNotifications = pushNotifications;
     this.paseoHome = paseoHome;
     this.projectIcons = new ProjectIconReader(paseoHome);
@@ -813,6 +842,11 @@ export class Session {
     this.agentStorage = agentStorage;
     this.agentCommandReceiptStore = resolveAgentCommandReceiptStore({
       store: agentCommandReceiptStore,
+      paseoHome,
+      logger,
+    });
+    this.devicePairingStore = resolveDevicePairingStore({
+      store: devicePairingStore,
       paseoHome,
       logger,
     });
@@ -2460,6 +2494,31 @@ export class Session {
       case "register_push_token":
         this.handleRegisterPushToken(msg.token);
         return;
+      case "device.pairing.list.request": {
+        const devices = await this.devicePairingStore.listDevices();
+        this.emit({
+          type: "device.pairing.list.response",
+          payload: {
+            requestId: msg.requestId,
+            devices: devices.map(toPairedDevicePayload),
+          },
+        });
+        return;
+      }
+      case "device.pairing.revoke.request": {
+        const device = await this.devicePairingStore.revoke(msg.deviceId);
+        this.emit({
+          type: "device.pairing.revoke.response",
+          payload: {
+            requestId: msg.requestId,
+            device: device ? toPairedDevicePayload(device) : null,
+          },
+        });
+        if (device) {
+          queueMicrotask(() => this.onDeviceRevoked?.(device.deviceId));
+        }
+        return;
+      }
       case "push.unregister.request":
         this.pushNotifications.revoke(msg.token);
         if (this.registeredPushToken?.trim() === msg.token.trim()) {

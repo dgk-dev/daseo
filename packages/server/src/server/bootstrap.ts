@@ -168,6 +168,7 @@ import type { TerminalManager } from "../terminal/terminal-manager.js";
 import { createConfiguredTerminalManager } from "../terminal/terminal-manager-factory.js";
 import { applyTerminalAgentHookSetting } from "../terminal/agent-hooks/terminal-agent-hook-setting.js";
 import { loadOrCreateDaemonKeyPair } from "./daemon-keypair.js";
+import { getDevicePairingStore } from "./device-pairing-store.js";
 import { createRelayRuntime, type RelayRuntime } from "./relay-runtime.js";
 import type { PushNotificationSender } from "./push/index.js";
 import { getOrCreateServerId } from "./server-id.js";
@@ -601,6 +602,7 @@ export async function createPaseoDaemon(
 
   const serverId = getOrCreateServerId(config.paseoHome, { logger });
   const daemonKeyPair = await loadOrCreateDaemonKeyPair(config.paseoHome, logger);
+  const devicePairingStore = getDevicePairingStore(config.paseoHome, logger);
   const managedProcesses = createBootstrapManagedProcessRegistry(config, logger);
   // Reconcile the helper-process ledger in the background so it never blocks the
   // daemon from coming up; terminating a live leftover can take a few seconds.
@@ -1687,6 +1689,14 @@ export async function createPaseoDaemon(
               },
               serverId,
               daemonKeyPair: daemonKeyPair.keyPair,
+              e2eeV2: {
+                signingKeyPair: daemonKeyPair.signingKeyPair,
+                keyEpoch: daemonKeyPair.keyEpoch,
+                authorizeDevice: async (input) => {
+                  const device = await devicePairingStore.authorize(input);
+                  return { deviceId: device.deviceId, scopes: device.scopes };
+                },
+              },
             });
             daemonConfigStore.onFieldChange("relay.enabled", (value) => {
               relayRuntime?.setEnabled(value === true);

@@ -4,11 +4,13 @@ import { createConnectionOfferV2, encodeOfferToFragmentUrl } from "./connection-
 import { loadOrCreateDaemonKeyPair } from "./daemon-keypair.js";
 import { renderPairingQr } from "./pairing-qr.js";
 import { getOrCreateServerId } from "./server-id.js";
+import { getDevicePairingStore } from "./device-pairing-store.js";
 
 export interface LocalPairingOffer {
   relayEnabled: boolean;
   url: string | null;
   qr: string | null;
+  expiresAt: string | null;
 }
 
 export async function generateLocalPairingOffer(args: {
@@ -28,6 +30,7 @@ export async function generateLocalPairingOffer(args: {
       relayEnabled: false,
       url: null,
       qr: null,
+      expiresAt: null,
     };
   }
 
@@ -38,10 +41,19 @@ export async function generateLocalPairingOffer(args: {
   const appBaseUrl = args.appBaseUrl ?? "https://app.paseo.sh";
   const serverId = getOrCreateServerId(args.paseoHome, { logger: args.logger });
   const daemonKeyPair = await loadOrCreateDaemonKeyPair(args.paseoHome, args.logger);
+  const grant = await getDevicePairingStore(args.paseoHome, args.logger).createGrant();
   const offer = await createConnectionOfferV2({
     serverId,
     daemonPublicKeyB64: daemonKeyPair.publicKeyB64,
     relay: { endpoint: relayPublicEndpoint, useTls: relayPublicUseTls },
+    e2ee: {
+      version: 2,
+      daemonSigningPublicKeyB64: daemonKeyPair.signingPublicKeyB64,
+      keyEpoch: daemonKeyPair.keyEpoch,
+      offerId: grant.offerId,
+      pairingSecret: grant.pairingSecret,
+      expiresAt: grant.expiresAt,
+    },
   });
   const url = encodeOfferToFragmentUrl({ offer, appBaseUrl });
 
@@ -50,6 +62,7 @@ export async function generateLocalPairingOffer(args: {
       relayEnabled: true,
       url,
       qr: null,
+      expiresAt: grant.expiresAt,
     };
   }
 
@@ -64,5 +77,6 @@ export async function generateLocalPairingOffer(args: {
     relayEnabled: true,
     url,
     qr,
+    expiresAt: grant.expiresAt,
   };
 }

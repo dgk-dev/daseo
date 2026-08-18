@@ -5,6 +5,7 @@ import type pino from "pino";
 import {
   createDaemonChannel,
   type Transport as RelayTransport,
+  type E2EEV2DaemonConfig,
   type KeyPair,
 } from "@getpaseo/relay/e2ee";
 import { buildRelayWebSocketUrl } from "@getpaseo/protocol/daemon-endpoints";
@@ -18,6 +19,7 @@ export interface RelayTransportOptions {
   relayUseTls: boolean;
   serverId: string;
   daemonKeyPair?: KeyPair;
+  e2eeV2?: E2EEV2DaemonConfig;
   createWebSocket?: RelayWebSocketFactory;
 }
 
@@ -113,6 +115,7 @@ export function startRelayTransport({
   relayUseTls,
   serverId,
   daemonKeyPair,
+  e2eeV2,
   createWebSocket = createDefaultRelayWebSocket,
 }: RelayTransportOptions): RelayTransportController {
   const relayLogger = logger.child({ module: "relay-transport" });
@@ -386,6 +389,7 @@ export function startRelayTransport({
           relayLogger.child({ connectionId }),
           attachSocket,
           externalMetadata,
+          e2eeV2,
         );
       } else {
         void attachSocket(socket, externalMetadata);
@@ -419,6 +423,7 @@ async function attachEncryptedSocket(
   logger: pino.Logger,
   attachSocket: (ws: RelaySocketLike, metadata?: ExternalSocketMetadata) => Promise<void>,
   metadata?: ExternalSocketMetadata,
+  e2eeV2?: E2EEV2DaemonConfig,
 ): Promise<void> {
   try {
     const relayTransport = createRelayTransportAdapter(socket, logger);
@@ -432,21 +437,35 @@ async function attachEncryptedSocket(
       }
       pendingMessages.push(data);
     };
-    const channel = await createDaemonChannel(relayTransport, daemonKeyPair, {
-      onmessage: emitMessage,
-      onclose: (code, reason) => emitter.emit("close", code, reason),
-      onerror: (error) => {
-        logger.warn({ err: error }, "relay_e2ee_error");
-        emitter.emit("error", error);
+    const channel = await createDaemonChannel(
+      relayTransport,
+      daemonKeyPair,
+      {
+        onmessage: emitMessage,
+        onclose: (code, reason) => emitter.emit("close", code, reason),
+        onerror: (error) => {
+          logger.warn({ err: error }, "relay_e2ee_error");
+          emitter.emit("error", error);
+        },
       },
-    });
+      e2eeV2,
+    );
+    const peerIdentity = channel.getPeerIdentity();
+    const authenticatedMetadata = peerIdentity
+      ? {
+          ...metadata,
+          transport: "relay" as const,
+          deviceId: peerIdentity.deviceId,
+          scopes: peerIdentity.scopes,
+        }
+      : metadata;
     const encryptedSocket = createEncryptedRelaySocket({
       channel,
       emitter,
       getTransportBufferedAmount: () => socket.bufferedAmount,
       terminateTransport: () => socket.terminate(),
     });
-    await attachSocket(encryptedSocket, metadata);
+    await attachSocket(encryptedSocket, authenticatedMetadata);
     attached = true;
     for (const message of pendingMessages) {
       emitter.emit("message", message);

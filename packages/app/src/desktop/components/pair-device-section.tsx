@@ -36,6 +36,33 @@ export interface PairDeviceSectionProps {
   onClose: () => void;
 }
 
+function usePairedDevices(input: {
+  serverId: string;
+  client: ReturnType<typeof useHostRuntimeClient>;
+  enabled: boolean;
+  disconnectedMessage: string;
+}) {
+  const query = useFetchQuery({
+    queryKey: ["device-pairings", input.serverId],
+    queryFn: async () => {
+      if (!input.client) throw new Error(input.disconnectedMessage);
+      return (await input.client.listPairedDevices()).devices;
+    },
+    enabled: input.enabled && Boolean(input.client),
+    dataShape: "value",
+    staleTimeMs: 15_000,
+  });
+  const mutation = useMutation({
+    mutationFn: async (deviceId: string) => {
+      if (!input.client) throw new Error(input.disconnectedMessage);
+      await input.client.revokePairedDevice(deviceId);
+      await query.refetch();
+    },
+  });
+  const revoke = useCallback((deviceId: string) => mutation.mutate(deviceId), [mutation]);
+  return { query, mutation, revoke };
+}
+
 export function PairDeviceSection({ serverId, onClose }: PairDeviceSectionProps) {
   const { t } = useTranslation();
   const client = useHostRuntimeClient(serverId);
@@ -49,6 +76,7 @@ export function PairDeviceSection({ serverId, onClose }: PairDeviceSectionProps)
   const serverFeatures = client?.getLastServerInfoMessage()?.features;
   const supportsPairingRpc = serverFeatures?.daemonStatusRpc === true;
   const canConfigureRelay = supportsPairingRpc && serverFeatures?.relayConfig === true;
+  const supportsDeviceManagement = serverFeatures?.devicePairingManagement === true;
 
   const pairingQuery = useFetchQuery({
     queryKey: daemonPairingOfferQueryKey(serverId),
@@ -60,6 +88,13 @@ export function PairDeviceSection({ serverId, onClose }: PairDeviceSectionProps)
     dataShape: "value",
     staleTimeMs: 5 * 60 * 1000,
     retry: 1,
+  });
+
+  const pairedDevices = usePairedDevices({
+    serverId,
+    client,
+    enabled: supportsDeviceManagement && isConnected,
+    disconnectedMessage: t("workspace.terminal.hostDisconnected"),
   });
 
   const enableRelay = useMutation({
@@ -123,6 +158,7 @@ export function PairDeviceSection({ serverId, onClose }: PairDeviceSectionProps)
         onClose={onClose}
         onCopy={handleCopyPress}
       />
+      <PairedDevicesGate enabled={supportsDeviceManagement} state={pairedDevices} />
     </View>
   );
 }
@@ -266,6 +302,95 @@ function PairingOffer(props: PairDeviceBodyProps & { offer: { url: string } }) {
   );
 }
 
+function PairedDevicesGate({
+  enabled,
+  state,
+}: {
+  enabled: boolean;
+  state: ReturnType<typeof usePairedDevices>;
+}) {
+  if (!enabled) return null;
+  return (
+    <PairedDevices
+      devices={state.query.data ?? []}
+      isPending={state.query.isPending}
+      revokingDeviceId={state.mutation.variables ?? null}
+      onRevoke={state.revoke}
+    />
+  );
+}
+
+interface PairedDeviceRow {
+  deviceId: string;
+  label: string | null;
+  platform: string | null;
+  appVersion: string | null;
+  lastSeenAt: string;
+  revokedAt: string | null;
+}
+
+function PairedDevices({
+  devices,
+  isPending,
+  revokingDeviceId,
+  onRevoke,
+}: {
+  devices: PairedDeviceRow[];
+  isPending: boolean;
+  revokingDeviceId: string | null;
+  onRevoke: (deviceId: string) => void;
+}) {
+  const { t } = useTranslation();
+  const activeDevices = devices.filter((device) => !device.revokedAt);
+  return (
+    <View style={styles.devicesSection}>
+      <Text style={styles.devicesTitle}>{t("pairing.device.pairedDevices")}</Text>
+      {isPending ? (
+        <ThemedLoadingSpinner size="small" uniProps={foregroundMutedColorMapping} />
+      ) : null}
+      {!isPending && activeDevices.length === 0 ? (
+        <Text style={styles.hint}>{t("pairing.device.noPairedDevices")}</Text>
+      ) : null}
+      {activeDevices.map((device) => (
+        <PairedDeviceItem
+          key={device.deviceId}
+          device={device}
+          isRevoking={revokingDeviceId === device.deviceId}
+          onRevoke={onRevoke}
+        />
+      ))}
+    </View>
+  );
+}
+
+function PairedDeviceItem({
+  device,
+  isRevoking,
+  onRevoke,
+}: {
+  device: PairedDeviceRow;
+  isRevoking: boolean;
+  onRevoke: (deviceId: string) => void;
+}) {
+  const { t } = useTranslation();
+  const handleRevoke = useCallback(() => onRevoke(device.deviceId), [device.deviceId, onRevoke]);
+  return (
+    <View style={styles.deviceRow}>
+      <View style={styles.deviceIdentity}>
+        <Text style={styles.deviceLabel}>
+          {device.label ?? device.platform ?? t("pairing.device.unknownDevice")}
+        </Text>
+        <Text style={styles.hint}>
+          {[device.platform, device.appVersion].filter(Boolean).join(" · ")}
+        </Text>
+      </View>
+      <Button variant="destructive" size="sm" loading={isRevoking} onPress={handleRevoke}>
+        {t("pairing.device.revoke")}
+      </Button>
+    </View>
+  );
+}
+
 function PairingQr({ svg, isError }: { svg: string | null; isError: boolean }) {
   const { t } = useTranslation();
   if (svg) {
@@ -285,6 +410,33 @@ function PairingQr({ svg, isError }: { svg: string | null; isError: boolean }) {
 }
 
 const styles = StyleSheet.create((theme) => ({
+  devicesSection: {
+    marginTop: theme.spacing[6],
+    paddingTop: theme.spacing[4],
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+    gap: theme.spacing[3],
+  },
+  devicesTitle: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.semibold,
+  },
+  deviceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: theme.spacing[3],
+  },
+  deviceIdentity: {
+    flex: 1,
+    minWidth: 0,
+  },
+  deviceLabel: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.medium,
+  },
   stateLine: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,

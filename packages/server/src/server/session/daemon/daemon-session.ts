@@ -219,6 +219,7 @@ export class DaemonSession {
           url: pairing.url ?? "",
           qr: pairing.qr ?? null,
           relayEnabled: pairing.relayEnabled,
+          expiresAt: pairing.expiresAt,
         },
       });
     } catch (error) {

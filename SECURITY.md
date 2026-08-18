@@ -19,10 +19,14 @@ The relay is designed to be untrusted. All traffic between your phone and daemon
 
 ### How it works
 
-1. The daemon generates a persistent Curve25519 keypair on first run and stores it at `$PASEO_HOME/daemon-keypair.json` with mode `0600`
-2. The pairing URL (rendered as a QR code or opened directly) carries the daemon's public key in its URL fragment (`https://app.paseo.sh/#offer=...`). Fragments are not sent to the web server, so `app.paseo.sh` never sees the key.
-3. When the phone connects via the relay, it generates a fresh ephemeral Curve25519 keypair and sends an `e2ee_hello` message containing its public key. The daemon will not process any application messages until this handshake completes.
-4. Both sides perform a Curve25519 ECDH key exchange to derive a shared key. All subsequent messages are encrypted with XSalsa20-Poly1305 (NaCl `box`). The encrypted bundle is `[24-byte nonce][ciphertext]`. Peers optionally negotiate `binaryCiphertext` in `e2ee_hello` / `e2ee_ready`: negotiated application text is carried as a base64 WebSocket text frame, while application binary is carried as a raw WebSocket binary frame. A peer that does not negotiate the capability uses base64 text frames for both kinds.
+1. The daemon stores a legacy Curve25519 identity and an Ed25519 signing identity in `$PASEO_HOME/daemon-keypair.json` with mode `0600`. Existing version-2 key files are upgraded in place without changing the legacy public key.
+2. The pairing URL is carried in the fragment (`https://app.paseo.sh/#offer=...`), so `app.paseo.sh` never receives the offer.
+3. A current pairing offer carries an expiring, one-use device grant and the daemon's Ed25519 signing identity as optional metadata. Older clients ignore it and retain the legacy channel.
+4. A current mobile client keeps its device signing key in iOS Keychain or Android Keystore through Expo SecureStore. It signs a hello containing its stable device ID and fresh Curve25519 key; the one-use grant is encrypted to the daemon's legacy Curve25519 identity before crossing the relay.
+5. The daemon validates or registers the device, answers with a freshly generated Curve25519 key, and signs the full handshake transcript. Both peers derive directional keys, a session ID, and a nonce prefix from the ephemeral shared secret and transcript.
+6. Every E2EE v2 application frame carries a monotonic 64-bit counter. Text remains base64 WebSocket text and binary remains raw WebSocket binary. The counter determines the nonce and is authenticated with the encrypted frame kind, so replay, direction swap, counter gaps, and frame-kind substitution close the connection.
+
+The legacy `e2ee_hello` / `e2ee_ready` channel remains accepted for old paired clients. It uses the daemon's persistent Curve25519 key, a client-ephemeral key, random 24-byte nonces, and XSalsa20-Poly1305. New pairings negotiate E2EE v2.
 
 The WebSocket opcode is preserved end to end after negotiation; the receiver never guesses whether authenticated plaintext is text or binary from its byte contents. The plaintext handshake remains WebSocket text and contains only public keys and capability declarations.
 
@@ -36,11 +40,12 @@ The daemon requires a valid cryptographic handshake before processing any comman
 - **Send commands as you** — The daemon only accepts traffic that decrypts and authenticates under a shared key derived with its own secret key. The phone's keypair is ephemeral per connection, so there is no persistent phone-side secret to steal; protection comes from the daemon's secret key never leaving the daemon.
 - **Read your traffic** — All messages are encrypted with XSalsa20-Poly1305 (NaCl box) after the handshake
 - **Forge messages** — NaCl box provides authenticated encryption; tampered messages are rejected
-- **Replay old messages across sessions** — Each session derives fresh encryption keys, so ciphertext from one session cannot be replayed into another session. Within a live session, replay protection is not yet implemented; the protocol uses random nonces and does not track nonce reuse or message counters.
+- **Replay messages** — E2EE v2 derives fresh ephemeral session keys and rejects every counter except the next expected value. Legacy channels still prevent cross-session replay through fresh client keys but do not track same-session replay; remove that compatibility path only after the supported client floor includes E2EE v2.
+- **Keep using a revoked device** — Each paired device has a distinct signing key and daemon record. Revocation closes its current relay socket and blocks its next handshake without rotating other devices.
 
 ### Trust model
 
-The QR code or pairing link is the trust anchor. It contains the daemon's public key, which is required to establish the encrypted connection. Treat it like a password — don't share it publicly.
+The QR code or pairing link is a short-lived trust grant. Generate it on the daemon you control, scan it directly, and do not publish it. After first use the daemon authenticates the device signing key instead; Settings > Pair device lists and revokes those grants independently.
 
 ## Local daemon trust boundary
 

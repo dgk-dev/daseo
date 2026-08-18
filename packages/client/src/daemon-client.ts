@@ -119,6 +119,7 @@ import type {
   MutableDaemonConfigPatch,
 } from "@getpaseo/protocol/messages";
 import { isRelayClientWebSocketUrl } from "@getpaseo/protocol/daemon-endpoints";
+import type { E2EEV2ClientConfig } from "@getpaseo/relay/e2ee";
 import { terminalSubscriptionKey } from "@getpaseo/protocol/terminal-subscription-key";
 import {
   asUint8Array,
@@ -320,6 +321,7 @@ export interface DaemonClientConfig {
   e2ee?: {
     enabled?: boolean;
     daemonPublicKeyB64?: string;
+    v2?: E2EEV2ClientConfig | (() => Promise<E2EEV2ClientConfig>);
   };
   reconnect?: {
     enabled?: boolean;
@@ -1178,6 +1180,28 @@ export class DaemonClient {
     return this.connectPromise;
   }
 
+  private resolveTransportFactory(
+    baseTransportFactory: DaemonTransportFactory,
+  ): DaemonTransportFactory {
+    const e2ee = this.config.e2ee;
+    if (e2ee?.enabled !== true || !isRelayClientWebSocketUrl(this.config.url)) {
+      return baseTransportFactory;
+    }
+    if (!e2ee.daemonPublicKeyB64) {
+      throw new Error("daemonPublicKeyB64 is required for relay E2EE");
+    }
+    return createRelayE2eeTransportFactory({
+      baseFactory: baseTransportFactory,
+      daemonPublicKeyB64: e2ee.daemonPublicKeyB64,
+      logger: this.logger,
+      ...(e2ee.v2
+        ? {
+            getE2EEV2: async () => (typeof e2ee.v2 === "function" ? await e2ee.v2() : e2ee.v2),
+          }
+        : {}),
+    });
+  }
+
   private attemptConnect(): void {
     if (this.connectionState.status === "disposed") {
       this.rejectConnect(new Error("Daemon client is disposed"));
@@ -1208,21 +1232,7 @@ export class DaemonClient {
       const baseTransportFactory =
         this.config.transportFactory ??
         createWebSocketTransportFactory(this.config.webSocketFactory ?? defaultWebSocketFactory);
-      const shouldUseRelayE2ee =
-        this.config.e2ee?.enabled === true && isRelayClientWebSocketUrl(this.config.url);
-
-      let transportFactory = baseTransportFactory;
-      if (shouldUseRelayE2ee) {
-        const daemonPublicKeyB64 = this.config.e2ee?.daemonPublicKeyB64;
-        if (!daemonPublicKeyB64) {
-          throw new Error("daemonPublicKeyB64 is required for relay E2EE");
-        }
-        transportFactory = createRelayE2eeTransportFactory({
-          baseFactory: baseTransportFactory,
-          daemonPublicKeyB64,
-          logger: this.logger,
-        });
-      }
+      const transportFactory = this.resolveTransportFactory(baseTransportFactory);
       const transportUrl = this.resolveTransportUrlForAttempt();
       const transport = transportFactory({
         url: transportUrl,
@@ -4601,6 +4611,29 @@ export class DaemonClient {
       },
       responseType: "daemon.get_status.response",
       timeout: options?.timeout,
+    });
+  }
+
+  async listPairedDevices(
+    requestId?: string,
+  ): Promise<Extract<SessionOutboundMessage, { type: "device.pairing.list.response" }>["payload"]> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "device.pairing.list.request" },
+      responseType: "device.pairing.list.response",
+    });
+  }
+
+  async revokePairedDevice(
+    deviceId: string,
+    requestId?: string,
+  ): Promise<
+    Extract<SessionOutboundMessage, { type: "device.pairing.revoke.response" }>["payload"]
+  > {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "device.pairing.revoke.request", deviceId },
+      responseType: "device.pairing.revoke.response",
     });
   }
 

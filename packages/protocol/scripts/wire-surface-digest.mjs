@@ -210,7 +210,9 @@ export function checkWireLedger(ledger = readWireLedger(), current = computeWire
       failures.push(`${root} is in the ledger but no longer in WIRE_ROOTS`);
   }
   for (const change of ledger.compatibleChanges ?? []) {
-    if (!knownRoots.has(change.root)) failures.push(`stale compatibility entry for ${change.root}`);
+    if (!knownRoots.has(change.root) || current[change.root]?.digest !== change.digest) {
+      failures.push(`stale compatibility entry for ${change.root}`);
+    }
     if (typeof change.rationale !== "string" || change.rationale.trim().length < 20) {
       failures.push(`compatibility entry for ${change.root} needs a specific rationale`);
     }

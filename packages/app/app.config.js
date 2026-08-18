@@ -151,6 +151,7 @@ export default {
     },
     plugins: [
       "expo-router",
+      "expo-secure-store",
       withPasteInput,
       [withAndroidAsyncStorageSize, 64],
       withAndroidTextMetrics,

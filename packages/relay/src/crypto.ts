@@ -20,6 +20,11 @@ export interface KeyPair {
   secretKey: Uint8Array; // 32 bytes
 }
 
+export interface SigningKeyPair {
+  publicKey: Uint8Array; // 32 bytes
+  secretKey: Uint8Array; // 64 bytes
+}
+
 export type SharedKey = Uint8Array; // 32 bytes (box.before)
 
 const NONCE_LENGTH = nacl.box.nonceLength; // 24
@@ -84,6 +89,55 @@ export function generateKeyPair(): KeyPair {
   return { publicKey, secretKey };
 }
 
+export function generateSigningKeyPair(): SigningKeyPair {
+  ensurePrng();
+  const { publicKey, secretKey } = nacl.sign.keyPair();
+  return { publicKey, secretKey };
+}
+
+export function signDetached(message: Uint8Array, secretKey: Uint8Array): Uint8Array {
+  if (secretKey.byteLength !== nacl.sign.secretKeyLength) {
+    throw new Error(`Invalid signing secret key length (expected ${nacl.sign.secretKeyLength})`);
+  }
+  return nacl.sign.detached(message, secretKey);
+}
+
+export function verifyDetached(
+  message: Uint8Array,
+  signature: Uint8Array,
+  publicKey: Uint8Array,
+): boolean {
+  if (publicKey.byteLength !== nacl.sign.publicKeyLength) return false;
+  if (signature.byteLength !== nacl.sign.signatureLength) return false;
+  return nacl.sign.detached.verify(message, signature, publicKey);
+}
+
+export function hashBytes(message: Uint8Array): Uint8Array {
+  return nacl.hash(message);
+}
+
+export function secretboxEncrypt(
+  plaintext: Uint8Array,
+  nonce: Uint8Array,
+  key: Uint8Array,
+): Uint8Array {
+  if (nonce.byteLength !== nacl.secretbox.nonceLength) throw new Error("Invalid secretbox nonce");
+  if (key.byteLength !== nacl.secretbox.keyLength) throw new Error("Invalid secretbox key");
+  return nacl.secretbox(plaintext, nonce, key);
+}
+
+export function secretboxDecrypt(
+  ciphertext: Uint8Array,
+  nonce: Uint8Array,
+  key: Uint8Array,
+): Uint8Array {
+  if (nonce.byteLength !== nacl.secretbox.nonceLength) throw new Error("Invalid secretbox nonce");
+  if (key.byteLength !== nacl.secretbox.keyLength) throw new Error("Invalid secretbox key");
+  const opened = nacl.secretbox.open(ciphertext, nonce, key);
+  if (!opened) throw new Error("E2EE v2 authentication failed");
+  return opened;
+}
+
 export function exportPublicKey(publicKey: Uint8Array): string {
   if (!(publicKey instanceof Uint8Array) || publicKey.byteLength !== nacl.box.publicKeyLength) {
     throw new Error(`Invalid public key length (expected ${nacl.box.publicKeyLength})`);
@@ -104,6 +158,36 @@ export function exportSecretKey(secretKey: Uint8Array): string {
     throw new Error(`Invalid secret key length (expected ${nacl.box.secretKeyLength})`);
   }
   return encodeBase64(secretKey);
+}
+
+export function exportSigningPublicKey(publicKey: Uint8Array): string {
+  if (publicKey.byteLength !== nacl.sign.publicKeyLength) {
+    throw new Error(`Invalid signing public key length (expected ${nacl.sign.publicKeyLength})`);
+  }
+  return encodeBase64(publicKey);
+}
+
+export function exportSigningSecretKey(secretKey: Uint8Array): string {
+  if (secretKey.byteLength !== nacl.sign.secretKeyLength) {
+    throw new Error(`Invalid signing secret key length (expected ${nacl.sign.secretKeyLength})`);
+  }
+  return encodeBase64(secretKey);
+}
+
+export function importSigningPublicKey(base64: string): Uint8Array {
+  const bytes = decodeBase64(base64);
+  if (bytes.byteLength !== nacl.sign.publicKeyLength) {
+    throw new Error(`Invalid signing public key length (expected ${nacl.sign.publicKeyLength})`);
+  }
+  return bytes;
+}
+
+export function importSigningSecretKey(base64: string): Uint8Array {
+  const bytes = decodeBase64(base64);
+  if (bytes.byteLength !== nacl.sign.secretKeyLength) {
+    throw new Error(`Invalid signing secret key length (expected ${nacl.sign.secretKeyLength})`);
+  }
+  return bytes;
 }
 
 export function importSecretKey(base64: string): Uint8Array {

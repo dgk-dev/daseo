@@ -116,6 +116,8 @@ export interface ExternalSocketMetadata {
   transport: "relay";
   externalSessionKey?: string;
   relayConnectionId?: string;
+  deviceId?: string;
+  scopes?: readonly string[];
 }
 
 interface PendingConnection {
@@ -134,6 +136,8 @@ interface WebSocketConnectionIdentity {
   userAgent?: string;
   remoteAddress?: string;
   relayConnectionId?: string;
+  deviceId?: string;
+  scopes?: readonly string[];
   clientId?: string;
   sessionId?: string;
   appVersion?: string;
@@ -1275,6 +1279,17 @@ export class VoiceAssistantWebSocketServer {
     );
   }
 
+  private disconnectPairedDevice(deviceId: string): void {
+    for (const [socket, identity] of this.socketIdentities) {
+      if (identity.deviceId !== deviceId) continue;
+      try {
+        socket.close(4403, "Paired device revoked");
+      } catch {
+        // The identity is already revoked; a transport close race needs no retry.
+      }
+    }
+  }
+
   private createSessionConnection(params: {
     ws: WebSocketLike;
     clientId: string;
@@ -1289,7 +1304,7 @@ export class VoiceAssistantWebSocketServer {
       clientId,
       appVersion,
       clientCapabilities,
-      scopes: ["*"],
+      scopes: this.socketIdentities.get(ws)?.scopes ?? ["*"],
       connectionLogger,
       onMessage: (msg) => {
         if (!connection) {
@@ -1363,6 +1378,7 @@ export class VoiceAssistantWebSocketServer {
       onBinaryMessageToSource: options.onBinaryMessageToSource,
       getTransportBufferedAmount: options.getTransportBufferedAmount,
       onLifecycleIntent: options.onLifecycleIntent,
+      onDeviceRevoked: (deviceId) => this.disconnectPairedDevice(deviceId),
       logger: options.connectionLogger.child({ module: "session" }),
       onWorkspaceRecovered: async (workspace) => {
         await Promise.all(
@@ -1665,6 +1681,8 @@ export class VoiceAssistantWebSocketServer {
         canonicalSubmittedPrompts: true,
         // COMPAT(durableCommandReceipts): added in v0.5.0, remove after 2027-02-18.
         durableCommandReceipts: true,
+        // COMPAT(devicePairingManagement): added in v0.5.0, remove after 2027-02-18.
+        devicePairingManagement: true,
         // COMPAT(stableProjectIdentity): added in v0.1.109, remove gate after 2027-01-15.
         stableProjectIdentity: true,
         // COMPAT(workspaceScriptManagement): added in v0.1.105, remove gate after 2027-01-10.
@@ -2909,6 +2927,8 @@ function createWebSocketConnectionIdentity(
     ...(requestMetadata.userAgent ? { userAgent: requestMetadata.userAgent } : {}),
     ...(requestMetadata.remoteAddress ? { remoteAddress: requestMetadata.remoteAddress } : {}),
     ...(metadata?.relayConnectionId ? { relayConnectionId: metadata.relayConnectionId } : {}),
+    ...(metadata?.deviceId ? { deviceId: metadata.deviceId } : {}),
+    ...(metadata?.scopes ? { scopes: metadata.scopes } : {}),
   };
 }
 
@@ -2922,6 +2942,7 @@ function toConnectionLogFields(identity: WebSocketConnectionIdentity): Record<st
     ...(identity.userAgent ? { userAgent: identity.userAgent } : {}),
     ...(identity.remoteAddress ? { remoteAddress: identity.remoteAddress } : {}),
     ...(identity.relayConnectionId ? { relayConnectionId: identity.relayConnectionId } : {}),
+    ...(identity.deviceId ? { deviceId: identity.deviceId } : {}),
     ...(identity.clientId ? { clientId: identity.clientId } : {}),
     ...(identity.sessionId ? { sessionId: identity.sessionId } : {}),
     ...(identity.appVersion ? { appVersion: identity.appVersion } : {}),

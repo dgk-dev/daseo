@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import {
   ConnectionOfferSchema,
@@ -69,6 +70,36 @@ describe("connection offer", () => {
       v: 2,
       serverId: "server-123",
       daemonPublicKeyB64: "pubkey",
+      relay: { endpoint: "relay.example.com:443", useTls: true },
+    });
+  });
+
+  it("keeps E2EE v2 metadata optional and invisible to a legacy offer reader", () => {
+    const current = ConnectionOfferSchema.parse({
+      v: 2,
+      serverId: "server-123",
+      daemonPublicKeyB64: "legacy-key",
+      relay: { endpoint: "relay.example.com:443", useTls: true },
+      e2ee: {
+        version: 2,
+        daemonSigningPublicKeyB64: "signing-key",
+        keyEpoch: 1,
+        offerId: "offer-1",
+        pairingSecret: "secret",
+        expiresAt: "2026-08-18T01:00:00.000Z",
+      },
+    });
+    const legacy = z.object({
+      v: z.literal(2),
+      serverId: z.string(),
+      daemonPublicKeyB64: z.string(),
+      relay: z.object({ endpoint: z.string(), useTls: z.boolean().optional() }),
+    });
+
+    expect(legacy.parse(current)).toEqual({
+      v: 2,
+      serverId: "server-123",
+      daemonPublicKeyB64: "legacy-key",
       relay: { endpoint: "relay.example.com:443", useTls: true },
     });
   });

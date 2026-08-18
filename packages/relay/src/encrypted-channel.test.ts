@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   createClientChannel,
+  createClientChannelV2,
   createDaemonChannel,
   EncryptedChannel,
   Transport,
@@ -10,6 +11,8 @@ import {
   encrypt,
   exportPublicKey,
   generateKeyPair,
+  generateSigningKeyPair,
+  exportSigningPublicKey,
   importPublicKey,
 } from "./crypto.js";
 import { arrayBufferToBase64 } from "./base64.js";
@@ -136,6 +139,59 @@ describe("EncryptedChannel", () => {
 
     expect(clientChannel.isOpen()).toBe(true);
     expect(daemonChannel.isOpen()).toBe(true);
+  });
+
+  it("authenticates a device and exchanges counter-protected E2EE v2 frames", async () => {
+    const [daemonTransport, clientTransport] = createMockTransportPair();
+    const daemonKeyPair = generateKeyPair();
+    const daemonSigningKeyPair = generateSigningKeyPair();
+    const deviceSigningKeyPair = generateSigningKeyPair();
+    const daemonMessages: Array<string | ArrayBuffer> = [];
+    const clientMessages: Array<string | ArrayBuffer> = [];
+    const authorizeDevice = vi.fn(async (input) => {
+      expect(input).toMatchObject({
+        offerId: "offer-1",
+        pairingSecret: "one-time-secret",
+        deviceId: "device-1",
+        signingPublicKeyB64: exportSigningPublicKey(deviceSigningKeyPair.publicKey),
+      });
+      return { deviceId: "device-1", scopes: ["*"] };
+    });
+
+    const daemonChannelPromise = createDaemonChannel(
+      daemonTransport,
+      daemonKeyPair,
+      { onmessage: (data) => daemonMessages.push(data) },
+      { signingKeyPair: daemonSigningKeyPair, keyEpoch: 1, authorizeDevice },
+    );
+    const clientChannel = await createClientChannelV2(
+      clientTransport,
+      exportPublicKey(daemonKeyPair.publicKey),
+      {
+        daemonSigningPublicKeyB64: exportSigningPublicKey(daemonSigningKeyPair.publicKey),
+        keyEpoch: 1,
+        offerId: "offer-1",
+        pairingSecret: "one-time-secret",
+        deviceId: "device-1",
+        deviceSigningKeyPair,
+      },
+      { onmessage: (data) => clientMessages.push(data) },
+    );
+    const daemonChannel = await daemonChannelPromise;
+
+    expect(daemonChannel.getPeerIdentity()).toEqual({ deviceId: "device-1", scopes: ["*"] });
+    const helloFrame = (clientTransport.send as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(typeof helloFrame).toBe("string");
+    expect(String(helloFrame)).not.toContain("one-time-secret");
+    await Promise.all([
+      clientChannel.send("from client"),
+      daemonChannel.send(new Uint8Array([1, 2, 3]).buffer),
+    ]);
+    await waitForAsyncDelivery();
+
+    expect(daemonMessages).toEqual(["from client"]);
+    expect(new Uint8Array(clientMessages[0] as ArrayBuffer)).toEqual(Uint8Array.of(1, 2, 3));
+    expect(authorizeDevice).toHaveBeenCalledTimes(1);
   });
 
   it("exchanges encrypted messages bidirectionally", async () => {

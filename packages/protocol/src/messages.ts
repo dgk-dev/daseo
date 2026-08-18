@@ -1320,6 +1320,17 @@ export const DaemonGetStatusRequestSchema = z.object({
   requestId: z.string(),
 });
 
+export const DevicePairingListRequestSchema = z.object({
+  type: z.literal("device.pairing.list.request"),
+  requestId: z.string(),
+});
+
+export const DevicePairingRevokeRequestSchema = z.object({
+  type: z.literal("device.pairing.revoke.request"),
+  requestId: z.string(),
+  deviceId: z.string().min(1),
+});
+
 export const BrowserRemoteWatchRequestSchema = z.object({
   type: z.literal("browser.remote.watch.request"),
   requestId: z.string(),
@@ -2912,6 +2923,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   BrowserRemoteListRequestSchema,
   BrowserRemoteCloseRequestSchema,
   DaemonGetStatusRequestSchema,
+  DevicePairingListRequestSchema,
+  DevicePairingRevokeRequestSchema,
   DaemonGetPairingOfferRequestSchema,
   DaemonConfigReloadRequestSchema,
   HubManagementDaemonConnectRequestSchema,
@@ -3329,6 +3342,8 @@ export const ServerInfoStatusPayloadSchema = z
         canonicalSubmittedPrompts: z.boolean().optional(),
         // COMPAT(durableCommandReceipts): added in v0.5.0, remove after 2027-02-18.
         durableCommandReceipts: z.boolean().optional(),
+        // COMPAT(devicePairingManagement): added in v0.5.0, remove after 2027-02-18.
+        devicePairingManagement: z.boolean().optional(),
         // COMPAT(agentTurnIdentity): accept peers that observed pre-release v0.2.6 through 2027-01-31.
         agentTurnIdentity: z.boolean().optional(),
         // COMPAT(stableProjectIdentity): added in v0.1.109, remove gate after 2027-01-15.
@@ -4436,6 +4451,33 @@ export const BrowserRemoteCloseResponseSchema = z.object({
   }),
 });
 
+const PairedDevicePayloadSchema = z.object({
+  deviceId: z.string(),
+  label: z.string().nullable(),
+  platform: z.string().nullable(),
+  appVersion: z.string().nullable(),
+  scopes: z.array(z.string()),
+  createdAt: z.string(),
+  lastSeenAt: z.string(),
+  revokedAt: z.string().nullable(),
+});
+
+export const DevicePairingListResponseSchema = z.object({
+  type: z.literal("device.pairing.list.response"),
+  payload: z.object({
+    requestId: z.string(),
+    devices: z.array(PairedDevicePayloadSchema),
+  }),
+});
+
+export const DevicePairingRevokeResponseSchema = z.object({
+  type: z.literal("device.pairing.revoke.response"),
+  payload: z.object({
+    requestId: z.string(),
+    device: PairedDevicePayloadSchema.nullable(),
+  }),
+});
+
 export const DaemonGetStatusResponseSchema = z.object({
   type: z.literal("daemon.get_status.response"),
   payload: z
@@ -4508,6 +4550,7 @@ export const DaemonGetPairingOfferResponseSchema = z.object({
       url: z.string(),
       qr: z.string().nullable().optional(),
       relayEnabled: z.boolean(),
+      expiresAt: z.string().nullable().optional(),
     })
     .passthrough(),
 });
@@ -6125,6 +6168,8 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   BrowserRemoteListResponseSchema,
   BrowserRemoteCloseResponseSchema,
   DaemonGetStatusResponseSchema,
+  DevicePairingListResponseSchema,
+  DevicePairingRevokeResponseSchema,
   DaemonGetPairingOfferResponseSchema,
   DaemonConfigReloadResponseSchema,
   HubManagementDaemonConnectResponseSchema,

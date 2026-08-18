@@ -285,6 +285,8 @@ interface SessionForTestOptions {
   agentManager?: { [K in keyof SessionOptions["agentManager"]]?: unknown };
   agentStorage?: { [K in keyof SessionOptions["agentStorage"]]?: unknown };
   agentCommandReceiptStore?: SessionOptions["agentCommandReceiptStore"];
+  devicePairingStore?: SessionOptions["devicePairingStore"];
+  onDeviceRevoked?: SessionOptions["onDeviceRevoked"];
   github?: Partial<ForgeService & GitHubService>;
   checkoutDiffManager?: { scheduleRefreshForCwd: ReturnType<typeof vi.fn> };
   workspaceGitService?: {
@@ -383,6 +385,8 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
       ...options.agentStorage,
     }),
     agentCommandReceiptStore: options.agentCommandReceiptStore,
+    devicePairingStore: options.devicePairingStore,
+    onDeviceRevoked: options.onDeviceRevoked,
     projectRegistry: {
       list: vi.fn().mockResolvedValue([]),
       get: vi.fn(),
@@ -508,6 +512,57 @@ describe("durable agent command receipts", () => {
     });
     expect(streamAgent).toHaveBeenCalledTimes(1);
   });
+});
+
+test("lists and revokes paired devices without exposing signing keys", async () => {
+  const messages: SessionOutboundMessage[] = [];
+  const onDeviceRevoked = vi.fn();
+  const device = {
+    deviceId: "device-1",
+    signingPublicKeyB64: "do-not-emit",
+    label: "Fold",
+    platform: "android",
+    appVersion: "0.5.0",
+    scopes: ["*"],
+    createdAt: "2026-08-18T00:00:00.000Z",
+    lastSeenAt: "2026-08-18T00:01:00.000Z",
+    revokedAt: null,
+  };
+  const session = createSessionForTest({
+    messages,
+    onDeviceRevoked,
+    devicePairingStore: {
+      listDevices: vi.fn().mockResolvedValue([device]),
+      revoke: vi.fn().mockResolvedValue({
+        ...device,
+        revokedAt: "2026-08-18T00:02:00.000Z",
+      }),
+    } as unknown as NonNullable<SessionOptions["devicePairingStore"]>,
+  });
+
+  await session.handleMessage({ type: "device.pairing.list.request", requestId: "list" });
+  await session.handleMessage({
+    type: "device.pairing.revoke.request",
+    requestId: "revoke",
+    deviceId: "device-1",
+  });
+  await Promise.resolve();
+
+  expect(messages).toMatchObject([
+    {
+      type: "device.pairing.list.response",
+      payload: { requestId: "list", devices: [{ deviceId: "device-1", label: "Fold" }] },
+    },
+    {
+      type: "device.pairing.revoke.response",
+      payload: {
+        requestId: "revoke",
+        device: { deviceId: "device-1", revokedAt: "2026-08-18T00:02:00.000Z" },
+      },
+    },
+  ]);
+  expect(JSON.stringify(messages)).not.toContain("do-not-emit");
+  expect(onDeviceRevoked).toHaveBeenCalledWith("device-1");
 });
 
 test("routes plugin management requests and catalog notifications", async () => {

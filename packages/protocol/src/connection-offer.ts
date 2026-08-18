@@ -14,6 +14,18 @@ export const ConnectionOfferV2Schema = z.object({
     endpoint: z.string().min(1),
     useTls: z.boolean().optional(),
   }),
+  // COMPAT(devicePairingE2EEV2): optional so older clients keep using the
+  // daemonPublicKeyB64 legacy channel from the same offer.
+  e2ee: z
+    .object({
+      version: z.literal(2),
+      daemonSigningPublicKeyB64: z.string().min(1),
+      keyEpoch: z.number().int().positive(),
+      offerId: z.string().min(1),
+      pairingSecret: z.string().min(1),
+      expiresAt: z.string().datetime(),
+    })
+    .optional(),
 });
 
 export type ConnectionOfferV2 = z.infer<typeof ConnectionOfferV2Schema>;

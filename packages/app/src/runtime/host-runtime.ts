@@ -15,6 +15,7 @@ import {
   StoredHostRegistrySchema,
   type HostConnection,
   type HostProfile,
+  type RelayHostConnection,
 } from "@/types/host-connection";
 import { defaultHostAppearance, type HostBadgeDisplay, type HostColor } from "@/hosts/appearance";
 import {
@@ -66,6 +67,7 @@ import { projectIconCache } from "@/projects/icon-cache";
 import { nativePerformanceTrace } from "@/performance/native-trace";
 import { revokePushNotifications } from "@/push-notifications";
 import { createAppWebSocketFactory } from "./websocket-factory";
+import { getOrCreateDeviceSigningIdentity } from "@/security/device-identity";
 
 export type HostRuntimeConnectionStatus = "idle" | "connecting" | "online" | "offline" | "error";
 export type HostRegistryStatus = "loading" | "ready";
@@ -528,6 +530,26 @@ function createDefaultDeps(): HostRuntimeControllerDeps {
         e2ee: {
           enabled: true,
           daemonPublicKeyB64: connection.daemonPublicKeyB64,
+          ...(connection.e2eeV2
+            ? {
+                v2: async () => {
+                  const identity = await getOrCreateDeviceSigningIdentity();
+                  const e2eeV2 = connection.e2eeV2;
+                  if (!e2eeV2) throw new Error("E2EE v2 connection metadata is missing");
+                  return {
+                    daemonSigningPublicKeyB64: e2eeV2.daemonSigningPublicKeyB64,
+                    keyEpoch: e2eeV2.keyEpoch,
+                    offerId: e2eeV2.offerId,
+                    pairingSecret: e2eeV2.pairingSecret,
+                    deviceId: identity.deviceId,
+                    deviceSigningKeyPair: identity.keyPair,
+                    label: host.label,
+                    platform: isWeb ? "web" : "native",
+                    appVersion: resolveAppVersion() ?? undefined,
+                  };
+                },
+              }
+            : {}),
         },
       });
     },
@@ -1751,6 +1773,7 @@ export class HostRuntimeStore {
     relayEndpoint: string;
     useTls?: boolean;
     daemonPublicKeyB64: string;
+    e2eeV2?: RelayHostConnection["e2eeV2"];
     label?: string;
   }): Promise<HostProfile> {
     const relayEndpoint = normalizeHostPort(input.relayEndpoint);
@@ -1769,6 +1792,7 @@ export class HostRuntimeStore {
         relayEndpoint,
         ...(explicitUseTls ? { useTls } : {}),
         daemonPublicKeyB64,
+        ...(input.e2eeV2 ? { e2eeV2: input.e2eeV2 } : {}),
       },
     });
   }
@@ -1781,6 +1805,17 @@ export class HostRuntimeStore {
       relayEndpoint: offer.relay.endpoint,
       useTls,
       daemonPublicKeyB64: offer.daemonPublicKeyB64,
+      ...(offer.e2ee
+        ? {
+            e2eeV2: {
+              daemonSigningPublicKeyB64: offer.e2ee.daemonSigningPublicKeyB64,
+              keyEpoch: offer.e2ee.keyEpoch,
+              offerId: offer.e2ee.offerId,
+              pairingSecret: offer.e2ee.pairingSecret,
+              expiresAt: offer.e2ee.expiresAt,
+            },
+          }
+        : {}),
       label,
     });
   }

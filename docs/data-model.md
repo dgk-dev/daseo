@@ -46,7 +46,8 @@ Store APIs own persistence atomicity and should not make services coordinate raw
 $PASEO_HOME/
 ├── config.json                          # Daemon configuration
 ├── server-id                            # Stable daemon identifier (plain text, "srv_<base64url>")
-├── daemon-keypair.json                  # E2EE keypair for relay (mode 0600)
+├── daemon-keypair.json                  # Legacy encryption + signing identity (mode 0600)
+├── device-pairings.json                 # Expiring grants and revocable device public keys
 ├── agent-command-receipts.json          # Idempotent mobile command admission receipts
 ├── paseo.pid                            # Daemon PID lock file
 ├── daemon.log                           # Default log file (path configurable)
@@ -472,12 +473,13 @@ The daemon writes an `in_flight` receipt before dispatching a command that carri
 
 These small files are not validated as full Zod schemas but are persisted under `$PASEO_HOME` for daemon identity and runtime coordination.
 
-| Path                  | Format                                                         | Notes                                                                             |
-| --------------------- | -------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `server-id`           | Plain text, e.g. `srv_<base64url>`                             | Stable per-`$PASEO_HOME` daemon ID. Overridable via `PASEO_SERVER_ID` env.        |
-| `daemon-keypair.json` | `{ v: 2, publicKeyB64, secretKeyB64 }` (libsodium box keypair) | E2EE relay identity. Written with mode `0600`. Regenerated if file is unreadable. |
-| `paseo.pid`           | JSON `{ pid, startedAt, ... }`                                 | PID lock; prevents two daemons sharing one `$PASEO_HOME`.                         |
-| `daemon.log`          | Pino log output                                                | Default location; path/rotation configurable via `log.file` in `config.json`.     |
+| Path                   | Format                                                                                     | Notes                                                                                                                                                            |
+| ---------------------- | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server-id`            | Plain text, e.g. `srv_<base64url>`                                                         | Stable per-`$PASEO_HOME` daemon ID. Overridable via `PASEO_SERVER_ID` env.                                                                                       |
+| `daemon-keypair.json`  | `{ v: 3, publicKeyB64, secretKeyB64, signingPublicKeyB64, signingSecretKeyB64, keyEpoch }` | Legacy Curve25519 compatibility identity plus the Ed25519 identity that signs ephemeral E2EE v2 handshakes. Written with mode `0600`; v2 files upgrade in place. |
+| `device-pairings.json` | `{ version: 1, grants, devices }`                                                          | Stores only hashed one-use grants and device public keys, labels, scopes, last-seen and revocation state.                                                        |
+| `paseo.pid`            | JSON `{ pid, startedAt, ... }`                                                             | PID lock; prevents two daemons sharing one `$PASEO_HOME`.                                                                                                        |
+| `daemon.log`           | Pino log output                                                                            | Default location; path/rotation configurable via `log.file` in `config.json`.                                                                                    |
 
 ---
 
@@ -507,6 +509,10 @@ Right-sidebar client state splits on whether it is determined by the directory o
   createModalDraft: DraftRecord | null
 }
 ```
+
+### Device signing identity
+
+Native builds store the E2EE v2 device signing key through `expo-secure-store`, backed by iOS Keychain and Android Keystore. Browser and Electron clients use the app storage fallback and should not be treated as hardware-backed identities.
 
 ### Composer Outbox
 

@@ -1,5 +1,7 @@
 import {
   createClientChannel,
+  createClientChannelV2,
+  type E2EEV2ClientConfig,
   type EncryptedChannel,
   type Transport as RelayTransport,
 } from "@getpaseo/relay/e2ee";
@@ -19,10 +21,11 @@ export function createRelayE2eeTransportFactory(args: {
   baseFactory: DaemonTransportFactory;
   daemonPublicKeyB64: string;
   logger: TransportLogger;
+  getE2EEV2?: () => Promise<E2EEV2ClientConfig | undefined>;
 }): DaemonTransportFactory {
   return ({ url, headers }) => {
     const base = args.baseFactory({ url, headers });
-    return createEncryptedTransport(base, args.daemonPublicKeyB64, args.logger);
+    return createEncryptedTransport(base, args.daemonPublicKeyB64, args.logger, args.getE2EEV2);
   };
 }
 
@@ -30,6 +33,7 @@ export function createEncryptedTransport(
   base: DaemonTransport,
   daemonPublicKeyB64: string,
   logger: TransportLogger,
+  getE2EEV2?: () => Promise<E2EEV2ClientConfig | undefined>,
 ): DaemonTransport {
   let channel: EncryptedChannel | null = null;
   let opened = false;
@@ -94,12 +98,16 @@ export function createEncryptedTransport(
 
   const startHandshake = async () => {
     try {
-      channel = await createClientChannel(relayTransport, daemonPublicKeyB64, {
+      const e2eeV2 = await getE2EEV2?.();
+      const events = {
         onopen: emitOpen,
-        onmessage: (data) => emitMessage(data),
-        onclose: (code, reason) => emitClose({ code, reason }),
-        onerror: (error) => emitError(error),
-      });
+        onmessage: (data: string | ArrayBuffer) => emitMessage(data),
+        onclose: (code: number, reason: string) => emitClose({ code, reason }),
+        onerror: (error: Error) => emitError(error),
+      };
+      channel = e2eeV2
+        ? await createClientChannelV2(relayTransport, daemonPublicKeyB64, e2eeV2, events)
+        : await createClientChannel(relayTransport, daemonPublicKeyB64, events);
     } catch (error) {
       logger.warn({ err: normalizeTransportError(error) }, "relay_e2ee_handshake_failed");
       emitError(error);

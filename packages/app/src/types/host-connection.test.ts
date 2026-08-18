@@ -119,6 +119,37 @@ describe("normalizeStoredHostProfile", () => {
     });
   });
 
+  it("preserves optional device-authenticated E2EE metadata", () => {
+    const profile = normalizeStoredHostProfile({
+      serverId: "srv_relay_v2",
+      connections: [
+        {
+          type: "relay",
+          relayEndpoint: "relay.example.com:443",
+          useTls: true,
+          daemonPublicKeyB64: "legacy-key",
+          e2eeV2: {
+            daemonSigningPublicKeyB64: "signing-key",
+            keyEpoch: 1,
+            offerId: "offer-1",
+            pairingSecret: "grant",
+            expiresAt: "2026-08-18T01:00:00.000Z",
+          },
+        },
+      ],
+    });
+
+    expect(profile?.connections[0]).toMatchObject({
+      type: "relay",
+      e2eeV2: {
+        daemonSigningPublicKeyB64: "signing-key",
+        keyEpoch: 1,
+        offerId: "offer-1",
+        pairingSecret: "grant",
+      },
+    });
+  });
+
   it("gives a host stored before appearance existed the default appearance", () => {
     const profile = normalizeStoredHostProfile({
       serverId: "srv_old",

@@ -8,6 +8,8 @@ import {
   buildRelayWebSocketUrl,
   shouldUseTlsForDefaultHostedRelay,
 } from "./daemon-endpoints";
+import { getOrCreateDeviceSigningIdentity } from "@/security/device-identity";
+import { isWeb } from "@/constants/platform";
 import {
   buildLocalDaemonTransportUrl,
   createDesktopLocalDaemonTransportFactory,
@@ -151,7 +153,29 @@ export async function buildClientConfig(
       useTls: connection.useTls ?? shouldUseTlsForDefaultHostedRelay(connection.relayEndpoint),
       serverId,
     }),
-    e2ee: { enabled: true, daemonPublicKeyB64: connection.daemonPublicKeyB64 },
+    e2ee: {
+      enabled: true,
+      daemonPublicKeyB64: connection.daemonPublicKeyB64,
+      ...(connection.e2eeV2
+        ? {
+            v2: async () => {
+              const identity = await getOrCreateDeviceSigningIdentity();
+              const e2eeV2 = connection.e2eeV2;
+              if (!e2eeV2) throw new Error("E2EE v2 connection metadata is missing");
+              return {
+                daemonSigningPublicKeyB64: e2eeV2.daemonSigningPublicKeyB64,
+                keyEpoch: e2eeV2.keyEpoch,
+                offerId: e2eeV2.offerId,
+                pairingSecret: e2eeV2.pairingSecret,
+                deviceId: identity.deviceId,
+                deviceSigningKeyPair: identity.keyPair,
+                platform: isWeb ? "web" : "native",
+                appVersion: deps.resolveAppVersion() ?? undefined,
+              };
+            },
+          }
+        : {}),
+    },
   };
 }
 

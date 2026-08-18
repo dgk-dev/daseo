@@ -182,6 +182,17 @@ export default function PairScanScreen() {
             relayEndpoint: normalizeHostPort(offer.relay.endpoint),
             useTls: offer.relay.useTls,
             daemonPublicKeyB64: offer.daemonPublicKeyB64,
+            ...(offer.e2ee
+              ? {
+                  e2eeV2: {
+                    daemonSigningPublicKeyB64: offer.e2ee.daemonSigningPublicKeyB64,
+                    keyEpoch: offer.e2ee.keyEpoch,
+                    offerId: offer.e2ee.offerId,
+                    pairingSecret: offer.e2ee.pairingSecret,
+                    expiresAt: offer.e2ee.expiresAt,
+                  },
+                }
+              : {}),
           },
           { serverId: offer.serverId },
         );
