@@ -32,6 +32,7 @@ const DevicePairingFileSchema = z.object({
 });
 
 export type PairedDevice = z.infer<typeof PairedDeviceSchema>;
+export const DEFAULT_PAIRED_DEVICE_SCOPES = ["mobile"] as const;
 
 function hashSecret(secret: string): string {
   return createHash("sha256").update(secret).digest("hex");
@@ -125,7 +126,7 @@ export class DevicePairingStore {
         label: input.label?.trim() || null,
         platform: input.platform?.trim() || null,
         appVersion: input.appVersion?.trim() || null,
-        scopes: ["*"],
+        scopes: [...DEFAULT_PAIRED_DEVICE_SCOPES],
         createdAt: timestamp,
         lastSeenAt: timestamp,
         revokedAt: null,
@@ -144,10 +145,15 @@ export class DevicePairingStore {
     );
   }
 
-  async revoke(deviceId: string, now = new Date()): Promise<PairedDevice | null> {
+  async revoke(
+    deviceId: string,
+    now = new Date(),
+    beforeCommit?: (deviceId: string) => void,
+  ): Promise<PairedDevice | null> {
     return await this.mutate(async () => {
       const existing = this.devices.get(deviceId);
       if (!existing) return null;
+      beforeCommit?.(deviceId);
       const updated = { ...existing, revokedAt: now.toISOString() };
       this.devices.set(deviceId, updated);
       await this.persist(now);
@@ -188,7 +194,16 @@ export class DevicePairingStore {
       return;
     }
     this.grants = new Map(parsed.data.grants.map((grant) => [grant.offerId, grant]));
-    this.devices = new Map(parsed.data.devices.map((device) => [device.deviceId, device]));
+    let migratedWildcardScopes = false;
+    this.devices = new Map(
+      parsed.data.devices.map((device) => {
+        if (!device.scopes.includes("*")) return [device.deviceId, device];
+        migratedWildcardScopes = true;
+        const migrated = { ...device, scopes: [...DEFAULT_PAIRED_DEVICE_SCOPES] };
+        return [migrated.deviceId, migrated];
+      }),
+    );
+    if (migratedWildcardScopes) await this.persist(new Date());
   }
 
   private async persist(now: Date): Promise<void> {

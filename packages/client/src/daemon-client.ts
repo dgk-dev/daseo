@@ -347,6 +347,18 @@ export interface SendAgentMessageResult {
   receiptStatus: AgentCommandReceiptStatus;
 }
 
+export type AgentCommandReceiptResolutionStatus =
+  | "missing"
+  | AgentCommandReceiptStatus
+  | "retry_ready";
+
+export interface AgentCommandReceiptResolution {
+  commandId: string;
+  agentId: string | null;
+  status: AgentCommandReceiptResolutionStatus;
+  error: string | null;
+}
+
 export class AgentCommandDeliveryUnknownError extends Error {
   readonly commandId: string;
 
@@ -3041,6 +3053,44 @@ export class DaemonClient {
     options?: SendMessageOptions,
   ): Promise<SendAgentMessageResult> {
     return await this.sendAgentMessage(agentId, text, options);
+  }
+
+  async getAgentCommandReceipt(commandId: string): Promise<AgentCommandReceiptResolution> {
+    const requestId = this.createRequestId();
+    return await this.sendRequest({
+      requestId,
+      message: SessionInboundMessageSchema.parse({
+        type: "agent.command_receipt.get.request",
+        requestId,
+        commandId,
+      }),
+      options: { skipQueue: true },
+      select: (message) => {
+        if (message.type !== "agent.command_receipt.get.response") return null;
+        return message.payload.requestId === requestId ? message.payload : null;
+      },
+    });
+  }
+
+  async resolveAgentCommandReceipt(
+    commandId: string,
+    action: "retry" | "discard",
+  ): Promise<AgentCommandReceiptResolution> {
+    const requestId = this.createRequestId();
+    return await this.sendRequest({
+      requestId,
+      message: SessionInboundMessageSchema.parse({
+        type: "agent.command_receipt.resolve.request",
+        requestId,
+        commandId,
+        action,
+      }),
+      options: { skipQueue: true },
+      select: (message) => {
+        if (message.type !== "agent.command_receipt.resolve.response") return null;
+        return message.payload.requestId === requestId ? message.payload : null;
+      },
+    });
   }
 
   async rewindAgent(

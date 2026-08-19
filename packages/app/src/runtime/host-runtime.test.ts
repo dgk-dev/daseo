@@ -41,6 +41,11 @@ class FakeDaemonClient {
   public sentAgentMessages: Array<Parameters<DaemonClient["sendAgentMessage"]>> = [];
   public sendAgentMessageFailures: Error[] = [];
   public sendAgentMessageResponses: Promise<void>[] = [];
+  public commandReceiptResponses: Array<
+    Awaited<ReturnType<DaemonClient["getAgentCommandReceipt"]>>
+  > = [];
+  public resolvedCommandReceipts: Array<Parameters<DaemonClient["resolveAgentCommandReceipt"]>> =
+    [];
   private agentUpdateListeners = new Set<
     (message: Extract<SessionOutboundMessage, { type: "agent_update" }>) => void
   >();
@@ -102,6 +107,31 @@ class FakeDaemonClient {
     if (failure) throw failure;
     const commandId = args[2]?.commandId ?? args[2]?.messageId ?? "test-command";
     return { commandId, receiptStatus: "accepted" };
+  }
+
+  async getAgentCommandReceipt(
+    commandId: string,
+  ): ReturnType<DaemonClient["getAgentCommandReceipt"]> {
+    return Promise.resolve(
+      this.commandReceiptResponses.shift() ?? {
+        commandId,
+        agentId: null,
+        status: "missing",
+        error: null,
+      },
+    );
+  }
+
+  async resolveAgentCommandReceipt(
+    ...args: Parameters<DaemonClient["resolveAgentCommandReceipt"]>
+  ): ReturnType<DaemonClient["resolveAgentCommandReceipt"]> {
+    this.resolvedCommandReceipts.push(args);
+    return Promise.resolve({
+      commandId: args[0],
+      agentId: null,
+      status: "retry_ready",
+      error: null,
+    });
   }
 
   async waitForSentMessages(count: number): Promise<void> {
@@ -2584,6 +2614,35 @@ describe("HostRuntimeStore", () => {
     useSessionStore.getState().clearSession(host.serverId);
   });
 
+  it("does not drain a queued message while its exact agent still has an active turn", () => {
+    const host = makeHost({ serverId: "srv_running_queue_guard" });
+    const fakeClient = new FakeDaemonClient();
+    const store = new HostRuntimeStore();
+    const sessionStore = useSessionStore.getState();
+    sessionStore.initializeSession(host.serverId, fakeClient as unknown as DaemonClient, 1);
+    const entry = makeFetchAgentsEntry({
+      id: "agent",
+      cwd: "/repo",
+      updatedAt: "2026-08-19T00:00:00.000Z",
+    });
+    sessionStore.setAgents(
+      host.serverId,
+      new Map([["agent", { ...replicaAgent(entry.agent, host.serverId), status: "running" }]]),
+    );
+    sessionStore.setQueuedMessages(
+      host.serverId,
+      new Map([["agent", [{ id: "queued", text: "wait for idle", attachments: [] }]]]),
+    );
+
+    store.drainQueuedAgentMessage(host.serverId, "agent");
+
+    expect(fakeClient.sentAgentMessages).toEqual([]);
+    expect(useSessionStore.getState().sessions[host.serverId]?.queuedMessages.get("agent")).toEqual(
+      [{ id: "queued", text: "wait for idle", attachments: [] }],
+    );
+    sessionStore.clearSession(host.serverId);
+  });
+
   it("submits an automatically drained message through the submission producer", async () => {
     const host = makeHost({ serverId: "srv_drain_submission" });
     const fakeClient = new FakeDaemonClient();
@@ -2847,6 +2906,7 @@ describe("HostRuntimeStore", () => {
       features: {
         canonicalSubmittedPrompts: true,
         durableCommandReceipts: true,
+        commandReceiptResolution: true,
       },
     });
 
@@ -2872,6 +2932,72 @@ describe("HostRuntimeStore", () => {
       ).toEqual([{ id: "queued-after-restart", text: "wait until idle", attachments: [] }]);
     });
     expect(await outbox.list({ serverId: host.serverId, intent: "queued" })).toHaveLength(1);
+    sessionStore.clearSession(host.serverId);
+  });
+
+  it("holds an in-flight receipt for explicit restore, retry, or discard", async () => {
+    const host = makeHost({ serverId: "srv_ambiguous_outbox" });
+    const fakeClient = new FakeDaemonClient();
+    fakeClient.setConnectionState({ status: "connected" });
+    fakeClient.commandReceiptResponses.push({
+      commandId: "ambiguous-after-restart",
+      agentId: "agent-ambiguous",
+      status: "in_flight",
+      error: "Provider admission was not confirmed",
+    });
+    const outbox = new ComposerOutboxStore();
+    await outbox.enqueue({
+      id: "ambiguous-after-restart",
+      serverId: host.serverId,
+      agentId: "agent-ambiguous",
+      text: "do not retry automatically",
+      attachments: [],
+      intent: "dispatch",
+      now: 1,
+    });
+    await outbox.mark({
+      serverId: host.serverId,
+      id: "ambiguous-after-restart",
+      status: "delivery_unknown",
+      now: 2,
+    });
+    const store = new HostRuntimeStore({ composerOutbox: outbox });
+    const sessionStore = useSessionStore.getState();
+    sessionStore.initializeSession(host.serverId, fakeClient as unknown as DaemonClient, 1);
+    sessionStore.updateSessionServerInfo(host.serverId, {
+      serverId: host.serverId,
+      hostname: null,
+      version: "0.5.3",
+      features: {
+        canonicalSubmittedPrompts: true,
+        durableCommandReceipts: true,
+        commandReceiptResolution: true,
+      },
+    });
+
+    store.drainComposerOutbox(host.serverId);
+
+    await vi.waitFor(async () => {
+      expect(await outbox.list({ serverId: host.serverId })).toMatchObject([
+        { id: "ambiguous-after-restart", status: "in_flight" },
+      ]);
+    });
+    await vi.waitFor(() => {
+      expect(
+        useSessionStore.getState().sessions[host.serverId]?.queuedMessages.get("agent-ambiguous"),
+      ).toEqual([
+        {
+          id: "ambiguous-after-restart",
+          text: "do not retry automatically",
+          attachments: [],
+          resolution: {
+            status: "in_flight",
+            message: "Provider admission was not confirmed",
+          },
+        },
+      ]);
+    });
+    expect(fakeClient.sentAgentMessages).toEqual([]);
     sessionStore.clearSession(host.serverId);
   });
 

@@ -106,7 +106,7 @@ export class FcmService {
   private async loadCredentials(): Promise<ServiceAccountCredentials | null> {
     try {
       const fileStat = await stat(this.credentialPath);
-      if ((fileStat.mode & 0o077) !== 0) {
+      if (process.platform !== "win32" && (fileStat.mode & 0o077) !== 0) {
         this.logger.error(
           { credentialPath: this.credentialPath },
           "Refusing FCM credentials readable by group or others",

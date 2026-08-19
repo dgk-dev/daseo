@@ -13,6 +13,7 @@ import {
   type RuntimeUpdateCheckResult,
   type RuntimeUpdateInfo,
 } from "./app-update-service.js";
+import { isDaseoDistribution } from "../distribution.js";
 import {
   bucketFromStagingUserId,
   rolloutManifestSchema,
@@ -34,6 +35,7 @@ export {
 let cachedStagingUserIdPromise: Promise<string> | null = null;
 
 const UPDATE_CHANNEL_NOT_PUBLISHED_CODE = "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND";
+const DASEO_UPDATE_MESSAGE = "Daseo updates use signed local release artifacts";
 
 function isUpdateChannelNotPublished(error: unknown): boolean {
   return (
@@ -200,6 +202,17 @@ export async function checkForAppUpdate({
   releaseChannel: AppReleaseChannel;
   intent: AppUpdateCheckIntent;
 }): Promise<AppUpdateCheckResult> {
+  if (isDaseoDistribution()) {
+    return {
+      hasUpdate: false,
+      readyToInstall: false,
+      currentVersion,
+      latestVersion: currentVersion,
+      body: null,
+      date: null,
+      errorMessage: null,
+    };
+  }
   return appUpdateService.checkForAppUpdate({ currentVersion, releaseChannel, intent });
 }
 
@@ -213,6 +226,9 @@ export async function downloadAndInstallUpdate(
   },
   onBeforeQuit?: () => Promise<void>,
 ): Promise<AppUpdateInstallResult> {
+  if (isDaseoDistribution()) {
+    return { installed: false, version: null, message: DASEO_UPDATE_MESSAGE };
+  }
   return appUpdateService.downloadAndInstallUpdate(
     { currentVersion, releaseChannel },
     onBeforeQuit,
@@ -228,6 +244,7 @@ export async function installAppUpdateOnQuit({
   releaseChannel: AppReleaseChannel;
   signal: AbortSignal;
 }): Promise<boolean> {
+  if (isDaseoDistribution()) return false;
   if (
     !shouldInstallAppUpdateOnQuit({
       platform: process.platform,

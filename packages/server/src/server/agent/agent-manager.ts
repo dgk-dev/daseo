@@ -40,6 +40,7 @@ import {
   type AgentSessionConfig,
   type AgentStreamEvent,
   type AgentTimelineItem,
+  type AssistantTurnOutcome,
   type AgentUsage,
   type AgentRuntimeInfo,
   type ImportedTimelineEntry,
@@ -449,7 +450,11 @@ function attachManagedTurnIdentity(
     }
     case "turn_completed":
     case "turn_failed":
-    case "turn_canceled": {
+    case "turn_canceled":
+    case "usage_updated":
+    case "timeline":
+    case "permission_requested":
+    case "permission_resolved": {
       const turnId = agent.activeForegroundTurnId ?? agent.activeTurnId ?? undefined;
       return turnId ? { event: { ...event, turnId }, turnId } : { event, turnId };
     }
@@ -504,12 +509,25 @@ function isAgentBusy(status: AgentLifecycleStatus): boolean {
   return BUSY_STATUSES.has(status);
 }
 
-function isTurnTerminalEvent(event: AgentStreamEvent): boolean {
+function isTurnTerminalEvent(
+  event: AgentStreamEvent,
+): event is Extract<
+  AgentStreamEvent,
+  { type: "turn_completed" | "turn_failed" | "turn_canceled" }
+> {
   return (
     event.type === "turn_completed" ||
     event.type === "turn_failed" ||
     event.type === "turn_canceled"
   );
+}
+
+function terminalTurnOutcome(
+  terminalType: "turn_completed" | "turn_failed" | "turn_canceled",
+): AssistantTurnOutcome {
+  if (terminalType === "turn_completed") return "completed";
+  if (terminalType === "turn_failed") return "failed";
+  return "canceled";
 }
 
 function abortMessage(reason: unknown, fallbackMessage: string): string {
@@ -3193,8 +3211,14 @@ export class AgentManager {
       return { timestamp: now.toISOString() };
     }
 
+    const committed = await this.durableTimelineStore.fetchCommitted(agentId, {
+      direction: "tail",
+      limit: 0,
+    });
     return {
-      nextSeq: (await this.durableTimelineStore.getLatestCommittedSeq(agentId)) + 1,
+      rows: committed.rows,
+      epoch: committed.epoch,
+      nextSeq: committed.window.nextSeq,
       timestamp: now.toISOString(),
     };
   }
@@ -3680,6 +3704,14 @@ export class AgentManager {
       await dispatchPromise;
     }
 
+    this.recordCanonicalTurnOutcomeIfNeeded({
+      agentId: agent.id,
+      event,
+      eventTurnId,
+      terminalDisposition,
+      fromHistory: options?.fromHistory === true,
+    });
+
     if (!options?.fromHistory) {
       if (isTurnTerminalEvent(event)) {
         this.runs.settleTerminalRun(agent.id, eventTurnId);
@@ -3810,7 +3842,7 @@ export class AgentManager {
         this.emitState(agent);
         return undefined;
       case "timeline":
-        return this.onStreamTimelineEvent({ agent, event, options, flags });
+        return this.onStreamTimelineEvent({ agent, event, options, flags, eventTurnId });
       case "turn_completed":
         this.onStreamTurnCompleted({
           agent,
@@ -3870,8 +3902,9 @@ export class AgentManager {
     event: Extract<AgentStreamEvent, { type: "timeline" }>;
     options: { fromHistory?: boolean } | undefined;
     flags: StreamEventFlags;
+    eventTurnId: string | undefined;
   }): Promise<void> {
-    const { agent, event, options, flags } = params;
+    const { agent, event, options, flags, eventTurnId } = params;
 
     if (event.item.type === "user_message" && isSystemInjectedEnvelope(event.item.text)) {
       flags.shouldDispatchEvent = false;
@@ -3900,7 +3933,7 @@ export class AgentManager {
       return;
     }
 
-    this.recordAndDispatchTimelineItem(agent.id, event.item, event.provider, event.turnId);
+    this.recordAndDispatchTimelineItem(agent.id, event.item, event.provider, eventTurnId);
     if (event.item.type === "user_message") {
       agent.lastUserMessageAt = new Date();
       this.emitState(agent);
@@ -3982,6 +4015,7 @@ export class AgentManager {
       event.provider,
       this.formatTurnFailedMessage(event),
       options,
+      eventTurnId,
     );
     this.resolvePendingPermissionsForAgent(agent, event.provider, options, "Turn failed");
     if (!isForegroundEvent && !agent.activeForegroundTurnId) {
@@ -4115,7 +4149,10 @@ export class AgentManager {
     turnId?: string,
     options?: { providerMessageId?: string },
   ): AgentStreamEvent {
-    const row = this.recordTimeline(agentId, item, options);
+    const row = this.recordTimeline(agentId, item, {
+      ...options,
+      ...(turnId ? { turnId } : {}),
+    });
     const event: AgentStreamEvent = {
       type: "timeline",
       item,
@@ -4188,6 +4225,7 @@ export class AgentManager {
     provider: AgentProvider,
     message: string,
     options?: { fromHistory?: boolean },
+    turnId?: string,
   ): Promise<void> {
     if (options?.fromHistory) {
       return;
@@ -4205,13 +4243,14 @@ export class AgentManager {
     }
 
     const item: AgentTimelineItem = { type: "assistant_message", text };
-    const row = this.recordTimeline(agent.id, item);
+    const row = this.recordTimeline(agent.id, item, turnId ? { turnId } : undefined);
     this.dispatchStream(
       agent.id,
       {
         type: "timeline",
         item,
         provider,
+        ...(turnId ? { turnId } : {}),
       },
       {
         seq: row.seq,
@@ -4219,6 +4258,29 @@ export class AgentManager {
         timestamp: row.timestamp,
       },
     );
+  }
+
+  private recordCanonicalTurnOutcomeIfNeeded(input: {
+    agentId: string;
+    event: AgentStreamEvent;
+    eventTurnId: string | undefined;
+    terminalDisposition: ActiveTurnTerminalDisposition;
+    fromHistory: boolean;
+  }): void {
+    if (
+      input.fromHistory ||
+      input.terminalDisposition === "stale" ||
+      !input.eventTurnId ||
+      !isTurnTerminalEvent(input.event)
+    ) {
+      return;
+    }
+    const row = this.timelineStore.markTurnAssistantOutcome(
+      input.agentId,
+      input.eventTurnId,
+      terminalTurnOutcome(input.event.type),
+    );
+    if (row) this.enqueueDurableTimelineUpdate(input.agentId, row);
   }
 
   private formatTurnFailedMessage(
@@ -4240,7 +4302,7 @@ export class AgentManager {
   private recordTimeline(
     agentId: string,
     item: AgentTimelineItem,
-    options?: { timestamp?: string; providerMessageId?: string },
+    options?: { timestamp?: string; turnId?: string; providerMessageId?: string },
   ): AgentTimelineRow {
     item = limitAgentTimelineItemContent(item);
     const row = this.timelineStore.append(agentId, item, options);

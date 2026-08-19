@@ -22,6 +22,7 @@ export interface PushNotifications {
     cursor?: { epoch: string; seq: number } | null,
   ): PushNotificationCatchUp;
   revoke(token: string): void;
+  revokeDevice(deviceId: string): number;
   send(payload: PushPayload): Promise<void>;
 }
 
@@ -51,6 +52,9 @@ export function createPushNotifications(options: {
     },
     revoke(token) {
       store.revokeToken(token);
+    },
+    revokeDevice(deviceId) {
+      return store.revokeDevice(deviceId);
     },
     async send(payload) {
       const recorded = events.append(payload);

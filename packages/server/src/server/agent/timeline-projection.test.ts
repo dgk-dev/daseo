@@ -64,6 +64,43 @@ describe("projectTimelineRows", () => {
     });
   });
 
+  test("preserves a terminal outcome and does not merge the next logical turn", () => {
+    const rows: AgentTimelineRow[] = [
+      {
+        seq: 1,
+        timestamp: "2026-02-13T00:00:00.000Z",
+        item: { type: "assistant_message", text: "Hel", messageId: "msg-1" },
+      },
+      {
+        seq: 2,
+        timestamp: "2026-02-13T00:00:00.100Z",
+        item: {
+          type: "assistant_message",
+          text: "lo",
+          messageId: "msg-1",
+          turnOutcome: "completed",
+        },
+      },
+      {
+        seq: 3,
+        timestamp: "2026-02-13T00:00:00.200Z",
+        item: { type: "assistant_message", text: "Background", messageId: "msg-1" },
+      },
+    ];
+
+    const projected = projectTimelineRows({ rows, mode: "projected" });
+
+    expect(projected.map((entry) => entry.item)).toEqual([
+      {
+        type: "assistant_message",
+        text: "Hello",
+        messageId: "msg-1",
+        turnOutcome: "completed",
+      },
+      { type: "assistant_message", text: "Background", messageId: "msg-1" },
+    ]);
+  });
+
   test("applies a later phase-only update to the same assistant message", () => {
     const rows: AgentTimelineRow[] = [
       {

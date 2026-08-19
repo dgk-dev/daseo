@@ -68,6 +68,54 @@ describe.skipIf(process.platform === "win32")("PushTokenStore file permissions",
 });
 
 describe("PushTokenStore persistence", () => {
+  test("revokes every token for one device without affecting another device", () => {
+    let persisted = "";
+    const store = new PushTokenStore(
+      createLogger(),
+      path.join(tmpdir(), `device-push-token-store-${process.pid}`, "push-tokens.json"),
+      () => Date.parse("2026-08-10T00:00:00.000Z"),
+      48 * 60 * 60 * 1000,
+      (_filePath, payload) => {
+        persisted = String(payload);
+      },
+    );
+
+    store.renewToken("ExponentPushToken[device-a-1]", { deviceId: "device-a" });
+    store.renewToken("ExponentPushToken[device-a-2]", { deviceId: "device-a" });
+    store.renewToken("ExponentPushToken[device-b]", { deviceId: "device-b" });
+
+    expect(store.revokeDevice("device-a")).toBe(2);
+    expect(store.getActiveTokens()).toEqual(["ExponentPushToken[device-b]"]);
+    expect(JSON.parse(persisted)).toEqual({
+      subscriptions: [
+        {
+          token: "ExponentPushToken[device-b]",
+          expiresAt: "2026-08-12T00:00:00.000Z",
+          deviceId: "device-b",
+        },
+      ],
+    });
+  });
+
+  test("does not apply a device revocation until the updated subscriptions are durable", () => {
+    let rejectWrites = false;
+    const store = new PushTokenStore(
+      createLogger(),
+      path.join(tmpdir(), `failed-device-push-token-store-${process.pid}`, "push-tokens.json"),
+      () => Date.parse("2026-08-10T00:00:00.000Z"),
+      48 * 60 * 60 * 1000,
+      () => {
+        if (rejectWrites) throw new Error("disk full");
+      },
+    );
+
+    store.renewToken("ExponentPushToken[device-a]", { deviceId: "device-a" });
+    rejectWrites = true;
+
+    expect(() => store.revokeDevice("device-a")).toThrow("disk full");
+    expect(store.getActiveTokens()).toEqual(["ExponentPushToken[device-a]"]);
+  });
+
   test("does not apply a revocation until the updated subscriptions are durable", () => {
     let rejectWrites = false;
     let persisted = "";

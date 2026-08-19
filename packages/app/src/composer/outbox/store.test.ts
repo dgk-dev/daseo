@@ -99,6 +99,64 @@ describe("ComposerOutboxStore", () => {
     ).rejects.toThrow("already belongs to another payload");
   });
 
+  test("preserves corrupt recovery bytes and blocks destructive overwrite", async () => {
+    const storage = createStorage();
+    const corrupt = '{"records":[{"metadata":{"id":"attachment-from-corrupt-store"}}]';
+    storage.values.set("@paseo:composer-outbox", corrupt);
+    const store = new ComposerOutboxStore(storage);
+
+    expect(await store.collectAttachmentIds()).toContain("attachment-from-corrupt-store");
+    await expect(
+      store.enqueue({
+        id: "new-message",
+        serverId: "server-1",
+        agentId: "agent-1",
+        text: "must not overwrite",
+        attachments: [],
+        intent: "dispatch",
+      }),
+    ).rejects.toThrow("preserved for manual recovery");
+    expect(storage.values.get("@paseo:composer-outbox")).toBe(corrupt);
+  });
+
+  test("rejects a new message instead of evicting unresolved records at capacity", async () => {
+    const storage = createStorage();
+    storage.values.set(
+      "@paseo:composer-outbox",
+      JSON.stringify({
+        version: 1,
+        records: Array.from({ length: 1_000 }, (_, index) => ({
+          version: 1,
+          id: `message-${index}`,
+          serverId: "server-1",
+          agentId: "agent-1",
+          text: `message ${index}`,
+          attachments: [],
+          intent: "dispatch",
+          status: "delivery_unknown",
+          createdAt: index,
+          updatedAt: index,
+          attemptCount: 1,
+          lastError: "unknown",
+        })),
+      }),
+    );
+    const store = new ComposerOutboxStore(storage);
+
+    await expect(
+      store.enqueue({
+        id: "message-over-capacity",
+        serverId: "server-1",
+        agentId: "agent-1",
+        text: "must not evict",
+        attachments: [],
+        intent: "dispatch",
+      }),
+    ).rejects.toThrow("outbox is full");
+    expect(await store.list()).toHaveLength(1_000);
+    expect((await store.list()).at(0)?.id).toBe("message-0");
+  });
+
   test("rekeys placeholder hosts and preserves delivery-unknown state", async () => {
     const storage = createStorage();
     const store = new ComposerOutboxStore(storage);

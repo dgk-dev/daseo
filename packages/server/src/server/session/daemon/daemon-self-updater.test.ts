@@ -26,6 +26,7 @@ const globalNodeModules = `${globalRoot}/node_modules`;
 const cliPackagePath = `${globalNodeModules}/@getpaseo/cli`;
 const npmServerPackageRoot = `${cliPackagePath}/node_modules/@getpaseo/server`;
 const sourceServerPackageRoot = "/repo/packages/server";
+const SERVER_UPDATE_ID = "00000000-0000-4000-8000-000000000094";
 
 function npmGlobalPaseoInstall(
   version: string,
@@ -101,6 +102,7 @@ async function runUpdate(input: {
     onProgress: (phase) => phases.push(phase),
     logger,
     paseoHome: input.paseoHome,
+    allowLiveNpmMutation: true,
   });
   return { result, logger, phases };
 }
@@ -121,6 +123,28 @@ describe("DaemonSelfUpdater", () => {
       rolledBack: false,
     });
     expect(phases).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  test("fails closed before live npm mutation unless explicitly enabled", async () => {
+    const calls: RuntimeCall[] = [];
+    const updater = new DaemonSelfUpdater(createRuntime({ calls, inspections: [] }));
+
+    await expect(
+      updater.update({
+        daemonVersion: "0.1.15",
+        desktopManaged: false,
+        onProgress: () => undefined,
+        logger: createLogger(),
+      }),
+    ).resolves.toEqual({
+      success: false,
+      error: "Daemon self-update is disabled until staged executable activation is available.",
+      newVersion: null,
+      updateId: null,
+      targetVersion: null,
+      rolledBack: false,
+    });
     expect(calls).toEqual([]);
   });
 
@@ -173,6 +197,7 @@ describe("DaemonSelfUpdater", () => {
         },
       },
       installOrigin: { resolveCurrentServerPackageRoot: () => npmServerPackageRoot },
+      createUpdateId: () => SERVER_UPDATE_ID,
     };
     try {
       const { result } = await runUpdate({ runtime, paseoHome });
@@ -180,7 +205,7 @@ describe("DaemonSelfUpdater", () => {
         success: true,
         newVersion: "0.5.0",
         targetVersion: "0.5.0",
-        updateId: expect.any(String),
+        updateId: SERVER_UPDATE_ID,
       });
       expect(calls).toEqual(["inspect", "resolve", "preflight:0.5.0", "install:0.5.0", "inspect"]);
       await expect(new DaemonUpdateTrialStore(paseoHome).read()).resolves.toMatchObject({
@@ -332,6 +357,7 @@ describe("DaemonSelfUpdater", () => {
     const firstUpdate = updater.update({
       daemonVersion: "0.1.15",
       desktopManaged: false,
+      allowLiveNpmMutation: true,
       onProgress: () => {},
       logger,
     });
@@ -341,6 +367,7 @@ describe("DaemonSelfUpdater", () => {
       updater.update({
         daemonVersion: "0.1.15",
         desktopManaged: false,
+        allowLiveNpmMutation: true,
         onProgress: () => {},
         logger,
       }),

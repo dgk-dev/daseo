@@ -50,6 +50,13 @@ export async function fillComposerDraft(page: Page, text: string): Promise<void>
 }
 
 export async function sendDraftToQueue(page: Page): Promise<void> {
+  const queueButton = page
+    .getByTestId("message-input-root")
+    .getByRole("button", { name: "Queue message" });
+  if (await queueButton.isVisible().catch(() => false)) {
+    await queueButton.click();
+    return;
+  }
   await composerInput(page).press("Control+Enter");
 }
 

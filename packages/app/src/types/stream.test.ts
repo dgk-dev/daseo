@@ -830,6 +830,45 @@ describe("stream reducer canonical tool calls", () => {
     expect(message?.kind === "assistant_message" ? message.turnOutcome : undefined).toBe(expected);
   });
 
+  it("hydrates canonical terminal outcomes and keeps the next turn separate", () => {
+    const state = hydrateStreamState([
+      {
+        event: {
+          type: "timeline",
+          provider: "claude",
+          item: {
+            type: "assistant_message",
+            text: "First final.",
+            messageId: "reused-provider-id",
+            turnOutcome: "completed",
+          },
+        },
+        timestamp: new Date("2025-01-01T10:02:00Z"),
+      },
+      {
+        event: {
+          type: "timeline",
+          provider: "claude",
+          item: {
+            type: "assistant_message",
+            text: "Background follow-up.",
+            messageId: "reused-provider-id",
+          },
+        },
+        timestamp: new Date("2025-01-01T10:02:01Z"),
+      },
+    ]);
+
+    const messages = state.filter(
+      (item): item is Extract<StreamItem, { kind: "assistant_message" }> =>
+        item.kind === "assistant_message",
+    );
+    expect(messages.map(({ text, turnOutcome }) => ({ text, turnOutcome }))).toEqual([
+      { text: "First final.", turnOutcome: "completed" },
+      { text: "Background follow-up.", turnOutcome: undefined },
+    ]);
+  });
+
   it("does not apply a failed empty turn to the previous answer", () => {
     const state = hydrateStreamState([
       {
@@ -1745,6 +1784,49 @@ describe("turn lifecycle events", () => {
       "user_message",
       "assistant_message",
     ]);
+  });
+
+  it("orders an overtaking canonical prompt before a still-unacknowledged local prompt", () => {
+    const local = createUserMessage({
+      clientMessageId: "local-held",
+      text: "local held prompt",
+      timestamp: new Date("2025-01-01T15:02:00Z"),
+    });
+    const remote = applyStreamEvent({
+      tail: [local],
+      head: [],
+      event: {
+        type: "timeline",
+        provider: "pi",
+        item: { type: "user_message", text: "remote first", messageId: "remote-first" },
+      },
+      timestamp: new Date("2025-01-01T15:02:01Z"),
+      source: "live",
+      timelineCursor: { epoch: "epoch-1", seq: 1 },
+    });
+    const acknowledgedLocal = applyStreamEvent({
+      tail: remote.tail,
+      head: remote.head,
+      event: {
+        type: "timeline",
+        provider: "pi",
+        item: {
+          type: "user_message",
+          text: local.text,
+          messageId: "local-provider-id",
+          clientMessageId: local.clientMessageId,
+        },
+      },
+      timestamp: new Date("2025-01-01T15:02:02Z"),
+      source: "live",
+      timelineCursor: { epoch: "epoch-1", seq: 2 },
+    });
+
+    expect(
+      [...acknowledgedLocal.tail, ...acknowledgedLocal.head]
+        .filter((item) => item.kind === "user_message")
+        .map((item) => item.text),
+    ).toEqual(["remote first", "local held prompt"]);
   });
 
   it("replaces one submitted plain-text user message with the next live server user message", () => {

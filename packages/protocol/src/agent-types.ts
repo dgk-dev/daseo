@@ -4,6 +4,7 @@ export type AgentProvider = string;
 
 /** Provider-authored classification for assistant text, matching Codex MessagePhase. */
 export type AssistantMessagePhase = "commentary" | "final_answer";
+export type AssistantTurnOutcome = "completed" | "failed" | "canceled";
 
 export interface AgentMetadata {
   [key: string]: unknown;
@@ -366,6 +367,8 @@ export type AgentTimelineItem =
       text: string;
       messageId?: string;
       phase?: AssistantMessagePhase;
+      /** Canonical terminal state for the turn ending at this assistant item. */
+      turnOutcome?: AssistantTurnOutcome;
     }
   | { type: "reasoning"; text: string }
   | ToolCallTimelineItem

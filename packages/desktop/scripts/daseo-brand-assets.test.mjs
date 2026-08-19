@@ -6,6 +6,7 @@ import sharp from "sharp";
 import {
   buildBrandOutputs,
   generateDaseoBrandAssets,
+  generatedBrandOutputMatches,
 } from "../../../scripts/generate-daseo-brand-assets.mjs";
 
 const APP_ICON = "packages/app/assets/images/icon.png";
@@ -81,6 +82,13 @@ describe("Daseo brand asset SSOT", () => {
     for (const [file, content] of generatedEntries) {
       expect(manifest.generated[file]).toBe(sha256(content));
     }
+  });
+
+  test("treats checkout CRLF as equivalent only for generated text", () => {
+    expect(
+      generatedBrandOutputMatches(Buffer.from("line one\r\nline two\r\n"), "line one\nline two\n"),
+    ).toBe(true);
+    expect(generatedBrandOutputMatches(Buffer.from([1, 2, 3]), Buffer.from([1, 2, 4]))).toBe(false);
   });
 
   test("keeps every checked-in derivative synchronized", async () => {

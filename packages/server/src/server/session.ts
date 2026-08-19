@@ -557,8 +557,29 @@ function parseClientCapabilities(
   return new Set(result);
 }
 
+const MOBILE_DEVICE_DENIED_RPCS = new Set([
+  "daemon.update.request",
+  "daemon.config.reload.request",
+  "get_daemon_config_request",
+  "set_daemon_config_request",
+  "daemon.get_pairing_offer.request",
+  "device.pairing.revoke.request",
+  "plugin.directory.install.request",
+  "plugin.reload.request",
+  "plugin.enable.request",
+  "plugin.disable.request",
+  "plugin.remove.request",
+  "hub.management.daemon.connect.request",
+  "hub.management.daemon.disconnect.request",
+]);
+
+function isMobileDeviceRpcAllowed(rpcName: string): boolean {
+  return !MOBILE_DEVICE_DENIED_RPCS.has(rpcName) && !rpcName.startsWith("hub.execution.");
+}
+
 export function isSessionRpcAllowed(scopes: readonly string[], rpcName: string): boolean {
   return scopes.some((scope) => {
+    if (scope === "mobile") return isMobileDeviceRpcAllowed(rpcName);
     if (scope === "*" || scope === rpcName) {
       return true;
     }
@@ -2486,7 +2507,53 @@ export class Session {
     }
   }
 
+  private async dispatchCommandReceiptMessage(msg: SessionInboundMessage): Promise<boolean> {
+    if (msg.type === "agent.command_receipt.get.request") {
+      let receipt = await this.agentCommandReceiptStore.get(msg.commandId);
+      if (
+        receipt?.status === "in_flight" &&
+        (await this.agentManager.hasCanonicalSubmittedPrompt(receipt.agentId, msg.commandId))
+      ) {
+        receipt =
+          (await this.agentCommandReceiptStore.settle({
+            commandId: msg.commandId,
+            status: "accepted",
+          })) ?? receipt;
+      }
+      this.emit({
+        type: "agent.command_receipt.get.response",
+        payload: {
+          requestId: msg.requestId,
+          commandId: msg.commandId,
+          agentId: receipt?.agentId ?? null,
+          status: receipt?.status ?? "missing",
+          error: receipt?.error ?? null,
+        },
+      });
+      return true;
+    }
+    if (msg.type === "agent.command_receipt.resolve.request") {
+      const resolution = await this.agentCommandReceiptStore.resolve({
+        commandId: msg.commandId,
+        action: msg.action,
+      });
+      this.emit({
+        type: "agent.command_receipt.resolve.response",
+        payload: {
+          requestId: msg.requestId,
+          commandId: msg.commandId,
+          agentId: resolution.receipt?.agentId ?? null,
+          status: resolution.status,
+          error: resolution.receipt?.error ?? null,
+        },
+      });
+      return true;
+    }
+    return false;
+  }
+
   private async dispatchMiscMessage(msg: SessionInboundMessage): Promise<void> {
+    if (await this.dispatchCommandReceiptMessage(msg)) return;
     switch (msg.type) {
       case "list_commands_request":
         await this.handleListCommandsRequest(msg);
@@ -2506,7 +2573,13 @@ export class Session {
         return;
       }
       case "device.pairing.revoke.request": {
-        const device = await this.devicePairingStore.revoke(msg.deviceId);
+        const device = await this.devicePairingStore.revoke(
+          msg.deviceId,
+          new Date(),
+          (deviceId) => {
+            this.pushNotifications.revokeDevice(deviceId);
+          },
+        );
         this.emit({
           type: "device.pairing.revoke.response",
           payload: {
@@ -7006,6 +7079,19 @@ export class Session {
       });
     };
 
+    const emitFailureAtAdmissionBoundary = async (message: string): Promise<void> => {
+      if (!commandId) {
+        emitResponse({ accepted: false, error: message });
+        return;
+      }
+      if (await this.agentManager.hasCanonicalSubmittedPrompt(agentId, commandId)) {
+        await this.agentCommandReceiptStore.settle({ commandId, status: "accepted" });
+        emitResponse({ accepted: true, error: null, receiptStatus: "accepted" });
+        return;
+      }
+      emitResponse({ accepted: true, error: message, receiptStatus: "in_flight" });
+    };
+
     if (commandId) {
       const payloadHash = hashAgentCommandPayload({
         agentId,
@@ -7071,11 +7157,7 @@ export class Session {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         this.handleAgentRunError(agentId, error, "Failed to send agent message");
-        if (commandId) {
-          emitResponse({ accepted: true, error: message, receiptStatus: "in_flight" });
-        } else {
-          emitResponse({ accepted: false, error: message });
-        }
+        await emitFailureAtAdmissionBoundary(message);
         return;
       }
 
@@ -7084,11 +7166,7 @@ export class Session {
           await waitForAgentRunStartWithTimeout(this.agentManager, agentId);
         } catch (error) {
           const message = errorToFriendlyMessage(error);
-          if (commandId) {
-            emitResponse({ accepted: true, error: message, receiptStatus: "in_flight" });
-          } else {
-            emitResponse({ accepted: false, error: message });
-          }
+          await emitFailureAtAdmissionBoundary(message);
           return;
         }
       }
@@ -7101,11 +7179,7 @@ export class Session {
       }
     } catch (error) {
       const message = errorToFriendlyMessage(error);
-      if (commandId) {
-        emitResponse({ accepted: true, error: message, receiptStatus: "in_flight" });
-      } else {
-        emitResponse({ accepted: false, error: message });
-      }
+      await emitFailureAtAdmissionBoundary(message);
     }
   }
 

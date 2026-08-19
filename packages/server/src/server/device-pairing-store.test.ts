@@ -37,7 +37,7 @@ describe("DevicePairingStore", () => {
     ).resolves.toMatchObject({
       deviceId: "device-1",
       label: "Fold",
-      scopes: ["*"],
+      scopes: ["mobile"],
       revokedAt: null,
     });
 

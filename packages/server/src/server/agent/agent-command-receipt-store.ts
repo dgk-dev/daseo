@@ -30,6 +30,11 @@ export type AgentCommandAdmission =
   | { kind: "existing"; receipt: AgentCommandReceipt }
   | { kind: "conflict"; receipt: AgentCommandReceipt };
 
+export interface AgentCommandReceiptResolution {
+  status: "missing" | "in_flight" | "accepted" | "rejected" | "retry_ready";
+  receipt: AgentCommandReceipt | null;
+}
+
 function stableJson(value: unknown): string {
   if (value === undefined) return "undefined";
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -129,6 +134,48 @@ export class AgentCommandReceiptStore {
       this.receipts.set(receipt.commandId, receipt);
       await this.persist(input.now);
       return receipt;
+    });
+  }
+
+  async resolve(input: {
+    commandId: string;
+    action: "retry" | "discard";
+    now?: Date;
+  }): Promise<AgentCommandReceiptResolution> {
+    return await this.mutate(async () => {
+      const existing = this.receipts.get(input.commandId) ?? null;
+      if (input.action === "retry") {
+        if (existing?.status === "accepted") {
+          return { status: "accepted", receipt: existing };
+        }
+        if (existing) this.receipts.delete(input.commandId);
+        try {
+          if (existing) await this.persist(input.now);
+        } catch (error) {
+          if (existing) this.receipts.set(input.commandId, existing);
+          throw error;
+        }
+        return { status: "retry_ready", receipt: existing };
+      }
+
+      if (!existing) return { status: "missing", receipt: null };
+      if (existing.status === "accepted" || existing.status === "rejected") {
+        return { status: existing.status, receipt: existing };
+      }
+      const receipt: AgentCommandReceipt = {
+        ...existing,
+        status: "rejected",
+        updatedAt: (input.now ?? new Date()).toISOString(),
+        error: "Discarded by operator",
+      };
+      this.receipts.set(receipt.commandId, receipt);
+      try {
+        await this.persist(input.now);
+      } catch (error) {
+        this.receipts.set(existing.commandId, existing);
+        throw error;
+      }
+      return { status: "rejected", receipt };
     });
   }
 

@@ -340,6 +340,14 @@ function terminalEvent(
   return { type, provider: "codex", turnId, reason: "canceled" };
 }
 
+function terminalOutcome(
+  type: "turn_completed" | "turn_failed" | "turn_canceled",
+): "completed" | "failed" | "canceled" {
+  if (type === "turn_completed") return "completed";
+  if (type === "turn_failed") return "failed";
+  return "canceled";
+}
+
 function getStreamEvents(events: AgentManagerEvent[], agentId: string): AgentManagerEvent[] {
   return events.filter((event) => event.type === "agent_stream" && event.agentId === agentId);
 }
@@ -948,10 +956,18 @@ describe("target coalesced behavior", () => {
         const timelineEvents = getTimelineStreamEvents(harness.events, agentId);
         const rows = await harness.manager.getTimelineRows(agentId);
 
-        expect(getTimelineItems(rows)[0]).toEqual({
+        expect(getTimelineItems(rows)[0]).toMatchObject({
           type: "assistant_message",
           text: `${terminalType}-text`,
         });
+        const terminalAssistant = getTimelineItems(rows).findLast(
+          (item) => item.type === "assistant_message",
+        );
+        expect(
+          terminalAssistant?.type === "assistant_message"
+            ? terminalAssistant.turnOutcome
+            : undefined,
+        ).toBe(terminalOutcome(terminalType));
         const expectedTimelineEventCount = terminalType === "turn_failed" ? 2 : 1;
         expect(timelineEvents).toHaveLength(expectedTimelineEventCount);
         expect(streamEvents[0]).toMatchObject({
@@ -1268,7 +1284,9 @@ describe("target coalesced behavior", () => {
 
       const rows = await harness.manager.getTimelineRows(agentId);
       const streamEvents = getStreamEvents(harness.events, agentId);
-      expect(getTimelineItems(rows)).toEqual([{ type: "assistant_message", text: "hello world" }]);
+      expect(getTimelineItems(rows)).toEqual([
+        { type: "assistant_message", text: "hello world", turnOutcome: "completed" },
+      ]);
       expect(streamEvents[0]).toMatchObject({
         type: "agent_stream",
         event: { type: "turn_started", provider: "codex", turnId: "turn-1" },
@@ -1310,7 +1328,7 @@ describe("target coalesced behavior", () => {
       expect(getTimelineItems(rows)).toEqual([
         { type: "assistant_message", text: "a1a2" },
         { type: "reasoning", text: "r1r2" },
-        { type: "assistant_message", text: "b1b2" },
+        { type: "assistant_message", text: "b1b2", turnOutcome: "completed" },
       ]);
       expectContiguousRowSeqs(rows, [1, 2, 3]);
       const timelineEvents = getTimelineStreamEvents(harness.events, agentId);
@@ -1321,7 +1339,7 @@ describe("target coalesced behavior", () => {
       expect(getTimelineItems(await harness.manager.getTimelineRows(agentId))).toEqual([
         { type: "assistant_message", text: "a1a2" },
         { type: "reasoning", text: "r1r2" },
-        { type: "assistant_message", text: "b1b2" },
+        { type: "assistant_message", text: "b1b2", turnOutcome: "completed" },
       ]);
       expect(getTimelineStreamEvents(harness.events, agentId)).toHaveLength(3);
     } finally {

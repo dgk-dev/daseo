@@ -135,8 +135,8 @@
     "@types/react": "~19.2.0",
     "@types/turndown": "^5.0.6",
     "@types/ws": "^8.18.1",
-    "@vitest/browser": "^4.1.7",
-    "@vitest/browser-playwright": "^4.1.7",
+    "@vitest/browser": "^4.1.11",
+    "@vitest/browser-playwright": "^4.1.11",
     "@xterm/headless": "^6.1.0-beta.213",
     "dotenv": "^17.2.3",
     "eas-cli": "^16.24.1",
@@ -149,8 +149,8 @@
     "playwright": "^1.56.1",
     "serve-sim": "^0.1.40",
     "typescript": "~5.9.2",
-    "vitest": "^4.1.6",
+    "vitest": "^4.1.11",
     "wrangler": "^4.105.0",
-    "ws": "^8.20.0"
+    "ws": "^8.21.0"
   }
 }

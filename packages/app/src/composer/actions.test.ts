@@ -21,6 +21,7 @@ import {
 import {
   cancelComposerAgent,
   dispatchComposerAgentMessage,
+  discardQueuedComposerMessage,
   editQueuedComposerMessage,
   findGithubItemByOption,
   isAttachmentSelectedForGithubItem,
@@ -533,7 +534,7 @@ describe("dispatchComposerAgentMessage", () => {
     expect(stream.tail.get("agent") ?? []).toEqual([]);
   });
 
-  it("keeps the outbox and optimistic row when delivery becomes unknown", async () => {
+  it("keeps the outbox but removes the optimistic row when delivery becomes unknown", async () => {
     const deliveryUnknown = new Error("socket closed after write");
     deliveryUnknown.name = "AgentCommandDeliveryUnknownError";
     const client = createFakeSendClient({ rejection: deliveryUnknown });
@@ -559,16 +560,11 @@ describe("dispatchComposerAgentMessage", () => {
       attemptCount: 1,
       lastError: "socket closed after write",
     });
-    expect(stream.tail.get("agent")?.[0]).toMatchObject({
-      kind: "user_message",
-      clientMessageId: "message-unknown",
-    });
-    expect(readSubmission(stream, "agent").submissions).toMatchObject([
-      { clientMessageId: "message-unknown", rpcSettled: false },
-    ]);
+    expect(stream.tail.get("agent") ?? []).toEqual([]);
+    expect(readSubmission(stream, "agent").submissions).toEqual([]);
   });
 
-  it("keeps an in-flight server receipt pending for authoritative reconciliation", async () => {
+  it("moves an in-flight receipt out of the optimistic timeline for reconciliation", async () => {
     const client = createFakeSendClient({ receiptStatus: "in_flight" });
     const stream = createFakeStream();
     const outbox = createFakeOutbox();
@@ -586,9 +582,8 @@ describe("dispatchComposerAgentMessage", () => {
     });
 
     expect(outbox.records.get("message-in-flight")).toMatchObject({ status: "in_flight" });
-    expect(readSubmission(stream, "agent").submissions).toMatchObject([
-      { clientMessageId: "message-in-flight", rpcSettled: false },
-    ]);
+    expect(stream.tail.get("agent") ?? []).toEqual([]);
+    expect(readSubmission(stream, "agent").submissions).toEqual([]);
   });
 
   it("does not clear the composer transaction when durable admission fails", async () => {
@@ -903,6 +898,44 @@ describe("editQueuedComposerMessage", () => {
     expect(queue.state.get("agent")).toHaveLength(1);
   });
 
+  it("resolves an uncertain receipt as discarded before restoring the draft", async () => {
+    const queue = createFakeQueue(
+      new Map([
+        [
+          "agent",
+          [
+            {
+              id: "ambiguous-1",
+              text: "restore me",
+              attachments: [],
+              resolution: { status: "in_flight" },
+            },
+          ],
+        ],
+      ]),
+    );
+    const resolveAgentCommandReceipt = vi.fn().mockResolvedValue({
+      status: "rejected",
+      error: "Discarded by operator",
+    });
+
+    await expect(
+      editQueuedComposerMessage({
+        serverId: "server",
+        outbox: createFakeOutbox(),
+        agentId: "agent",
+        messageId: "ambiguous-1",
+        queue,
+        receiptResolver: {
+          getAgentCommandReceipt: vi.fn(),
+          resolveAgentCommandReceipt,
+        },
+      }),
+    ).resolves.toEqual({ text: "restore me", attachments: [] });
+    expect(resolveAgentCommandReceipt).toHaveBeenCalledWith("ambiguous-1", "discard");
+    expect(queue.state.get("agent")).toEqual([]);
+  });
+
   it("returns the text and only user attachments, removing the queued entry", async () => {
     const review = reviewWorkspaceAttachment("Queued snapshot.");
     const image = imageWithId("img-queued-edit");
@@ -932,6 +965,56 @@ describe("editQueuedComposerMessage", () => {
       text: "queued draft",
       attachments: [{ kind: "image", metadata: image }],
     });
+    expect(queue.state.get("agent")).toEqual([]);
+  });
+});
+
+describe("discardQueuedComposerMessage", () => {
+  it("settles an uncertain receipt before removing the local record", async () => {
+    const queue = createFakeQueue(
+      new Map([
+        [
+          "agent",
+          [
+            {
+              id: "discard-1",
+              text: "discard me",
+              attachments: [],
+              resolution: { status: "delivery_unknown" },
+            },
+          ],
+        ],
+      ]),
+    );
+    const outbox = createFakeOutbox();
+    await outbox.enqueue({
+      id: "discard-1",
+      serverId: "server",
+      agentId: "agent",
+      text: "discard me",
+      attachments: [],
+      intent: "dispatch",
+    });
+    const resolveAgentCommandReceipt = vi.fn().mockResolvedValue({
+      status: "rejected",
+      error: "Discarded by operator",
+    });
+
+    await expect(
+      discardQueuedComposerMessage({
+        serverId: "server",
+        agentId: "agent",
+        messageId: "discard-1",
+        queue,
+        outbox,
+        receiptResolver: {
+          getAgentCommandReceipt: vi.fn(),
+          resolveAgentCommandReceipt,
+        },
+      }),
+    ).resolves.toBe("discarded");
+    expect(resolveAgentCommandReceipt).toHaveBeenCalledWith("discard-1", "discard");
+    expect(outbox.records.has("discard-1")).toBe(false);
     expect(queue.state.get("agent")).toEqual([]);
   });
 });
@@ -983,6 +1066,89 @@ describe("sendQueuedComposerMessageNow", () => {
     expect(submitted).toEqual([
       { text: "send me", attachments: [review], clientMessageId: "msg-1" },
     ]);
+  });
+
+  it("requires an explicit retry resolution before resending uncertain delivery", async () => {
+    const queue = createFakeQueue(
+      new Map([
+        [
+          "agent",
+          [
+            {
+              id: "ambiguous-1",
+              text: "retry me",
+              attachments: [],
+              resolution: { status: "delivery_unknown" },
+            },
+          ],
+        ],
+      ]),
+    );
+    const resolveAgentCommandReceipt = vi.fn().mockResolvedValue({
+      status: "retry_ready",
+      error: null,
+    });
+    const submitted = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      sendQueuedComposerMessageNow({
+        serverId: "server",
+        outbox: createFakeOutbox(),
+        agentId: "agent",
+        messageId: "ambiguous-1",
+        queue,
+        submitMessage: submitted,
+        receiptResolver: {
+          getAgentCommandReceipt: vi.fn(),
+          resolveAgentCommandReceipt,
+        },
+      }),
+    ).resolves.toEqual({ status: "submitted" });
+    expect(resolveAgentCommandReceipt).toHaveBeenCalledWith("ambiguous-1", "retry");
+    expect(submitted).toHaveBeenCalledWith({
+      text: "retry me",
+      attachments: [],
+      clientMessageId: "ambiguous-1",
+    });
+  });
+
+  it("removes an uncertain queue item without resending when the receipt is already accepted", async () => {
+    const queue = createFakeQueue(
+      new Map([
+        [
+          "agent",
+          [
+            {
+              id: "accepted-1",
+              text: "already sent",
+              attachments: [],
+              resolution: { status: "in_flight" },
+            },
+          ],
+        ],
+      ]),
+    );
+    const submitted = vi.fn();
+
+    await expect(
+      sendQueuedComposerMessageNow({
+        serverId: "server",
+        outbox: createFakeOutbox(),
+        agentId: "agent",
+        messageId: "accepted-1",
+        queue,
+        submitMessage: submitted,
+        receiptResolver: {
+          getAgentCommandReceipt: vi.fn(),
+          resolveAgentCommandReceipt: vi.fn().mockResolvedValue({
+            status: "accepted",
+            error: null,
+          }),
+        },
+      }),
+    ).resolves.toEqual({ status: "already_accepted" });
+    expect(submitted).not.toHaveBeenCalled();
+    expect(queue.state.get("agent")).toEqual([]);
   });
 
   it("restores the queued entry to the front and surfaces the error message on failure", async () => {

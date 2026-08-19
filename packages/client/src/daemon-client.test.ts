@@ -229,6 +229,61 @@ test("sendAgentMessage returns a durable command receipt", async () => {
   });
 });
 
+test("queries and explicitly resolves an ambiguous command receipt", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "command_resolution_test",
+    transportFactory: () => mock.transport,
+    reconnect: { enabled: false },
+  });
+  clients.push(client);
+  const connect = client.connect();
+  mock.triggerOpen();
+  await connect;
+
+  const getting = client.getAgentCommandReceipt("command-1");
+  const getRequest = parseSentFrame(mock.sent.at(-1));
+  expect(getRequest).toMatchObject({
+    type: "agent.command_receipt.get.request",
+    commandId: "command-1",
+  });
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "agent.command_receipt.get.response",
+      payload: {
+        requestId: getRequest.requestId,
+        commandId: "command-1",
+        agentId: "agent-1",
+        status: "in_flight",
+        error: null,
+      },
+    }),
+  );
+  await expect(getting).resolves.toMatchObject({ status: "in_flight", commandId: "command-1" });
+
+  const resolving = client.resolveAgentCommandReceipt("command-1", "retry");
+  const resolveRequest = parseSentFrame(mock.sent.at(-1));
+  expect(resolveRequest).toMatchObject({
+    type: "agent.command_receipt.resolve.request",
+    commandId: "command-1",
+    action: "retry",
+  });
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "agent.command_receipt.resolve.response",
+      payload: {
+        requestId: resolveRequest.requestId,
+        commandId: "command-1",
+        agentId: "agent-1",
+        status: "retry_ready",
+        error: null,
+      },
+    }),
+  );
+  await expect(resolving).resolves.toMatchObject({ status: "retry_ready" });
+});
+
 test("sendAgentMessage classifies disconnect after write as delivery unknown", async () => {
   const mock = createMockTransport();
   const client = new DaemonClient({

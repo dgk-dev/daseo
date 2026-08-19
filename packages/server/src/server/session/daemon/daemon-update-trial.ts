@@ -1,12 +1,12 @@
 import { spawn } from "node:child_process";
 import { cp, mkdir, readFile, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { z } from "zod";
 import { writeJsonFileAtomic } from "../../atomic-file.js";
 
 const TrialSchema = z.object({
   version: z.literal(1),
-  updateId: z.string(),
+  updateId: z.uuid(),
   previousVersion: z.string(),
   targetVersion: z.string(),
   status: z.enum(["prepared", "installed", "committed", "rolled_back", "failed"]),
@@ -27,6 +27,16 @@ const SNAPSHOT_PATHS = [
   "projects/workspaces.json",
 ] as const;
 
+function resolveContainedUpdateDirectory(root: string, updateId: string): string {
+  const parsedUpdateId = z.uuid().parse(updateId);
+  const resolvedRoot = resolve(root);
+  const directory = resolve(resolvedRoot, parsedUpdateId);
+  if (!directory.startsWith(`${resolvedRoot}${sep}`)) {
+    throw new Error("Daemon update directory escaped its storage root");
+  }
+  return directory;
+}
+
 export class DaemonUpdateTrialStore {
   private readonly filePath: string;
   private readonly root: string;
@@ -43,8 +53,9 @@ export class DaemonUpdateTrialStore {
     now?: Date;
   }): Promise<DaemonUpdateTrial> {
     const now = input.now ?? new Date();
-    const snapshotDirectory = join(this.root, input.updateId, "snapshot");
-    await rm(join(this.root, input.updateId), { recursive: true, force: true });
+    const updateDirectory = resolveContainedUpdateDirectory(this.root, input.updateId);
+    const snapshotDirectory = join(updateDirectory, "snapshot");
+    await rm(updateDirectory, { recursive: true, force: true });
     await mkdir(snapshotDirectory, { recursive: true });
     for (const relativePath of SNAPSHOT_PATHS) {
       const destination = join(snapshotDirectory, relativePath);

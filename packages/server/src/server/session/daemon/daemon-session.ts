@@ -98,6 +98,7 @@ export class DaemonSession {
       daemonVersion: this.daemonVersion ?? null,
       paseoHome: this.paseoHome,
       desktopManaged: this.daemonRuntimeConfig?.desktopManaged === true,
+      selfUpdateEnabled: process.env.PASEO_ENABLE_LIVE_NPM_SELF_UPDATE === "1",
       emit: (msg) => this.host.emit(msg),
       emitLifecycleIntent: (intent) => this.host.emitLifecycleIntent(intent),
       sessionLogger: this.logger,

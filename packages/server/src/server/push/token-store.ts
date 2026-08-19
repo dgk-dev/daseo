@@ -99,6 +99,22 @@ export class PushTokenStore {
     this.logger.debug({ total: this.subscriptions.size }, "Revoked token");
   }
 
+  revokeDevice(deviceId: string): number {
+    const normalized = deviceId.trim();
+    if (!normalized) return 0;
+    const next = new Map(
+      Array.from(this.subscriptions).filter(([, subscription]) => {
+        return subscription.deviceId !== normalized;
+      }),
+    );
+    const revoked = this.subscriptions.size - next.size;
+    if (revoked === 0) return 0;
+    this.persist(next);
+    this.subscriptions = next;
+    this.logger.debug({ deviceId: normalized, revoked, total: next.size }, "Revoked device tokens");
+    return revoked;
+  }
+
   getActiveTokens(notificationKind?: string): string[] {
     const now = this.now();
     const active = new Map(this.subscriptions);

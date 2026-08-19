@@ -1,10 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
-import { patchDaseoMacBundleMetadata } from "./daseo-app-package.mjs";
+import {
+  patchDaseoMacBundleMetadata,
+  writeDaseoDistributionMetadata,
+} from "./daseo-app-package.mjs";
 
 const PLIST_BUDDY = "/usr/libexec/PlistBuddy";
 const tempRoots = [];
@@ -22,6 +25,9 @@ function createPaseoAppFixture() {
   const contentsPath = path.join(appPath, "Contents");
   mkdirSync(contentsPath, { recursive: true });
   const plistPath = path.join(contentsPath, "Info.plist");
+  const resourcesPath = path.join(contentsPath, "Resources");
+  mkdirSync(resourcesPath, { recursive: true });
+  writeFileSync(path.join(resourcesPath, "app-update.yml"), "owner: getpaseo\nrepo: paseo\n");
   writeFileSync(
     plistPath,
     `<?xml version="1.0" encoding="UTF-8"?>
@@ -44,7 +50,25 @@ afterEach(() => {
   }
 });
 
-describe("Daseo macOS package metadata", () => {
+describe("Daseo distribution metadata", () => {
+  test("marks the fork and removes the upstream update feed on every platform", () => {
+    const { appPath } = createPaseoAppFixture();
+
+    writeDaseoDistributionMetadata(appPath);
+
+    expect(
+      JSON.parse(
+        readFileSync(
+          path.join(appPath, "Contents", "Resources", "daseo-distribution.json"),
+          "utf8",
+        ),
+      ),
+    ).toEqual({ distribution: "daseo", updates: "signed-local-artifact" });
+    expect(existsSync(path.join(appPath, "Contents", "Resources", "app-update.yml"))).toBe(false);
+  });
+});
+
+describe.skipIf(process.platform !== "darwin")("Daseo macOS package metadata", () => {
   test("keeps Paseo's Electron identity while separating product and build versions", () => {
     const { appPath, plistPath } = createPaseoAppFixture();
 
@@ -59,6 +83,15 @@ describe("Daseo macOS package metadata", () => {
     expect(readPlistValue(plistPath, "CFBundleExecutable")).toBe("Paseo");
     expect(readPlistValue(plistPath, "CFBundleShortVersionString")).toBe("0.4.1");
     expect(readPlistValue(plistPath, "CFBundleVersion")).toBe("4001");
+    expect(
+      JSON.parse(
+        readFileSync(
+          path.join(appPath, "Contents", "Resources", "daseo-distribution.json"),
+          "utf8",
+        ),
+      ),
+    ).toEqual({ distribution: "daseo", updates: "signed-local-artifact" });
+    expect(existsSync(path.join(appPath, "Contents", "Resources", "app-update.yml"))).toBe(false);
   });
 
   test("applies the safe metadata contract from the packaging command", () => {

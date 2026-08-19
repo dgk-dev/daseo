@@ -689,6 +689,7 @@ export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknow
     text: z.string(),
     messageId: z.string().optional(),
     phase: z.enum(["commentary", "final_answer"]).optional(),
+    turnOutcome: z.enum(["completed", "failed", "canceled"]).optional(),
   }),
   z.object({
     type: z.literal("reasoning"),
@@ -1305,6 +1306,19 @@ export const SendAgentMessageRequestSchema = z.object({
   commandId: z.string().min(1).optional(),
   images: z.array(ImageAttachmentSchema).optional(),
   attachments: AgentAttachmentsSchema,
+});
+
+export const AgentCommandReceiptGetRequestSchema = z.object({
+  type: z.literal("agent.command_receipt.get.request"),
+  requestId: z.string(),
+  commandId: z.string().min(1),
+});
+
+export const AgentCommandReceiptResolveRequestSchema = z.object({
+  type: z.literal("agent.command_receipt.resolve.request"),
+  requestId: z.string(),
+  commandId: z.string().min(1),
+  action: z.enum(["retry", "discard"]),
 });
 
 export const WaitForFinishRequestSchema = z.object({
@@ -2943,6 +2957,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   WorkspaceRecoveryRestoreRequestSchema,
   SetVoiceModeMessageSchema,
   SendAgentMessageRequestSchema,
+  AgentCommandReceiptGetRequestSchema,
+  AgentCommandReceiptResolveRequestSchema,
   WaitForFinishRequestSchema,
   BrowserRemoteWatchRequestSchema,
   BrowserRemoteUnwatchRequestSchema,
@@ -3370,6 +3386,8 @@ export const ServerInfoStatusPayloadSchema = z
         canonicalSubmittedPrompts: z.boolean().optional(),
         // COMPAT(durableCommandReceipts): added in v0.5.0, remove after 2027-02-18.
         durableCommandReceipts: z.boolean().optional(),
+        // COMPAT(commandReceiptResolution): added in v0.5.3, remove after 2027-02-19.
+        commandReceiptResolution: z.boolean().optional(),
         // COMPAT(devicePairingManagement): added in v0.5.0, remove after 2027-02-18.
         devicePairingManagement: z.boolean().optional(),
         // COMPAT(agentTurnIdentity): accept peers that observed pre-release v0.2.6 through 2027-01-31.
@@ -4376,6 +4394,36 @@ export const SendAgentMessageResponseMessageSchema = z.object({
     // COMPAT(durableCommandReceipts): added in v0.5.0, remove after 2027-02-18.
     commandId: z.string().optional(),
     receiptStatus: z.enum(["in_flight", "accepted", "rejected"]).optional(),
+  }),
+});
+
+const AgentCommandReceiptResolutionStatusSchema = z.enum([
+  "missing",
+  "in_flight",
+  "accepted",
+  "rejected",
+  "retry_ready",
+]);
+
+export const AgentCommandReceiptGetResponseMessageSchema = z.object({
+  type: z.literal("agent.command_receipt.get.response"),
+  payload: z.object({
+    requestId: z.string(),
+    commandId: z.string(),
+    agentId: z.string().nullable(),
+    status: AgentCommandReceiptResolutionStatusSchema,
+    error: z.string().nullable(),
+  }),
+});
+
+export const AgentCommandReceiptResolveResponseMessageSchema = z.object({
+  type: z.literal("agent.command_receipt.resolve.response"),
+  payload: z.object({
+    requestId: z.string(),
+    commandId: z.string(),
+    agentId: z.string().nullable(),
+    status: AgentCommandReceiptResolutionStatusSchema,
+    error: z.string().nullable(),
   }),
 });
 
@@ -6193,6 +6241,8 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   WorkspaceCreateResponseSchema,
   WorkspaceClearAttentionResponseSchema,
   SendAgentMessageResponseMessageSchema,
+  AgentCommandReceiptGetResponseMessageSchema,
+  AgentCommandReceiptResolveResponseMessageSchema,
   SetVoiceModeResponseMessageSchema,
   BrowserRemoteWatchResponseSchema,
   BrowserRemoteUnwatchResponseSchema,
@@ -6407,6 +6457,12 @@ export type AgentTimelineListPromptsResponseMessage = z.infer<
 export type AgentForkContextResponseMessage = z.infer<typeof AgentForkContextResponseMessageSchema>;
 export type CancelAgentResponseMessage = z.infer<typeof CancelAgentResponseMessageSchema>;
 export type SendAgentMessageResponseMessage = z.infer<typeof SendAgentMessageResponseMessageSchema>;
+export type AgentCommandReceiptGetResponseMessage = z.infer<
+  typeof AgentCommandReceiptGetResponseMessageSchema
+>;
+export type AgentCommandReceiptResolveResponseMessage = z.infer<
+  typeof AgentCommandReceiptResolveResponseMessageSchema
+>;
 export type SetVoiceModeResponseMessage = z.infer<typeof SetVoiceModeResponseMessageSchema>;
 export type SetAgentModeResponseMessage = z.infer<typeof SetAgentModeResponseMessageSchema>;
 export type SetAgentModelResponseMessage = z.infer<typeof SetAgentModelResponseMessageSchema>;
@@ -6521,6 +6577,10 @@ export type ProjectListRequestMessage = z.infer<typeof ProjectListRequestMessage
 export type FetchAgentRequestMessage = z.infer<typeof FetchAgentRequestMessageSchema>;
 export type AgentForkContextRequestMessage = z.infer<typeof AgentForkContextRequestMessageSchema>;
 export type SendAgentMessageRequest = z.infer<typeof SendAgentMessageRequestSchema>;
+export type AgentCommandReceiptGetRequest = z.infer<typeof AgentCommandReceiptGetRequestSchema>;
+export type AgentCommandReceiptResolveRequest = z.infer<
+  typeof AgentCommandReceiptResolveRequestSchema
+>;
 export type WaitForFinishRequest = z.infer<typeof WaitForFinishRequestSchema>;
 export type DictationStreamStartMessage = z.infer<typeof DictationStreamStartMessageSchema>;
 export type DictationStreamChunkMessage = z.infer<typeof DictationStreamChunkMessageSchema>;

@@ -10,6 +10,7 @@ import type { TFunction } from "i18next";
 import {
   useState,
   useEffect,
+  useLayoutEffect,
   useRef,
   useCallback,
   useMemo,
@@ -32,6 +33,7 @@ import {
   Image as ImageIcon,
   ClipboardPaste,
   Paperclip,
+  Trash2,
 } from "lucide-react-native";
 import * as Clipboard from "expo-clipboard";
 import Animated from "react-native-reanimated";
@@ -56,6 +58,7 @@ import { focusWithRetries } from "@/utils/web-focus";
 import {
   cancelComposerAgent,
   dispatchComposerAgentMessage,
+  discardQueuedComposerMessage,
   editQueuedComposerMessage,
   findGithubItemByOption,
   isAttachmentSelectedForGithubItem,
@@ -73,6 +76,7 @@ import {
 import { useVoiceOptional } from "@/contexts/voice-context";
 import { useToast } from "@/contexts/toast-context";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { StatusBadge } from "@/components/ui/status-badge";
 import { Shortcut } from "@/components/ui/shortcut";
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
 import { AutocompletePopover } from "@/components/ui/autocomplete-popover";
@@ -128,6 +132,13 @@ import { readClipboardImage } from "./clipboard-image";
 import { normalizeNativePastedImages, type NativePastedFile } from "./native-pasted-image";
 import { PluginResourceAttachmentPill, usePluginAttachmentPicker } from "@/plugins";
 import { resolveClientSlashCommand, type ClientSlashCommand } from "@/client-slash-commands";
+import { confirmDialog } from "@/utils/confirm-dialog";
+import {
+  claimComposerOwnerLease,
+  createComposerOwnerLeaseToken,
+  ownsComposerOwnerLease,
+  releaseComposerOwnerLease,
+} from "@/composer/owner-lease";
 import {
   appendWorkspaceFileAttachment,
   getWorkspaceFileAttachmentKey,
@@ -362,13 +373,27 @@ interface RenderQueueTrackArgs {
   queuedMessages: readonly QueuedMessage[];
   handleEditQueuedMessage: (id: string) => void;
   handleSendQueuedNow: (id: string) => Promise<void>;
-  editLabel: string;
-  sendNowLabel: string;
+  handleDiscardQueuedMessage: (id: string) => Promise<void>;
+  labels: {
+    edit: string;
+    sendNow: string;
+    restore: string;
+    retry: string;
+    discard: string;
+    deliveryUnknown: string;
+    inFlight: string;
+    rejected: string;
+  };
 }
 
 function renderQueueTrack(args: RenderQueueTrackArgs): ReactElement | null {
-  const { queuedMessages, handleEditQueuedMessage, handleSendQueuedNow, editLabel, sendNowLabel } =
-    args;
+  const {
+    queuedMessages,
+    handleEditQueuedMessage,
+    handleSendQueuedNow,
+    handleDiscardQueuedMessage,
+    labels,
+  } = args;
   if (queuedMessages.length === 0) return null;
   return (
     <View style={styles.queueTrack}>
@@ -378,8 +403,8 @@ function renderQueueTrack(args: RenderQueueTrackArgs): ReactElement | null {
           item={item}
           onEdit={handleEditQueuedMessage}
           onSendNow={handleSendQueuedNow}
-          editLabel={editLabel}
-          sendNowLabel={sendNowLabel}
+          onDiscard={handleDiscardQueuedMessage}
+          labels={labels}
         />
       ))}
     </View>
@@ -589,37 +614,53 @@ function resolveMessageInputPassthroughAction(
   }
 }
 
+function resolveQueuedMessageStatusLabel(
+  item: QueuedMessage,
+  labels: RenderQueueTrackArgs["labels"],
+): string | null {
+  if (item.resolution?.status === "delivery_unknown") return labels.deliveryUnknown;
+  if (item.resolution?.status === "in_flight") return labels.inFlight;
+  if (item.resolution?.status === "rejected") return labels.rejected;
+  return null;
+}
+
 interface QueuedMessageRowProps {
   item: QueuedMessage;
   onEdit: (id: string) => void;
   onSendNow: (id: string) => void;
-  editLabel: string;
-  sendNowLabel: string;
+  onDiscard: (id: string) => void;
+  labels: RenderQueueTrackArgs["labels"];
 }
 
-function QueuedMessageRow({
-  item,
-  onEdit,
-  onSendNow,
-  editLabel,
-  sendNowLabel,
-}: QueuedMessageRowProps) {
+function QueuedMessageRow({ item, onEdit, onSendNow, onDiscard, labels }: QueuedMessageRowProps) {
   const handleEdit = useCallback(() => {
     onEdit(item.id);
   }, [onEdit, item.id]);
   const handleSendNow = useCallback(() => {
     onSendNow(item.id);
   }, [onSendNow, item.id]);
+  const handleDiscard = useCallback(() => {
+    onDiscard(item.id);
+  }, [onDiscard, item.id]);
+  const resolutionLabel = resolveQueuedMessageStatusLabel(item, labels);
   return (
-    <View style={styles.queueItem}>
-      <Text style={styles.queueText} numberOfLines={2} ellipsizeMode="tail">
-        {item.text}
-      </Text>
+    <View style={styles.queueItem} testID="composer-queued-message">
+      <View style={styles.queueContent}>
+        <Text style={styles.queueText} numberOfLines={2} ellipsizeMode="tail">
+          {item.text}
+        </Text>
+        {resolutionLabel ? (
+          <StatusBadge
+            label={resolutionLabel}
+            variant={item.resolution?.status === "in_flight" ? "muted" : "error"}
+          />
+        ) : null}
+      </View>
       <View style={styles.queueActions}>
         <Pressable
           onPress={handleEdit}
           style={styles.queueActionButton}
-          accessibilityLabel={editLabel}
+          accessibilityLabel={item.resolution ? labels.restore : labels.edit}
           accessibilityRole="button"
         >
           <ThemedPencil size={ICON_SIZE.sm} uniProps={iconForegroundMapping} />
@@ -627,11 +668,21 @@ function QueuedMessageRow({
         <Pressable
           onPress={handleSendNow}
           style={[styles.queueActionButton, styles.queueSendButton]}
-          accessibilityLabel={sendNowLabel}
+          accessibilityLabel={item.resolution ? labels.retry : labels.sendNow}
           accessibilityRole="button"
         >
           <ThemedArrowUp size={ICON_SIZE.sm} uniProps={iconAccentForegroundMapping} />
         </Pressable>
+        {item.resolution ? (
+          <Pressable
+            onPress={handleDiscard}
+            style={styles.queueActionButton}
+            accessibilityLabel={labels.discard}
+            accessibilityRole="button"
+          >
+            <ThemedTrash size={ICON_SIZE.sm} uniProps={iconForegroundMapping} />
+          </Pressable>
+        ) : null}
       </View>
     </View>
   );
@@ -1182,8 +1233,33 @@ export function Composer({
   const [lightboxMetadata, setLightboxMetadata] = useState<AttachmentMetadata | null>(null);
   const attachButtonRef = useRef<View | null>(null);
   const messageInputRef = useRef<MessageInputRef>(null);
+  const agentIdRef = useRef(agentId);
+  agentIdRef.current = agentId;
   const isPaneFocusedRef = useRef(isPaneFocused);
   isPaneFocusedRef.current = isPaneFocused;
+  const ownerLeaseTokenRef = useRef(createComposerOwnerLeaseToken());
+  const ownerLeaseScopeId = workspaceId
+    ? `${serverId}:workspace:${workspaceId}`
+    : `${serverId}:standalone:${agentId}`;
+  const isComposerOwner = useCallback(
+    () =>
+      isPaneFocusedRef.current &&
+      ownsComposerOwnerLease({
+        scopeId: ownerLeaseScopeId,
+        agentId: agentIdRef.current,
+        token: ownerLeaseTokenRef.current,
+      }),
+    [ownerLeaseScopeId],
+  );
+  useLayoutEffect(() => {
+    const token = ownerLeaseTokenRef.current;
+    if (isPaneFocused) {
+      claimComposerOwnerLease({ scopeId: ownerLeaseScopeId, agentId, token });
+    } else {
+      releaseComposerOwnerLease({ scopeId: ownerLeaseScopeId, token });
+    }
+    return () => releaseComposerOwnerLease({ scopeId: ownerLeaseScopeId, token });
+  }, [agentId, isPaneFocused, ownerLeaseScopeId]);
   const pluginAttachments = usePluginAttachmentPicker({
     serverId,
     client,
@@ -1210,6 +1286,7 @@ export function Composer({
 
   const runClientSlashCommand = useCallback(
     (command: ClientSlashCommand): boolean => {
+      if (!isComposerOwner()) return false;
       if (command.execution !== "immediate" || !onClientSlashCommand) {
         return false;
       }
@@ -1236,6 +1313,7 @@ export function Composer({
     [
       blurOnSubmit,
       clearDraft,
+      isComposerOwner,
       onClientSlashCommand,
       resetSuppression,
       setSelectedAttachments,
@@ -1272,8 +1350,6 @@ export function Composer({
 
   const { pickImages } = useImageAttachmentPicker();
   const { pickFiles } = useFilePicker();
-  const agentIdRef = useRef(agentId);
-  agentIdRef.current = agentId;
   const sendAgentMessageRef = useRef<
     | ((
         agentId: string,
@@ -1338,6 +1414,7 @@ export function Composer({
 
   const submitMessage = useCallback(
     async (text: string, submitAttachments: ComposerAttachment[], clientMessageId?: string) => {
+      if (!isComposerOwner()) throw new Error("Composer is no longer active");
       onMessageSent?.();
       if (onSubmitMessageRef.current) {
         await onSubmitMessageRef.current({ text, attachments: submitAttachments, cwd });
@@ -1353,7 +1430,7 @@ export function Composer({
         clientMessageId,
       );
     },
-    [cwd, onMessageSent, t],
+    [cwd, isComposerOwner, onMessageSent, t],
   );
 
   useEffect(() => {
@@ -1412,6 +1489,7 @@ export function Composer({
 
   const queueMessage = useCallback(
     async (queuedMessage: string, queuedAttachments: ComposerAttachment[]) => {
+      if (!isComposerOwner()) throw new Error("Composer is no longer active");
       const result = await queueComposerMessage({
         serverId,
         agentId,
@@ -1429,6 +1507,7 @@ export function Composer({
     [
       agentId,
       clearSentAttachments,
+      isComposerOwner,
       queueWriter,
       resetSuppression,
       serverId,
@@ -1443,6 +1522,7 @@ export function Composer({
       outgoingAttachments: ComposerAttachment[],
       forceSend?: boolean,
     ) => {
+      if (!isComposerOwner()) return;
       const result = await submitAgentInput({
         message: outgoingMessage,
         attachments: outgoingAttachments,
@@ -1486,6 +1566,7 @@ export function Composer({
       completeSubmit,
       hasExternalContent,
       isAgentRunning,
+      isComposerOwner,
       queueMessage,
       setSelectedAttachments,
       replaceUserInput,
@@ -1497,6 +1578,7 @@ export function Composer({
 
   const handleSubmit = useCallback(
     (payload: MessagePayload) => {
+      if (!isComposerOwner()) return;
       const outgoingAttachments = buildOutgoingAttachments(attachments);
       const clientSlashCommand = resolveClientSlashCommand({
         text: payload.text,
@@ -1515,6 +1597,7 @@ export function Composer({
       attachments,
       blurOnSubmit,
       buildOutgoingAttachments,
+      isComposerOwner,
       runClientSlashCommand,
       sendMessageWithContent,
     ],
@@ -1681,6 +1764,7 @@ export function Composer({
   );
 
   const handleCancelAgent = useCallback(() => {
+    if (!isComposerOwner()) return;
     const targetAgentId = agentIdRef.current;
     const cancellation = cancelComposerAgent({
       client,
@@ -1708,13 +1792,14 @@ export function Composer({
     isAgentRunning,
     isCancellingAgent,
     isConnected,
+    isComposerOwner,
     serverId,
     settleAgentCancellation,
   ]);
 
   const focusMessageInputForKeyboardAction = useCallback(() => {
-    focusMessageInputWithPlatformStrategy(messageInputRef, () => isPaneFocusedRef.current);
-  }, []);
+    focusMessageInputWithPlatformStrategy(messageInputRef, isComposerOwner);
+  }, [isComposerOwner]);
 
   const handleKeyboardAction = useCallback(
     (action: KeyboardActionDefinition): boolean =>
@@ -1752,7 +1837,7 @@ export function Composer({
     ],
     enabled: isPaneFocused,
     priority: resolveKeyboardPriority(isMessageInputFocused),
-    isActive: () => isPaneFocused,
+    isActive: isComposerOwner,
     handle: handleKeyboardAction,
   });
 
@@ -1764,6 +1849,7 @@ export function Composer({
   const isVoiceModeForAgent = resolveIsVoiceModeForAgent(voice, serverId, agentId);
 
   const handleToggleRealtimeVoice = useCallback(() => {
+    if (!isComposerOwner()) return;
     attemptStartRealtimeVoice({
       voice,
       isConnected,
@@ -1772,27 +1858,43 @@ export function Composer({
       agentId,
       toastErrorRef,
     });
-  }, [agentId, hasAgent, isConnected, serverId, voice]);
+  }, [agentId, hasAgent, isComposerOwner, isConnected, serverId, voice]);
 
   const handleEditQueuedMessage = useCallback(
     (id: string) => {
+      if (!isComposerOwner()) return;
       void editQueuedComposerMessage({
         serverId,
         agentId,
         messageId: id,
         queue: queueWriter,
-      }).then((result) => {
-        if (!result) return undefined;
-        replaceUserInput(result.text);
-        setSelectedAttachments(result.attachments);
-        return undefined;
-      });
+        ...(client ? { receiptResolver: client } : {}),
+      })
+        .then((result) => {
+          if (!result) return undefined;
+          replaceUserInput(result.text);
+          setSelectedAttachments(result.attachments);
+          return undefined;
+        })
+        .catch((error) => {
+          setSendError(error instanceof Error ? error.message : t("composer.errors.failedToSend"));
+        });
     },
-    [agentId, queueWriter, replaceUserInput, serverId, setSelectedAttachments],
+    [
+      agentId,
+      client,
+      isComposerOwner,
+      queueWriter,
+      replaceUserInput,
+      serverId,
+      setSelectedAttachments,
+      t,
+    ],
   );
 
   const handleSendQueuedNow = useCallback(
     async (id: string) => {
+      if (!isComposerOwner()) return;
       if (!sendAgentMessageRef.current && !onSubmitMessageRef.current) return;
       // Reuse the regular send path; steer-capable providers accept this into
       // the active turn, while other providers preserve their legacy behavior.
@@ -1803,17 +1905,45 @@ export function Composer({
         queue: queueWriter,
         submitMessage: ({ text, attachments: queuedAttachments, clientMessageId }) =>
           submitMessage(text, queuedAttachments, clientMessageId),
+        ...(client ? { receiptResolver: client } : {}),
         failedToSendMessage: t("composer.errors.failedToSend"),
       });
       if (result.status === "failed") {
         setSendError(result.errorMessage);
       }
     },
-    [agentId, queueWriter, serverId, submitMessage, t],
+    [agentId, client, isComposerOwner, queueWriter, serverId, submitMessage, t],
+  );
+
+  const handleDiscardQueuedMessage = useCallback(
+    async (id: string) => {
+      if (!isComposerOwner()) return;
+      const confirmed = await confirmDialog({
+        title: t("composer.attachments.discardUncertainTitle"),
+        message: t("composer.attachments.discardUncertainMessage"),
+        confirmLabel: t("composer.attachments.discardUncertainMessageAction"),
+        cancelLabel: t("common.cancel"),
+        destructive: true,
+      });
+      if (!confirmed || !isComposerOwner()) return;
+      try {
+        await discardQueuedComposerMessage({
+          serverId,
+          agentId,
+          messageId: id,
+          queue: queueWriter,
+          ...(client ? { receiptResolver: client } : {}),
+        });
+      } catch (error) {
+        setSendError(error instanceof Error ? error.message : t("composer.errors.failedToSend"));
+      }
+    },
+    [agentId, client, isComposerOwner, queueWriter, serverId, t],
   );
 
   const handleQueue = useCallback(
     (payload: MessagePayload) => {
+      if (!isComposerOwner()) return;
       const outgoingAttachments = buildOutgoingAttachments(attachments);
       const clientSlashCommand = resolveClientSlashCommand({
         text: payload.text,
@@ -1824,16 +1954,18 @@ export function Composer({
       }
       void queueMessage(payload.text, outgoingAttachments);
     },
-    [attachments, buildOutgoingAttachments, queueMessage, runClientSlashCommand],
+    [attachments, buildOutgoingAttachments, isComposerOwner, queueMessage, runClientSlashCommand],
   );
 
   const hasSendableContent = userInput.trim().length > 0 || selectedAttachments.length > 0;
 
   // Handle keyboard navigation for command autocomplete.
   const handleCommandKeyPress = useCallback(
-    (event: { key: string; preventDefault: () => void }) =>
-      autocompleteOnKeyPressRef.current(event),
-    [],
+    (event: { key: string; preventDefault: () => void }) => {
+      if (!isComposerOwner()) return false;
+      return autocompleteOnKeyPressRef.current(event);
+    },
+    [isComposerOwner],
   );
 
   const cancelButtonStyle = useMemo(
@@ -2165,10 +2297,19 @@ export function Composer({
         queuedMessages,
         handleEditQueuedMessage,
         handleSendQueuedNow,
-        editLabel: t("composer.attachments.editQueuedMessage"),
-        sendNowLabel: t("composer.attachments.sendQueuedMessageNow"),
+        handleDiscardQueuedMessage,
+        labels: {
+          edit: t("composer.attachments.editQueuedMessage"),
+          sendNow: t("composer.attachments.sendQueuedMessageNow"),
+          restore: t("composer.attachments.restoreUncertainMessage"),
+          retry: t("composer.attachments.retryUncertainMessage"),
+          discard: t("composer.attachments.discardUncertainMessageAction"),
+          deliveryUnknown: t("composer.attachments.deliveryUnknown"),
+          inFlight: t("composer.attachments.deliveryInFlight"),
+          rejected: t("composer.attachments.deliveryRejected"),
+        },
       }),
-    [handleEditQueuedMessage, handleSendQueuedNow, queuedMessages, t],
+    [handleDiscardQueuedMessage, handleEditQueuedMessage, handleSendQueuedNow, queuedMessages, t],
   );
 
   const messageInputContainerRef = useRef<View>(null);
@@ -2187,7 +2328,7 @@ export function Composer({
       onGenericFiles: handleGenericFilesDropped,
       onWorkspaceFile: handleWorkspaceFileDropped,
     },
-    { disabled: isSubmitLoadingVisible },
+    { disabled: isSubmitLoadingVisible || !isPaneFocused },
   );
 
   const messageInputAutoFocus = autoFocus && isDesktopWebBreakpoint;
@@ -2253,6 +2394,7 @@ export function Composer({
                 autoFocusKey={`${serverId}:${agentId}:${autoFocusKey ?? ""}`}
                 disabled={isSubmitLoading}
                 isPaneFocused={isPaneFocused}
+                isSubmitOwner={isComposerOwner}
                 leftContent={leftContent}
                 beforeVoiceContent={beforeVoiceContent}
                 rightContent={rightContent}
@@ -2410,8 +2552,12 @@ const styles = StyleSheet.create((theme: Theme) => ({
     borderColor: theme.colors.border,
     gap: theme.spacing[2],
   },
-  queueText: {
+  queueContent: {
     flex: 1,
+    alignItems: "flex-start",
+    gap: theme.spacing[1],
+  },
+  queueText: {
     color: theme.colors.foreground,
     fontSize: theme.fontSize.base,
   },
@@ -2446,6 +2592,7 @@ const ThemedStopSquare = withUnistyles(Square, (theme) => ({
 }));
 const ThemedPencil = withUnistyles(Pencil);
 const ThemedArrowUp = withUnistyles(ArrowUp);
+const ThemedTrash = withUnistyles(Trash2);
 const ThemedGitPullRequest = withUnistyles(GitPullRequest);
 const ThemedCircleDot = withUnistyles(CircleDot);
 const ThemedAudioLines = withUnistyles(AudioLines);

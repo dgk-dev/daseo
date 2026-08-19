@@ -232,6 +232,17 @@ describe("global routes", () => {
     ).toBe("/new?serverId=local&dir=%2Frepo%2Fproject&name=Project&projectId=project-1");
   });
 
+  it("buildNewWorkspaceRoute marks explicit immediate workspace creation", () => {
+    expect(
+      buildNewWorkspaceRoute({
+        serverId: "local",
+        sourceDirectory: "/repo/project",
+        projectId: "project-1",
+        autoCreate: true,
+      }),
+    ).toBe("/new?serverId=local&dir=%2Frepo%2Fproject&projectId=project-1&autoCreate=1");
+  });
+
   it("buildNewWorkspaceRoute carries a draft context id", () => {
     expect(
       buildNewWorkspaceRoute({

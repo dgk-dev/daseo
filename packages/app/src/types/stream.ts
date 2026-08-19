@@ -393,6 +393,27 @@ export function upsertUserMessageAcrossStream(
   };
 }
 
+function findCanonicalUserInsertIndex(
+  items: readonly StreamItem[],
+  message: UserMessageItem,
+): number {
+  const position = message.timelineCursor;
+  if (!position) return items.length;
+  for (let index = 0; index < items.length; index += 1) {
+    const candidate = items[index];
+    if (
+      candidate?.timelineCursor?.epoch === position.epoch &&
+      candidate.timelineCursor.seq > position.seq
+    ) {
+      return index;
+    }
+  }
+  const unresolvedIndex = items.findIndex(
+    (item) => item.kind === "user_message" && isUnreconciledLocalUserMessage(item),
+  );
+  return unresolvedIndex >= 0 ? unresolvedIndex : items.length;
+}
+
 function upsertCanonicalUserMessageInTail(
   tail: StreamItem[],
   message: UserMessageItem,
@@ -400,14 +421,16 @@ function upsertCanonicalUserMessageInTail(
   placement: "preserve-existing" | "event-order",
 ): Pick<UserMessageProductionResult, "items" | "message" | "matched"> {
   const produced = produceUserMessage(tail, message, null, "existing");
-  if ((produced.matched && placement === "preserve-existing") || !insertWhenUnmatched) {
+  if (!insertWhenUnmatched) return produced;
+  if (produced.matched && placement === "preserve-existing" && !message.timelineCursor) {
     return produced;
   }
   const preceding = produced.matched
     ? [...produced.items.slice(0, produced.index), ...produced.items.slice(produced.index + 1)]
     : produced.items;
+  const insertIndex = findCanonicalUserInsertIndex(preceding, produced.message);
   return {
-    items: [...preceding, produced.message],
+    items: [...preceding.slice(0, insertIndex), produced.message, ...preceding.slice(insertIndex)],
     message: produced.message,
     matched: produced.matched,
   };
@@ -1058,14 +1081,21 @@ function assistantPhaseFields(phase: AssistantMessagePhase | undefined) {
   return phase ? { phase } : {};
 }
 
+function assistantOutcomeFields(turnOutcome: AssistantTurnOutcome | undefined) {
+  return turnOutcome ? { turnOutcome } : {};
+}
+
 function isSameAssistantStream(
   existing: AssistantMessageItem,
   messageId: string | undefined,
   phase: AssistantMessagePhase | undefined,
+  turnOutcome: AssistantTurnOutcome | undefined,
 ): boolean {
   const phaseCompatible =
     existing.phase === undefined || phase === undefined || existing.phase === phase;
-  return existing.messageId === messageId && phaseCompatible;
+  const outcomeCompatible =
+    existing.turnOutcome === undefined || existing.turnOutcome === turnOutcome;
+  return existing.messageId === messageId && phaseCompatible && outcomeCompatible;
 }
 
 function appendAssistantMessage(
@@ -1075,23 +1105,28 @@ function appendAssistantMessage(
   source: StreamUpdateSource,
   messageId?: string,
   phase?: AssistantMessagePhase,
+  turnOutcome?: AssistantTurnOutcome,
   reservedItemIds?: ReadonlySet<string>,
   timelineCursor?: TimelinePosition,
 ): StreamItem[] {
   const { chunk, hasContent } = normalizeChunk(text);
   if (!chunk) {
-    return phase ? applyAssistantPhase(state, messageId, phase) : state;
+    const phased = phase ? applyAssistantPhase(state, messageId, phase) : state;
+    return turnOutcome ? markLastTurnAssistantOutcome(phased, turnOutcome) : phased;
   }
 
   const last = state[state.length - 1];
   const shouldAppendToLast =
-    last && last.kind === "assistant_message" && isSameAssistantStream(last, messageId, phase);
+    last &&
+    last.kind === "assistant_message" &&
+    isSameAssistantStream(last, messageId, phase, turnOutcome);
   if (shouldAppendToLast) {
     const updated: AssistantMessageItem = {
       ...last,
       text: `${last.text}${chunk}`,
       timestamp,
       ...assistantPhaseFields(phase),
+      ...assistantOutcomeFields(turnOutcome),
       ...(timelineCursor ? { timelineCursor } : {}),
     };
     return [...state.slice(0, -1), updated];
@@ -1104,13 +1139,14 @@ function appendAssistantMessage(
     source === "live" &&
     last?.kind === "user_message" &&
     secondLast?.kind === "assistant_message" &&
-    isSameAssistantStream(secondLast, messageId, phase)
+    isSameAssistantStream(secondLast, messageId, phase, turnOutcome)
   ) {
     const updated: AssistantMessageItem = {
       ...secondLast,
       text: `${secondLast.text}${chunk}`,
       timestamp,
       ...assistantPhaseFields(phase),
+      ...assistantOutcomeFields(turnOutcome),
       ...(timelineCursor ? { timelineCursor } : {}),
     };
     return [...state.slice(0, -2), updated, last];
@@ -1127,6 +1163,7 @@ function appendAssistantMessage(
     id: entryId,
     ...(messageId ? { messageId } : {}),
     ...assistantPhaseFields(phase),
+    ...assistantOutcomeFields(turnOutcome),
     ...(timelineCursor ? { timelineCursor } : {}),
     text: chunk,
     timestamp,
@@ -1639,6 +1676,7 @@ function reduceTimelineEvent(
           source,
           item.messageId,
           item.phase,
+          item.turnOutcome,
           reservedItemIds,
           timelineCursor,
         ),

@@ -49,6 +49,8 @@ $PASEO_HOME/
 ├── daemon-keypair.json                  # Legacy encryption + signing identity (mode 0600)
 ├── device-pairings.json                 # Expiring grants and revocable device public keys
 ├── agent-command-receipts.json          # Idempotent mobile command admission receipts
+├── timelines/
+│   └── {agentId}/                       # Private canonical rows + stable cursor epoch
 ├── paseo.pid                            # Daemon PID lock file
 ├── daemon.log                           # Default log file (path configurable)
 ├── agents/
@@ -469,15 +471,21 @@ Each subscription records the token lease plus optional client/device identity, 
 
 **Path:** `$PASEO_HOME/agent-command-receipts.json`
 
-The daemon writes an `in_flight` receipt before dispatching a command that carries `commandId`. A repeated ID with the same agent and payload returns the existing receipt; reuse with a different target or payload is rejected. `accepted` and `rejected` receipts are retained for 30 days under a bounded 4,096-record budget. `in_flight` receipts are not evicted because a crash can leave provider delivery ambiguous.
+The daemon writes an `in_flight` receipt before dispatching a command that carries `commandId`. A repeated ID with the same agent and payload returns the existing receipt; reuse with a different target or payload is rejected. `accepted` and `rejected` receipts are retained for 30 days under a bounded 4,096-record budget. `in_flight` receipts are not evicted because a crash can leave provider delivery ambiguous. The app queries ambiguous receipts after reconnect and requires an explicit retry, restore, or discard action; retry releases only that stable command ID, while discard durably rejects it.
 
-## 8. Daemon update trial
+## 8. Canonical agent timelines
+
+**Path:** `$PASEO_HOME/timelines/{agentId}/`
+
+Each canonical row is an individually atomic, mode-`0600` JSON file; `state.json` retains the cursor epoch and next sequence. Assistant rows may carry the optional terminal `turnOutcome`, so cold clients and daemon restarts preserve which logical answer completed even when provider history has no terminal event. Internal turn correlation is stored with the row but is not exposed as a client contract.
+
+## 9. Daemon update trial
 
 **Path:** `$PASEO_HOME/updates/current.json`
 
-Headless self-update resolves and preflights one exact npm version, snapshots the small durable stores a new daemon may normalize, installs that exact version, and verifies the installed package before requesting restart. A failed post-install verification reinstalls the exact previous version. A detached 45-second watchdog also restores that package if the target cannot reach readiness at all. The restarted daemon commits the trial only after bootstrap, WebSocket setup, relay initialization, and Hub startup complete with the target version.
+Headless self-update is disabled by default because a live global npm install cannot provide an immutable staged executable or atomic activation. The daemon does not advertise the capability and rejects the mutation unless an operator explicitly sets `PASEO_ENABLE_LIVE_NPM_SELF_UPDATE=1`; Daseo distributions reject it regardless and use signed local release artifacts. Retained legacy trial code generates its own UUID, contains every update path under `$PASEO_HOME/updates`, and records readiness/rollback state, but it is not a supported Daseo release path.
 
-## 9. Daemon meta files
+## 10. Daemon meta files
 
 These small files are not validated as full Zod schemas but are persisted under `$PASEO_HOME` for daemon identity and runtime coordination.
 

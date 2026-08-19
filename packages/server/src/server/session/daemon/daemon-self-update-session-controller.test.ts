@@ -24,6 +24,7 @@ function createController(input: {
   updater: TestUpdater;
   daemonVersion?: string | null;
   desktopManaged?: boolean;
+  selfUpdateEnabled?: boolean;
 }): ControllerHarness {
   const emitted: SessionOutboundMessage[] = [];
   const restartIntents: RestartIntent[] = [];
@@ -31,6 +32,7 @@ function createController(input: {
     clientId: "client-1",
     daemonVersion: input.daemonVersion ?? "0.1.15",
     desktopManaged: input.desktopManaged,
+    selfUpdateEnabled: input.selfUpdateEnabled ?? true,
     emit: (msg) => {
       emitted.push(msg);
     },
@@ -43,6 +45,8 @@ function createController(input: {
 
   return { controller, emitted, restartIntents };
 }
+
+const SERVER_UPDATE_ID = "00000000-0000-4000-8000-000000000093";
 
 const updateRequest: SessionInboundMessage = {
   type: "daemon.update.request",
@@ -76,7 +80,12 @@ describe("DaemonSelfUpdateSessionController", () => {
         updateInput = input;
         input.onProgress("starting");
         input.onProgress("installing");
-        return { success: true, error: null, newVersion: "0.1.96" };
+        return {
+          success: true,
+          error: null,
+          newVersion: "0.1.96",
+          updateId: SERVER_UPDATE_ID,
+        };
       },
     };
     const { controller, emitted, restartIntents } = createController({ updater });
@@ -85,6 +94,7 @@ describe("DaemonSelfUpdateSessionController", () => {
 
     expect(updateInput?.daemonVersion).toBe("0.1.15");
     expect(updateInput?.desktopManaged).toBe(false);
+    expect(updateInput?.allowLiveNpmMutation).toBe(true);
     expect(emitted).toEqual([
       {
         type: "daemon.update.progress",
@@ -108,7 +118,7 @@ describe("DaemonSelfUpdateSessionController", () => {
           error: null,
           previousVersion: "0.1.15",
           newVersion: "0.1.96",
-          updateId: "update-1",
+          updateId: SERVER_UPDATE_ID,
           targetVersion: "0.1.96",
           rolledBack: false,
         },
@@ -149,7 +159,7 @@ describe("DaemonSelfUpdateSessionController", () => {
           error: "not an npm global install",
           previousVersion: "0.1.15",
           newVersion: null,
-          updateId: "update-1",
+          updateId: null,
           targetVersion: null,
           rolledBack: false,
         },

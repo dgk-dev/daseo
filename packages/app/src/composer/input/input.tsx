@@ -128,6 +128,8 @@ export interface MessageInputProps {
   disabled?: boolean;
   /** True when this composer's pane is focused. Used to gate global hotkeys and stop dictation when hidden. */
   isPaneFocused?: boolean;
+  /** Submit-time ownership check for retained panes and delayed native events. */
+  isSubmitOwner?: () => boolean;
   /** Content to render on the left side of the composer toolbar (e.g., AgentControls) */
   leftContent?: React.ReactNode;
   /** Content to render on the right side before the voice button (e.g., context window meter) */
@@ -1058,6 +1060,7 @@ interface ResolvedMessageInputProps {
   autoFocusKey: string | undefined;
   disabled: boolean;
   isPaneFocused: boolean;
+  isSubmitOwner: () => boolean;
   leftContent: React.ReactNode;
   beforeVoiceContent: React.ReactNode;
   rightContent: React.ReactNode;
@@ -1107,6 +1110,7 @@ function resolveMessageInputProps(props: MessageInputProps): ResolvedMessageInpu
     autoFocusKey: props.autoFocusKey,
     disabled: props.disabled ?? false,
     isPaneFocused: props.isPaneFocused ?? true,
+    isSubmitOwner: props.isSubmitOwner ?? (() => props.isPaneFocused ?? true),
     leftContent: props.leftContent,
     beforeVoiceContent: props.beforeVoiceContent,
     rightContent: props.rightContent,
@@ -1164,6 +1168,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       autoFocusKey,
       disabled,
       isPaneFocused,
+      isSubmitOwner,
       leftContent,
       beforeVoiceContent,
       rightContent,
@@ -1227,19 +1232,21 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       getText: () => textInputRef.current?.getText() ?? valueRef.current,
       replaceText,
       runKeyboardAction: (action) =>
-        runMessageInputKeyboardAction(action, {
-          focusInput: () => textInputRef.current?.focus(),
-          isDictationRecording: isDictationActive,
-          markTranscriptForSend: () => {
-            sendAfterTranscriptRef.current = true;
-          },
-          confirmDictation,
-          cancelDictation,
-          startDictation: startDictationIfAvailable,
-          toggleRealtimeVoice: handleToggleRealtimeVoiceShortcut,
-          isRealtimeVoiceActive: isRealtimeVoiceForCurrentAgent,
-          toggleRealtimeVoiceMute: () => voice?.toggleMute(),
-        }),
+        isSubmitOwner()
+          ? runMessageInputKeyboardAction(action, {
+              focusInput: () => textInputRef.current?.focus(),
+              isDictationRecording: isDictationActive,
+              markTranscriptForSend: () => {
+                sendAfterTranscriptRef.current = true;
+              },
+              confirmDictation,
+              cancelDictation,
+              startDictation: startDictationIfAvailable,
+              toggleRealtimeVoice: handleToggleRealtimeVoiceShortcut,
+              isRealtimeVoiceActive: isRealtimeVoiceForCurrentAgent,
+              toggleRealtimeVoiceMute: () => voice?.toggleMute(),
+            })
+          : false,
       getNativeElement: () => (isWeb ? getTextInputNativeElement(textInputRef.current) : null),
     }));
     const inputHeightRef = useRef(MIN_INPUT_HEIGHT);
@@ -1289,7 +1296,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
 
     const handleDictationTranscript = useCallback(
       (text: string, _meta: { requestId: string }) => {
-        const autoSend = sendAfterTranscriptRef.current;
+        const autoSend = sendAfterTranscriptRef.current && isSubmitOwner();
         sendAfterTranscriptRef.current = false;
         applyDictationTranscript(text, {
           value: valueRef.current,
@@ -1303,7 +1310,16 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           autoSend,
         });
       },
-      [replaceText, onSubmit, onQueue, attachments, cwd, isAgentRunning, defaultSendBehavior],
+      [
+        replaceText,
+        onSubmit,
+        onQueue,
+        attachments,
+        cwd,
+        isAgentRunning,
+        defaultSendBehavior,
+        isSubmitOwner,
+      ],
     );
 
     const handleDictationError = useCallback(
@@ -1483,17 +1499,19 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
 
     const handleSendMessage = useCallback(
       () =>
-        sendMessageImpl({
-          value: textInputRef.current?.getText() ?? valueRef.current,
-          attachments,
-          hasExternalContent,
-          allowEmptySubmit,
-          cwd,
-          isAgentRunning,
-          onSubmit,
-          onMinimizeHeight: minimizeInputHeight,
-          preserveHeightOnSubmit,
-        }),
+        isSubmitOwner()
+          ? sendMessageImpl({
+              value: textInputRef.current?.getText() ?? valueRef.current,
+              attachments,
+              hasExternalContent,
+              allowEmptySubmit,
+              cwd,
+              isAgentRunning,
+              onSubmit,
+              onMinimizeHeight: minimizeInputHeight,
+              preserveHeightOnSubmit,
+            })
+          : undefined,
       [
         allowEmptySubmit,
         attachments,
@@ -1501,6 +1519,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         onSubmit,
         isAgentRunning,
         hasExternalContent,
+        isSubmitOwner,
         minimizeInputHeight,
         preserveHeightOnSubmit,
       ],
@@ -1508,18 +1527,21 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
 
     const handleQueueMessage = useCallback(
       () =>
-        queueMessageImpl({
-          value: textInputRef.current?.getText() ?? valueRef.current,
-          attachments,
-          cwd,
-          onQueue,
-          replaceText,
-          onMinimizeHeight: minimizeInputHeight,
-        }),
-      [attachments, cwd, onQueue, replaceText, minimizeInputHeight],
+        isSubmitOwner()
+          ? queueMessageImpl({
+              value: textInputRef.current?.getText() ?? valueRef.current,
+              attachments,
+              cwd,
+              onQueue,
+              replaceText,
+              onMinimizeHeight: minimizeInputHeight,
+            })
+          : undefined,
+      [attachments, cwd, onQueue, replaceText, minimizeInputHeight, isSubmitOwner],
     );
 
     const handleDefaultSendAction = useCallback(() => {
+      if (!isSubmitOwner()) return;
       runDefaultSendAction({
         defaultSendBehavior,
         isAgentRunning,
@@ -1527,9 +1549,17 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         handleSendMessage,
         handleQueueMessage,
       });
-    }, [defaultSendBehavior, isAgentRunning, onQueue, handleQueueMessage, handleSendMessage]);
+    }, [
+      defaultSendBehavior,
+      isAgentRunning,
+      isSubmitOwner,
+      onQueue,
+      handleQueueMessage,
+      handleSendMessage,
+    ]);
 
     const handleAlternateSendAction = useCallback(() => {
+      if (!isSubmitOwner()) return;
       runAlternateSendAction({
         defaultSendBehavior,
         isAgentRunning,
@@ -1537,7 +1567,14 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         handleSendMessage,
         handleQueueMessage,
       });
-    }, [defaultSendBehavior, isAgentRunning, handleSendMessage, handleQueueMessage, onQueue]);
+    }, [
+      defaultSendBehavior,
+      isAgentRunning,
+      isSubmitOwner,
+      handleSendMessage,
+      handleQueueMessage,
+      onQueue,
+    ]);
 
     const getWebTextArea = useCallback(
       (): TextAreaHandle | null => getWebTextAreaImpl(textInputRef.current),
@@ -1683,18 +1720,22 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       (nextValue: string) => {
         // Retained panes stay mounted. Ignore late native/IME events from a composer that no
         // longer owns logical input, otherwise its text can overwrite another session's draft.
-        if (!isPaneFocusedRef.current) return;
+        if (!isPaneFocusedRef.current || !isSubmitOwner()) return;
         valueRef.current = nextValue;
         onChangeText(nextValue);
       },
-      [onChangeText],
+      [isSubmitOwner, onChangeText],
     );
 
     const handleInputFocus = useCallback(() => {
+      if (!isSubmitOwner()) {
+        textInputRef.current?.blur();
+        return;
+      }
       isInputFocusedRef.current = true;
       setIsInputFocused(true);
       onFocusChange?.(true);
-    }, [onFocusChange]);
+    }, [isSubmitOwner, onFocusChange]);
 
     const handleInputBlur = useCallback(() => {
       isInputFocusedRef.current = false;

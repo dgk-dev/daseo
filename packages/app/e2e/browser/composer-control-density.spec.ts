@@ -107,6 +107,47 @@ test.describe("Composer control density across tab switches", () => {
     }
   });
 
+  test("delayed Enter from a retained inactive composer cannot submit its draft", async ({
+    page,
+  }) => {
+    const workspace = await seedWorkspace({ repoPrefix: "composer-submit-ownership-" });
+    try {
+      const first = await seedSettledMockAgent(workspace, "First submit owner");
+      const second = await seedSettledMockAgent(workspace, "Second submit owner");
+      await openWorkspaceWithAgents(page, [first, second]);
+
+      const visibleComposer = () =>
+        page.locator("textarea[data-composer-input]").filter({ visible: true }).first();
+      const firstDraft = `inactive submit sentinel ${Date.now()}`;
+
+      await visibleAgentTab(page, first.id).click();
+      await visibleComposer().fill(firstDraft);
+      const inactiveInput = await visibleComposer().elementHandle();
+      if (!inactiveInput) throw new Error("Expected the first agent composer input");
+
+      await visibleAgentTab(page, second.id).click();
+      await inactiveInput.evaluate((element) => {
+        for (const type of ["keydown", "keypress", "keyup"]) {
+          element.dispatchEvent(
+            new KeyboardEvent(type, {
+              key: "Enter",
+              code: "Enter",
+              bubbles: true,
+              cancelable: true,
+            }),
+          );
+        }
+      });
+
+      await expect(page.getByTestId("user-message").filter({ hasText: firstDraft })).toHaveCount(0);
+      await visibleAgentTab(page, first.id).click();
+      await expect(visibleComposer()).toHaveValue(firstDraft);
+      await expect(page.getByTestId("user-message").filter({ hasText: firstDraft })).toHaveCount(0);
+    } finally {
+      await workspace.cleanup();
+    }
+  });
+
   test("switching between draft tabs never paints a collapsed composer toolbar", async ({
     page,
   }) => {

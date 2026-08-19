@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import {
+  AgentCommandReceiptGetRequestSchema,
+  AgentCommandReceiptResolveResponseMessageSchema,
   AgentSnapshotPayloadSchema,
   AgentTimelineItemPayloadSchema,
   SendAgentMessageRequestSchema,
@@ -102,7 +104,7 @@ describe("wire schema compatibility", () => {
     });
   });
 
-  test("assistant message identity and phase remain wire-compatible", () => {
+  test("assistant identity, phase, and terminal outcome remain wire-compatible", () => {
     expect(
       AgentTimelineItemPayloadSchema.parse({
         type: "assistant_message",
@@ -118,12 +120,14 @@ describe("wire schema compatibility", () => {
       text: "new daemon shape",
       messageId: "msg-1",
       phase: "final_answer",
+      turnOutcome: "completed",
     });
     expect(current).toEqual({
       type: "assistant_message",
       text: "new daemon shape",
       messageId: "msg-1",
       phase: "final_answer",
+      turnOutcome: "completed",
     });
     expect(LegacyAssistantTimelineItemSchema.parse(current)).toEqual({
       type: "assistant_message",
@@ -154,6 +158,28 @@ describe("wire schema compatibility", () => {
       messageId: "provider-message",
       clientMessageId: "client-message",
     });
+  });
+
+  test("command receipt resolution messages are additive", () => {
+    expect(
+      AgentCommandReceiptGetRequestSchema.parse({
+        type: "agent.command_receipt.get.request",
+        requestId: "get-1",
+        commandId: "command-1",
+      }),
+    ).toMatchObject({ commandId: "command-1" });
+    expect(
+      AgentCommandReceiptResolveResponseMessageSchema.parse({
+        type: "agent.command_receipt.resolve.response",
+        payload: {
+          requestId: "resolve-1",
+          commandId: "command-1",
+          agentId: "agent-1",
+          status: "retry_ready",
+          error: null,
+        },
+      }),
+    ).toMatchObject({ payload: { status: "retry_ready" } });
   });
 
   test("durable command receipt fields remain optional for old peers", () => {

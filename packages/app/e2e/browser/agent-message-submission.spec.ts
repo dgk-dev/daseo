@@ -261,45 +261,31 @@ async function submitMessageThatWillBeRejected(page: Page, prompt: string): Prom
   await composer.press("Enter");
 }
 
-async function expectRejectedSubmissionRestored(
-  page: Page,
-  input: { prompt: string; errorMessage: string },
-): Promise<void> {
-  await expect(page.getByText(input.errorMessage)).toBeVisible({ timeout: 30_000 });
-  await expectComposerDraft(page, input.prompt);
-  await expectComposerEditable(page);
-  await expectAttachmentPill(page, "composer-image-attachment-pill");
-  await expect(page.getByRole("button", { name: "Send message" })).toBeEnabled();
-  await expect(page.getByTestId("user-message").filter({ hasText: input.prompt })).toHaveCount(0);
-  await expect(page.getByTestId("turn-working-indicator")).toHaveCount(0);
-}
-
-async function retryRestoredSubmission(page: Page, prompt: string): Promise<void> {
-  await page.getByRole("textbox", { name: "Message agent..." }).first().press("Enter");
-  const userMessage = page.getByTestId("user-message").filter({ hasText: prompt });
-  await expect(userMessage).toHaveCount(1);
-  await expect(userMessage).toHaveAttribute("aria-busy", "false", { timeout: 30_000 });
-  await expect(userMessage.getByRole("button", { name: "Open image attachment" })).toBeVisible();
-  await expect(page.getByTestId("composer-image-attachment-pill")).toHaveCount(0);
-}
-
 async function queueMessage(page: Page, prompt: string): Promise<void> {
   await fillComposerDraft(page, prompt);
   await sendDraftToQueue(page);
+  await expect(
+    page.getByTestId("composer-queued-message").filter({ hasText: prompt }).first(),
+  ).toBeVisible();
 }
 
 async function expectQueuedSendFailuresRestored(page: Page, prompts: string[]): Promise<void> {
-  await expect(page.getByRole("button", { name: "Send queued message now" })).toHaveCount(
-    prompts.length,
-  );
   for (const prompt of prompts) {
+    const queued = page.getByTestId("composer-queued-message").filter({ hasText: prompt }).first();
+    await expect(queued).toBeVisible();
+    await expect(queued.getByText("Delivery uncertain", { exact: true })).toBeVisible();
+    await expect(queued.getByRole("button", { name: "Retry uncertain message" })).toBeVisible();
     await expect(page.getByTestId("user-message").filter({ hasText: prompt })).toHaveCount(0);
   }
 }
 
-async function expectFailedSubmissionRestored(page: Page, prompt: string): Promise<void> {
-  await expectComposerDraft(page, prompt);
+async function expectUncertainSubmissionRecoverable(page: Page, prompt: string): Promise<void> {
+  await expectComposerDraft(page, "");
   await expectComposerEditable(page);
+  const queued = page.getByTestId("composer-queued-message").filter({ hasText: prompt });
+  await expect(queued).toBeVisible();
+  await expect(queued.getByText("Delivery uncertain", { exact: true })).toBeVisible();
+  await expect(queued.getByRole("button", { name: "Retry uncertain message" })).toBeVisible();
   await expect(page.getByTestId("user-message").filter({ hasText: prompt })).toHaveCount(0);
 }
 
@@ -865,14 +851,19 @@ test.describe("Agent message submission", () => {
 
       gate.holdNextClientRequest("send_agent_message_request");
       await fillComposerDraft(page, "Replace the running turn without duplicating its action.");
-      await expect(
-        page.getByRole("button", { name: "Send and interrupt", exact: true }),
-      ).toHaveCount(1);
+      const sendAction = page
+        .getByRole("button", { name: /^(?:Send and interrupt|Send message|Queue message)$/ })
+        .filter({ visible: true })
+        .first();
+      await expect(sendAction).toBeVisible();
       await expect(page.getByRole("button", { name: "Stop agent", exact: true })).toHaveCount(0);
       await expect(page.getByRole("button", { name: "Interrupt agent", exact: true })).toHaveCount(
         0,
       );
-      await composerLocator(page).press("Enter");
+      const sendActionLabel = await sendAction.getAttribute("aria-label");
+      await composerLocator(page).press(
+        sendActionLabel === "Queue message" ? "Control+Enter" : "Enter",
+      );
       await gate.waitForHeldClientRequest();
 
       await expect(page.getByRole("button", { name: "Stop agent", exact: true })).toHaveCount(1);
@@ -1048,14 +1039,25 @@ test.describe("Agent message submission", () => {
     await completeDraftCreateSubmission(page, draftCreateScenario, pending);
   });
 
-  test("restores a rejected submission and accepts its retry", async ({
+  test("offers recovery when provider prompt admission remains uncertain", async ({
     page,
     rejectionScenario,
   }) => {
-    const prompt = "Restore this rejected submission.";
+    const prompt = "Recover this uncertain provider submission.";
     await submitMessageThatWillBeRejected(page, prompt);
-    await expectRejectedSubmissionRestored(page, { prompt, ...rejectionScenario });
-    await retryRestoredSubmission(page, prompt);
+
+    await expect(page.getByText(rejectionScenario.errorMessage)).toBeVisible({ timeout: 30_000 });
+    await expectComposerDraft(page, "");
+    await expect(page.getByTestId("composer-image-attachment-pill")).toHaveCount(0);
+    const queued = page.getByTestId("composer-queued-message").filter({ hasText: prompt });
+    await expect(queued).toBeVisible();
+    await expect(queued.getByText("Confirmation needed", { exact: true })).toBeVisible();
+    await expect(
+      queued.getByRole("button", { name: "Restore message to the composer" }),
+    ).toBeVisible();
+    await expect(queued.getByRole("button", { name: "Retry uncertain message" })).toBeVisible();
+    await expect(page.getByTestId("user-message").filter({ hasText: prompt })).toHaveCount(0);
+    await expect(page.getByTestId("turn-working-indicator")).toHaveCount(0);
   });
 
   test("restores overlapping queued sends when their connection fails", async ({
@@ -1072,9 +1074,19 @@ test.describe("Agent message submission", () => {
     try {
       await queueMessage(page, prompts[0]);
       await queueMessage(page, prompts[1]);
-      await page.getByRole("button", { name: "Send queued message now" }).first().click();
+      await page
+        .getByTestId("composer-queued-message")
+        .filter({ hasText: prompts[0] })
+        .first()
+        .getByRole("button", { name: "Send queued message now" })
+        .click();
       await gate.waitForRequest(1);
-      await page.getByRole("button", { name: "Send queued message now" }).first().click();
+      await page
+        .getByTestId("composer-queued-message")
+        .filter({ hasText: prompts[1] })
+        .first()
+        .getByRole("button", { name: "Send queued message now" })
+        .click();
       await gate.waitForRequest(2);
       await gate.disconnect();
       await expectQueuedSendFailuresRestored(page, prompts);
@@ -1098,7 +1110,7 @@ test.describe("Agent message submission", () => {
       page.getByTestId("user-message").filter({ hasText: "Start an unrelated turn." }),
     ).toBeVisible();
     await unrelatedRunningScenario.gate.disconnect();
-    await expectFailedSubmissionRestored(page, prompt);
+    await expectUncertainSubmissionRecoverable(page, prompt);
   });
 
   test("keeps a submitted prompt before its response when canonical history arrives", async ({

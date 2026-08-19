@@ -6,6 +6,13 @@ const OUTBOX_STORAGE_KEY = "@paseo:composer-outbox";
 const OUTBOX_VERSION = 1;
 const MAX_OUTBOX_RECORDS = 1_000;
 
+export class ComposerOutboxCorruptionError extends Error {
+  constructor() {
+    super("Composer recovery data is unreadable and was preserved for manual recovery");
+    this.name = "ComposerOutboxCorruptionError";
+  }
+}
+
 const OutboxRecordSchema = z.object({
   version: z.literal(OUTBOX_VERSION),
   id: z.string().min(1),
@@ -94,6 +101,8 @@ export class ComposerOutboxStore {
   private readonly listeners = new Set<() => void>();
   private hydration: Promise<void> | null = null;
   private mutationTail: Promise<void> = Promise.resolve();
+  private corruptionError: ComposerOutboxCorruptionError | null = null;
+  private unreadableRaw: string | null = null;
 
   constructor(storage: ComposerOutboxStorage = createDefaultOutboxStorage()) {
     this.storage = storage;
@@ -148,6 +157,11 @@ export class ComposerOutboxStore {
           throw new Error(`Composer outbox id already belongs to another payload: ${input.id}`);
         }
         return existing;
+      }
+      if (next.size >= MAX_OUTBOX_RECORDS) {
+        throw new Error(
+          `Composer outbox is full (${MAX_OUTBOX_RECORDS} unresolved messages); resolve one before sending another`,
+        );
       }
       const now = input.now ?? Date.now();
       const record: ComposerOutboxRecord = {
@@ -228,6 +242,12 @@ export class ComposerOutboxStore {
         }
       }
     }
+    if (this.unreadableRaw) {
+      for (const match of this.unreadableRaw.matchAll(/"id"\s*:\s*"([^"]+)"/gu)) {
+        const id = match[1]?.trim();
+        if (id) ids.add(id);
+      }
+    }
     return ids;
   }
 
@@ -243,12 +263,14 @@ export class ComposerOutboxStore {
     try {
       decoded = JSON.parse(raw) as unknown;
     } catch {
-      await this.storage.removeItem(OUTBOX_STORAGE_KEY);
+      this.unreadableRaw = raw;
+      this.corruptionError = new ComposerOutboxCorruptionError();
       return;
     }
     const parsed = OutboxFileSchema.safeParse(decoded);
     if (!parsed.success) {
-      await this.storage.removeItem(OUTBOX_STORAGE_KEY);
+      this.unreadableRaw = raw;
+      this.corruptionError = new ComposerOutboxCorruptionError();
       return;
     }
     for (const persisted of parsed.data.records) {
@@ -264,11 +286,10 @@ export class ComposerOutboxStore {
     const previous = this.mutationTail;
     const run = (async () => {
       await previous;
+      if (this.corruptionError) throw this.corruptionError;
       const next = new Map(this.records);
       const result = await operation(next);
-      const records = [...next.values()]
-        .sort((left, right) => left.createdAt - right.createdAt)
-        .slice(-MAX_OUTBOX_RECORDS);
+      const records = [...next.values()].sort((left, right) => left.createdAt - right.createdAt);
       if (records.length === 0) {
         await this.storage.removeItem(OUTBOX_STORAGE_KEY);
       } else {

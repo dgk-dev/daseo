@@ -1648,7 +1648,9 @@ export class VoiceAssistantWebSocketServer {
         // COMPAT(daemonDiagnostics): added in v0.1.100, remove gate after 2026-12-25 once daemon floor >= v0.1.100.
         daemonDiagnostics: true,
         // COMPAT(daemonSelfUpdate): added in v0.1.93, remove gate after 2026-12-13.
-        daemonSelfUpdate: this.daemonRuntimeConfig?.desktopManaged !== true,
+        daemonSelfUpdate:
+          this.daemonRuntimeConfig?.desktopManaged !== true &&
+          process.env.PASEO_ENABLE_LIVE_NPM_SELF_UPDATE === "1",
         // COMPAT(agentForkContext): added in v0.1.102, remove gate after 2026-12-28.
         agentForkContext: true,
         // COMPAT(agentForkContextCursor): added in v0.1.108, remove gate after 2027-01-14.
@@ -1681,6 +1683,8 @@ export class VoiceAssistantWebSocketServer {
         canonicalSubmittedPrompts: true,
         // COMPAT(durableCommandReceipts): added in v0.5.0, remove after 2027-02-18.
         durableCommandReceipts: true,
+        // COMPAT(commandReceiptResolution): added in v0.5.3, remove after 2027-02-19.
+        commandReceiptResolution: true,
         // COMPAT(devicePairingManagement): added in v0.5.0, remove after 2027-02-18.
         devicePairingManagement: true,
         // COMPAT(stableProjectIdentity): added in v0.1.109, remove gate after 2027-01-15.

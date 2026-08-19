@@ -23,6 +23,24 @@ export interface QueuedComposerMessage {
   id: string;
   text: string;
   attachments: ComposerAttachment[];
+  resolution?: {
+    status: "delivery_unknown" | "in_flight" | "rejected";
+    message?: string | null;
+  };
+}
+
+export interface CommandReceiptResolver {
+  getAgentCommandReceipt(commandId: string): Promise<{
+    status: "missing" | "in_flight" | "accepted" | "rejected" | "retry_ready";
+    error: string | null;
+  }>;
+  resolveAgentCommandReceipt(
+    commandId: string,
+    action: "retry" | "discard",
+  ): Promise<{
+    status: "missing" | "in_flight" | "accepted" | "rejected" | "retry_ready";
+    error: string | null;
+  }>;
 }
 
 export interface AttachmentPersister {
@@ -55,6 +73,10 @@ export interface ComposerSendClient {
       attachments: ReturnType<typeof splitComposerAttachmentsForSubmit>["attachments"];
     },
   ) => Promise<{ receiptStatus?: "in_flight" | "accepted" | "rejected" } | void>;
+  getAgentCommandReceipt?: (commandId: string) => Promise<{
+    status: "missing" | "in_flight" | "accepted" | "rejected" | "retry_ready";
+    error: string | null;
+  }>;
   uploadFile: (input: { fileName: string; mimeType: string; bytes: Uint8Array }) => Promise<{
     requestId: string;
     file: {
@@ -275,12 +297,19 @@ export async function dispatchComposerAgentMessage(
       attachments: wirePayload.attachments,
     });
     if (result?.receiptStatus === "in_flight") {
+      const receipt = await input.client.getAgentCommandReceipt?.(clientMessageId);
+      if (receipt?.status === "accepted") {
+        await outbox.remove(input.serverId, clientMessageId);
+        input.submission.accept(input.agentId, clientMessageId);
+        return;
+      }
       await outbox.mark({
         serverId: input.serverId,
         id: clientMessageId,
-        status: "in_flight",
-        lastError: null,
+        status: receipt?.status === "rejected" ? "rejected" : "in_flight",
+        lastError: receipt?.error ?? null,
       });
+      input.submission.reject(input.agentId, clientMessageId);
       return;
     }
     await outbox.remove(input.serverId, clientMessageId);
@@ -293,6 +322,7 @@ export async function dispatchComposerAgentMessage(
         status: "delivery_unknown",
         lastError: error.message,
       });
+      input.submission.reject(input.agentId, clientMessageId);
       return;
     }
     if (input.preserveRejectedOutbox) {
@@ -345,8 +375,10 @@ export async function queueComposerMessage(
     intent: "queued",
   });
   input.queue.write((prev) => {
+    const current = prev.get(input.agentId) ?? [];
+    if (current.some((message) => message.id === item.id)) return prev;
     const next = new Map(prev);
-    next.set(input.agentId, [...(prev.get(input.agentId) ?? []), item]);
+    next.set(input.agentId, [...current, item]);
     return next;
   });
   return { queued: item };
@@ -358,6 +390,7 @@ export interface EditQueuedComposerMessageInput {
   messageId: string;
   queue: QueueWriter;
   outbox?: ComposerOutboxWriter;
+  receiptResolver?: CommandReceiptResolver;
 }
 
 export interface EditQueuedComposerMessageResult {
@@ -370,6 +403,22 @@ export async function editQueuedComposerMessage(
 ): Promise<EditQueuedComposerMessageResult | null> {
   const item = input.queue.read(input.agentId).find((q) => q.id === input.messageId);
   if (!item) return null;
+  if (item.resolution) {
+    if (!input.receiptResolver) throw new Error("Host cannot resolve this uncertain delivery");
+    const resolution = await input.receiptResolver.resolveAgentCommandReceipt(item.id, "discard");
+    if (resolution.status === "accepted") {
+      await (input.outbox ?? composerOutboxStore).remove(input.serverId, input.messageId);
+      input.queue.write((previous) => {
+        const next = new Map(previous);
+        next.set(
+          input.agentId,
+          (previous.get(input.agentId) ?? []).filter((message) => message.id !== input.messageId),
+        );
+        return next;
+      });
+      return null;
+    }
+  }
   await (input.outbox ?? composerOutboxStore).remove(input.serverId, input.messageId);
   input.queue.write((prev) => {
     const next = new Map(prev);
@@ -385,6 +434,38 @@ export async function editQueuedComposerMessage(
   };
 }
 
+export interface DiscardQueuedComposerMessageInput {
+  serverId: string;
+  agentId: string;
+  messageId: string;
+  queue: QueueWriter;
+  outbox?: ComposerOutboxWriter;
+  receiptResolver?: CommandReceiptResolver;
+}
+
+export async function discardQueuedComposerMessage(
+  input: DiscardQueuedComposerMessageInput,
+): Promise<"missing" | "discarded" | "already_accepted"> {
+  const item = input.queue.read(input.agentId).find((message) => message.id === input.messageId);
+  if (!item) return "missing";
+  let result: "discarded" | "already_accepted" = "discarded";
+  if (item.resolution) {
+    if (!input.receiptResolver) throw new Error("Host cannot resolve this uncertain delivery");
+    const resolution = await input.receiptResolver.resolveAgentCommandReceipt(item.id, "discard");
+    if (resolution.status === "accepted") result = "already_accepted";
+  }
+  await (input.outbox ?? composerOutboxStore).remove(input.serverId, input.messageId);
+  input.queue.write((previous) => {
+    const next = new Map(previous);
+    next.set(
+      input.agentId,
+      (previous.get(input.agentId) ?? []).filter((message) => message.id !== input.messageId),
+    );
+    return next;
+  });
+  return result;
+}
+
 export interface SendQueuedComposerMessageNowInput {
   serverId: string;
   agentId: string;
@@ -396,12 +477,14 @@ export interface SendQueuedComposerMessageNowInput {
     attachments: ComposerAttachment[];
     clientMessageId: string;
   }) => Promise<void>;
+  receiptResolver?: CommandReceiptResolver;
   failedToSendMessage?: string;
 }
 
 export type SendQueuedComposerMessageNowResult =
   | { status: "missing" }
   | { status: "submitted" }
+  | { status: "already_accepted" }
   | { status: "failed"; errorMessage: string };
 
 export async function sendQueuedComposerMessageNow(
@@ -410,6 +493,30 @@ export async function sendQueuedComposerMessageNow(
   const item = input.queue.read(input.agentId).find((q) => q.id === input.messageId);
   if (!item) return { status: "missing" };
   const outbox = input.outbox ?? composerOutboxStore;
+  if (item.resolution) {
+    if (!input.receiptResolver) {
+      return { status: "failed", errorMessage: "Host cannot resolve this uncertain delivery" };
+    }
+    const resolution = await input.receiptResolver.resolveAgentCommandReceipt(item.id, "retry");
+    if (resolution.status === "accepted") {
+      await outbox.remove(input.serverId, item.id);
+      input.queue.write((previous) => {
+        const next = new Map(previous);
+        next.set(
+          input.agentId,
+          (previous.get(input.agentId) ?? []).filter((message) => message.id !== item.id),
+        );
+        return next;
+      });
+      return { status: "already_accepted" };
+    }
+    if (resolution.status !== "retry_ready") {
+      return {
+        status: "failed",
+        errorMessage: resolution.error ?? `Unable to retry command (${resolution.status})`,
+      };
+    }
+  }
   await outbox.mark({
     serverId: input.serverId,
     id: item.id,
@@ -448,8 +555,9 @@ export async function sendQueuedComposerMessageNow(
       lastError: error instanceof Error ? error.message : "Failed to send queued message",
     });
     input.queue.write((prev) => {
+      const current = (prev.get(input.agentId) ?? []).filter((message) => message.id !== item.id);
       const next = new Map(prev);
-      next.set(input.agentId, [item, ...(prev.get(input.agentId) ?? [])]);
+      next.set(input.agentId, [item, ...current]);
       return next;
     });
     return {

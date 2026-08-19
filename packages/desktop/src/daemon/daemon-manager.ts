@@ -39,6 +39,7 @@ import type { DesktopSettings } from "../settings/desktop-settings.js";
 import { getDesktopSettingsStore } from "../settings/desktop-settings-electron.js";
 import { isRunningUnderARM64Translation } from "../system/arm64-translation.js";
 import { getDesktopAppLogs } from "../diagnostics/app-logs.js";
+import { isDaseoDistribution } from "../distribution.js";
 import { tailFile } from "../diagnostics/tail-file.js";
 
 const DAEMON_LOG_FILENAME = "daemon.log";
@@ -396,6 +397,7 @@ async function startDaemon(): Promise<DesktopDaemonStatus> {
     env: invocation.env,
     envOverlay: {
       PASEO_DESKTOP_MANAGED: "1",
+      ...(isDaseoDistribution() ? { DASEO_DISTRIBUTION: "1" } : {}),
       PASEO_CLI: getBundledCliShimPath(),
       PASEO_WEB_UI_ENABLED: "false",
     },

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AgentTimelineItem } from "./agent-sdk-types.js";
+import type { AgentTimelineItem, AssistantTurnOutcome } from "./agent-sdk-types.js";
 import type {
   AgentTimelineFetchOptions,
   AgentTimelineFetchResult,
@@ -196,6 +196,26 @@ export class InMemoryAgentTimelineStore {
     return cloneRow(enriched);
   }
 
+  markTurnAssistantOutcome(
+    agentId: string,
+    turnId: string,
+    turnOutcome: AssistantTurnOutcome,
+  ): AgentTimelineRow | null {
+    const state = this.requireState(agentId);
+    for (let index = state.rows.length - 1; index >= 0; index -= 1) {
+      const row = state.rows[index];
+      if (!row || row.turnId !== turnId || row.item.type !== "assistant_message") continue;
+      if (row.item.turnOutcome === turnOutcome) return cloneRow(row);
+      const updated: AgentTimelineRow = {
+        ...row,
+        item: { ...row.item, turnOutcome },
+      };
+      state.rows[index] = updated;
+      return cloneRow(updated);
+    }
+    return null;
+  }
+
   getEpoch(agentId: string): string {
     return this.requireState(agentId).epoch;
   }
@@ -264,13 +284,14 @@ export class InMemoryAgentTimelineStore {
   append(
     agentId: string,
     item: AgentTimelineItem,
-    options?: { timestamp?: string; providerMessageId?: string },
+    options?: { timestamp?: string; turnId?: string; providerMessageId?: string },
   ): AgentTimelineRow {
     const state = this.requireState(agentId);
     const row: AgentTimelineRow = {
       seq: state.nextSeq,
       timestamp: options?.timestamp ?? new Date().toISOString(),
       item,
+      ...(options?.turnId ? { turnId: options.turnId } : {}),
       ...(options?.providerMessageId ? { providerMessageId: options.providerMessageId } : {}),
     };
     state.nextSeq += 1;

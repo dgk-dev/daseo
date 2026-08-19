@@ -16,6 +16,7 @@ import {
   importPublicKey,
 } from "./crypto.js";
 import { arrayBufferToBase64 } from "./base64.js";
+import { deriveE2EEV2SessionKeys } from "./e2ee-v2.js";
 
 /**
  * Creates a pair of connected mock transports.
@@ -111,6 +112,42 @@ describe("EncryptedChannel", () => {
     completeSend?.();
     await sending;
     expect(completed).toBe(true);
+  });
+
+  it("consumes a v2 nonce before transport I/O and closes permanently on rejection", async () => {
+    const first = generateKeyPair();
+    const second = generateKeyPair();
+    const sharedKey = deriveSharedKey(first.secretKey, second.publicKey);
+    const keys = deriveE2EEV2SessionKeys(sharedKey, "send-failure-transcript");
+    const transport: Transport = {
+      send: vi.fn().mockRejectedValue(new Error("socket write rejected")),
+      close: vi.fn(),
+      onmessage: null,
+      onclose: null,
+      onerror: null,
+    };
+    const onerror = vi.fn();
+    const v2 = {
+      sendKey: keys.clientToDaemonKey,
+      receiveKey: keys.daemonToClientKey,
+      noncePrefix: keys.noncePrefix,
+      sendCounter: 0n,
+      receiveCounter: 0n,
+      sessionId: keys.sessionId,
+    };
+    const channel = new EncryptedChannel(transport, sharedKey, { onerror }, { v2 });
+    channel.setState("open");
+
+    await expect(channel.send("first attempt")).rejects.toThrow("socket write rejected");
+    expect(v2.sendCounter).toBe(1n);
+    expect(onerror).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "socket write rejected" }),
+    );
+    expect(transport.close).toHaveBeenCalledWith(1011, "E2EE v2 send failed");
+
+    await expect(channel.send("must not reuse nonce")).rejects.toThrow("Channel not open");
+    expect(transport.send).toHaveBeenCalledTimes(1);
+    expect(v2.sendCounter).toBe(1n);
   });
 
   it("establishes encrypted channel between daemon and client", async () => {

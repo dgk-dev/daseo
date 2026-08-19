@@ -446,6 +446,7 @@ interface NewWorkspaceRouteOptions {
   displayName?: string;
   projectId?: string;
   draftId?: string;
+  autoCreate?: boolean;
 }
 
 function buildNewWorkspaceSearch(options: NewWorkspaceRouteOptions): string {
@@ -465,6 +466,9 @@ function buildNewWorkspaceSearch(options: NewWorkspaceRouteOptions): string {
   }
   if (options.draftId) {
     params.set("draftId", options.draftId);
+  }
+  if (options.autoCreate === true) {
+    params.set("autoCreate", "1");
   }
   return params.toString();
 }

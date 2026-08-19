@@ -25,7 +25,7 @@ export interface DaemonSelfUpdateInput {
   onProgress: (phase: DaemonSelfUpdatePhase) => void;
   logger: DaemonSelfUpdateLogger;
   paseoHome?: string;
-  updateId?: string;
+  allowLiveNpmMutation?: boolean;
 }
 
 export interface DaemonSelfUpdateLogger {
@@ -37,6 +37,7 @@ export interface DaemonSelfUpdateRuntime {
   npm: NpmGlobalPaseoCli;
   installOrigin: DaemonInstallOriginRuntime;
   armRollbackWatchdog?: typeof armDaemonUpdateRollbackWatchdog;
+  createUpdateId?: () => string;
 }
 
 export class DaemonSelfUpdateInProgressError extends Error {
@@ -50,10 +51,14 @@ const defaultRuntime: DaemonSelfUpdateRuntime = {
   npm: npmGlobalPaseoCli,
   installOrigin: daemonInstallOriginRuntime,
   armRollbackWatchdog: armDaemonUpdateRollbackWatchdog,
+  createUpdateId: randomUUID,
 };
 
 const DESKTOP_MANAGED_UPDATE_ERROR =
   "This daemon is managed by Paseo Desktop. Update Paseo Desktop on the host.";
+const DISABLED_SELF_UPDATE_ERROR =
+  "Daemon self-update is disabled until staged executable activation is available.";
+const DASEO_SELF_UPDATE_ERROR = "Daseo updates use signed local release artifacts.";
 
 export class DaemonSelfUpdater {
   private inProgress = false;
@@ -61,7 +66,9 @@ export class DaemonSelfUpdater {
   constructor(private readonly runtime: DaemonSelfUpdateRuntime = defaultRuntime) {}
 
   async update(input: DaemonSelfUpdateInput): Promise<DaemonSelfUpdateResult> {
+    if (process.env.DASEO_DISTRIBUTION === "1") return this.failure(DASEO_SELF_UPDATE_ERROR);
     if (input.desktopManaged) return this.failure(DESKTOP_MANAGED_UPDATE_ERROR);
+    if (input.allowLiveNpmMutation !== true) return this.failure(DISABLED_SELF_UPDATE_ERROR);
     if (this.inProgress) throw new DaemonSelfUpdateInProgressError();
     this.inProgress = true;
     try {
@@ -72,7 +79,7 @@ export class DaemonSelfUpdater {
   }
 
   private async runUpdate(input: DaemonSelfUpdateInput): Promise<DaemonSelfUpdateResult> {
-    const updateId = input.updateId ?? randomUUID();
+    const updateId = (this.runtime.createUpdateId ?? randomUUID)();
     const trialStore = input.paseoHome ? new DaemonUpdateTrialStore(input.paseoHome) : null;
     let prepared: { previousVersion: string; targetVersion: string } | null = null;
     let installSucceeded = false;

@@ -254,6 +254,11 @@ async function writeOutputs(outputs) {
   }
 }
 
+export function generatedBrandOutputMatches(actual, expected) {
+  if (Buffer.isBuffer(expected)) return actual.equals(expected);
+  return actual.toString("utf8").replaceAll("\r\n", "\n") === expected.replaceAll("\r\n", "\n");
+}
+
 async function checkOutputs(outputs) {
   const stale = [];
   for (const [relativePath, expected] of outputs) {
@@ -265,8 +270,7 @@ async function checkOutputs(outputs) {
       stale.push(`${relativePath} (missing)`);
       continue;
     }
-    const expectedBuffer = Buffer.isBuffer(expected) ? expected : Buffer.from(expected);
-    if (!actual.equals(expectedBuffer)) stale.push(relativePath);
+    if (!generatedBrandOutputMatches(actual, expected)) stale.push(relativePath);
   }
   if (stale.length > 0) {
     throw new Error(

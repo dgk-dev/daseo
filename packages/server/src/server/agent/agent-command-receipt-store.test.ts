@@ -61,6 +61,36 @@ describe("AgentCommandReceiptStore", () => {
     ).resolves.toMatchObject({ kind: "conflict", receipt: { agentId: "agent-1" } });
   });
 
+  test("requires an explicit resolution before retrying an ambiguous command", async () => {
+    const paseoHome = await mkdtemp(join(tmpdir(), "paseo-command-receipt-resolution-"));
+    const store = new AgentCommandReceiptStore(paseoHome, logger);
+    const payloadHash = hashAgentCommandPayload({ agentId: "agent-1", text: "ambiguous" });
+    await store.admit({ commandId: "retry-id", agentId: "agent-1", payloadHash });
+
+    await expect(store.resolve({ commandId: "retry-id", action: "retry" })).resolves.toMatchObject({
+      status: "retry_ready",
+      receipt: { status: "in_flight" },
+    });
+    await expect(
+      store.admit({ commandId: "retry-id", agentId: "agent-1", payloadHash }),
+    ).resolves.toMatchObject({ kind: "new", receipt: { status: "in_flight" } });
+
+    await expect(
+      store.resolve({ commandId: "retry-id", action: "discard" }),
+    ).resolves.toMatchObject({ status: "rejected", receipt: { error: "Discarded by operator" } });
+    await expect(store.get("retry-id")).resolves.toMatchObject({ status: "rejected" });
+
+    await store.settle({ commandId: "retry-id", status: "accepted" });
+    await expect(store.resolve({ commandId: "retry-id", action: "retry" })).resolves.toMatchObject({
+      status: "accepted",
+      receipt: { status: "accepted" },
+    });
+    await expect(store.resolve({ commandId: "missing-id", action: "retry" })).resolves.toEqual({
+      status: "retry_ready",
+      receipt: null,
+    });
+  });
+
   test("hashes object keys deterministically while preserving image and text identity", () => {
     const left = hashAgentCommandPayload({
       agentId: "agent-1",

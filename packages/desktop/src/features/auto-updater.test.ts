@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { UUID } from "builder-util-runtime";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const { autoUpdaterMock } = vi.hoisted(() => {
   const handlers = new Map<string, (value: unknown) => void>();
@@ -45,7 +45,33 @@ import {
   shouldInstallAppUpdateOnQuit,
 } from "./auto-updater";
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe("checkForAppUpdate", () => {
+  it("never contacts the Paseo feed from a Daseo distribution", async () => {
+    vi.stubEnv("DASEO_DISTRIBUTION", "1");
+    autoUpdaterMock.checkForUpdates.mockClear();
+
+    await expect(
+      checkForAppUpdate({
+        currentVersion: "0.5.3",
+        releaseChannel: "stable",
+        intent: "manual",
+      }),
+    ).resolves.toEqual({
+      hasUpdate: false,
+      readyToInstall: false,
+      currentVersion: "0.5.3",
+      latestVersion: "0.5.3",
+      body: null,
+      date: null,
+      errorMessage: null,
+    });
+    expect(autoUpdaterMock.checkForUpdates).not.toHaveBeenCalled();
+  });
+
   it("treats an unpublished channel manifest as an unavailable update", async () => {
     const error = Object.assign(new Error("Cannot find latest-mac.yml"), {
       code: "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND",

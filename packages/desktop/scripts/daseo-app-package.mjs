@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -36,6 +36,16 @@ function writeLocalizedBundleName(appPath) {
   }
 }
 
+export function writeDaseoDistributionMetadata(appPath) {
+  const resourcesPath = path.join(appPath, "Contents", "Resources");
+  mkdirSync(resourcesPath, { recursive: true });
+  writeFileSync(
+    path.join(resourcesPath, "daseo-distribution.json"),
+    `${JSON.stringify({ distribution: "daseo", updates: "signed-local-artifact" }, null, 2)}\n`,
+  );
+  rmSync(path.join(resourcesPath, "app-update.yml"), { force: true });
+}
+
 export function patchDaseoMacBundleMetadata({ appPath, displayVersion, buildVersion }) {
   if (!/^\d+(?:\.\d+){0,2}$/.test(buildVersion)) {
     throw new Error(`Invalid macOS build version: ${buildVersion}`);
@@ -47,6 +57,7 @@ export function patchDaseoMacBundleMetadata({ appPath, displayVersion, buildVers
   setPlistValue(plistPath, "CFBundleShortVersionString", displayVersion);
   setPlistValue(plistPath, "CFBundleVersion", buildVersion);
   ensurePlistValue(plistPath, "LSHasLocalizedDisplayName", "bool", "true");
+  writeDaseoDistributionMetadata(appPath);
   writeLocalizedBundleName(appPath);
 }
 

@@ -878,19 +878,35 @@ export class EncryptedChannel {
       const previous = this.v2SendTail;
       const operation = (async () => {
         await previous;
+        if (this.state !== "open") throw new Error("Channel not open");
         const v2 = this.options.v2;
         if (!v2) throw new Error("E2EE v2 state was cleared");
         const counter = v2.sendCounter + 1n;
-        const ciphertext = encryptE2EEV2Frame({
-          key: v2.sendKey,
-          noncePrefix: v2.noncePrefix,
-          counter,
-          data,
-        });
-        await this.transport.send(
-          data instanceof ArrayBuffer ? ciphertext : arrayBufferToBase64(ciphertext),
-        );
+        // Consume the counter before encryption or transport I/O. Reusing it
+        // after an ambiguous send would reuse the session key/nonce pair.
         v2.sendCounter = counter;
+        try {
+          const ciphertext = encryptE2EEV2Frame({
+            key: v2.sendKey,
+            noncePrefix: v2.noncePrefix,
+            counter,
+            data,
+          });
+          await this.transport.send(
+            data instanceof ArrayBuffer ? ciphertext : arrayBufferToBase64(ciphertext),
+          );
+        } catch (error) {
+          const err = error instanceof Error ? error : new Error(String(error));
+          this.state = "closed";
+          this.events.onerror?.(err);
+          try {
+            this.transport.close(1011, "E2EE v2 send failed");
+          } catch {
+            // The channel is already permanently closed even if the adapter
+            // cannot emit another close frame.
+          }
+          throw err;
+        }
       })();
       this.v2SendTail = operation.catch(() => undefined);
       await operation;

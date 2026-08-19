@@ -386,7 +386,8 @@ Providers that can accept native tool definitions should set `supportsNativePase
 
 ```
 $PASEO_HOME/
-├── agents/{cwd-with-dashes}/{agent-id}.json   # Agent record + persisted timeline rows
+├── agents/{cwd-with-dashes}/{agent-id}.json   # Agent lifecycle and provider handle
+├── timelines/{agent-id}/                      # Canonical timeline rows and cursor epoch
 ├── projects/projects.json                      # Project registry
 ├── projects/workspaces.json                    # Workspace registry
 ├── projects/icons/                             # Custom project icon images
@@ -405,4 +406,4 @@ $PASEO_HOME/
 2. **Managed desktop**: Electron app spawns daemon as subprocess, and stops it again on quit so that "restart the app" is a complete reset. Settings > Host > "Keep daemon running after quit" opts out. Only a daemon the desktop started is stopped — a daemon you started yourself with `paseo daemon start` is left alone (`paseo.pid` records `desktopManaged`).
 3. **Remote + relay**: Daemon behind firewall, relay bridges with E2E encryption
 
-Headless npm self-update is an exact-version trial. It preflights the target, records a durable-state snapshot and pending update ID, verifies the installed version, rolls back the package on verification failure, and commits only when the restarted target reaches daemon readiness. Desktop-managed daemons continue to use the signed desktop updater instead.
+Live global-npm self-update is disabled by default because it cannot stage an immutable executable or atomically switch the launch target. The daemon advertises no capability unless an operator explicitly enables the legacy path; Daseo distributions reject it regardless and ship through their signed local artifact workflow. Update IDs are daemon-generated UUIDs and every retained trial path is contained under `$PASEO_HOME/updates`.

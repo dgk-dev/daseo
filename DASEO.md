@@ -157,6 +157,12 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     and native pick/paste converts other raster formats to PNG. Key files:
     `packages/app/src/{attachments,composer,utils/image-attachments-from-files.ts}` and
     `packages/desktop/src/features/clipboard-image.ts`.
+16. **Fork-owned update provenance** — Daseo never follows official Paseo npm or GitHub update
+    channels. The Mac packaging step writes `daseo-distribution.json`, removes `app-update.yml`,
+    and the packaged runtime disables Electron auto-update and quit-time installation. The marker
+    is propagated to the bundled daemon, which rejects live npm self-update. Daseo upgrades use the
+    stable local signing identity, recorded source commit, artifact hash, idle gate, and explicit
+    activation approval.
 
 ## Product version policy
 
@@ -174,6 +180,8 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
   `node packages/desktop/scripts/daseo-app-package.mjs packages/desktop/release/mac-arm64/Paseo.app <product-version> <mac-build-version>`
   followed by
   `node packages/desktop/scripts/daseo-code-sign.mjs packages/desktop/release/mac-arm64/Paseo.app`.
+  Verify `Contents/Resources/daseo-distribution.json` exists and `app-update.yml` does not before
+  signing or activation.
   The signer requires the stable `Daseo Local Code Signing` identity and intentionally refuses an
   ad-hoc fallback. Stage the signed bundle to `~/Applications/Paseo Local Patch.app`, rename only
   the outer installed directory to `/Applications/Daseo.app`, and activate via an idle-gated

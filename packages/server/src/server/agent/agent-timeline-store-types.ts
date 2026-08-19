@@ -4,6 +4,8 @@ export interface AgentTimelineRow {
   seq: number;
   timestamp: string;
   item: AgentTimelineItem;
+  /** Internal correlation used to attach a terminal outcome to the correct canonical row. */
+  readonly turnId?: string;
   readonly providerMessageId?: string;
 }
 

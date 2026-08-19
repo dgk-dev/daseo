@@ -178,6 +178,7 @@ interface NewWorkspaceScreenProps {
   projectId?: string;
   displayName?: string;
   draftId?: string;
+  autoCreate?: boolean;
 }
 
 // A terminal launch sends argv, not a message: there is nothing to attach and
@@ -1549,9 +1550,13 @@ function isProjectScopedLaunch(input: {
   projectId: string | undefined;
   sourceDirectory: string | undefined;
   draftId: string | undefined;
+  autoCreate: boolean;
 }): boolean {
   return Boolean(
-    input.projectId?.trim() && input.sourceDirectory?.trim() && !input.draftId?.trim(),
+    input.autoCreate &&
+    input.projectId?.trim() &&
+    input.sourceDirectory?.trim() &&
+    !input.draftId?.trim(),
   );
 }
 
@@ -1561,6 +1566,7 @@ export function NewWorkspaceScreen({
   projectId,
   displayName: displayNameProp,
   draftId,
+  autoCreate,
 }: NewWorkspaceScreenProps) {
   const queryClient = useQueryClient();
   const { theme } = useUnistyles();
@@ -2063,11 +2069,16 @@ export function NewWorkspaceScreen({
     ],
   );
 
-  // Project-scoped launches (sidebar "+ new workspace" rows and the header
-  // button while a workspace is active) skip the intro form; see
+  // Only routes carrying explicit one-click intent skip the intro form. Project
+  // context alone preselects the form without creating durable state; see
   // useAutoCreateEmptyWorkspace for the fallback rules.
   const autoCreateEmptyActive = useAutoCreateEmptyWorkspace({
-    requested: isProjectScopedLaunch({ projectId, sourceDirectory: sourceDirectoryProp, draftId }),
+    requested: isProjectScopedLaunch({
+      projectId,
+      sourceDirectory: sourceDirectoryProp,
+      draftId,
+      autoCreate: autoCreate === true,
+    }),
     isConnected,
     selectedProject,
     selectedSourceDirectory,

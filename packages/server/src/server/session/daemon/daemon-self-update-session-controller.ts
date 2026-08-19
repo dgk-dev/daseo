@@ -26,6 +26,7 @@ export interface DaemonSelfUpdateSessionControllerOptions {
   daemonVersion: string | null;
   paseoHome?: string;
   desktopManaged?: boolean;
+  selfUpdateEnabled?: boolean;
   emit: (msg: SessionOutboundMessage) => void;
   emitLifecycleIntent: (intent: DaemonSelfUpdateRestartIntent) => void;
   sessionLogger: pino.Logger;
@@ -41,6 +42,7 @@ export class DaemonSelfUpdateSessionController {
   private readonly daemonVersion: string | null;
   private readonly paseoHome: string | undefined;
   private readonly desktopManaged: boolean;
+  private readonly selfUpdateEnabled: boolean;
   private readonly emit: (msg: SessionOutboundMessage) => void;
   private readonly emitLifecycleIntent: (intent: DaemonSelfUpdateRestartIntent) => void;
   private readonly sessionLogger: pino.Logger;
@@ -51,6 +53,7 @@ export class DaemonSelfUpdateSessionController {
     this.daemonVersion = options.daemonVersion;
     this.paseoHome = options.paseoHome;
     this.desktopManaged = options.desktopManaged === true;
+    this.selfUpdateEnabled = options.selfUpdateEnabled === true;
     this.emit = options.emit;
     this.emitLifecycleIntent = options.emitLifecycleIntent;
     this.sessionLogger = options.sessionLogger;
@@ -74,7 +77,7 @@ export class DaemonSelfUpdateSessionController {
         onProgress: (phase) => this.emitProgress(msg.requestId, phase),
         logger: this.sessionLogger,
         paseoHome: this.paseoHome,
-        updateId: msg.requestId,
+        allowLiveNpmMutation: this.selfUpdateEnabled,
       });
 
       this.emitResponse({
@@ -83,7 +86,7 @@ export class DaemonSelfUpdateSessionController {
         error: result.error,
         previousVersion,
         newVersion: result.newVersion,
-        updateId: result.updateId ?? msg.requestId,
+        updateId: result.updateId ?? null,
         targetVersion: result.targetVersion ?? result.newVersion,
         rolledBack: result.rolledBack ?? false,
       });

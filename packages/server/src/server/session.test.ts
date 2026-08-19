@@ -512,6 +512,58 @@ describe("durable agent command receipts", () => {
     });
     expect(streamAgent).toHaveBeenCalledTimes(1);
   });
+
+  test("looks up and explicitly resolves an ambiguous command receipt", async () => {
+    const paseoHome = mkdtempSync(join(tmpdir(), "paseo-command-resolution-session-"));
+    tempDirs.push(paseoHome);
+    const messages: SessionOutboundMessage[] = [];
+    const receiptStore = new AgentCommandReceiptStore(paseoHome, pino({ level: "silent" }));
+    await receiptStore.admit({
+      commandId: "ambiguous-command",
+      agentId: "agent-1",
+      payloadHash: "sha256:test",
+    });
+    const session = createSessionForTest({
+      paseoHome,
+      messages,
+      agentCommandReceiptStore: receiptStore,
+      agentManager: { hasCanonicalSubmittedPrompt: vi.fn().mockResolvedValue(false) },
+    });
+
+    await session.handleMessage({
+      type: "agent.command_receipt.get.request",
+      requestId: "get-receipt",
+      commandId: "ambiguous-command",
+    });
+    await session.handleMessage({
+      type: "agent.command_receipt.resolve.request",
+      requestId: "resolve-receipt",
+      commandId: "ambiguous-command",
+      action: "retry",
+    });
+
+    expect(messages).toContainEqual({
+      type: "agent.command_receipt.get.response",
+      payload: {
+        requestId: "get-receipt",
+        commandId: "ambiguous-command",
+        agentId: "agent-1",
+        status: "in_flight",
+        error: null,
+      },
+    });
+    expect(messages).toContainEqual({
+      type: "agent.command_receipt.resolve.response",
+      payload: {
+        requestId: "resolve-receipt",
+        commandId: "ambiguous-command",
+        agentId: "agent-1",
+        status: "retry_ready",
+        error: null,
+      },
+    });
+    await expect(receiptStore.get("ambiguous-command")).resolves.toBeNull();
+  });
 });
 
 test("lists and revokes paired devices without exposing signing keys", async () => {
@@ -523,20 +575,28 @@ test("lists and revokes paired devices without exposing signing keys", async () 
     label: "Fold",
     platform: "android",
     appVersion: "0.5.0",
-    scopes: ["*"],
+    scopes: ["mobile"],
     createdAt: "2026-08-18T00:00:00.000Z",
     lastSeenAt: "2026-08-18T00:01:00.000Z",
     revokedAt: null,
   };
+  const revokeDevice = vi.fn().mockReturnValue(2);
   const session = createSessionForTest({
     messages,
     onDeviceRevoked,
+    pushNotifications: asPushNotifications({ revokeDevice }),
     devicePairingStore: {
       listDevices: vi.fn().mockResolvedValue([device]),
-      revoke: vi.fn().mockResolvedValue({
-        ...device,
-        revokedAt: "2026-08-18T00:02:00.000Z",
-      }),
+      revoke: vi.fn(
+        async (
+          deviceId: string,
+          _now: Date,
+          beforeCommit: ((deviceId: string) => void) | undefined,
+        ) => {
+          beforeCommit?.(deviceId);
+          return { ...device, revokedAt: "2026-08-18T00:02:00.000Z" };
+        },
+      ),
     } as unknown as NonNullable<SessionOptions["devicePairingStore"]>,
   });
 
@@ -562,6 +622,10 @@ test("lists and revokes paired devices without exposing signing keys", async () 
     },
   ]);
   expect(JSON.stringify(messages)).not.toContain("do-not-emit");
+  expect(revokeDevice).toHaveBeenCalledWith("device-1");
+  expect(revokeDevice.mock.invocationCallOrder[0]).toBeLessThan(
+    onDeviceRevoked.mock.invocationCallOrder[0]!,
+  );
   expect(onDeviceRevoked).toHaveBeenCalledWith("device-1");
 });
 
@@ -705,6 +769,25 @@ describe("session authorization scopes", () => {
     ["hub.execution.*", "hub.executions.agent.create.request"],
   ])("scope %s rejects %s", (scope, requestType) => {
     expect(isSessionRpcAllowed([scope], requestType)).toBe(false);
+  });
+
+  test.each([
+    "ping",
+    "send_agent_message_request",
+    "browser.automation.execute.request",
+    "schedule/create",
+  ])("mobile device scope allows ordinary operator RPC %s", (requestType) => {
+    expect(isSessionRpcAllowed(["mobile"], requestType)).toBe(true);
+  });
+
+  test.each([
+    "daemon.update.request",
+    "set_daemon_config_request",
+    "device.pairing.revoke.request",
+    "plugin.directory.install.request",
+    "hub.execution.agent.create.request",
+  ])("mobile device scope denies privileged RPC %s", (requestType) => {
+    expect(isSessionRpcAllowed(["mobile"], requestType)).toBe(false);
   });
 
   test("replaces a session's scopes without reconstructing the session", async () => {
@@ -1658,7 +1741,10 @@ test("push token registration can be revoked by the connected client", async () 
   const session = createSessionForTest({
     messages,
     pushNotifications: asPushNotifications({
-      renew: (token: string) => renewed.push(token),
+      renew: (token: string) => {
+        renewed.push(token);
+        return { epoch: "push-test", events: [], quarantinedThroughSeq: 0 };
+      },
       revoke: (token: string) => revoked.push(token),
     }),
   });
@@ -1684,6 +1770,10 @@ test("push token registration can be revoked by the connected client", async () 
   expect(revoked).toEqual(["ExponentPushToken[test-device]"]);
   expect(messages).toEqual([
     {
+      type: "push.notification.catch_up",
+      payload: { epoch: "push-test", events: [], quarantinedThroughSeq: 0 },
+    },
+    {
       type: "push.unregister.response",
       payload: { requestId: "revoke-1" },
     },
@@ -1696,7 +1786,10 @@ test("push token revocation only acknowledges durable removal", async () => {
   const session = createSessionForTest({
     messages,
     pushNotifications: asPushNotifications({
-      renew: (token: string) => renewed.push(token),
+      renew: (token: string) => {
+        renewed.push(token);
+        return { epoch: "push-test", events: [], quarantinedThroughSeq: 0 };
+      },
       revoke: () => {
         throw new Error("disk full");
       },
@@ -1853,6 +1946,7 @@ describe("daemon status + pairing RPC", () => {
           url: "",
           qr: null,
           relayEnabled: false,
+          expiresAt: null,
         },
       },
     ]);

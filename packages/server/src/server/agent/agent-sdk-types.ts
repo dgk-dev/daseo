@@ -2,13 +2,14 @@ import type {
   AgentProviderNotice,
   AgentTaskItem,
   AssistantMessagePhase,
+  AssistantTurnOutcome,
   ProviderOptions,
   ToolPolicy,
 } from "@getpaseo/protocol/agent-types";
 import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import type { PaseoToolCatalog } from "./tools/types.js";
 
-export type { AgentProviderNotice, AgentTaskItem };
+export type { AgentProviderNotice, AgentTaskItem, AssistantTurnOutcome };
 
 export type AgentProvider = string;
 
@@ -396,6 +397,7 @@ export type AgentTimelineItem =
       text: string;
       messageId?: string;
       phase?: AssistantMessagePhase;
+      turnOutcome?: AssistantTurnOutcome;
     }
   | { type: "reasoning"; text: string }
   | ToolCallTimelineItem
