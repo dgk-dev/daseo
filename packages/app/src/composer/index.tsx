@@ -501,16 +501,21 @@ function attemptStartRealtimeVoice(args: AttemptStartRealtimeVoiceArgs): void {
   });
 }
 
-function focusMessageInputWithPlatformStrategy(messageInputRef: {
-  current: MessageInputRef | null;
-}): void {
+function focusMessageInputWithPlatformStrategy(
+  messageInputRef: { current: MessageInputRef | null },
+  isActive: () => boolean,
+): void {
+  if (!isActive()) return;
   if (isNative) {
     messageInputRef.current?.focus();
     return;
   }
   focusWithRetries({
-    focus: () => messageInputRef.current?.focus(),
+    focus: () => {
+      if (isActive()) messageInputRef.current?.focus();
+    },
     isFocused: () => {
+      if (!isActive()) return true;
       const el = messageInputRef.current?.getNativeElement?.() ?? null;
       const active = typeof document !== "undefined" ? document.activeElement : null;
       return Boolean(el) && active === el;
@@ -1177,6 +1182,8 @@ export function Composer({
   const [lightboxMetadata, setLightboxMetadata] = useState<AttachmentMetadata | null>(null);
   const attachButtonRef = useRef<View | null>(null);
   const messageInputRef = useRef<MessageInputRef>(null);
+  const isPaneFocusedRef = useRef(isPaneFocused);
+  isPaneFocusedRef.current = isPaneFocused;
   const pluginAttachments = usePluginAttachmentPicker({
     serverId,
     client,
@@ -1246,7 +1253,7 @@ export function Composer({
     canExecuteClientSlashCommand: buildOutgoingAttachments(attachments).length === 0,
     onClientSlashCommand: runClientSlashCommand,
     onAutocompleteApplied: () => {
-      messageInputRef.current?.focus();
+      if (isPaneFocusedRef.current) messageInputRef.current?.focus();
     },
   });
   const autocompleteOnKeyPressRef = useRef(autocomplete.onKeyPress);
@@ -1266,6 +1273,7 @@ export function Composer({
   const { pickImages } = useImageAttachmentPicker();
   const { pickFiles } = useFilePicker();
   const agentIdRef = useRef(agentId);
+  agentIdRef.current = agentId;
   const sendAgentMessageRef = useRef<
     | ((
         agentId: string,
@@ -1276,6 +1284,7 @@ export function Composer({
     | null
   >(null);
   const onSubmitMessageRef = useRef(onSubmitMessage);
+  onSubmitMessageRef.current = onSubmitMessage;
 
   const addImages = useCallback(
     (images: ImageAttachment[]) => {
@@ -1295,10 +1304,13 @@ export function Composer({
   );
 
   const focusInput = useCallback(() => {
-    if (isNative) return;
+    if (isNative || !isPaneFocusedRef.current) return;
     focusWithRetries({
-      focus: () => messageInputRef.current?.focus(),
+      focus: () => {
+        if (isPaneFocusedRef.current) messageInputRef.current?.focus();
+      },
       isFocused: () => {
+        if (!isPaneFocusedRef.current) return true;
         const el = messageInputRef.current?.getNativeElement?.() ?? null;
         return el != null && document.activeElement === el;
       },
@@ -1345,10 +1357,6 @@ export function Composer({
   );
 
   useEffect(() => {
-    agentIdRef.current = agentId;
-  }, [agentId]);
-
-  useEffect(() => {
     sendAgentMessageRef.current = async (
       targetAgentId: string,
       text: string,
@@ -1378,10 +1386,6 @@ export function Composer({
       onAttentionPromptSend?.();
     };
   }, [client, onAttentionPromptSend, serverId, supportsForgeSearch, t]);
-
-  useEffect(() => {
-    onSubmitMessageRef.current = onSubmitMessage;
-  }, [onSubmitMessage]);
 
   const hasActiveTurn = useSessionStore(
     (state) => selectAgentTurnPresentation(state.sessions[serverId], agentId).isActive,
@@ -1697,7 +1701,7 @@ export function Composer({
       .finally(() => {
         settleAgentCancellation(serverId, targetAgentId, requestId);
       });
-    messageInputRef.current?.focus();
+    if (isPaneFocusedRef.current) messageInputRef.current?.focus();
   }, [
     beginAgentCancellation,
     client,
@@ -1709,7 +1713,7 @@ export function Composer({
   ]);
 
   const focusMessageInputForKeyboardAction = useCallback(() => {
-    focusMessageInputWithPlatformStrategy(messageInputRef);
+    focusMessageInputWithPlatformStrategy(messageInputRef, () => isPaneFocusedRef.current);
   }, []);
 
   const handleKeyboardAction = useCallback(
@@ -2222,6 +2226,7 @@ export function Composer({
 
               {/* MessageInput handles everything: text, dictation, attachments, all buttons */}
               <StableMessageInput
+                key={`${serverId}:${agentId}`}
                 ref={messageInputRef}
                 value={userInput}
                 onChangeText={setUserInput}

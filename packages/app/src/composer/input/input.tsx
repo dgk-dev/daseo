@@ -1202,8 +1202,11 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const inputWrapperRef = useRef<View | null>(null);
     const textInputRef = useRef<ComposerTextInputHandle | null>(null);
     const isInputFocusedRef = useRef(false);
+    const isPaneFocusedRef = useRef(isPaneFocused);
+    const wasPaneFocusedRef = useRef(isPaneFocused);
     const valueRef = useRef(value);
     const appliedTextReplacementKeyRef = useRef(textReplacementKey);
+    isPaneFocusedRef.current = isPaneFocused;
 
     const replaceText = useCallback(
       (nextText: string, selection?: { start: number; end: number }) => {
@@ -1259,6 +1262,22 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       valueRef.current = value;
       textInputRef.current?.replaceText(value);
     }, [textReplacementKey, value]);
+
+    useLayoutEffect(() => {
+      const wasPaneFocused = wasPaneFocusedRef.current;
+      wasPaneFocusedRef.current = isPaneFocused;
+
+      if (!isPaneFocused) {
+        textInputRef.current?.blur();
+        return;
+      }
+      if (!wasPaneFocused) {
+        // A retained input can receive an already-queued browser/IME event after its tab loses
+        // ownership. Restore the newly active surface from its agent-scoped draft before paint.
+        valueRef.current = value;
+        textInputRef.current?.replaceText(value);
+      }
+    }, [isPaneFocused, value]);
 
     useEffect(() => {
       return () => {
@@ -1662,6 +1681,9 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
 
     const handleInputChange = useCallback(
       (nextValue: string) => {
+        // Retained panes stay mounted. Ignore late native/IME events from a composer that no
+        // longer owns logical input, otherwise its text can overwrite another session's draft.
+        if (!isPaneFocusedRef.current) return;
         valueRef.current = nextValue;
         onChangeText(nextValue);
       },

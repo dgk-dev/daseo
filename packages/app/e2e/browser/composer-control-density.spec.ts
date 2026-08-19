@@ -54,6 +54,59 @@ test.describe("Composer control density across tab switches", () => {
     }
   });
 
+  test("late input from an inactive agent tab cannot overwrite either session draft", async ({
+    page,
+  }) => {
+    const workspace = await seedWorkspace({ repoPrefix: "composer-session-isolation-" });
+    try {
+      const first = await seedSettledMockAgent(workspace, "First isolated chat");
+      const second = await seedSettledMockAgent(workspace, "Second isolated chat");
+      await openWorkspaceWithAgents(page, [first, second]);
+
+      const visibleComposer = () =>
+        page.locator("textarea[data-composer-input]").filter({ visible: true }).first();
+      const firstDraft = `first draft ${Date.now()}`;
+      const secondDraft = `second draft ${Date.now()}`;
+      const lateForeignText = `late foreign input ${Date.now()}`;
+
+      await visibleAgentTab(page, first.id).click();
+      await visibleComposer().fill(firstDraft);
+      const inactiveInput = await visibleComposer().elementHandle();
+      if (!inactiveInput) throw new Error("Expected the first agent composer input");
+
+      await visibleAgentTab(page, second.id).click();
+      await visibleComposer().fill(secondDraft);
+
+      // Model a delayed browser/IME input event that was queued for the old textarea before
+      // the tab switch completed. Retained tabs keep that node mounted, but it no longer owns
+      // physical or logical input and must not publish into its draft.
+      await inactiveInput.evaluate((element, text) => {
+        if (!(element instanceof HTMLTextAreaElement)) {
+          throw new Error("Expected a retained HTML textarea");
+        }
+        // oxlint-disable-next-line typescript-eslint/unbound-method -- the native setter is rebound below
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+        if (!setter) throw new Error("HTML textarea value setter is unavailable");
+        setter.call(element, text);
+        element.dispatchEvent(
+          new InputEvent("input", {
+            bubbles: true,
+            data: text,
+            inputType: "insertText",
+          }),
+        );
+      }, lateForeignText);
+
+      await expect(visibleComposer()).toHaveValue(secondDraft);
+      await visibleAgentTab(page, first.id).click();
+      await expect(visibleComposer()).toHaveValue(firstDraft);
+      await visibleAgentTab(page, second.id).click();
+      await expect(visibleComposer()).toHaveValue(secondDraft);
+    } finally {
+      await workspace.cleanup();
+    }
+  });
+
   test("switching between draft tabs never paints a collapsed composer toolbar", async ({
     page,
   }) => {
