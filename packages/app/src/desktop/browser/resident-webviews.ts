@@ -58,10 +58,17 @@ function registerBrowserWhenAttached(
   identity: BrowserWebviewIdentity,
   browser: BrowserWebviewProfileHost,
 ): void {
-  // Reparenting a webview can replace its guest WebContents without replacing
-  // this DOM element, so every attachment needs a fresh main-process registration.
-  webview.addEventListener("did-attach", () => {
-    const webContentsId = webview.getWebContentsId();
+  let awaitingDomReady = false;
+  const register = (reportFailure: boolean): boolean => {
+    let webContentsId: number;
+    try {
+      webContentsId = webview.getWebContentsId();
+    } catch (error) {
+      if (reportFailure) {
+        console.error("[browser-webview] attached guest identity unavailable", error);
+      }
+      return false;
+    }
     void browser
       .registerAttachedBrowser({
         browserId: identity.browserId,
@@ -71,6 +78,23 @@ function registerBrowserWhenAttached(
       .catch((error) => {
         console.error("[browser-webview] attached registration failed", error);
       });
+    return true;
+  };
+
+  // Electron can emit did-attach before getWebContentsId becomes legal. A
+  // reparented, already-ready guest registers immediately; a new guest waits
+  // for its first dom-ready instead of throwing out of the renderer event.
+  webview.addEventListener("did-attach", () => {
+    if (register(false) || awaitingDomReady) return;
+    awaitingDomReady = true;
+    webview.addEventListener(
+      "dom-ready",
+      () => {
+        awaitingDomReady = false;
+        register(true);
+      },
+      { once: true },
+    );
   });
 }
 

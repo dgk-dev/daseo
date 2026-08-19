@@ -261,6 +261,36 @@ describe("resident browser webviews", () => {
     ]);
   });
 
+  it("waits for dom-ready when Electron exposes the guest identity after did-attach", () => {
+    const webview = ensureTestBrowser({
+      browserId: "browser-delayed-identity",
+      workspaceId: "workspace-delayed-identity",
+      url: "https://example.com/delayed",
+    });
+    if (!webview) throw new Error("Expected resident webview");
+
+    let ready = false;
+    Object.assign(webview, {
+      getWebContentsId: () => {
+        if (!ready) throw new Error("guest is not ready");
+        return 303;
+      },
+    });
+
+    webview.dispatchEvent(new Event("did-attach"));
+    expect(attachedBrowsers).toEqual([]);
+
+    ready = true;
+    webview.dispatchEvent(new Event("dom-ready"));
+    expect(attachedBrowsers).toEqual([
+      {
+        browserId: "browser-delayed-identity",
+        workspaceId: "workspace-delayed-identity",
+        webContentsId: 303,
+      },
+    ]);
+  });
+
   it("normalizes an existing resident host back to permanent parking", () => {
     const staleHost = document.createElement("div");
     staleHost.id = RESIDENT_HOST_ID;

@@ -89,19 +89,27 @@ describe.skipIf(isPlatform("win32"))("worktree-bootstrap POSIX-only", () => {
       throw new Error(`Timed out waiting for path: ${targetPath}`);
     }
 
-    function readEnvFile(path: string): Record<string, string> {
-      const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error(`Expected env file to contain a JSON object: ${path}`);
-      }
+    async function readEnvFile(path: string, timeoutMs = 10000): Promise<Record<string, string>> {
+      const startedAt = Date.now();
+      let lastError: unknown = null;
+      while (Date.now() - startedAt < timeoutMs) {
+        try {
+          const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            throw new Error(`Expected env file to contain a JSON object: ${path}`);
+          }
 
-      const env: Record<string, string> = {};
-      for (const [key, value] of Object.entries(parsed)) {
-        if (typeof value === "string") {
-          env[key] = value;
+          const env: Record<string, string> = {};
+          for (const [key, value] of Object.entries(parsed)) {
+            if (typeof value === "string") env[key] = value;
+          }
+          return env;
+        } catch (error) {
+          lastError = error;
+          await new Promise((resolve) => setTimeout(resolve, 25));
         }
       }
-      return env;
+      throw new Error(`Timed out waiting for complete env JSON: ${path}`, { cause: lastError });
     }
 
     beforeEach(() => {
@@ -468,8 +476,8 @@ describe.skipIf(isPlatform("win32"))("worktree-bootstrap POSIX-only", () => {
       await waitForPathExists(apiEnvPath);
       await waitForPathExists(webEnvPath);
 
-      const apiEnv = readEnvFile(apiEnvPath);
-      const webEnv = readEnvFile(webEnvPath);
+      const apiEnv = await readEnvFile(apiEnvPath);
+      const webEnv = await readEnvFile(webEnvPath);
 
       expect(apiEnv.PASEO_SERVICE_API_URL).toBe(
         "http://api--feature-peer-env--repo.localhost:6767",
