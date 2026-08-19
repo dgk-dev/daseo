@@ -300,6 +300,37 @@ describe("collapseCompletedWork", () => {
     expect(result.summaryTurnKeyByAssistantId.get("final-a")).toBe("provider-final-b");
   });
 
+  test("keeps phase-less completed answers visible across an autonomous extension follow-up", () => {
+    const user = item("user_message");
+    const extensionNotice = assistant("extension-notice", {
+      text: "Content fetched for 1/5 URLs.",
+      phase: "commentary",
+    });
+    const work = item("tool_call");
+    const detailedAnswer = assistant("detailed-answer", {
+      text: "The full researched conclusion.",
+      messageId: "response-detailed",
+      turnOutcome: "completed",
+    });
+    const followUpThought = item("thought");
+    const backgroundNotice = assistant("background-notice", {
+      text: "The background fetch added nothing new.",
+      messageId: "response-background",
+      turnOutcome: "completed",
+    });
+    const items = [user, extensionNotice, work, detailedAnswer, followUpThought, backgroundNotice];
+
+    const result = collapseCompletedWork({
+      items,
+      expandedTurnKeys: NONE,
+      keepLastTurnExpanded: false,
+    });
+
+    expect(result.items).toEqual([user, detailedAnswer, backgroundNotice]);
+    expect(result.workCountByTurnKey.get("response-background")).toBe(3);
+    expect(result.summaryTurnKeyByAssistantId.get("detailed-answer")).toBe("response-background");
+  });
+
   test("keeps explicit final answers visible across an autonomous extension follow-up", () => {
     const user = item("user_message");
     const work = item("tool_call");

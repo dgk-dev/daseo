@@ -156,6 +156,29 @@ function getFinalGroupIndices(
     });
   }
 
+  if (!hasExplicitFinalAnswer) {
+    for (const index of assistantIndices) {
+      const assistant = items[index];
+      if (
+        assistant?.kind !== "assistant_message" ||
+        assistant.phase !== undefined ||
+        assistant.turnOutcome !== "completed"
+      ) {
+        continue;
+      }
+      // A phase-less provider can settle, wake for autonomous extension work,
+      // and settle again without another user message. Each completed output is
+      // an authoritative response boundary; preserving it avoids folding an
+      // earlier answer behind the later background notification.
+      addLogicalAssistantGroup({
+        items,
+        assistantIndices,
+        terminalIndex: index,
+        visibleIndices: finalGroupIndices,
+      });
+    }
+  }
+
   const lastAssistant = items[lastAssistantIndex];
   // Codex treats absent phase as "unknown" for provider compatibility. Keep
   // the legacy last-message fallback unless the provider explicitly says the

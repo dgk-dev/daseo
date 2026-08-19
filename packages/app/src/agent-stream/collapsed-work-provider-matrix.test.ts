@@ -163,6 +163,43 @@ describe("completed-work provider event matrix", () => {
     expect([...collapsed.workCountByTurnKey.values()]).toEqual([3]);
   });
 
+  test("Pi keeps a completed answer visible when an autonomous extension settles again", () => {
+    const provider = "pi";
+    const reduced = reduceProviderEvents([
+      timeline(provider, { type: "user_message", text: "Research", messageId: "user-pi" }, 0),
+      timeline(provider, { type: "reasoning", text: "Researching" }, 1),
+      timeline(provider, toolItem({ callId: "pi-tool", status: "completed" }), 2),
+      timeline(
+        provider,
+        {
+          type: "assistant_message",
+          text: "The full researched conclusion.",
+          messageId: "response-detailed",
+        },
+        3,
+      ),
+      terminal(provider, { type: "turn_completed" }, 4),
+      timeline(provider, { type: "reasoning", text: "Checking the background fetch" }, 5),
+      timeline(
+        provider,
+        {
+          type: "assistant_message",
+          text: "The background fetch added nothing new.",
+          messageId: "response-background",
+        },
+        6,
+      ),
+      terminal(provider, { type: "turn_completed" }, 7),
+    ]);
+    const collapsed = collapseIdle(reduced.tail);
+
+    expect(assistantTexts(collapsed.items)).toEqual([
+      "The full researched conclusion.",
+      "The background fetch added nothing new.",
+    ]);
+    expect(collapsed.workCountByTurnKey.get("response-background")).toBe(3);
+  });
+
   test.each([
     ["failed", terminal("opencode", { type: "turn_failed", error: "provider failed" }, 4)],
     ["canceled", terminal("opencode", { type: "turn_canceled", reason: "interrupted" }, 4)],
