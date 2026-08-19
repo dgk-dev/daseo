@@ -4301,6 +4301,7 @@ test("coalesces assistant chunks and persists the canonical row", async () => {
     {
       type: "assistant_message",
       text: "final reply",
+      turnOutcome: "completed",
     },
   ]);
   const fetched = await manager.fetchTimeline(snapshot.id, {
@@ -4312,6 +4313,7 @@ test("coalesces assistant chunks and persists the canonical row", async () => {
   expect(fetched.rows[0]?.item).toEqual({
     type: "assistant_message",
     text: "final reply",
+    turnOutcome: "completed",
   });
 });
 
@@ -5350,6 +5352,7 @@ test("applies live autonomous events and preserves usage omitted from completion
   expect(manager.getTimeline(snapshot.id)).toContainEqual({
     type: "assistant_message",
     text: "AUTONOMOUS_PUMP_MESSAGE",
+    turnOutcome: "completed",
   });
   expect(lifecycleUpdates).toContain("running");
   expect(lifecycleUpdates).toContain("idle");
@@ -5905,6 +5908,7 @@ test("subscribe error isolation: throwing subscriber does not break event flow",
   expect(manager.getTimeline(snapshot.id)).toContainEqual({
     type: "assistant_message",
     text: "EVENT_AFTER_ERROR",
+    turnOutcome: "completed",
   });
 });
 
@@ -8929,7 +8933,12 @@ test("canonical submitted prompt keeps wire identity while rewind resolves provi
       {
         seq: 2,
         timestamp: expect.any(String),
-        item: { type: "assistant_message", text: "output before provider echo" },
+        turnId: "turn-submitted-user-message",
+        item: {
+          type: "assistant_message",
+          text: "output before provider echo",
+          turnOutcome: "completed",
+        },
       },
     ]);
 

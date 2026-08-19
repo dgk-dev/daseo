@@ -140,9 +140,13 @@ async function addRasterOutput(outputs, relativePath, svg, size) {
   outputs.set(relativePath, await renderPng(svg, size));
 }
 
+function normalizeGeneratedText(value) {
+  return value.replaceAll("\r\n", "\n");
+}
+
 export async function buildBrandOutputs() {
   const sourcePath = path.join(REPO_ROOT, SOURCE_RELATIVE_PATH);
-  const source = await readFile(sourcePath, "utf8");
+  const source = normalizeGeneratedText(await readFile(sourcePath, "utf8"));
   const mark = readCanonicalMark(source);
   const outputs = new Map();
   outputs.set(GENERATED_MODULE_PATH, createGeneratedModule(mark));
@@ -256,7 +260,7 @@ async function writeOutputs(outputs) {
 
 export function generatedBrandOutputMatches(actual, expected) {
   if (Buffer.isBuffer(expected)) return actual.equals(expected);
-  return actual.toString("utf8").replaceAll("\r\n", "\n") === expected.replaceAll("\r\n", "\n");
+  return normalizeGeneratedText(actual.toString("utf8")) === normalizeGeneratedText(expected);
 }
 
 async function checkOutputs(outputs) {

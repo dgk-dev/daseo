@@ -54,16 +54,18 @@ export interface IdleAgentSeedClient {
 
 export async function createIdleAgent(
   client: IdleAgentSeedClient,
-  input: { cwd: string; workspaceId: string; title: string },
+  input: { cwd: string; workspaceId: string; title: string; provider?: "opencode" | "mock" },
 ): Promise<ArchiveTabAgent> {
+  const provider = input.provider ?? "opencode";
   const created = await client.createAgent({
-    provider: "opencode",
-    model: "opencode/gpt-5-nano",
+    provider,
+    model: provider === "mock" ? "ten-second-stream" : "opencode/gpt-5-nano",
     // OpenCode has no "bypassPermissions" mode (that's Claude's). Use build with
     // auto_accept for unattended full access — mode validation now rejects modes
-    // the provider doesn't define.
-    modeId: "build",
-    featureValues: { auto_accept: true },
+    // the provider doesn't define. The mock option keeps navigation-only specs
+    // independent of a runner-local OpenCode installation.
+    modeId: provider === "mock" ? "load-test" : "build",
+    featureValues: provider === "mock" ? undefined : { auto_accept: true },
     cwd: input.cwd,
     workspaceId: input.workspaceId,
     title: input.title,

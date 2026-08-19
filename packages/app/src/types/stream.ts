@@ -422,9 +422,14 @@ function upsertCanonicalUserMessageInTail(
 ): Pick<UserMessageProductionResult, "items" | "message" | "matched"> {
   const produced = produceUserMessage(tail, message, null, "existing");
   if (!insertWhenUnmatched) return produced;
-  if (produced.matched && placement === "preserve-existing" && !message.timelineCursor) {
-    return produced;
+  if (!produced.matched) {
+    return {
+      items: [...produced.items, produced.message],
+      message: produced.message,
+      matched: false,
+    };
   }
+  if (placement === "preserve-existing" && !message.timelineCursor) return produced;
   const preceding = produced.matched
     ? [...produced.items.slice(0, produced.index), ...produced.items.slice(produced.index + 1)]
     : produced.items;

@@ -143,21 +143,24 @@ describe("FcmService", () => {
     expect(revoke).toHaveBeenCalledWith("fcm:stale-token");
   });
 
-  test("refuses a credential file readable by other users", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "daseo-fcm-"));
-    directories.push(directory);
-    const credentialPath = createCredentialsFile(directory, 0o644);
-    const fetchMock = vi.fn();
-    const service = new FcmService(createLogger(), vi.fn(), {
-      credentialPath,
-      fetch: fetchMock as typeof fetch,
-    });
+  test.skipIf(process.platform === "win32")(
+    "refuses a credential file readable by other users",
+    async () => {
+      const directory = mkdtempSync(path.join(tmpdir(), "daseo-fcm-"));
+      directories.push(directory);
+      const credentialPath = createCredentialsFile(directory, 0o644);
+      const fetchMock = vi.fn();
+      const service = new FcmService(createLogger(), vi.fn(), {
+        credentialPath,
+        fetch: fetchMock as typeof fetch,
+      });
 
-    await service.sendPush(["fcm:device-token"], {
-      title: "Finished",
-      body: "Done",
-    });
+      await service.sendPush(["fcm:device-token"], {
+        title: "Finished",
+        body: "Done",
+      });
 
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
 });

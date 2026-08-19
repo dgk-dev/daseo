@@ -12,7 +12,7 @@ async function pressSettingsToggleShortcut(page: import("@playwright/test").Page
 
 async function expectSendBehavior(
   page: import("@playwright/test").Page,
-  expected: "interrupt" | "queue",
+  expected: "steer" | "queue",
 ) {
   await expect
     .poll(async () => {
@@ -56,11 +56,13 @@ test.describe("Settings toggle tab regression", () => {
         cwd: workspace.repoPath,
         workspaceId: workspace.workspaceId,
         title: `settings-toggle-a-${Date.now()}`,
+        provider: "mock",
       });
       const secondAgent = await createIdleAgent(workspace.client, {
         cwd: workspace.repoPath,
         workspaceId: workspace.workspaceId,
         title: `settings-toggle-b-${Date.now()}`,
+        provider: "mock",
       });
 
       await openWorkspaceWithAgents(page, [firstAgent, secondAgent]);
@@ -72,8 +74,8 @@ test.describe("Settings toggle tab regression", () => {
 
       await page.getByRole("button", { name: "Queue", exact: true }).click();
       await expectSendBehavior(page, "queue");
-      await page.getByRole("button", { name: "Interrupt", exact: true }).click();
-      await expectSendBehavior(page, "interrupt");
+      await page.getByRole("button", { name: "Steer", exact: true }).click();
+      await expectSendBehavior(page, "steer");
 
       await pressSettingsToggleShortcut(page);
       await expect(page).toHaveURL(buildHostWorkspaceRoute(serverId, workspace.workspaceId));
@@ -99,11 +101,13 @@ test.describe("Settings toggle tab regression", () => {
         cwd: workspace.repoPath,
         workspaceId: workspace.workspaceId,
         title: `agent-route-refresh-a-${Date.now()}`,
+        provider: "mock",
       });
       const secondAgent = await createIdleAgent(workspace.client, {
         cwd: workspace.repoPath,
         workspaceId: workspace.workspaceId,
         title: `agent-route-refresh-b-${Date.now()}`,
+        provider: "mock",
       });
 
       await openAgentRouteAndExpectFocused({

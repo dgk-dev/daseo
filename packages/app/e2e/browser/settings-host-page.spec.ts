@@ -69,7 +69,7 @@ test.describe("Settings host page", () => {
     await expectHostActionCards(page, serverId);
   });
 
-  test("a failed remote daemon update remains visible in the host UI", async ({
+  test("does not offer the disabled headless daemon self-update path", async ({
     page,
     outdatedDaemon,
   }) => {
@@ -79,19 +79,8 @@ test.describe("Settings host page", () => {
     await openSettingsHost(page, outdatedDaemon.serverId);
     await openHostSection(page, outdatedDaemon.serverId, "host");
 
-    page.once("dialog", (dialog) => dialog.accept());
-    const updateButton = page.getByTestId("host-page-update-button");
-    await updateButton.click();
-
-    await expect(
-      updateButton.filter({ hasText: /Preparing update|Downloading packages|Installing/ }),
-    ).toBeDisabled();
-
-    const updateFailure = page.getByTestId("host-page-update-error");
-    await expect(updateFailure).toBeVisible();
-    await expect(updateFailure).toContainText("Update failed");
-    await expect(updateFailure).toContainText("Failed to update the daemon:");
-    await expect(updateButton).toBeEnabled();
+    await expect(page.getByTestId("host-page-update-card")).toHaveCount(0);
+    await expect(page.getByTestId("host-page-update-button")).toHaveCount(0);
   });
 
   test("clicking the label pencil reveals the inline editor", async ({ page }) => {

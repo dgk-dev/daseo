@@ -27,6 +27,13 @@ import {
 
 const SCROLL_AWAY_MIN_SCROLLABLE_DISTANCE = 360;
 
+async function expandLatestCompletedWork(page: import("@playwright/test").Page): Promise<void> {
+  const workSummary = page.getByTestId("collapsed-work-row").last();
+  if (!(await workSummary.isVisible({ timeout: 1_000 }).catch(() => false))) return;
+  await workSummary.click();
+  await expect(workSummary).toHaveAttribute("aria-label", /hide work details/i);
+}
+
 test.describe("Agent stream UI", () => {
   test("keeps running agent chrome after page refresh", async ({ page }) => {
     const title = "Running agent refresh";
@@ -163,6 +170,7 @@ test.describe("Agent stream UI", () => {
         agentId: agent.agentId,
       });
       await expectComposerVisible(page);
+      await expandLatestCompletedWork(page);
       await agent.client.sendAgentMessage(agent.agentId, "Stream for scroll-away anchor test.");
       await expect(page.getByRole("button", { name: /stop|cancel/i }).first()).toBeVisible({
         timeout: 30_000,
@@ -245,6 +253,7 @@ test.describe("Agent stream UI", () => {
         workspaceId: agent.workspaceId,
         agentId: agent.agentId,
       });
+      await expandLatestCompletedWork(page);
       await waitForScrollableChat(page, {
         minScrollableDistance: SCROLL_AWAY_MIN_SCROLLABLE_DISTANCE,
         timeout: 30_000,
