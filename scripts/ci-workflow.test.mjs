@@ -125,6 +125,8 @@ test("focused contracts stay inside existing required checks", () => {
   assert.match(desktop, /test:e2e:renderer/);
   assert.match(desktop, /test:e2e:browser-tabs/);
   assert.match(desktop, /npm run test --workspace=@getpaseo\/desktop/);
+  assert.match(desktop, /command -v Xvfb/);
+  assert.match(desktop, /Acquire::http::Timeout=30/);
   assert.ok(!jobs.has("desktop-browser-bridge"));
   assert.ok(!jobs.has("playwright-desktop"));
 });

@@ -211,7 +211,18 @@ jobs:
 
       - name: Install virtual display
         if: ${{ runner.os == 'Linux' }}
-        run: sudo apt-get update && sudo apt-get install -y xvfb xauth
+        run: |
+          if command -v Xvfb >/dev/null && command -v xauth >/dev/null; then
+            echo "Xvfb and xauth are already available."
+            exit 0
+          fi
+          for source in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources /etc/apt/apt-mirrors.txt; do
+            if [ -f "$source" ]; then
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$source"
+            fi
+          done
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          sudo apt-get install -y xvfb xauth
 
       - name: Install Playwright browser
         if: ${{ runner.os == 'Linux' }}

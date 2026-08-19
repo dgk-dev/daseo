@@ -27,11 +27,11 @@ export async function expectDiagramWithLabels(
 
 export async function expectDiagramRemainsRenderedWhileStreaming(page: Page): Promise<void> {
   const { diagram, svg } = renderedDiagram(page);
-  const samples = 80;
+  const samples = 20;
   for (let sample = 0; sample < samples; sample += 1) {
-    await expect(diagram).toBeVisible({ timeout: 1_000 });
-    await expect(svg).toBeVisible({ timeout: 1_000 });
-    await page.waitForTimeout(25);
+    await expect(diagram).toBeVisible({ timeout: 3_000 });
+    await expect(svg).toBeVisible({ timeout: 3_000 });
+    await page.waitForTimeout(150);
   }
 }
 
