@@ -6,10 +6,16 @@ import {
   readWireLedger,
 } from "../scripts/wire-surface-digest.mjs";
 
+const WIRE_SURFACE_TEST_TIMEOUT_MS = 15_000;
+
 describe("wire compatibility ledger", () => {
-  test("covers the current released protocol surface", () => {
-    expect(checkWireLedger(readWireLedger(), computeWireSurface())).toEqual([]);
-  });
+  test(
+    "covers the current released protocol surface",
+    () => {
+      expect(checkWireLedger(readWireLedger(), computeWireSurface())).toEqual([]);
+    },
+    WIRE_SURFACE_TEST_TIMEOUT_MS,
+  );
 
   test("ignores formatting and comments but catches payload shape drift", () => {
     const baseline = digestTypeScriptDeclaration(
@@ -29,17 +35,21 @@ describe("wire compatibility ledger", () => {
     expect(narrowed).not.toBe(baseline);
   });
 
-  test("rejects a digest change without a digest-scoped rationale", () => {
-    const current = computeWireSurface();
-    const ledger = structuredClone(readWireLedger());
-    const root = Object.keys(current)[0];
-    ledger.roots[root].digest = "sha256:released-shape";
-    ledger.compatibleChanges = ledger.compatibleChanges.filter(
-      (change: { root: string }) => change.root !== root,
-    );
+  test(
+    "rejects a digest change without a digest-scoped rationale",
+    () => {
+      const current = computeWireSurface();
+      const ledger = structuredClone(readWireLedger());
+      const root = Object.keys(current)[0];
+      ledger.roots[root].digest = "sha256:released-shape";
+      ledger.compatibleChanges = ledger.compatibleChanges.filter(
+        (change: { root: string }) => change.root !== root,
+      );
 
-    expect(checkWireLedger(ledger, current)).toEqual([
-      `${root} changed to ${current[root].digest} (${current[root].declarationCount} declarations) without a digest-scoped compatibility rationale`,
-    ]);
-  });
+      expect(checkWireLedger(ledger, current)).toEqual([
+        `${root} changed to ${current[root].digest} (${current[root].declarationCount} declarations) without a digest-scoped compatibility rationale`,
+      ]);
+    },
+    WIRE_SURFACE_TEST_TIMEOUT_MS,
+  );
 });
