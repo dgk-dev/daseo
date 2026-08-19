@@ -184,10 +184,15 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
   signing or activation.
   The signer requires the stable `Daseo Local Code Signing` identity and intentionally refuses an
   ad-hoc fallback. Stage the signed bundle to `~/Applications/Paseo Local Patch.app`, rename only
-  the outer installed directory to `/Applications/Daseo.app`, and activate via an idle-gated
-  launchd watcher. Never change `CFBundleName`, `CFBundleExecutable`, helper names, bundle IDs,
-  or the user-data path. **The `Paseo Daemon` process survives app swaps — always restart it too**
-  (see `~/.paseo/restart-daemon-local5.sh` pattern).
+  the outer installed directory to `/Applications/Daseo.app`. Run the idle-gated activation script
+  through
+  `node packages/desktop/scripts/daseo-activate-once.mjs /absolute/path/to/activate-daseo-<version>.sh`.
+  The launcher detaches one unsupervised process so it survives the current daemon stopping and
+  exits permanently with the script. Never use `launchctl submit` or `KeepAlive` for activation;
+  either one can relaunch a successful finalizer into an endless app/daemon replacement loop.
+  Never change `CFBundleName`, `CFBundleExecutable`, helper names, bundle IDs, or the user-data
+  path. **The `Paseo Daemon` process survives app swaps — always restart it too** (see
+  `~/.paseo/restart-daemon-local5.sh` pattern).
 - Android: verify the ignored personal Firebase config exists, use JDK 17 and the Android 36
   SDK (`JAVA_HOME=$(/usr/libexec/java_home -v 17)`,
   `ANDROID_HOME=/opt/homebrew/share/android-commandlinetools`), then run
