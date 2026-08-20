@@ -1,5 +1,5 @@
 import type { Rectangle } from "electron";
-import { ipcMain, nativeImage } from "electron";
+import { ipcMain, nativeImage, webContents as electronWebContents } from "electron";
 import { BrowserAutomationExecuteRequestSchema } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import type {
   BrowserAutomationConsoleLogEntry,
@@ -112,7 +112,8 @@ interface BrowserAutomationWebContents extends ConsoleMessageEmitter {
   canGoForward(): boolean;
   isLoading(): boolean;
   isDestroyed(): boolean;
-  executeJavaScript(code: string): Promise<unknown>;
+  executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>;
+  insertText(text: string): Promise<void>;
   loadURL(url: string): Promise<void>;
   goBack(): void;
   goForward(): void;
@@ -151,9 +152,13 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
     canGoForward: () => contents.canGoForward(),
     isLoading: () => contents.isLoading(),
     isDestroyed: () => contents.isDestroyed(),
-    executeJavaScript: (code: string) => {
+    executeJavaScript: (code: string, userGesture?: boolean) => {
       markPaseoBrowserAutomationActivity(contentsId);
-      return contents.executeJavaScript(code);
+      return contents.executeJavaScript(code, userGesture);
+    },
+    insertText: (text: string) => {
+      markPaseoBrowserAutomationActivity(contentsId);
+      return contents.insertText(text);
     },
     loadURL: (url: string) => {
       markPaseoBrowserAutomationActivity(contentsId);
@@ -501,6 +506,17 @@ function createRegistry(hostWebContentsId: number): BrowserRegistry {
     getBrowserTargetMetadata: getPaseoBrowserTargetMetadata,
     getWorkspaceActiveBrowserId(workspaceId: string): string | null {
       return getWorkspaceActivePaseoBrowserIdForHostWindow(workspaceId, hostWebContentsId);
+    },
+    isBrowserInputFocused(browserId: string): boolean {
+      const workspaceId = getPaseoBrowserWorkspaceId(browserId);
+      if (
+        !workspaceId ||
+        getWorkspaceActivePaseoBrowserIdForHostWindow(workspaceId, hostWebContentsId) !== browserId
+      ) {
+        return false;
+      }
+      const target = getPaseoBrowserWebContentsForHostWindow(browserId, hostWebContentsId);
+      return Boolean(target && electronWebContents.getFocusedWebContents()?.id === target.id);
     },
   };
 }

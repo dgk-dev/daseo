@@ -1032,7 +1032,34 @@ async function runRegression({
   });
   assert(
     await page.evaluate(() => document.activeElement?.id === "cross-session-focus-sentinel"),
-    "Browser input from another workspace stole the user's host input focus",
+    "Browser fill from another workspace stole the user's host input focus",
+  );
+  await callBrowserTool(backgroundClient, "browser_click", {
+    browserId: backgroundCreated.browserId,
+    ref: crossWorkspaceInputRef,
+  });
+  assert(
+    await page.evaluate(
+      () =>
+        document.activeElement?.id === "cross-session-focus-sentinel" &&
+        document.querySelector("#cross-session-focus-sentinel")?.value ===
+          "keep-cross-workspace-focus",
+    ),
+    "Browser click from another workspace interrupted the user's host input",
+  );
+  await callBrowserTool(backgroundClient, "browser_type", {
+    browserId: backgroundCreated.browserId,
+    ref: crossWorkspaceInputRef,
+    text: "-typed-in-browser",
+  });
+  assert(
+    await page.evaluate(
+      () =>
+        document.activeElement?.id === "cross-session-focus-sentinel" &&
+        document.querySelector("#cross-session-focus-sentinel")?.value ===
+          "keep-cross-workspace-focus",
+    ),
+    "Browser typing from another workspace crossed into the user's host input",
   );
   await callBrowserTool(backgroundClient, "browser_evaluate", {
     browserId: backgroundCreated.browserId,

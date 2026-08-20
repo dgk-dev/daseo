@@ -16,6 +16,8 @@ It validates the compositor behavior that unit tests cannot see:
   renderer coordination;
 - the real-Electron host-composer sentinel proves guest Enter cannot submit a focused
   host composer;
+- production browser click, drag, type, remote tap, and remote text paths can operate a
+  background guest without blurring or changing the host composer;
 - the automation group loads the compiled production keyboard boundary and guest
   preload, then proves that initial page window handlers get first refusal, unhandled
   shortcuts synchronously suppress editable browser defaults before crossing the host
@@ -53,9 +55,12 @@ ARIA-like snapshot text includes headings, static text, and controls; refs survi
 `pushState` when the element still matches; same-URL rerenders stale old refs; and a
 file-input ref can be resolved to a CDP backend node id for upload. It also verifies
 page-context evaluation, including passing a resolved ref element as the function argument.
-Keyboard containment runs last because the host-composer sentinel intentionally leaves
-native focus in the host. It reuses an existing fixture button: adding a test-only control
-changes the inline fixture geometry exercised by the earlier actionability checks.
+The background-input regression executes the compiled automation service against the real
+parked guest. It asserts the host composer's active element, value, blur count, and input count,
+then verifies the browser target received click and text. Keyboard containment runs last because
+the host-composer sentinel intentionally leaves native focus in the host. It reuses an existing
+fixture button: adding a test-only control changes the inline fixture geometry exercised by the
+earlier actionability checks.
 
 On macOS the harness process must set `app.setActivationPolicy("accessory")` and
 hide the Dock icon before creating any window. `showInactive()` only prevents window
@@ -99,6 +104,13 @@ There is no host-renderer parking handshake. Main disables guest background thro
 when the webview attaches, then screenshot capture uses the shared serialized queue, invalidates
 before each attempt, and retries known first-frame failures. Viewport screenshots retain the
 5-second budget and use `capturePage({ stayHidden:false })`.
+
+CDP pointer presses on an embedded guest move host DOM focus into the `<webview>`, even when its
+parked surface has `pointer-events:none`. CDP `Input.insertText` follows Chromium's active focus
+chain and can therefore write into a host textarea instead of the requested guest. Main considers
+pointer input trusted only when the target browser owns both logical and Electron focus. Background
+pointer actions use page-local user-gesture execution, text uses the target
+`WebContents.insertText`, and key input stays target-contained with `skipIfUnhandled`.
 
 Electron guest `captureBeyondViewport` repeats the current compositor viewport below the fold,
 so full-page capture uses a bounded 30-second scroll-and-stitch path. It verifies the scroll before

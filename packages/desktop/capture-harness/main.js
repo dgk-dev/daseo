@@ -17,6 +17,18 @@ const PRODUCTION_BROWSER_AUTOMATION_DIR = path.join(
 const { captureFullPage } = require(
   path.join(PRODUCTION_BROWSER_AUTOMATION_DIR, "full-page-capture.js"),
 );
+const PRODUCTION_BROWSER_AUTOMATION_SERVICE_PATH = path.join(
+  PRODUCTION_BROWSER_AUTOMATION_DIR,
+  "service.js",
+);
+const PRODUCTION_BROWSER_AUTOMATION_IPC_PATH = path.join(
+  PRODUCTION_BROWSER_AUTOMATION_DIR,
+  "ipc.js",
+);
+const PRODUCTION_BROWSER_SNAPSHOT_ENGINE_PATH = path.join(
+  PRODUCTION_BROWSER_AUTOMATION_DIR,
+  "snapshot-engine.js",
+);
 const PRODUCTION_BROWSER_KEYBOARD_DIR = path.join(
   ROOT,
   "..",
@@ -1252,7 +1264,7 @@ function automationFixtureUrl() {
             <button id="hover-source">Reveal actions</button>
             <button id="hover-target">Revealed action</button>
             <button id="drag-source">Drag source</button>
-            <span id="drag-target">Drop target</span>
+            <span id="drag-target" role="button" tabindex="0">Drop target</span>
             <button id="dialog-alert">Open alert</button>
             <button id="dialog-confirm">Open confirm</button>
             <button id="dialog-prompt">Open prompt</button>
@@ -1901,6 +1913,205 @@ async function verifyEditableShortcutExclusion({ guest, shortcutInputs }) {
   return { group: "automation", check: "browser-shortcut-editable-exclusion", pass: true };
 }
 
+function assertBackgroundHostInput({
+  label,
+  response,
+  hostState,
+  expectedValue,
+  pageEffect = true,
+  details = {},
+}) {
+  const expectedHostState = {
+    activeElementId: "host-composer",
+    value: expectedValue,
+    blurEvents: 0,
+    inputEvents: 0,
+  };
+  if (!response.ok || !pageEffect || !isDeepStrictEqual(hostState, expectedHostState)) {
+    fail(
+      `${label}: ${JSON.stringify({ response, hostState, expectedHostState, pageEffect, ...details })}`,
+    );
+  }
+}
+
+async function verifyBackgroundAutomationInputIsolation({ guest, win, browserId }) {
+  const { executeAutomationCommand } = require(PRODUCTION_BROWSER_AUTOMATION_SERVICE_PATH);
+  const { adaptWebContents } = require(PRODUCTION_BROWSER_AUTOMATION_IPC_PATH);
+  const { BrowserSnapshotEngine } = require(PRODUCTION_BROWSER_SNAPSHOT_ENGINE_PATH);
+  const workspaceId = "capture-harness-workspace";
+  const tab = adaptWebContents(guest);
+  const registry = {
+    listRegisteredBrowserIds: () => [browserId],
+    listRegisteredBrowserIdsForWorkspace: (candidateWorkspaceId) =>
+      candidateWorkspaceId === workspaceId ? [browserId] : [],
+    getTabContents: (candidateBrowserId) => (candidateBrowserId === browserId ? tab : null),
+    getBrowserWorkspaceId: (candidateBrowserId) =>
+      candidateBrowserId === browserId ? workspaceId : null,
+    getWorkspaceActiveBrowserId: () => null,
+    isBrowserInputFocused: () => false,
+    getBrowserTargetMetadata: () => ({ kind: "tab" }),
+  };
+  const snapshotEngine = new BrowserSnapshotEngine();
+  const execute = (requestId, command) =>
+    executeAutomationCommand(
+      {
+        type: "browser.automation.execute.request",
+        requestId,
+        workspaceId,
+        command,
+      },
+      registry,
+      { snapshotEngine },
+    );
+  const snapshot = await execute("focus-snapshot", {
+    command: "snapshot",
+    args: { browserId },
+  });
+  if (!snapshot.ok) {
+    fail(`background focus snapshot failed: ${JSON.stringify(snapshot)}`);
+  }
+  const nameRef = snapshot.result.snapshot.match(/textbox "Name" \[ref=(@e\d+)\]/)?.[1];
+  const saveRef = snapshot.result.snapshot.match(/button "Save changes" \[ref=(@e\d+)\]/)?.[1];
+  const dragSourceRef = snapshot.result.snapshot.match(/button "Drag source" \[ref=(@e\d+)\]/)?.[1];
+  const dragTargetRef = snapshot.result.snapshot.match(/button "Drop target" \[ref=(@e\d+)\]/)?.[1];
+  if (!nameRef || !saveRef || !dragSourceRef || !dragTargetRef) {
+    fail(`background focus refs missing: ${snapshot.result.snapshot}`);
+  }
+
+  await win.webContents.executeJavaScript(
+    `(() => {
+      const input = document.getElementById('host-composer');
+      window.__focusIsolationProbe = { blurEvents: 0, inputEvents: 0 };
+      input.addEventListener('blur', () => { window.__focusIsolationProbe.blurEvents += 1; });
+      input.addEventListener('input', () => { window.__focusIsolationProbe.inputEvents += 1; });
+    })()`,
+    true,
+  );
+  const focusHost = async (value) => {
+    await guest.executeJavaScript("document.getElementById('name').focus()", true);
+    await win.webContents.executeJavaScript(
+      `(() => {
+        const input = document.getElementById('host-composer');
+        input.value = ${JSON.stringify(value)};
+        window.__focusIsolationProbe.blurEvents = 0;
+        window.__focusIsolationProbe.inputEvents = 0;
+        input.focus();
+      })()`,
+      true,
+    );
+  };
+  const readHost = () =>
+    win.webContents.executeJavaScript(
+      `(() => ({
+        activeElementId: document.activeElement?.id || null,
+        value: document.getElementById('host-composer').value,
+        ...window.__focusIsolationProbe,
+      }))()`,
+      true,
+    );
+
+  await focusHost("human click draft");
+  const click = await execute("focus-click", {
+    command: "click",
+    args: { browserId, ref: saveRef },
+  });
+  const clickHost = await readHost();
+  const clickLog = await automationLog(guest);
+  const isolatedClickReachedPage = clickLog.some(
+    (entry) => entry.event === "click-save" && entry.trusted === false,
+  );
+  assertBackgroundHostInput({
+    label: "background browser click interrupted host input",
+    response: click,
+    hostState: clickHost,
+    expectedValue: "human click draft",
+    pageEffect: isolatedClickReachedPage,
+  });
+
+  await focusHost("human drag draft");
+  const drag = await execute("focus-drag", {
+    command: "drag",
+    args: { browserId, sourceRef: dragSourceRef, targetRef: dragTargetRef },
+  });
+  const dragHost = await readHost();
+  const dragLog = await automationLog(guest);
+  const isolatedDragReachedPage =
+    dragLog.some((entry) => entry.event === "drag-down" && entry.trusted === false) &&
+    dragLog.some((entry) => entry.event === "drag-up" && entry.trusted === false);
+  assertBackgroundHostInput({
+    label: "background browser drag interrupted host input",
+    response: drag,
+    hostState: dragHost,
+    expectedValue: "human drag draft",
+    pageEffect: isolatedDragReachedPage,
+  });
+
+  await guest.executeJavaScript("document.getElementById('name').value = ''", true);
+  await focusHost("human type draft");
+  const type = await execute("focus-type", {
+    command: "type",
+    args: { browserId, ref: nameRef, text: "agent browser text" },
+  });
+  const typeHost = await readHost();
+  const typedGuestValue = await guest.executeJavaScript(
+    "document.getElementById('name').value",
+    true,
+  );
+  assertBackgroundHostInput({
+    label: "background browser type crossed input ownership",
+    response: type,
+    hostState: typeHost,
+    expectedValue: "human type draft",
+    pageEffect: typedGuestValue === "agent browser text",
+    details: { typedGuestValue },
+  });
+
+  const savePoint = await guest.executeJavaScript(
+    `(() => {
+      const rect = document.getElementById('save').getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    })()`,
+    true,
+  );
+  await focusHost("human remote tap draft");
+  const remoteTap = await execute("focus-stream-tap", {
+    command: "stream_input",
+    args: { browserId, input: { kind: "tap", x: savePoint.x, y: savePoint.y } },
+  });
+  const remoteTapHost = await readHost();
+  const remoteTapTarget = await guest.executeJavaScript("document.activeElement?.id", true);
+  assertBackgroundHostInput({
+    label: "background remote browser tap interrupted host input",
+    response: remoteTap,
+    hostState: remoteTapHost,
+    expectedValue: "human remote tap draft",
+    pageEffect: remoteTapTarget === "save",
+    details: { remoteTapTarget },
+  });
+
+  await focusHost("human remote text draft");
+  const remoteText = await execute("focus-stream-text", {
+    command: "stream_input",
+    args: { browserId, input: { kind: "text", text: " remote" } },
+  });
+  const remoteTextHost = await readHost();
+  const remoteGuestValue = await guest.executeJavaScript(
+    "document.getElementById('name').value",
+    true,
+  );
+  assertBackgroundHostInput({
+    label: "background remote browser text crossed input ownership",
+    response: remoteText,
+    hostState: remoteTextHost,
+    expectedValue: "human remote text draft",
+    pageEffect: remoteGuestValue === "agent browser text remote",
+    details: { remoteGuestValue },
+  });
+
+  pass("background browser click, drag, type, remote tap, and remote text preserve host input");
+  return { group: "automation", check: "background-input-focus-isolation", pass: true };
+}
+
 async function verifyBrowserKeyboardIsolation({ guest, win, browserId, usesMeta, sentinel }) {
   const checks = [];
   const { shortcutInputs } = sentinel;
@@ -2415,6 +2626,8 @@ async function runAutomationGroup() {
     pass("automation beforeunload dialogs are dismissed and reported");
     results.push({ group: "automation", check: "dialog-beforeunload", pass: true });
 
+    results.push(await verifyBackgroundAutomationInputIsolation({ guest, win, browserId }));
+
     await guest.executeJavaScript("window.sameUrlRerender()", true);
     const rerenderResult = await guest.executeJavaScript(
       `window.__PASEO_BROWSER_AUTOMATION__.resolve(${JSON.stringify(saveRef.ref)}, ${JSON.stringify(saveRef.fingerprint)}).reason`,
@@ -2448,6 +2661,10 @@ async function runAutomationGroup() {
     pass("automation upload ref resolves to backendNodeId");
     results.push({ group: "automation", check: "upload-backend-node", pass: true });
 
+    await win.webContents.executeJavaScript(
+      "document.querySelector('webview')?.focus({ preventScroll: true })",
+      true,
+    );
     const browserKeyboardChecks = await verifyBrowserKeyboardIsolation({
       guest,
       win,

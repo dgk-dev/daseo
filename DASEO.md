@@ -144,8 +144,14 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     resize, or close each target by its own browser id. User focus is authoritative: Chromium
     navigation autofocus is disabled for embedded targets, inactive workspaces cannot advertise an
     active browser, only a trusted pointer in the visible interactive pane may claim physical browser
-    focus, and hidden retained overlays neither trap nor restore focus over a newer input. Key files:
+    focus, and hidden retained overlays neither trap nor restore focus over a newer input. Browser
+    automation treats physical focus as a main-process lease: CDP pointer presses are allowed only
+    when the target is both the workspace's active browser and Electron's focused `WebContents`.
+    Background clicks and drags use page-local semantic input, text uses the target
+    `WebContents.insertText`, and keys use contained target input, so another workspace cannot blur
+    or write into the host Composer. Key files:
     `packages/desktop/src/features/browser-webviews/{popup-targets,focus-policy}.ts`,
+    `packages/desktop/src/features/browser-automation/{service,focus-isolated-input}.ts`,
     `packages/app/src/desktop/browser/{popup-targets,remote-popup-targets,focus-policy}.ts`, and
     `packages/desktop/e2e/browser-tabs.e2e.mjs`.
 15. **Image-safe composer delivery** — Mac paste reads Electron's native clipboard image as a

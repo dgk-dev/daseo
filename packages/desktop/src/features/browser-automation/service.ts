@@ -10,6 +10,7 @@ import type {
   BrowserAutomationNetworkLogEntry,
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import { waitForActionableTarget, type ActionabilityResult } from "./actionability.js";
+import { dispatchFocusIsolatedClick, dispatchFocusIsolatedDrag } from "./focus-isolated-input.js";
 import type { ScreencastFramePayload, ScreencastOptions } from "./screencast.js";
 import { planStreamInputCdpSteps } from "./stream-input.js";
 import { FullPageCaptureUnsupportedError } from "./full-page-capture.js";
@@ -20,7 +21,6 @@ import {
   dispatchTrustedHover,
   dispatchTrustedKey,
   dispatchTrustedScroll,
-  dispatchTrustedText,
   type ClickInputOptions,
   type IsolatedKeyboardInputEvent,
 } from "./trusted-input.js";
@@ -33,7 +33,8 @@ export interface TabContents {
   canGoForward(): boolean;
   isLoading(): boolean;
   isDestroyed(): boolean;
-  executeJavaScript(code: string): Promise<unknown>;
+  executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>;
+  insertText(text: string): Promise<void>;
   loadURL(url: string): Promise<void>;
   goBack(): void;
   goForward(): void;
@@ -69,6 +70,7 @@ export interface BrowserRegistry {
   getTabContents(browserId: string): TabContents | null;
   getBrowserWorkspaceId(browserId: string): string | null;
   getWorkspaceActiveBrowserId(workspaceId: string): string | null;
+  isBrowserInputFocused(browserId: string): boolean;
   getBrowserTargetMetadata?(browserId: string): {
     kind: "tab" | "popup";
     rootBrowserId?: string;
@@ -670,17 +672,45 @@ async function executeStreamInput(
     return ok;
   }
 
-  if (!contents.sendDebugCommand) {
-    return fail(requestId, "browser_unsupported", "Remote input is not available for this tab.");
-  }
-  const steps = planStreamInputCdpSteps(input);
-  if (!steps) {
-    return fail(requestId, "browser_unsupported", "Unsupported remote input.");
-  }
   try {
+    if (input.kind === "text") {
+      await contents.insertText(input.text);
+      return ok;
+    }
+    if (input.kind === "key") {
+      dispatchTrustedKey((event) => contents.sendInputEvent(event), input.key);
+      return ok;
+    }
+    if (input.kind === "tap" && !registry.isBrowserInputFocused(browserId)) {
+      const point = { x: input.x, y: input.y };
+      const clicked = await dispatchFocusIsolatedClick(
+        contents,
+        `document.elementFromPoint(${input.x}, ${input.y})`,
+        point,
+        {
+          ...(input.button ? { button: input.button } : {}),
+          ...(input.doubleTap ? { doubleClick: true } : {}),
+        },
+      );
+      if (!clicked) {
+        return fail(
+          requestId,
+          "browser_timeout",
+          "Remote tap target is no longer available.",
+          true,
+        );
+      }
+      return ok;
+    }
+
+    if (!contents.sendDebugCommand) {
+      return fail(requestId, "browser_unsupported", "Remote input is not available for this tab.");
+    }
+    const steps = planStreamInputCdpSteps(input);
     for (const step of steps) {
       await contents.sendDebugCommand(step.command, step.params);
     }
+    return ok;
   } catch (error) {
     return fail(
       requestId,
@@ -688,7 +718,6 @@ async function executeStreamInput(
       `Remote input failed: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  return ok;
 }
 
 async function readViewportSize(
@@ -804,9 +833,6 @@ async function executeClick(
     return target;
   }
   return withDialogCapture(target.contents, async () => {
-    if (!target.contents.sendDebugCommand) {
-      return fail(requestId, "browser_unsupported", "browser_click requires trusted browser input");
-    }
     const elementExpression = snapshotEngine.runtimeElementExpression({
       browserId: target.browserId,
       ref,
@@ -821,7 +847,26 @@ async function executeClick(
     if (!actionable.ok) {
       return actionabilityFailure(requestId, ref, actionable);
     }
-    await dispatchTrustedClick(cdpSender(target.contents), actionable.target.point, options);
+    if (registry.isBrowserInputFocused(target.browserId)) {
+      if (!target.contents.sendDebugCommand) {
+        return fail(
+          requestId,
+          "browser_unsupported",
+          "browser_click requires trusted browser input",
+        );
+      }
+      await dispatchTrustedClick(cdpSender(target.contents), actionable.target.point, options);
+    } else {
+      const clicked = await dispatchFocusIsolatedClick(
+        target.contents,
+        elementExpression,
+        actionable.target.point,
+        options,
+      );
+      if (!clicked) {
+        return staleRefFailure(requestId, ref);
+      }
+    }
     return {
       requestId,
       ok: true,
@@ -953,9 +998,6 @@ async function executeDrag(
     return target;
   }
   return withDialogCapture(target.contents, async () => {
-    if (!target.contents.sendDebugCommand) {
-      return fail(requestId, "browser_unsupported", "browser_drag requires trusted browser input");
-    }
     const sourceExpression = snapshotEngine.runtimeElementExpression({
       browserId: target.browserId,
       ref: sourceRef,
@@ -981,11 +1023,31 @@ async function executeDrag(
     if (!dropTarget.ok) {
       return actionabilityFailure(requestId, targetRef, dropTarget);
     }
-    await dispatchTrustedDrag(
-      cdpSender(target.contents),
-      source.target.point,
-      dropTarget.target.point,
-    );
+    if (registry.isBrowserInputFocused(target.browserId)) {
+      if (!target.contents.sendDebugCommand) {
+        return fail(
+          requestId,
+          "browser_unsupported",
+          "browser_drag requires trusted browser input",
+        );
+      }
+      await dispatchTrustedDrag(
+        cdpSender(target.contents),
+        source.target.point,
+        dropTarget.target.point,
+      );
+    } else {
+      const dragged = await dispatchFocusIsolatedDrag(
+        target.contents,
+        sourceExpression,
+        targetExpression,
+        source.target.point,
+        dropTarget.target.point,
+      );
+      if (!dragged) {
+        return staleRefFailure(requestId, `${sourceRef}/${targetRef}`);
+      }
+    }
     return {
       requestId,
       ok: true,
@@ -1265,9 +1327,6 @@ async function executeType(
     return target;
   }
   return withDialogCapture(target.contents, async () => {
-    if (!target.contents.sendDebugCommand) {
-      return fail(requestId, "browser_unsupported", "browser_type requires trusted browser input");
-    }
     let actionable: ActionabilityResult | null = null;
     if (ref) {
       const elementExpression = snapshotEngine.runtimeElementExpression({
@@ -1285,9 +1344,22 @@ async function executeType(
       if (!actionable.ok) {
         return actionabilityFailure(requestId, ref, actionable);
       }
-      await dispatchTrustedClick(cdpSender(target.contents), actionable.target.point);
+      const focused = await focusAutomationTarget(target.contents, elementExpression);
+      if (focused === "stale_ref") {
+        return staleRefFailure(requestId, ref);
+      }
+      if (registry.isBrowserInputFocused(target.browserId)) {
+        if (!target.contents.sendDebugCommand) {
+          return fail(
+            requestId,
+            "browser_unsupported",
+            "browser_type requires trusted browser input",
+          );
+        }
+        await dispatchTrustedClick(cdpSender(target.contents), actionable.target.point);
+      }
     }
-    await dispatchTrustedText(cdpSender(target.contents), text);
+    await target.contents.insertText(text);
     return {
       requestId,
       ok: true,
@@ -1331,11 +1403,11 @@ async function executeKeypress(
       if (!actionable.ok) {
         return actionabilityFailure(requestId, ref, actionable);
       }
-      const focused = await focusKeypressTarget(target.contents, elementExpression);
+      const focused = await focusAutomationTarget(target.contents, elementExpression);
       if (focused === "stale_ref") {
         return staleRefFailure(requestId, ref);
       }
-      if (focused === "editable") {
+      if (focused === "editable" && registry.isBrowserInputFocused(target.browserId)) {
         if (!target.contents.sendDebugCommand) {
           return fail(
             requestId,
@@ -1753,7 +1825,7 @@ function buildEvaluateScript(
 	  })()`;
 }
 
-async function focusKeypressTarget(
+async function focusAutomationTarget(
   contents: TabContents,
   elementExpression: string,
 ): Promise<"editable" | "focused" | "stale_ref"> {
@@ -1765,7 +1837,7 @@ async function focusKeypressTarget(
     const editableInput = tagName === 'textarea' ||
       (tagName === 'input' && !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(inputType));
     const editable = editableInput || element.isContentEditable === true;
-    if (!editable && typeof element.focus === 'function') {
+    if (typeof element.focus === 'function') {
       element.focus({ preventScroll: true });
     }
     return { editable };

@@ -40,11 +40,13 @@ class FakeTab implements TabContents {
   public readonly capturedViewports: Array<{ stayHidden?: boolean }> = [];
   public readonly debugCommands: Array<{ command: string; params?: Record<string, unknown> }> = [];
   public readonly inputEvents: IsolatedKeyboardInputEvent[] = [];
+  public readonly insertedTexts: string[] = [];
   private readonly captureStartWaiters: Array<() => void> = [];
   private readonly deferredCaptures: Array<(image: TabImage) => void> = [];
   private finishFullPageAbort: (() => void) | null = null;
 
   public destroyed = false;
+  public focused = true;
   public bodyText = "";
   public snapshotNodes: Array<{
     role: string;
@@ -119,6 +121,10 @@ class FakeTab implements TabContents {
     return this.destroyed;
   }
 
+  public async insertText(text: string): Promise<void> {
+    this.insertedTexts.push(text);
+  }
+
   public async executeJavaScript(code: string): Promise<unknown> {
     this.scripts.push(code);
     if (code.includes("document.body.innerText")) {
@@ -138,6 +144,14 @@ class FakeTab implements TabContents {
     }
     if (code.includes("window.innerWidth") && code.includes("window.innerHeight")) {
       return { x: 640, y: 400 };
+    }
+    if (code.includes("__PASEO_FOCUS_ISOLATED_CLICK__")) {
+      this.actions.push("focus-isolated-click");
+      return { ok: true };
+    }
+    if (code.includes("__PASEO_FOCUS_ISOLATED_DRAG__")) {
+      this.actions.push("focus-isolated-drag");
+      return { ok: true };
     }
     if (code.includes("element.focus({ preventScroll: true })")) {
       return { editable: this.keypressTargetEditable };
@@ -353,6 +367,14 @@ class FakeRegistry implements BrowserRegistry {
 
   public getWorkspaceActiveBrowserId(workspaceId: string): string | null {
     return this.activeBrowserIdsByWorkspace.get(workspaceId) ?? null;
+  }
+
+  public isBrowserInputFocused(browserId: string): boolean {
+    const entry = this.tabs.get(browserId);
+    if (!entry || !entry.tab.focused) {
+      return false;
+    }
+    return this.activeBrowserIdsByWorkspace.get(entry.workspaceId) === browserId;
   }
 }
 
@@ -763,6 +785,26 @@ describe("executeAutomationCommand", () => {
     ]);
   });
 
+  test("background click ignores stale guest focus and preserves physical input", async () => {
+    const browser = new BrowserAutomationHarness();
+    browser.registry.setActiveBrowser(WORKSPACE_A, BROWSER_B);
+    browser.tab.snapshotNodes = formElements();
+
+    requireSnapshotRefs(await browser.snapshot());
+    const click = await browser.execute({
+      command: "click",
+      args: { browserId: BROWSER_A, ref: "@e4" },
+    });
+
+    expect(click).toEqual({
+      requestId: "req-click",
+      ok: true,
+      result: { command: "click", browserId: BROWSER_A, ref: "@e4", x: 40, y: 30 },
+    });
+    expect(browser.tab.actions).toContain("focus-isolated-click");
+    expect(browser.tab.debugCommands).toEqual([]);
+  });
+
   test("click options choose the trusted mouse button, double-click count, and modifiers", async () => {
     const browser = new BrowserAutomationHarness();
     browser.tab.snapshotNodes = [
@@ -1024,6 +1066,39 @@ describe("executeAutomationCommand", () => {
     });
   });
 
+  test("background drag does not take physical input focus", async () => {
+    const browser = new BrowserAutomationHarness();
+    browser.tab.focused = false;
+    browser.tab.snapshotNodes = formElements();
+    browser.tab.actionabilityResult = {
+      ok: true,
+      target: { point: { x: 100, y: 50 }, rect: { x: 80, y: 30, width: 40, height: 40 } },
+    };
+
+    requireSnapshotRefs(await browser.snapshot());
+    const action = await browser.execute({
+      command: "drag",
+      args: { browserId: BROWSER_A, sourceRef: "@e4", targetRef: "@e5" },
+    });
+
+    expect(action).toEqual({
+      requestId: "req-drag",
+      ok: true,
+      result: {
+        command: "drag",
+        browserId: BROWSER_A,
+        sourceRef: "@e4",
+        targetRef: "@e5",
+        sourceX: 100,
+        sourceY: 50,
+        targetX: 100,
+        targetY: 50,
+      },
+    });
+    expect(browser.tab.actions).toContain("focus-isolated-drag");
+    expect(browser.tab.debugCommands).toEqual([]);
+  });
+
   test("fill with an empty string clears a ref through the regular fill path", async () => {
     const browser = new BrowserAutomationHarness();
     browser.tab.snapshotNodes = formElements();
@@ -1203,15 +1278,93 @@ describe("executeAutomationCommand", () => {
       ok: true,
       result: { command: "type", browserId: BROWSER_A, ref: "@e1", x: 40, y: 30 },
     });
-    expect(browser.tab.debugCommands.at(-1)).toEqual({
-      command: "Input.insertText",
-      params: { text: "Ada" },
-    });
-    expect(browser.tab.debugCommands.slice(0, 3).map((entry) => entry.command)).toEqual([
+    expect(browser.tab.insertedTexts).toEqual(["Ada"]);
+    expect(browser.tab.debugCommands.map((entry) => entry.command)).toEqual([
       "Input.dispatchMouseEvent",
       "Input.dispatchMouseEvent",
       "Input.dispatchMouseEvent",
     ]);
+  });
+
+  test("background type keeps text targeted to the browser without physical mouse input", async () => {
+    const browser = new BrowserAutomationHarness();
+    browser.tab.focused = false;
+    browser.tab.snapshotNodes = formElements();
+
+    requireSnapshotRefs(await browser.snapshot());
+    const action = await browser.execute({
+      command: "type",
+      args: { browserId: BROWSER_A, ref: "@e1", text: "background text" },
+    });
+
+    expect(action).toEqual({
+      requestId: "req-type",
+      ok: true,
+      result: { command: "type", browserId: BROWSER_A, ref: "@e1", x: 40, y: 30 },
+    });
+    expect(browser.tab.insertedTexts).toEqual(["background text"]);
+    expect(browser.tab.debugCommands).toEqual([]);
+  });
+
+  test("background keypress focuses its browser target without physical mouse input", async () => {
+    const browser = new BrowserAutomationHarness();
+    browser.tab.focused = false;
+    browser.tab.keypressTargetEditable = true;
+    browser.tab.snapshotNodes = formElements();
+
+    requireSnapshotRefs(await browser.snapshot());
+    const action = await browser.execute({
+      command: "keypress",
+      args: { browserId: BROWSER_A, ref: "@e1", key: "Enter" },
+    });
+
+    expect(action).toEqual({
+      requestId: "req-keypress",
+      ok: true,
+      result: { command: "keypress", browserId: BROWSER_A, key: "Enter", ref: "@e1", x: 40, y: 30 },
+    });
+    expect(browser.tab.inputEvents).toEqual([
+      { type: "keyDown", keyCode: "Enter", skipIfUnhandled: true },
+      { type: "keyUp", keyCode: "Enter", skipIfUnhandled: true },
+    ]);
+    expect(browser.tab.debugCommands).toEqual([]);
+  });
+
+  test("background remote tap, text, and key input stay scoped to the browser", async () => {
+    const browser = new BrowserAutomationHarness();
+    browser.tab.focused = false;
+
+    const tap = await browser.execute({
+      command: "stream_input",
+      args: { browserId: BROWSER_A, input: { kind: "tap", x: 12, y: 24 } },
+    });
+    const text = await browser.execute({
+      command: "stream_input",
+      args: { browserId: BROWSER_A, input: { kind: "text", text: "remote text" } },
+    });
+    const key = await browser.execute({
+      command: "stream_input",
+      args: { browserId: BROWSER_A, input: { kind: "key", key: "Enter" } },
+    });
+
+    for (const [requestId, result] of [
+      ["req-stream_input", tap],
+      ["req-stream_input", text],
+      ["req-stream_input", key],
+    ]) {
+      expect(result).toEqual({
+        requestId,
+        ok: true,
+        result: { command: "stream_input", browserId: BROWSER_A },
+      });
+    }
+    expect(browser.tab.actions).toContain("focus-isolated-click");
+    expect(browser.tab.insertedTexts).toEqual(["remote text"]);
+    expect(browser.tab.inputEvents).toEqual([
+      { type: "keyDown", keyCode: "Enter", skipIfUnhandled: true },
+      { type: "keyUp", keyCode: "Enter", skipIfUnhandled: true },
+    ]);
+    expect(browser.tab.debugCommands).toEqual([]);
   });
 
   test("keypress dispatches a trusted key to the focused element when ref is omitted", async () => {

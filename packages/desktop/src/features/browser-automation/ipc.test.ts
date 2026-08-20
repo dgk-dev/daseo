@@ -118,6 +118,7 @@ type ConsoleMessageListener = (
 class FakeWebContents {
   public readonly debugger = new FakeDebugger();
   public readonly inputEvents: IsolatedKeyboardInputEvent[] = [];
+  public readonly insertedTexts: string[] = [];
   public readonly loadedUrls: string[] = [];
   public readonly captures: Array<{
     rect: Rectangle | undefined;
@@ -159,6 +160,10 @@ class FakeWebContents {
 
   public isDestroyed(): boolean {
     return this.destroyed;
+  }
+
+  public async insertText(text: string): Promise<void> {
+    this.insertedTexts.push(text);
   }
 
   public async executeJavaScript(): Promise<unknown> {
@@ -234,15 +239,17 @@ describe("browser automation IPC adapter", () => {
     expect(registry.get(new FakeHostWebContents(1))).not.toBe(firstEngine);
   });
 
-  test("sends contained keyboard input directly to the guest", () => {
+  test("sends contained keyboard and text input directly to the guest", async () => {
     const contents = new FakeWebContents(19);
     const tab = adaptWebContents(contents);
 
     tab.sendInputEvent({ type: "keyDown", keyCode: "Enter", skipIfUnhandled: true });
+    await tab.insertText("browser text");
 
     expect(contents.inputEvents).toEqual([
       { type: "keyDown", keyCode: "Enter", skipIfUnhandled: true },
     ]);
+    expect(contents.insertedTexts).toEqual(["browser text"]);
   });
 
   test("delegates viewport capture to the guest without a renderer prep bridge", async () => {

@@ -178,7 +178,7 @@ Electron wrapper for macOS, Linux, and Windows.
 >
 > **In-app browser ownership.** Each registered root guest and popup target records its owning host window and workspace. Popup metadata names both `rootBrowserId` and the direct `openerBrowserId`; project paths never determine ownership. The active browser is keyed by `(host window, workspace)`, and background agent automation does not change it. Application-menu Reload / Force Reload resolve only within the window Electron supplies to the menu callback. Browser automation targets every explicit browser id returned by `browser_new_tab` or `browser_list_tabs`, including parked popups. Mobile reconciliation keeps those popup targets nested under their root browser and streams the selected target without creating another workspace tab.
 >
-> **Browser keyboard boundary.** Guest pages receive renderer-published shortcuts first. `Cmd/Ctrl+L` and `Cmd/Ctrl+R` are explicit guest-shell reservations; ordinary Paseo shortcuts run only after the page declines them. The sandboxed guest preload runs in every frame so focused iframes use the same boundary, while Node integration remains disabled. Human guest input disables Electron's menu fallback for plain keys. Agent-generated keys use guest `sendInputEvent` with `skipIfUnhandled`, so an unhandled Enter stops at the guest instead of reaching the host composer. Main selects the preload; it exposes no APIs to guest pages.
+> **Browser input boundary.** Guest pages receive renderer-published shortcuts first. `Cmd/Ctrl+L` and `Cmd/Ctrl+R` are explicit guest-shell reservations; ordinary Paseo shortcuts run only after the page declines them. The sandboxed guest preload runs in every frame so focused iframes use the same boundary, while Node integration remains disabled. Human guest input disables Electron's menu fallback for plain keys. Main grants trusted CDP pointer input only when the target is both the workspace's active browser and Electron's focused `WebContents`. A background target uses page-local pointer activation instead, because a CDP mouse press on an embedded guest moves the host's focus into the `<webview>`. Text always uses the target `WebContents.insertText`; CDP `Input.insertText` can otherwise write into the host's currently focused field. Agent-generated keys use guest `sendInputEvent` with `skipIfUnhandled`, so an unhandled Enter stops at the guest instead of reaching the host composer. Main selects the preload; it exposes no APIs to guest pages.
 
 ```text
 Human key -> guest WebContents
@@ -186,6 +186,12 @@ Human key -> guest WebContents
   `-- page keydown
         |-- page prevents ------> page owns it
         `-- published shortcut -> guest preload -> IPC(browserId) -> Paseo resolver
+
+Agent pointer input
+  |-- active + physically focused browser -> trusted CDP pointer event
+  `-- background browser -----------------> page-local focus-isolated activation
+
+Agent text input -> target WebContents.insertText
 
 Agent browser_keypress -> guest sendInputEvent(skipIfUnhandled)
   |-- guest handles ------------> page owns it

@@ -5,17 +5,10 @@ export interface StreamInputCdpStep {
   params: Record<string, unknown>;
 }
 
-const KEY_CODES: Record<string, { code: string; windowsVirtualKeyCode: number; text?: string }> = {
-  Enter: { code: "Enter", windowsVirtualKeyCode: 13, text: "\r" },
-  Backspace: { code: "Backspace", windowsVirtualKeyCode: 8 },
-  Tab: { code: "Tab", windowsVirtualKeyCode: 9 },
-  Escape: { code: "Escape", windowsVirtualKeyCode: 27 },
-  ArrowLeft: { code: "ArrowLeft", windowsVirtualKeyCode: 37 },
-  ArrowUp: { code: "ArrowUp", windowsVirtualKeyCode: 38 },
-  ArrowRight: { code: "ArrowRight", windowsVirtualKeyCode: 39 },
-  ArrowDown: { code: "ArrowDown", windowsVirtualKeyCode: 40 },
-  Delete: { code: "Delete", windowsVirtualKeyCode: 46 },
-};
+type StreamPointerInput = Extract<
+  BrowserAutomationStreamInput,
+  { kind: "tap" } | { kind: "scroll" }
+>;
 
 function mouseClickSteps(input: {
   x: number;
@@ -30,14 +23,7 @@ function mouseClickSteps(input: {
   ];
 }
 
-/**
- * Translate a remote stream input into CDP command steps. Navigation kinds
- * (back/forward/reload/navigate) are handled by the caller on the tab itself
- * and return null here.
- */
-export function planStreamInputCdpSteps(
-  input: BrowserAutomationStreamInput,
-): StreamInputCdpStep[] | null {
+export function planStreamInputCdpSteps(input: StreamPointerInput): StreamInputCdpStep[] {
   switch (input.kind) {
     case "tap": {
       const button = input.button ?? "left";
@@ -60,29 +46,5 @@ export function planStreamInputCdpSteps(
           },
         },
       ];
-    case "text":
-      return [{ command: "Input.insertText", params: { text: input.text } }];
-    case "key": {
-      const key = KEY_CODES[input.key];
-      const base = {
-        key: input.key,
-        code: key.code,
-        windowsVirtualKeyCode: key.windowsVirtualKeyCode,
-        nativeVirtualKeyCode: key.windowsVirtualKeyCode,
-        ...(key.text !== undefined ? { text: key.text, unmodifiedText: key.text } : {}),
-      };
-      return [
-        { command: "Input.dispatchKeyEvent", params: { type: "rawKeyDown", ...base } },
-        ...(key.text !== undefined
-          ? [{ command: "Input.dispatchKeyEvent", params: { type: "char", ...base } }]
-          : []),
-        { command: "Input.dispatchKeyEvent", params: { type: "keyUp", ...base } },
-      ];
-    }
-    case "back":
-    case "forward":
-    case "reload":
-    case "navigate":
-      return null;
   }
 }
