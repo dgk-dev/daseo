@@ -2157,7 +2157,10 @@ export class AgentManager {
   }
 
   async hasCanonicalSubmittedPrompt(agentId: string, clientMessageId: string): Promise<boolean> {
-    if (this.timelineStore.getSubmittedUserMessage(agentId, clientMessageId)) {
+    if (
+      this.timelineStore.has(agentId) &&
+      this.timelineStore.getSubmittedUserMessage(agentId, clientMessageId)
+    ) {
       return true;
     }
     if (!this.durableTimelineStore) return false;

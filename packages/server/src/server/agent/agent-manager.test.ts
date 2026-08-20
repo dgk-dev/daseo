@@ -14,6 +14,7 @@ import {
   type ManagedAgent,
 } from "./agent-manager.js";
 import { AgentStorage } from "./agent-storage.js";
+import { FileBackedAgentTimelineStore } from "./file-backed-agent-timeline-store.js";
 import { toAgentPayload } from "./agent-projections.js";
 import { getOpenAgentTabLabel, PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import { formatSystemNotificationPrompt, startAgentRun } from "./agent-prompt.js";
@@ -791,6 +792,28 @@ function fakeCodexEmitting(args: FakeCodexEmitterArgs): AgentClient {
 }
 
 const logger = createTestLogger();
+
+test("checks durable command receipts before a persisted agent is loaded", async () => {
+  const root = mkdtempSync(join(tmpdir(), "agent-manager-command-receipt-"));
+  try {
+    const durableTimelineStore = new FileBackedAgentTimelineStore(join(root, "timelines"));
+    await durableTimelineStore.appendCommitted("persisted-agent", {
+      type: "user_message",
+      text: "persisted prompt",
+      clientMessageId: "persisted-command",
+    });
+    const manager = new AgentManager({ durableTimelineStore, logger });
+
+    await expect(
+      manager.hasCanonicalSubmittedPrompt("persisted-agent", "persisted-command"),
+    ).resolves.toBe(true);
+    await expect(
+      manager.hasCanonicalSubmittedPrompt("persisted-agent", "missing-command"),
+    ).resolves.toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("does not register a session that finishes starting after shutdown begins", async () => {
   const client = new HeldAgentCreationClient();
