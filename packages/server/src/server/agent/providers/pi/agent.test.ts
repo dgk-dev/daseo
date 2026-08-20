@@ -14,7 +14,7 @@ import path from "node:path";
 import pino from "pino";
 import { setImmediate as waitForImmediate } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
-import { describe, expect, onTestFinished, test } from "vitest";
+import { describe, expect, onTestFinished, test, vi } from "vitest";
 
 import type { AgentSession, AgentSessionConfig, AgentStreamEvent } from "../../agent-sdk-types.js";
 import { PiRpcAgentClient, PiRpcAgentSession, transformPiModels } from "./agent.js";
@@ -902,6 +902,105 @@ describe("PiRpcAgentSession", () => {
       },
       { type: "turn_completed" },
     ]);
+  });
+
+  test("ignores idle extension messages without emitting a turn completion", async () => {
+    const { pi, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    fakeSession.emit({
+      type: "message_end",
+      message: {
+        role: "custom",
+        content: [
+          {
+            type: "text",
+            text: "Content fetched for 30/30 URLs. Full page content now available.",
+          },
+        ],
+      },
+    });
+    await flushTurnScheduling();
+
+    expect(events.turnCompletedEvents()).toHaveLength(0);
+    expect(events.timelineItems()).toContainEqual({
+      type: "assistant_message",
+      text: "Content fetched for 30/30 URLs. Full page content now available.",
+      phase: "commentary",
+    });
+  });
+
+  test("completes extension-triggered autonomous runs", async () => {
+    const { pi, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    fakeSession.emit({
+      type: "message_end",
+      message: {
+        role: "custom",
+        content: [{ type: "text", text: "Content fetched for 5/5 URLs." }],
+      },
+    });
+    fakeSession.emit({ type: "agent_start" });
+    fakeSession.emit({ type: "turn_start" });
+    fakeSession.emit({
+      type: "message_start",
+      message: { role: "assistant", content: [], responseId: "autonomous-response" },
+    });
+    fakeSession.emit({
+      type: "message_update",
+      message: { role: "assistant", content: [], responseId: "autonomous-response" },
+      assistantMessageEvent: { type: "text_delta", delta: "Nothing new in the fetched pages." },
+    });
+    fakeSession.finishTurn();
+
+    const completion = await events.nextTurnCompletion();
+    expect(completion.turnId).toBeUndefined();
+    expect(events.turnCompletedEvents()).toHaveLength(1);
+    expect(events.eventTypes()).toContain("turn_started");
+  });
+
+  test("autonomous runs settle through the fallback timer when agent_settled is missing", async () => {
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const { pi, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    fakeSession.emit({ type: "agent_start" });
+    fakeSession.emit({ type: "turn_start" });
+    fakeSession.emit({ type: "agent_end", messages: [] });
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    expect(events.turnCompletedEvents()).toHaveLength(1);
+  });
+
+  test("holds the Pi turn open while auto-compaction runs after agent_end", async () => {
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    const { turnId } = await session.startTurn("long research task");
+    fakeSession.emit({ type: "agent_start" });
+    fakeSession.emit({ type: "turn_start" });
+    fakeSession.emit({ type: "agent_end", messages: [] });
+    fakeSession.emit({ type: "compaction_start", reason: "auto" });
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(events.turnCompletedEvents()).toHaveLength(0);
+
+    fakeSession.emit({ type: "compaction_end", reason: "auto" });
+    fakeSession.emit({ type: "turn_start" });
+    fakeSession.emit({ type: "agent_end", messages: [] });
+    fakeSession.emit({ type: "agent_settled" });
+
+    const completion = await events.nextTurnCompletion();
+    expect(completion.turnId).toBe(turnId);
+    expect(events.turnCompletedEvents()).toHaveLength(1);
   });
 
   test("does not complete an active Pi turn for a steered extension message", async () => {

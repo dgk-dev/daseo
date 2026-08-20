@@ -1716,7 +1716,10 @@ export class PiRpcAgentSession implements AgentSession {
     turnId: string | undefined,
     event: Extract<PiAgentSessionEvent, { type: "agent_end" }>,
   ): void {
-    if (!this.activeTurnId || !turnId) return;
+    // Extensions can start runs Paseo never prompted (for example a background
+    // web fetch waking the agent). Those runs have no activeTurnId but must
+    // still settle, otherwise the agent stays "working" forever.
+    if (!turnId && !this.isAutonomousRunActive()) return;
     this.pendingAgentEnd = { turnId, messages: event.messages ?? [] };
     if (event.willRetry === true || this.pendingSteeringCorrelations.length > 0) {
       return;
@@ -1725,7 +1728,8 @@ export class PiRpcAgentSession implements AgentSession {
     this.settlementFallbackTimer = setTimeout(() => {
       this.settlementFallbackTimer = null;
       const pending = this.pendingAgentEnd;
-      if (!pending || this.activeTurnId !== pending.turnId) return;
+      if (!pending || this.activeTurnId !== (pending.turnId ?? null)) return;
+      if (!pending.turnId && !this.activeTurnStarted) return;
       this.pendingAgentEnd = null;
       this.completeTurn(pending.turnId, pending.messages);
     }, PI_AGENT_SETTLEMENT_FALLBACK_MS);
@@ -1735,8 +1739,12 @@ export class PiRpcAgentSession implements AgentSession {
   private handleAgentSettled(turnId: string | undefined): void {
     const pending = this.pendingAgentEnd;
     this.clearPendingSettlement();
-    if (!this.activeTurnId || !turnId) return;
+    if (!turnId && !this.isAutonomousRunActive()) return;
     this.completeTurn(turnId, pending?.messages ?? []);
+  }
+
+  private isAutonomousRunActive(): boolean {
+    return this.activeTurnId === null && this.activeTurnStarted;
   }
 
   private clearNoTurnBuffers(): void {
@@ -2228,6 +2236,13 @@ export class PiRpcAgentSession implements AgentSession {
         return;
       }
       case "compaction_start":
+        // Auto-compaction runs between agent_end and the continuation turn and
+        // routinely takes longer than the settlement fallback. Hold the turn
+        // open; turn_start or agent_settled still closes it afterwards.
+        if (this.settlementFallbackTimer) {
+          clearTimeout(this.settlementFallbackTimer);
+          this.settlementFallbackTimer = null;
+        }
         this.emitCompactionTimeline({
           turnId,
           item: {
@@ -2383,7 +2398,10 @@ export class PiRpcAgentSession implements AgentSession {
           item: { type: "assistant_message", text, phase: "commentary" },
         });
       }
-      if (!this.activeTurnStarted && this.activeSteeringRequests === 0) {
+      // Only a prompt Paseo itself started can be "handled without a turn".
+      // Idle extension messages (fetch notifications and similar) must not
+      // emit a turn-less turn_completed that closes an unrelated turn.
+      if (this.activeTurnId && !this.activeTurnStarted && this.activeSteeringRequests === 0) {
         this.completeTurn(turnId, []);
       }
       return;
