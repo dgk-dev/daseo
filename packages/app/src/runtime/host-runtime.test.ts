@@ -2998,6 +2998,98 @@ describe("HostRuntimeStore", () => {
       ]);
     });
     expect(fakeClient.sentAgentMessages).toEqual([]);
+
+    fakeClient.commandReceiptResponses.push({
+      commandId: "ambiguous-after-restart",
+      agentId: "agent-ambiguous",
+      status: "accepted",
+      error: null,
+    });
+    store.drainComposerOutbox(host.serverId);
+    await vi.waitFor(async () => {
+      expect(await outbox.list({ serverId: host.serverId })).toEqual([]);
+    });
+    await vi.waitFor(() => {
+      expect(
+        useSessionStore.getState().sessions[host.serverId]?.queuedMessages.get("agent-ambiguous"),
+      ).toEqual([]);
+    });
+    sessionStore.clearSession(host.serverId);
+  });
+
+  it("keeps steering receipts out of the manual queue and reconciles them automatically", async () => {
+    useHostRuntimeClock();
+    const host = makeHost({ serverId: "srv_steering_outbox" });
+    const fakeClient = new FakeDaemonClient();
+    fakeClient.setConnectionState({ status: "connected" });
+    fakeClient.commandReceiptResponses.push(
+      {
+        commandId: "steer-after-compaction",
+        agentId: "agent-steering",
+        status: "in_flight",
+        error: null,
+      },
+      {
+        commandId: "steer-after-compaction",
+        agentId: "agent-steering",
+        status: "accepted",
+        error: null,
+      },
+    );
+    const outbox = new ComposerOutboxStore();
+    const runtimeStore = new HostRuntimeStore({ composerOutbox: outbox });
+    const sessionStore = useSessionStore.getState();
+    sessionStore.initializeSession(host.serverId, fakeClient as unknown as DaemonClient, 1);
+    sessionStore.updateSessionServerInfo(host.serverId, {
+      serverId: host.serverId,
+      hostname: null,
+      version: "0.5.6",
+      features: {
+        canonicalSubmittedPrompts: true,
+        durableCommandReceipts: true,
+        commandReceiptResolution: true,
+      },
+    });
+    await outbox.enqueue({
+      id: "steer-after-compaction",
+      serverId: host.serverId,
+      agentId: "agent-steering",
+      text: "continue when compaction finishes",
+      attachments: [],
+      intent: "dispatch",
+      steering: true,
+      now: 1,
+    });
+    await outbox.mark({
+      serverId: host.serverId,
+      id: "steer-after-compaction",
+      status: "delivery_unknown",
+      now: 2,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(
+      useSessionStore.getState().sessions[host.serverId]?.queuedMessages.get("agent-steering"),
+    ).toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(await outbox.list({ serverId: host.serverId })).toMatchObject([
+      { id: "steer-after-compaction", status: "in_flight", steering: true },
+    ]);
+    expect(
+      useSessionStore.getState().sessions[host.serverId]?.queuedMessages.get("agent-steering"),
+    ).toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    runtimeStore.drainComposerOutbox(host.serverId);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(await outbox.list({ serverId: host.serverId })).toEqual([]);
+    expect(
+      useSessionStore.getState().sessions[host.serverId]?.queuedMessages.get("agent-steering"),
+    ).toBeUndefined();
+    expect(fakeClient.sentAgentMessages).toEqual([]);
     sessionStore.clearSession(host.serverId);
   });
 

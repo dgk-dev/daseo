@@ -513,6 +513,86 @@ describe("durable agent command receipts", () => {
     expect(streamAgent).toHaveBeenCalledTimes(1);
   });
 
+  test("acknowledges an active-turn command before delayed steering admission settles", async () => {
+    const paseoHome = mkdtempSync(join(tmpdir(), "paseo-command-steering-session-"));
+    tempDirs.push(paseoHome);
+    const messages: SessionOutboundMessage[] = [];
+    const receiptStore = new AgentCommandReceiptStore(paseoHome, pino({ level: "silent" }));
+    const snapshot = {
+      id: "agent-steering",
+      provider: "pi",
+      lifecycle: "running",
+      activeForegroundTurnId: "turn-compacting",
+      persistence: { sessionId: "pi-session" },
+    };
+    let releaseSteering: (() => void) | null = null;
+    const steeringAdmission = new Promise<boolean>((resolve) => {
+      releaseSteering = () => resolve(true);
+    });
+    const trySteerAgentRun = vi.fn(() => steeringAdmission);
+    const manager = {
+      listAgents: vi.fn(() => [snapshot]),
+      listProviderSubagentActivity: vi.fn(() => []),
+      subscribe: vi.fn(() => () => {}),
+      getAgent: vi.fn(() => snapshot),
+      waitForAgentClose: vi.fn().mockResolvedValue(undefined),
+      tryRunOutOfBand: vi.fn(() => false),
+      trySteerAgentRun,
+      hasInFlightRun: vi.fn(() => true),
+      replaceAgentRun: vi.fn(),
+      streamAgent: vi.fn(emptyAgentStream),
+      waitForAgentRunStart: vi.fn().mockResolvedValue(undefined),
+      hasCanonicalSubmittedPrompt: vi.fn().mockResolvedValue(false),
+    };
+    const session = createSessionForTest({
+      paseoHome,
+      messages,
+      agentManager: manager,
+      agentStorage: {
+        get: vi.fn().mockResolvedValue(undefined),
+        list: vi.fn().mockResolvedValue([]),
+      },
+      agentCommandReceiptStore: receiptStore,
+    });
+
+    const handling = session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "request-steering",
+      agentId: "agent-steering",
+      text: "apply after compaction",
+      messageId: "command-steering",
+      commandId: "command-steering",
+      attachments: [],
+    });
+
+    await vi.waitFor(() => expect(trySteerAgentRun).toHaveBeenCalledTimes(1));
+    const responseBeforeSteeringSettles = messages.find(
+      (
+        message,
+      ): message is Extract<SessionOutboundMessage, { type: "send_agent_message_response" }> =>
+        message.type === "send_agent_message_response" &&
+        message.payload.requestId === "request-steering",
+    );
+
+    releaseSteering?.();
+    await handling;
+    await vi.waitFor(async () => {
+      await expect(receiptStore.get("command-steering")).resolves.toMatchObject({
+        status: "accepted",
+      });
+    });
+
+    expect(responseBeforeSteeringSettles).toMatchObject({
+      payload: {
+        accepted: true,
+        commandId: "command-steering",
+        receiptStatus: "in_flight",
+      },
+    });
+    expect(manager.replaceAgentRun).not.toHaveBeenCalled();
+    expect(manager.streamAgent).not.toHaveBeenCalled();
+  });
+
   test("looks up and explicitly resolves an ambiguous command receipt", async () => {
     const paseoHome = mkdtempSync(join(tmpdir(), "paseo-command-resolution-session-"));
     tempDirs.push(paseoHome);

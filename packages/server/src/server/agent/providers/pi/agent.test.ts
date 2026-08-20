@@ -1116,6 +1116,51 @@ describe("PiRpcAgentSession", () => {
     expect(events.turnCompletedEvents()).toHaveLength(1);
   });
 
+  test("accepts steering during auto-compaction and delivers it in the continued Pi turn", async () => {
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    const { turnId } = await session.startTurn("long task", {
+      clientMessageId: "client-initial",
+    });
+    fakeSession.emit({ type: "agent_start" });
+    fakeSession.emit({ type: "turn_start" });
+    fakeSession.finishSubmittedUserMessage({
+      id: "entry-before-compaction",
+      parentId: null,
+      text: "long task",
+    });
+    fakeSession.emit({ type: "agent_end", messages: [] });
+    fakeSession.emit({ type: "compaction_start", reason: "auto" });
+
+    await expect(
+      session.steerTurn?.("context while compacting", turnId, {
+        clientMessageId: "client-during-compaction",
+      }),
+    ).resolves.toEqual({ turnId });
+    expect(fakeSession.steers).toEqual([{ message: "context while compacting", imageCount: 0 }]);
+    expect(events.turnCompletedEvents()).toHaveLength(0);
+
+    fakeSession.emit({ type: "compaction_end", reason: "auto" });
+    fakeSession.emit({ type: "turn_start" });
+    fakeSession.finishSubmittedUserMessage({
+      id: "entry-during-compaction",
+      parentId: "entry-before-compaction",
+      text: "context while compacting",
+    });
+    fakeSession.emit({ type: "agent_end", messages: [] });
+    fakeSession.emit({ type: "agent_settled" });
+
+    await expect(events.nextTurnCompletion()).resolves.toMatchObject({ turnId });
+    expect(events.timelineItems()).toContainEqual({
+      type: "user_message",
+      text: "context while compacting",
+      messageId: "entry-during-compaction",
+      clientMessageId: "client-during-compaction",
+      steering: true,
+    });
+  });
+
   test("does not complete an active Pi turn for a steered extension message", async () => {
     const { pi, session, events } = await createSession();
     const fakeSession = pi.latestSession();

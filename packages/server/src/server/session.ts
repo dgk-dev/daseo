@@ -7060,11 +7060,14 @@ export class Session {
 
     const agentId = resolved.agentId;
     const commandId = msg.commandId;
+    let responseEmitted = false;
     const emitResponse = (input: {
       accepted: boolean;
       error: string | null;
       receiptStatus?: "in_flight" | "accepted" | "rejected";
     }): void => {
+      if (responseEmitted) return;
+      responseEmitted = true;
       this.emit({
         type: "send_agent_message_response",
         payload: {
@@ -7133,54 +7136,72 @@ export class Session {
       }
     }
 
-    try {
-      const prompt = buildAgentPrompt(msg.text, msg.images, msg.attachments);
-      this.sessionLogger.trace(
-        {
-          agentId,
-          messageId: msg.messageId,
-          commandId,
-          textPrefix: msg.text.slice(0, 80),
-        },
-        "agent.session.send_agent_message",
-      );
-      let dispatchResult: { outOfBand: boolean };
+    const dispatch = async (): Promise<void> => {
       try {
-        dispatchResult = await sendPromptToAgent({
-          agentManager: this.agentManager,
-          agentStorage: this.agentStorage,
-          agentId,
-          prompt,
-          messageId: msg.messageId,
-          logger: this.sessionLogger,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        this.handleAgentRunError(agentId, error, "Failed to send agent message");
-        await emitFailureAtAdmissionBoundary(message);
-        return;
-      }
-
-      if (!dispatchResult.outOfBand) {
+        const prompt = buildAgentPrompt(msg.text, msg.images, msg.attachments);
+        this.sessionLogger.trace(
+          {
+            agentId,
+            messageId: msg.messageId,
+            commandId,
+            textPrefix: msg.text.slice(0, 80),
+          },
+          "agent.session.send_agent_message",
+        );
+        let dispatchResult: { outOfBand: boolean };
         try {
-          await waitForAgentRunStartWithTimeout(this.agentManager, agentId);
+          dispatchResult = await sendPromptToAgent({
+            agentManager: this.agentManager,
+            agentStorage: this.agentStorage,
+            agentId,
+            prompt,
+            messageId: msg.messageId,
+            logger: this.sessionLogger,
+          });
         } catch (error) {
-          const message = errorToFriendlyMessage(error);
+          const message = error instanceof Error ? error.message : String(error);
+          this.handleAgentRunError(agentId, error, "Failed to send agent message");
           await emitFailureAtAdmissionBoundary(message);
           return;
         }
-      }
 
-      if (commandId) {
-        await this.agentCommandReceiptStore.settle({ commandId, status: "accepted" });
-        emitResponse({ accepted: true, error: null, receiptStatus: "accepted" });
-      } else {
-        emitResponse({ accepted: true, error: null });
+        if (!dispatchResult.outOfBand) {
+          try {
+            await waitForAgentRunStartWithTimeout(this.agentManager, agentId);
+          } catch (error) {
+            const message = errorToFriendlyMessage(error);
+            await emitFailureAtAdmissionBoundary(message);
+            return;
+          }
+        }
+
+        if (commandId) {
+          await this.agentCommandReceiptStore.settle({ commandId, status: "accepted" });
+          emitResponse({ accepted: true, error: null, receiptStatus: "accepted" });
+        } else {
+          emitResponse({ accepted: true, error: null });
+        }
+      } catch (error) {
+        const message = errorToFriendlyMessage(error);
+        await emitFailureAtAdmissionBoundary(message);
       }
-    } catch (error) {
-      const message = errorToFriendlyMessage(error);
-      await emitFailureAtAdmissionBoundary(message);
+    };
+
+    if (commandId && this.agentManager.hasInFlightRun(agentId)) {
+      // Persisted admission is enough to release the client immediately. Pi may
+      // still be compacting before its native steer acknowledgement arrives;
+      // the durable receipt transitions to accepted when dispatch completes.
+      emitResponse({ accepted: true, error: null, receiptStatus: "in_flight" });
+      void dispatch().catch((error) => {
+        this.sessionLogger.error(
+          { err: error, agentId, commandId },
+          "Failed to settle deferred agent command",
+        );
+      });
+      return;
     }
+
+    await dispatch();
   }
 
   private async handleWaitForFinish(

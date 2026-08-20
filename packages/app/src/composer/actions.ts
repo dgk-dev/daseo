@@ -244,6 +244,65 @@ export interface DispatchComposerAgentMessageInput {
   preserveRejectedOutbox?: boolean;
 }
 
+interface ReconcileInFlightComposerMessageInput {
+  client: ComposerSendClient;
+  outbox: ComposerOutboxWriter;
+  submission: MessageSubmissionWriter;
+  serverId: string;
+  agentId: string;
+  clientMessageId: string;
+  steering: boolean;
+}
+
+async function reconcileInFlightComposerMessage(
+  input: ReconcileInFlightComposerMessageInput,
+): Promise<void> {
+  const receipt = await input.client.getAgentCommandReceipt?.(input.clientMessageId);
+  if (receipt?.status === "accepted") {
+    await input.outbox.remove(input.serverId, input.clientMessageId);
+    input.submission.accept(input.agentId, input.clientMessageId);
+    return;
+  }
+  const rejected = receipt?.status === "rejected";
+  await input.outbox.mark({
+    serverId: input.serverId,
+    id: input.clientMessageId,
+    status: rejected ? "rejected" : "in_flight",
+    lastError: receipt?.error ?? null,
+  });
+  if (input.steering && !rejected) {
+    // Active-turn commands are durably admitted before Pi may finish
+    // compaction and acknowledge the native steer. Keep the optimistic
+    // message in place while the host runtime reconciles that receipt.
+    input.submission.accept(input.agentId, input.clientMessageId);
+    return;
+  }
+  input.submission.reject(input.agentId, input.clientMessageId);
+}
+
+async function preserveDeliveryUnknownComposerMessage(input: {
+  outbox: ComposerOutboxWriter;
+  submission: MessageSubmissionWriter;
+  serverId: string;
+  agentId: string;
+  clientMessageId: string;
+  steering: boolean;
+  error: Error;
+}): Promise<void> {
+  await input.outbox.mark({
+    serverId: input.serverId,
+    id: input.clientMessageId,
+    status: "delivery_unknown",
+    lastError: input.error.message,
+  });
+  // A steering write can outlive a relay response while Pi is compacting.
+  // Its durable command id is safe to reconcile automatically, so do not
+  // turn the optimistic message into a manual retry/discard row.
+  if (!input.steering) {
+    input.submission.reject(input.agentId, input.clientMessageId);
+  }
+}
+
 export async function dispatchComposerAgentMessage(
   input: DispatchComposerAgentMessageInput,
 ): Promise<void> {
@@ -297,32 +356,30 @@ export async function dispatchComposerAgentMessage(
       attachments: wirePayload.attachments,
     });
     if (result?.receiptStatus === "in_flight") {
-      const receipt = await input.client.getAgentCommandReceipt?.(clientMessageId);
-      if (receipt?.status === "accepted") {
-        await outbox.remove(input.serverId, clientMessageId);
-        input.submission.accept(input.agentId, clientMessageId);
-        return;
-      }
-      await outbox.mark({
+      await reconcileInFlightComposerMessage({
+        client: input.client,
+        outbox,
+        submission: input.submission,
         serverId: input.serverId,
-        id: clientMessageId,
-        status: receipt?.status === "rejected" ? "rejected" : "in_flight",
-        lastError: receipt?.error ?? null,
+        agentId: input.agentId,
+        clientMessageId,
+        steering: input.steering === true,
       });
-      input.submission.reject(input.agentId, clientMessageId);
       return;
     }
     await outbox.remove(input.serverId, clientMessageId);
     input.submission.accept(input.agentId, clientMessageId);
   } catch (error) {
     if (isDeliveryUnknownError(error)) {
-      await outbox.mark({
+      await preserveDeliveryUnknownComposerMessage({
+        outbox,
+        submission: input.submission,
         serverId: input.serverId,
-        id: clientMessageId,
-        status: "delivery_unknown",
-        lastError: error.message,
+        agentId: input.agentId,
+        clientMessageId,
+        steering: input.steering === true,
+        error,
       });
-      input.submission.reject(input.agentId, clientMessageId);
       return;
     }
     if (input.preserveRejectedOutbox) {

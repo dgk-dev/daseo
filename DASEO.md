@@ -124,11 +124,16 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     with the native expected turn id, Pi uses RPC `streamingBehavior: "steer"` and waits for
     `agent_settled`, and Claude pushes a priority-`next` SDK user message. Capability negotiation
     keeps unsupported or older providers on the queue/replacement fallback without model-specific
-    branches. Steering identity survives optimistic UI, canonical echo, cache, history, and
-    completed-work folding, with a subtle user-message marker. Key files:
-    `packages/server/src/server/agent/{agent-prompt,agent-manager,agent-sdk-types}.ts`,
+    branches. An active-turn command is durably admitted before the daemon waits for native steering,
+    so Pi compaction never holds the client RPC open. Desktop and mobile keep the optimistic message,
+    hide transient `in_flight`/delivery-unknown receipts from the manual retry queue, and reconcile
+    them until the provider accepts the steering input. Explicit queued messages and terminal
+    rejections retain their recovery controls. Steering identity survives optimistic UI, canonical
+    echo, cache, history, and completed-work folding, with a subtle user-message marker. Key files:
+    `packages/server/src/server/{session,agent/agent-prompt,agent/agent-manager}.ts`,
     `packages/server/src/server/agent/providers/{codex-app-server-agent,claude/agent,pi/agent}.ts`,
-    `packages/app/src/composer/`, and `packages/app/src/types/stream.ts`.
+    `packages/app/src/composer/`, `packages/app/src/runtime/host-runtime.ts`, and
+    `packages/app/src/types/stream.ts`.
 13. **Stable local macOS signing** — Mac builds must be signed with the login-keychain identity
     `Daseo Local Code Signing`, whose stable designated requirement preserves Accessibility,
     Screen Recording, and Full Disk Access grants across local rebuilds. The private key and trust

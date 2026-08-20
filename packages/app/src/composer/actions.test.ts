@@ -564,7 +564,7 @@ describe("dispatchComposerAgentMessage", () => {
     expect(readSubmission(stream, "agent").submissions).toEqual([]);
   });
 
-  it("moves an in-flight receipt out of the optimistic timeline for reconciliation", async () => {
+  it("moves a non-steering in-flight receipt out of the optimistic timeline for reconciliation", async () => {
     const client = createFakeSendClient({ receiptStatus: "in_flight" });
     const stream = createFakeStream();
     const outbox = createFakeOutbox();
@@ -584,6 +584,80 @@ describe("dispatchComposerAgentMessage", () => {
     expect(outbox.records.get("message-in-flight")).toMatchObject({ status: "in_flight" });
     expect(stream.tail.get("agent") ?? []).toEqual([]);
     expect(readSubmission(stream, "agent").submissions).toEqual([]);
+  });
+
+  it("keeps an in-flight steering message optimistic while its durable receipt reconciles", async () => {
+    const client = createFakeSendClient({ receiptStatus: "in_flight" });
+    const stream = createFakeStream();
+    const outbox = createFakeOutbox();
+
+    await dispatchComposerAgentMessage({
+      serverId: "server",
+      outbox,
+      client,
+      agentId: "agent",
+      text: "apply after compaction",
+      attachments: [],
+      encodeImages: passthroughEncodeImages,
+      submission: stream,
+      steering: true,
+      clientMessageId: "steer-in-flight",
+    });
+
+    expect(outbox.records.get("steer-in-flight")).toMatchObject({
+      status: "in_flight",
+      steering: true,
+    });
+    expect(stream.tail.get("agent")?.[0]).toMatchObject({
+      kind: "user_message",
+      text: "apply after compaction",
+      steering: true,
+    });
+    expect(readSubmission(stream, "agent").submissions).toEqual([
+      {
+        clientMessageId: "steer-in-flight",
+        providerAcknowledged: false,
+        rpcSettled: true,
+      },
+    ]);
+  });
+
+  it("keeps delivery-unknown steering optimistic for automatic receipt recovery", async () => {
+    const deliveryUnknown = new Error("relay changed after write");
+    deliveryUnknown.name = "AgentCommandDeliveryUnknownError";
+    const client = createFakeSendClient({ rejection: deliveryUnknown });
+    const stream = createFakeStream();
+    const outbox = createFakeOutbox();
+
+    await dispatchComposerAgentMessage({
+      serverId: "server",
+      outbox,
+      client,
+      agentId: "agent",
+      text: "continue after compaction",
+      attachments: [],
+      encodeImages: passthroughEncodeImages,
+      submission: stream,
+      steering: true,
+      clientMessageId: "steer-delivery-unknown",
+    });
+
+    expect(outbox.records.get("steer-delivery-unknown")).toMatchObject({
+      status: "delivery_unknown",
+      steering: true,
+    });
+    expect(stream.tail.get("agent")?.[0]).toMatchObject({
+      kind: "user_message",
+      text: "continue after compaction",
+      steering: true,
+    });
+    expect(readSubmission(stream, "agent").submissions).toEqual([
+      {
+        clientMessageId: "steer-delivery-unknown",
+        providerAcknowledged: false,
+        rpcSettled: false,
+      },
+    ]);
   });
 
   it("does not clear the composer transaction when durable admission fails", async () => {

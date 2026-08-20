@@ -55,7 +55,11 @@ import {
 } from "@/data/push-router";
 import { mountBrowserAutomationDaemonClientHandler } from "@/desktop/browser/automation/handler";
 import { schedulesQueryBaseKey } from "@/schedules/aggregated-schedules";
-import { dispatchComposerAgentMessage, sendQueuedComposerMessageNow } from "@/composer/actions";
+import {
+  dispatchComposerAgentMessage,
+  sendQueuedComposerMessageNow,
+  type QueuedComposerMessage,
+} from "@/composer/actions";
 import { createMessageSubmissionWriter } from "@/composer/submission/writer";
 import { ComposerOutboxStore, composerOutboxStore } from "@/composer/outbox/store";
 import { resolveComposerAttachmentSubmitFormat } from "@/composer/attachments/submit";
@@ -191,6 +195,7 @@ const ADAPTIVE_SWITCH_THRESHOLD_MS = 40;
 const ADAPTIVE_SWITCH_CONSECUTIVE_PROBES = 3;
 const DEFAULT_AGENT_DIRECTORY_PAGE_LIMIT = 200;
 const CONFIGURED_OVERRIDE_BOOTSTRAP_RETRY_MS = 1_000;
+const STEERING_RECEIPT_RECHECK_MS = 1_000;
 
 function toActiveConnection(connection: HostConnection): ActiveConnection {
   if (connection.type === "directSocket") {
@@ -1384,6 +1389,9 @@ export class HostRuntimeStore {
   private connectionStatusStartedAtByServer = new Map<string, number>();
   private directoryBootstrapInFlight = new Map<string, Promise<void>>();
   private queuedAgentDrainInFlight = new Set<string>();
+  private composerOutboxRecheckTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private composerOutboxProjectionIdsByServer = new Map<string, Set<string>>();
+  private composerOutboxProjectionTails = new Map<string, Promise<void>>();
   private directorySyncByServer = new Map<string, DirectorySync>();
   private configuredOverrideBootstrapInFlight: Promise<void> | null = null;
   private bootPromise: Promise<void> | null = null;
@@ -1408,6 +1416,7 @@ export class HostRuntimeStore {
     this.composerOutbox.subscribe(() => {
       for (const serverId of Object.keys(useSessionStore.getState().sessions)) {
         void this.restoreQueuedOutboxProjection(serverId);
+        void this.refreshComposerOutboxRecheck(serverId);
       }
     });
   }
@@ -2110,6 +2119,7 @@ export class HostRuntimeStore {
   private clearHostReplica(serverId: string): void {
     useSessionStore.getState().clearSession(serverId);
     useWorkspaceSetupStore.getState().clearServer(serverId);
+    this.composerOutboxProjectionIdsByServer.delete(serverId);
   }
 
   private maybeAutoBootstrapDirectories(serverId: string): void {
@@ -2118,6 +2128,7 @@ export class HostRuntimeStore {
       this.lastConnectionStatusByServer.delete(serverId);
       this.connectionStatusStartedAtByServer.delete(serverId);
       this.directoryBootstrapInFlight.delete(serverId);
+      this.clearComposerOutboxRecheck(serverId);
       return;
     }
     const snapshot = controller.getSnapshot();
@@ -2196,43 +2207,122 @@ export class HostRuntimeStore {
     this.directoryBootstrapInFlight.set(serverId, bootstrap);
   }
 
-  private async restoreQueuedOutboxProjection(serverId: string): Promise<void> {
+  private clearComposerOutboxRecheck(serverId: string): void {
+    const timer = this.composerOutboxRecheckTimers.get(serverId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.composerOutboxRecheckTimers.delete(serverId);
+  }
+
+  private scheduleComposerOutboxRecheck(serverId: string): void {
+    if (this.composerOutboxRecheckTimers.has(serverId)) return;
+    const timer = setTimeout(() => {
+      this.composerOutboxRecheckTimers.delete(serverId);
+      this.drainComposerOutbox(serverId);
+    }, STEERING_RECEIPT_RECHECK_MS);
+    this.composerOutboxRecheckTimers.set(serverId, timer);
+  }
+
+  private async refreshComposerOutboxRecheck(serverId: string): Promise<void> {
+    const unresolvedSteering = (
+      await this.composerOutbox.list({ serverId, intent: "dispatch" })
+    ).some(
+      (record) =>
+        record.steering === true &&
+        (record.status === "delivery_unknown" || record.status === "in_flight"),
+    );
+    if (unresolvedSteering) {
+      this.scheduleComposerOutboxRecheck(serverId);
+    } else {
+      this.clearComposerOutboxRecheck(serverId);
+    }
+  }
+
+  private restoreQueuedOutboxProjection(serverId: string): Promise<void> {
+    const previous = this.composerOutboxProjectionTails.get(serverId) ?? Promise.resolve();
+    const next = previous
+      .catch(() => undefined)
+      .then(() => this.applyQueuedOutboxProjection(serverId));
+    this.composerOutboxProjectionTails.set(serverId, next);
+    const cleanup = (): void => {
+      if (this.composerOutboxProjectionTails.get(serverId) === next) {
+        this.composerOutboxProjectionTails.delete(serverId);
+      }
+    };
+    void next.then(cleanup, cleanup);
+    return next;
+  }
+
+  private async applyQueuedOutboxProjection(serverId: string): Promise<void> {
     const records = await this.composerOutbox.list({ serverId });
+    if (!useSessionStore.getState().sessions[serverId]) {
+      this.composerOutboxProjectionIdsByServer.delete(serverId);
+      return;
+    }
     const visible = records.filter(
       (record) =>
         record.intent === "queued" ||
-        record.status === "delivery_unknown" ||
-        record.status === "in_flight" ||
-        record.status === "rejected",
+        record.status === "rejected" ||
+        ((record.status === "delivery_unknown" || record.status === "in_flight") &&
+          record.steering !== true),
     );
     const outboxIds = new Set(records.map((record) => `${record.agentId}\u0000${record.id}`));
+    const previousOutboxIds =
+      this.composerOutboxProjectionIdsByServer.get(serverId) ?? new Set<string>();
+    const projectedByAgent = new Map<string, QueuedComposerMessage[]>();
+    for (const record of visible) {
+      const resolution =
+        record.intent === "dispatch" || record.status === "rejected"
+          ? {
+              status: record.status as "delivery_unknown" | "in_flight" | "rejected",
+              message: record.lastError,
+            }
+          : undefined;
+      const projected: QueuedComposerMessage = {
+        id: record.id,
+        text: record.text,
+        attachments: record.attachments,
+        ...(resolution ? { resolution } : {}),
+      };
+      projectedByAgent.set(record.agentId, [
+        ...(projectedByAgent.get(record.agentId) ?? []),
+        projected,
+      ]);
+    }
     useSessionStore.getState().setQueuedMessages(serverId, (previous) => {
       const next = new Map(previous);
-      for (const [agentId, messages] of next) {
-        next.set(
-          agentId,
-          messages.filter((message) => !outboxIds.has(`${agentId}\u0000${message.id}`)),
+      const agentIds = new Set([...previous.keys(), ...projectedByAgent.keys()]);
+      for (const agentId of agentIds) {
+        const replacements = new Map(
+          (projectedByAgent.get(agentId) ?? []).map((message) => [message.id, message]),
         );
-      }
-      for (const record of visible) {
-        const current = next.get(record.agentId) ?? [];
-        const resolution =
-          record.intent === "dispatch" || record.status === "rejected"
-            ? {
-                status: record.status as "delivery_unknown" | "in_flight" | "rejected",
-                message: record.lastError,
-              }
-            : undefined;
-        const projected = {
-          id: record.id,
-          text: record.text,
-          attachments: record.attachments,
-          ...(resolution ? { resolution } : {}),
-        };
-        next.set(record.agentId, [...current, projected]);
+        const merged: QueuedComposerMessage[] = [];
+        for (const message of previous.get(agentId) ?? []) {
+          const replacement = replacements.get(message.id);
+          if (replacement) {
+            merged.push(replacement);
+            replacements.delete(message.id);
+            continue;
+          }
+          const key = `${agentId}\u0000${message.id}`;
+          if (!previousOutboxIds.has(key) && !outboxIds.has(key)) {
+            merged.push(message);
+          }
+        }
+        merged.push(...replacements.values());
+        if (merged.length > 0 || previous.has(agentId)) {
+          next.set(agentId, merged);
+        } else {
+          next.delete(agentId);
+        }
       }
       return next;
     });
+    if (outboxIds.size === 0) {
+      this.composerOutboxProjectionIdsByServer.delete(serverId);
+    } else {
+      this.composerOutboxProjectionIdsByServer.set(serverId, outboxIds);
+    }
   }
 
   drainComposerOutbox(serverId: string): void {
@@ -2347,6 +2437,7 @@ export class HostRuntimeStore {
         }
       }
       await this.restoreQueuedOutboxProjection(serverId);
+      await this.refreshComposerOutboxRecheck(serverId);
     })().catch((error) => {
       console.error("[HostRuntime] composer outbox drain failed", {
         serverId,
