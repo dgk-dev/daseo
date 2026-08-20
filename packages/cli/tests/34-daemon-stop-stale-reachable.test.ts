@@ -7,6 +7,7 @@
 
 import assert from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -102,6 +103,7 @@ console.log("=== Daemon Stop (stale pid, reachable worker regression) ===\n");
 
 const port = await getAvailablePort();
 const paseoHome = await mkdtemp(join(tmpdir(), "paseo-stop-stale-reachable-"));
+const foreignHome = await mkdtemp(join(tmpdir(), "paseo-stop-foreign-home-"));
 const cliRoot = join(import.meta.dirname, "..");
 const host = `127.0.0.1:${port}`;
 const pidPath = join(paseoHome, "paseo.pid");
@@ -158,8 +160,32 @@ try {
   assert(workerProcess.pid && isProcessRunning(workerProcess.pid), "worker should be running");
   console.log(`✓ fixture has stale pid ${stalePid} and live worker ${workerProcess.pid}\n`);
 
+  console.log("Test 2: a different Paseo home must not stop the reachable worker");
+  await writeFile(
+    join(foreignHome, "config.json"),
+    `${JSON.stringify({ daemon: { listen: host } }, null, 2)}\n`,
+  );
+
+  const workerExited = once(workerProcess, "exit").then(() => true);
+  const foreignStopResult =
+    await $`PASEO_HOME=${foreignHome} PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD=${testEnv.PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD} PASEO_DICTATION_ENABLED=${testEnv.PASEO_DICTATION_ENABLED} PASEO_VOICE_MODE_ENABLED=${testEnv.PASEO_VOICE_MODE_ENABLED} npx paseo daemon stop --home ${foreignHome} --json`.nothrow();
+  assert.strictEqual(
+    foreignStopResult.exitCode,
+    0,
+    `foreign-home stop should safely report not running: ${foreignStopResult.stderr}`,
+  );
+  const foreignStopJson = JSON.parse(foreignStopResult.stdout) as {
+    action?: unknown;
+    usedLifecycleRpc?: unknown;
+  };
+  assert.strictEqual(foreignStopJson.action, "not_running");
+  assert.strictEqual(foreignStopJson.usedLifecycleRpc, false);
+  const stoppedByForeignHome = await Promise.race([workerExited, sleep(1_000).then(() => false)]);
+  assert.strictEqual(stoppedByForeignHome, false, "foreign-home stop must not stop the worker");
+  console.log("✓ foreign-home stop left the reachable worker running\n");
+
   console.log(
-    "Test 2: `paseo daemon stop` should stop reachable worker instead of saying not_running",
+    "Test 3: `paseo daemon stop` should stop reachable worker instead of saying not_running",
   );
   const stopResult =
     await $`PASEO_HOME=${paseoHome} PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD=${testEnv.PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD} PASEO_DICTATION_ENABLED=${testEnv.PASEO_DICTATION_ENABLED} PASEO_VOICE_MODE_ENABLED=${testEnv.PASEO_VOICE_MODE_ENABLED} npx paseo daemon stop --home ${paseoHome} --json`.nothrow();
@@ -202,6 +228,7 @@ try {
 
   await $`PASEO_HOME=${paseoHome} PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD=${testEnv.PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD} PASEO_DICTATION_ENABLED=${testEnv.PASEO_DICTATION_ENABLED} PASEO_VOICE_MODE_ENABLED=${testEnv.PASEO_VOICE_MODE_ENABLED} npx paseo daemon stop --home ${paseoHome} --force`.nothrow();
   await rm(paseoHome, { recursive: true, force: true });
+  await rm(foreignHome, { recursive: true, force: true });
 }
 
 console.log("=== Stale reachable stop regression test passed ===");

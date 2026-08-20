@@ -30,8 +30,14 @@ console.log("=== Daemon Commands ===\n");
 
 // Keep restart off default 6767 to avoid collisions with any existing daemon.
 const port = 10000 + Math.floor(Math.random() * 50000);
+const listen = `127.0.0.1:${port}`;
 const paseoHome = await mkdtemp(join(tmpdir(), "paseo-test-home-"));
 const require = createRequire(import.meta.url);
+await writeFile(
+  join(paseoHome, "config.json"),
+  `${JSON.stringify({ daemon: { listen, relay: { enabled: false } } }, null, 2)}\n`,
+  "utf-8",
+);
 
 function daemonCommand(args: string[]) {
   return runLocalPaseo(["daemon", ...args], { PASEO_HOME: paseoHome });
@@ -167,6 +173,7 @@ try {
     assert.strictEqual(typeof status.serverId, "string", "json status should include serverId");
     assert.strictEqual(status.localDaemon, "stopped", "json status should report stopped");
     assert.strictEqual(status.home, paseoHome, "json status should reflect the isolated home");
+    assert.strictEqual(status.listen, listen, "json status should use the isolated listen target");
     assert.strictEqual(
       status.hostname,
       null,
@@ -204,7 +211,7 @@ try {
   // Test 8: status uses the running daemon as relay authority over local IPC
   {
     console.log("Test 8: daemon status probes live relay state over local IPC");
-    const listen =
+    const statusListen =
       process.platform === "win32"
         ? `\\\\.\\pipe\\paseo-status-${process.pid}-${Date.now()}`
         : join(paseoHome, "status.sock");
@@ -212,7 +219,7 @@ try {
     const config = JSON.parse(await readFile(configPath, "utf-8"));
     config.daemon = {
       ...config.daemon,
-      listen,
+      listen: statusListen,
       relay: { ...config.daemon?.relay, enabled: false },
     };
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
@@ -227,7 +234,7 @@ try {
       env: {
         ...process.env,
         PASEO_HOME: paseoHome,
-        PASEO_LISTEN: listen,
+        PASEO_LISTEN: statusListen,
         PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD: "0",
         PASEO_DICTATION_ENABLED: "0",
         PASEO_VOICE_MODE_ENABLED: "0",
@@ -280,11 +287,12 @@ try {
       const reloadConfig = JSON.parse(await readFile(configPath, "utf-8"));
       reloadConfig.daemon = {
         ...reloadConfig.daemon,
-        listen: process.platform === "win32" ? `${listen}-changed` : `${listen}.changed`,
+        listen:
+          process.platform === "win32" ? `${statusListen}-changed` : `${statusListen}.changed`,
         browserTools: { enabled: true },
       };
       await writeFile(configPath, `${JSON.stringify(reloadConfig, null, 2)}\n`, "utf-8");
-      const nestedReload = await daemonCommand(["reload", "--host", listen, "--json"]);
+      const nestedReload = await daemonCommand(["reload", "--host", statusListen, "--json"]);
       assert.strictEqual(nestedReload.exitCode, 0, nestedReload.stderr);
       assert.deepStrictEqual(JSON.parse(nestedReload.stdout), {
         appliedPaths: ["daemon.browserTools.enabled"],
@@ -294,7 +302,7 @@ try {
 
       reloadConfig.daemon.browserTools.enabled = false;
       await writeFile(configPath, `${JSON.stringify(reloadConfig, null, 2)}\n`, "utf-8");
-      const aliasReload = await runLocalPaseo(["reload", "--host", listen, "--json"], {
+      const aliasReload = await runLocalPaseo(["reload", "--host", statusListen, "--json"], {
         PASEO_HOME: paseoHome,
       });
       assert.strictEqual(aliasReload.exitCode, 0, aliasReload.stderr);
@@ -304,7 +312,13 @@ try {
         overrideControlledPaths: [],
       });
 
-      const yamlReload = await daemonCommand(["reload", "--host", listen, "--format", "yaml"]);
+      const yamlReload = await daemonCommand([
+        "reload",
+        "--host",
+        statusListen,
+        "--format",
+        "yaml",
+      ]);
       assert.strictEqual(yamlReload.exitCode, 0, yamlReload.stderr);
       assert.deepStrictEqual(YAML.parse(yamlReload.stdout), {
         appliedPaths: [],
@@ -312,14 +326,14 @@ try {
         overrideControlledPaths: [],
       });
 
-      const humanReload = await daemonCommand(["reload", "--host", listen]);
+      const humanReload = await daemonCommand(["reload", "--host", statusListen]);
       assert.match(humanReload.stdout, /Configuration reloaded\./);
 
       const foreignHome = await mkdtemp(join(tmpdir(), "paseo-test-foreign-home-"));
       try {
         await writeFile(
           join(foreignHome, "config.json"),
-          `${JSON.stringify({ daemon: { listen } }, null, 2)}\n`,
+          `${JSON.stringify({ daemon: { listen: statusListen } }, null, 2)}\n`,
           "utf-8",
         );
         const foreignPairing = await retryWhileWorkerRuns(
