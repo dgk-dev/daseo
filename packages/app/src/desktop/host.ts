@@ -184,6 +184,7 @@ export interface DesktopBrowserBridge {
   setWorkspaceActiveBrowser?: (input: {
     workspaceId: string;
     browserId: string | null;
+    isForeground?: boolean;
   }) => Promise<void>;
   listPopupTargets?: (rootBrowserId: string) => Promise<DesktopBrowserPopupTargetsSnapshot | null>;
   presentPopupTarget?: (input: DesktopBrowserPopupPresentation) => Promise<boolean>;

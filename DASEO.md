@@ -149,7 +149,11 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     when the target is both the workspace's active browser and Electron's focused `WebContents`.
     Background clicks and drags use page-local semantic input, text uses the target
     `WebContents.insertText`, and keys use contained target input, so another workspace cannot blur
-    or write into the host Composer. Key files:
+    or write into the host Composer. Popup visibility is double-gated: the renderer reports the
+    foreground workspace through `setWorkspaceActiveBrowser` (`isForeground`), and the main process
+    downgrades visible presentation requests from background workspaces to parking and force-parks
+    other-workspace popups on every foreground switch (fail-open when no foreground was reported).
+    Key files:
     `packages/desktop/src/features/browser-webviews/{popup-targets,focus-policy}.ts`,
     `packages/desktop/src/features/browser-automation/{service,focus-isolated-input}.ts`,
     `packages/app/src/desktop/browser/{popup-targets,remote-popup-targets,focus-policy}.ts`, and
@@ -169,6 +173,15 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     is propagated to the bundled daemon, which rejects live npm self-update. Daseo upgrades use the
     stable local signing identity, recorded source commit, artifact hash, idle gate, and explicit
     activation approval.
+
+17. **Pi extension-turn lifecycle** — Pi extensions may wake the agent without a Paseo prompt
+    (background web-fetch completions send `triggerTurn` messages) and may keep working after
+    `agent_end` (auto-compaction, queued continuations). The Pi provider settles those runs
+    symmetrically: extension-triggered autonomous runs emit and complete manager-tracked turns
+    instead of dropping `agent_end`/`agent_settled`, `compaction_start` holds the settlement
+    fallback open so compaction cannot be misreported as idle, and idle extension messages no
+    longer emit turn-less `turn_completed` events. Key file:
+    `packages/server/src/server/agent/providers/pi/agent.ts`.
 
 ## Product version policy
 

@@ -120,6 +120,13 @@ export interface BrowserPopupTargetManagerOptions {
     hostWebContentsId: number;
   }): void;
   onSnapshot?(snapshot: BrowserPopupTargetsSnapshot): void;
+  /**
+   * Second line of defense behind the renderer's per-pane gating: when this
+   * returns false, visible presentation requests are downgraded to parking so
+   * a background workspace can never paint a popup over the foreground one.
+   * Unknown foreground state must return true (fail-open).
+   */
+  isPresentationAllowed?(input: { workspaceId: string; hostWebContentsId: number }): boolean;
 }
 
 const DEFAULT_POPUP_WIDTH = 800;
@@ -140,6 +147,7 @@ export class BrowserPopupTargetManager {
   private readonly onUnregisterTarget: (browserId: string) => void;
   private readonly onSetActiveTarget: BrowserPopupTargetManagerOptions["onSetActiveTarget"];
   private readonly onSnapshot: (snapshot: BrowserPopupTargetsSnapshot) => void;
+  private readonly isPresentationAllowed: BrowserPopupTargetManagerOptions["isPresentationAllowed"];
   private readonly targetsByBrowserId = new Map<string, BrowserPopupTargetRecord>();
   private readonly targetBrowserIdsByWebContentsId = new Map<number, string>();
   private readonly rootBindingsByWebContentsId = new Map<number, RootBrowserBinding>();
@@ -157,6 +165,7 @@ export class BrowserPopupTargetManager {
     this.onUnregisterTarget = options.onUnregisterTarget ?? (() => {});
     this.onSetActiveTarget = options.onSetActiveTarget;
     this.onSnapshot = options.onSnapshot ?? (() => {});
+    this.isPresentationAllowed = options.isPresentationAllowed;
   }
 
   public tryAdmit(input: { rootWebContentsId: number; hostWebContentsId: number }): boolean {
@@ -300,6 +309,16 @@ export class BrowserPopupTargetManager {
     if (!binding) {
       return false;
     }
+    if (
+      input.visible &&
+      this.isPresentationAllowed &&
+      !this.isPresentationAllowed({
+        workspaceId: binding.workspaceId,
+        hostWebContentsId: binding.hostWebContentsId,
+      })
+    ) {
+      input = { ...input, visible: false, focus: false };
+    }
     const targets = this.targetsForRootWebContents(binding.rootWebContentsId);
     const selection = this.resolvePresentationSelection(binding, input);
     if (!selection) {
@@ -364,6 +383,37 @@ export class BrowserPopupTargetManager {
     }
     target.view.contents.close();
     return true;
+  }
+
+  /**
+   * Force-parks every visible popup owned by a different workspace on the
+   * given host window. Called on foreground-workspace changes so a stale or
+   * racing renderer presentation can never linger over another workspace.
+   */
+  public parkTargetsOutsideWorkspace(input: {
+    hostWebContentsId: number;
+    workspaceId: string;
+  }): void {
+    for (const binding of this.rootBindingsByWebContentsId.values()) {
+      if (
+        binding.hostWebContentsId !== input.hostWebContentsId ||
+        binding.workspaceId === input.workspaceId
+      ) {
+        continue;
+      }
+      let changed = false;
+      for (const target of this.targetsForRootWebContents(binding.rootWebContentsId)) {
+        changed = this.applyTargetPresentation(target, false, undefined) || changed;
+      }
+      if (changed) {
+        this.onSetActiveTarget?.({
+          browserId: binding.rootBrowserId,
+          workspaceId: binding.workspaceId,
+          hostWebContentsId: binding.hostWebContentsId,
+        });
+        this.emitSnapshot(binding.rootWebContentsId, "presentation");
+      }
+    }
   }
 
   public closeRoot(input: { rootBrowserId: string; hostWebContentsId: number }): void {

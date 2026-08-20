@@ -340,6 +340,9 @@ function useSyncWorkspaceActiveBrowser(input: {
         focusedBrowserId,
         isRouteFocused: input.isRouteFocused,
       }),
+      // Lets the main process park popups belonging to background workspaces
+      // even if a per-pane hide request is lost or races the switch.
+      isForeground: input.isRouteFocused,
     });
   }, [focusedBrowserId, input.isRouteFocused, input.workspaceId]);
 }

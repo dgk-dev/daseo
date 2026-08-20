@@ -181,7 +181,7 @@ function readAttachedBrowserInput(input: unknown): AttachedBrowserInput | null {
 
 function readActiveBrowserInput(
   input: unknown,
-): { workspaceId: string; browserId: string | null } | null {
+): { workspaceId: string; browserId: string | null; isForeground: boolean | null } | null {
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
     return null;
   }
@@ -190,8 +190,16 @@ function readActiveBrowserInput(
     return null;
   }
   const browserId = typeof record.browserId === "string" ? record.browserId.trim() : null;
-  return { workspaceId: record.workspaceId.trim(), browserId: browserId || null };
+  return {
+    workspaceId: record.workspaceId.trim(),
+    browserId: browserId || null,
+    isForeground: typeof record.isForeground === "boolean" ? record.isForeground : null,
+  };
 }
+
+// Foreground workspace per host window, reported by the renderer. Unknown
+// (never reported) means popup presentation stays fail-open.
+const foregroundWorkspaceByHostWebContentsId = new Map<number, string>();
 
 const browserKeyboard = new BrowserKeyboard(getPaseoBrowserWebviewRegistry());
 browserKeyboard.registerIpc();
@@ -318,6 +326,10 @@ function createBrowserPopupHostViewPort(mainWindow: BrowserWindow): BrowserPopup
 
 const browserPopupTargets = new BrowserPopupTargetManager({
   createBrowserId: randomUUID,
+  isPresentationAllowed: ({ workspaceId, hostWebContentsId }) => {
+    const foreground = foregroundWorkspaceByHostWebContentsId.get(hostWebContentsId);
+    return foreground === undefined || foreground === workspaceId;
+  },
   onRegisterTarget: (target) => {
     registerManagedPaseoBrowserTarget({
       browserId: target.browserId,
@@ -733,8 +745,25 @@ ipcMain.handle("paseo:browser:unregister-workspace-browser", async (event, brows
 
 ipcMain.handle("paseo:browser:set-workspace-active-browser", (event, rawInput: unknown) => {
   const input = readActiveBrowserInput(rawInput);
-  if (input) {
-    setWorkspaceActivePaseoBrowserId({ ...input, hostWebContentsId: event.sender.id });
+  if (!input) {
+    return;
+  }
+  setWorkspaceActivePaseoBrowserId({
+    workspaceId: input.workspaceId,
+    browserId: input.browserId,
+    hostWebContentsId: event.sender.id,
+  });
+  if (input.isForeground === true) {
+    foregroundWorkspaceByHostWebContentsId.set(event.sender.id, input.workspaceId);
+    browserPopupTargets.parkTargetsOutsideWorkspace({
+      hostWebContentsId: event.sender.id,
+      workspaceId: input.workspaceId,
+    });
+  } else if (
+    input.isForeground === false &&
+    foregroundWorkspaceByHostWebContentsId.get(event.sender.id) === input.workspaceId
+  ) {
+    foregroundWorkspaceByHostWebContentsId.delete(event.sender.id);
   }
 });
 
@@ -1164,6 +1193,7 @@ async function createWindow(
   mainWindow.on("closed", () => {
     pendingOpenProjectStore.delete(webContentsId);
     agentNavigationInbox.removeWindow(webContentsId);
+    foregroundWorkspaceByHostWebContentsId.delete(webContentsId);
     browserPopupTargets.closeHost(webContentsId);
     unregisterPaseoBrowserHost(webContentsId);
     browserKeyboard.detachHost(webContentsId);

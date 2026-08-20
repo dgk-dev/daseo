@@ -131,6 +131,10 @@ class PopupManagerHarness {
       maxTargetsPerHost?: number;
       openBurstLimit?: number;
       openBurstWindowMs?: number;
+      isPresentationAllowed?: (input: {
+        workspaceId: string;
+        hostWebContentsId: number;
+      }) => boolean;
     } = {},
   ) {
     this.manager = new BrowserPopupTargetManager({
@@ -353,6 +357,78 @@ describe("BrowserPopupTargetManager", () => {
     expect(popup.view.bounds).toEqual([{ x: 0, y: 0, width: 800, height: 600 }, PRESENTED_BOUNDS]);
     expect(harness.host.visibility).toEqual([{ view: popup.view, visible: true }]);
     expect(popup.contents.focusCalls).toBe(0);
+  });
+
+  test("downgrades a background-workspace presentation to parking", () => {
+    let foregroundWorkspaceId = "workspace-b";
+    const harness = new PopupManagerHarness({
+      isPresentationAllowed: ({ workspaceId }) => workspaceId === foregroundWorkspaceId,
+    });
+    harness.bind();
+    const popup = harness.adopt();
+
+    const accepted = harness.manager.setPresentation({
+      rootBrowserId: "browser-root",
+      hostWebContentsId: 10,
+      popupBrowserId: popup.browserId,
+      visible: true,
+      bounds: PRESENTED_BOUNDS,
+      focus: true,
+    });
+
+    expect(accepted).toBe(true);
+    expect(harness.host.visibility).toEqual([]);
+    expect(popup.contents.focusCalls).toBe(0);
+
+    foregroundWorkspaceId = "workspace-a";
+    harness.manager.setPresentation({
+      rootBrowserId: "browser-root",
+      hostWebContentsId: 10,
+      popupBrowserId: popup.browserId,
+      visible: true,
+      bounds: PRESENTED_BOUNDS,
+    });
+
+    expect(harness.host.visibility.at(-1)).toEqual({ view: popup.view, visible: true });
+  });
+
+  test("parks visible popups owned by other workspaces on foreground change", () => {
+    const harness = new PopupManagerHarness();
+    harness.bind();
+    const popup = harness.adopt();
+    harness.manager.setPresentation({
+      rootBrowserId: "browser-root",
+      hostWebContentsId: 10,
+      popupBrowserId: popup.browserId,
+      visible: true,
+      bounds: PRESENTED_BOUNDS,
+    });
+    expect(harness.host.visibility.at(-1)).toEqual({ view: popup.view, visible: true });
+
+    harness.manager.parkTargetsOutsideWorkspace({
+      hostWebContentsId: 10,
+      workspaceId: "workspace-a",
+    });
+    expect(harness.host.visibility.at(-1)).toEqual({ view: popup.view, visible: true });
+
+    harness.manager.parkTargetsOutsideWorkspace({
+      hostWebContentsId: 10,
+      workspaceId: "workspace-b",
+    });
+    expect(harness.host.visibility.at(-1)).toEqual({ view: popup.view, visible: false });
+    expect(harness.activeTargets.at(-1)).toEqual({
+      browserId: "browser-root",
+      workspaceId: "workspace-a",
+      hostWebContentsId: 10,
+    });
+    expect(harness.snapshots.at(-1)?.reason).toBe("presentation");
+    expect(harness.snapshots.at(-1)?.targets[0]?.isVisible).toBe(false);
+
+    harness.manager.parkTargetsOutsideWorkspace({
+      hostWebContentsId: 99,
+      workspaceId: "workspace-b",
+    });
+    expect(harness.host.visibility.at(-1)).toEqual({ view: popup.view, visible: false });
   });
 
   test("rejects presentation from another window or for another root", () => {

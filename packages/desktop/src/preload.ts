@@ -112,8 +112,11 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
       ipcRenderer.invoke("paseo:browser:register-attached", input),
     unregisterWorkspaceBrowser: (browserId: string) =>
       ipcRenderer.invoke("paseo:browser:unregister-workspace-browser", browserId),
-    setWorkspaceActiveBrowser: (input: { workspaceId: string; browserId: string | null }) =>
-      ipcRenderer.invoke("paseo:browser:set-workspace-active-browser", input),
+    setWorkspaceActiveBrowser: (input: {
+      workspaceId: string;
+      browserId: string | null;
+      isForeground?: boolean;
+    }) => ipcRenderer.invoke("paseo:browser:set-workspace-active-browser", input),
     listPopupTargets: (rootBrowserId: string) =>
       ipcRenderer.invoke("paseo:browser:list-popup-targets", rootBrowserId),
     presentPopupTarget: (input: {
