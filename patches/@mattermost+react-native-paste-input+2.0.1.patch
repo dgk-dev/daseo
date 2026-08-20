@@ -1,0 +1,94 @@
+diff --git a/node_modules/@mattermost/react-native-paste-input/src/PasteInput.tsx b/node_modules/@mattermost/react-native-paste-input/src/PasteInput.tsx
+index 12befab..d656090 100644
+--- a/node_modules/@mattermost/react-native-paste-input/src/PasteInput.tsx
++++ b/node_modules/@mattermost/react-native-paste-input/src/PasteInput.tsx
+@@ -72,6 +72,7 @@ function PasteInputIOSComponent(
+         return {
+             clear: () => {},
+             isFocused: () => false,
++            replaceText: () => {},
+             setSelection: () => {},
+         } as unknown as PasteTextInputInstance;
+     }, []);
+@@ -151,6 +152,7 @@ function PasteInputAndroidComponent(
+         return {
+             clear: () => {},
+             isFocused: () => false,
++            replaceText: () => {},
+             setSelection: () => {},
+         } as unknown as PasteTextInputInstance;
+     }, []);
+diff --git a/node_modules/@mattermost/react-native-paste-input/src/PasteTextInput.tsx b/node_modules/@mattermost/react-native-paste-input/src/PasteTextInput.tsx
+index dcc4a2b..f377b0d 100644
+--- a/node_modules/@mattermost/react-native-paste-input/src/PasteTextInput.tsx
++++ b/node_modules/@mattermost/react-native-paste-input/src/PasteTextInput.tsx
+@@ -84,6 +84,7 @@ function InternalTextInput(props: PasteInputProps): React.ReactNode {
+ 
+     const [mostRecentEventCount, setMostRecentEventCount] =
+         React.useState<number>(0);
++    const mostRecentEventCountRef = React.useRef(0);
+     const [lastNativeText, setLastNativeText] = React.useState<
+         string | undefined
+     >(props.value);
+@@ -181,7 +182,7 @@ function InternalTextInput(props: PasteInputProps): React.ReactNode {
+                         if (inputRef.current != null) {
+                             Commands.setTextAndSelection(
+                                 inputRef.current,
+-                                mostRecentEventCount,
++                                mostRecentEventCountRef.current,
+                                 '',
+                                 0,
+                                 0
+@@ -199,11 +200,31 @@ function InternalTextInput(props: PasteInputProps): React.ReactNode {
+                     > {
+                         return inputRef.current;
+                     },
++                    replaceText(
++                        nextText: string,
++                        start: number,
++                        end: number
++                    ): void {
++                        if (inputRef.current != null) {
++                            setLastNativeText(nextText);
++                            setLastNativeSelection({
++                                selection: { start, end },
++                                mostRecentEventCount: mostRecentEventCountRef.current,
++                            });
++                            Commands.setTextAndSelection(
++                                inputRef.current,
++                                mostRecentEventCountRef.current,
++                                nextText,
++                                start,
++                                end
++                            );
++                        }
++                    },
+                     setSelection(start: number, end: number): void {
+                         if (inputRef.current != null) {
+                             Commands.setTextAndSelection(
+                                 inputRef.current,
+-                                mostRecentEventCount,
++                                mostRecentEventCountRef.current,
+                                 null,
+                                 start,
+                                 end
+@@ -225,6 +246,7 @@ function InternalTextInput(props: PasteInputProps): React.ReactNode {
+         event: Parameters<NonNullable<TextInputProps['onChange']>>[0]
+     ) => {
+         const currentText = event.nativeEvent.text;
++        mostRecentEventCountRef.current = event.nativeEvent.eventCount;
+         props.onChange && props.onChange(event);
+         props.onChangeText && props.onChangeText(currentText);
+ 
+diff --git a/node_modules/@mattermost/react-native-paste-input/src/types.ts b/node_modules/@mattermost/react-native-paste-input/src/types.ts
+index e73c463..0f199f7 100644
+--- a/node_modules/@mattermost/react-native-paste-input/src/types.ts
++++ b/node_modules/@mattermost/react-native-paste-input/src/types.ts
+@@ -8,6 +8,7 @@ export type PasteTextInputInstance = HostInstance & {
+     clear: () => void;
+     isFocused: () => boolean;
+     getNativeRef?: () => HostInstance;
++    replaceText: (text: string, start: number, end: number) => void;
+     setSelection: (start: number, end: number) => void;
+ };
+ 

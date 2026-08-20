@@ -151,9 +151,11 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     `WebContents.insertText`, and keys use contained target input, so another workspace cannot blur
     or write into the host Composer. Popup visibility is double-gated: the renderer reports the
     foreground workspace through `setWorkspaceActiveBrowser` (`isForeground`), and the main process
-    downgrades visible presentation requests from background workspaces to parking and force-parks
-    other-workspace popups on every foreground switch (fail-open when no foreground was reported).
-    Key files:
+    owns a per-window `unknown | none | workspace` state. Unknown remains fail-open for old renderers;
+    explicit none parks every popup; a workspace owner parks all other workspaces. Denied presentation
+    intent is retained and reconciled when its workspace becomes foreground, so IPC ordering cannot
+    leave a selected popup blank after a workspace switch. Stale false reports cannot override a newer
+    owner, and route teardown reports explicit none even when no final background render occurs. Key files:
     `packages/desktop/src/features/browser-webviews/{popup-targets,focus-policy}.ts`,
     `packages/desktop/src/features/browser-automation/{service,focus-isolated-input}.ts`,
     `packages/app/src/desktop/browser/{popup-targets,remote-popup-targets,focus-policy}.ts`, and
@@ -176,12 +178,22 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
 
 17. **Pi extension-turn lifecycle** — Pi extensions may wake the agent without a Paseo prompt
     (background web-fetch completions send `triggerTurn` messages) and may keep working after
-    `agent_end` (auto-compaction, queued continuations). The Pi provider settles those runs
-    symmetrically: extension-triggered autonomous runs emit and complete manager-tracked turns
-    instead of dropping `agent_end`/`agent_settled`, `compaction_start` holds the settlement
-    fallback open so compaction cannot be misreported as idle, and idle extension messages no
-    longer emit turn-less `turn_completed` events. Key file:
+    `agent_end` (auto-compaction, queued continuations). Every run, including an autonomous one,
+    receives a stable provider turn id, so steering, process exit, cancellation, usage, and terminal
+    events stay correlated. `agent_settled` is accepted only after the same run's `agent_end` and an
+    idle runtime state; the legacy/lost-event fallback also verifies runtime idleness, compaction,
+    pending messages, and a quiescence window instead of trusting a timer. Compaction end resumes the
+    fallback, and unrelated custom messages cannot complete a user prompt preflight. Key file:
     `packages/server/src/server/agent/providers/pi/agent.ts`.
+18. **Native-owned Composer replacement** — Android keeps the IME-friendly uncontrolled Composer,
+    but application replacements use the PasteInput Fabric component's event-count-aware native
+    command rather than raw `setNativeProps`. Sends, queue clears, autocomplete, restore, and draft
+    hydration advance a replacement revision; an exact late pre-replacement IME event is rejected and
+    retried after the native event count commits. Composer editing remains disabled until Zustand's
+    global draft hydration merge finishes, preventing a cold-start persisted draft from restoring
+    stale sent text. Key files: `packages/app/src/components/ui/text-input/`,
+    `packages/app/src/composer/`, `packages/app/src/stores/draft-store/`, and
+    `patches/@mattermost+react-native-paste-input+2.0.1.patch`.
 
 ## Product version policy
 

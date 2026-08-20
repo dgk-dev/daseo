@@ -1674,7 +1674,9 @@ function ActiveAgentComposer({
         isPaneFocused={isPaneFocused}
         value={agentInputDraft.text}
         onChangeText={agentInputDraft.editText}
+        onReplaceText={agentInputDraft.replaceText}
         textReplacementKey={agentInputDraft.textReplacementKey}
+        isDraftHydrated={agentInputDraft.isHydrated}
         attachments={agentInputDraft.attachments}
         attachmentScopeKeys={attachmentScopeKeys}
         onOpenWorkspaceAttachment={handleOpenWorkspaceAttachment}

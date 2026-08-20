@@ -197,10 +197,6 @@ function readActiveBrowserInput(
   };
 }
 
-// Foreground workspace per host window, reported by the renderer. Unknown
-// (never reported) means popup presentation stays fail-open.
-const foregroundWorkspaceByHostWebContentsId = new Map<number, string>();
-
 const browserKeyboard = new BrowserKeyboard(getPaseoBrowserWebviewRegistry());
 browserKeyboard.registerIpc();
 
@@ -326,10 +322,6 @@ function createBrowserPopupHostViewPort(mainWindow: BrowserWindow): BrowserPopup
 
 const browserPopupTargets = new BrowserPopupTargetManager({
   createBrowserId: randomUUID,
-  isPresentationAllowed: ({ workspaceId, hostWebContentsId }) => {
-    const foreground = foregroundWorkspaceByHostWebContentsId.get(hostWebContentsId);
-    return foreground === undefined || foreground === workspaceId;
-  },
   onRegisterTarget: (target) => {
     registerManagedPaseoBrowserTarget({
       browserId: target.browserId,
@@ -753,17 +745,12 @@ ipcMain.handle("paseo:browser:set-workspace-active-browser", (event, rawInput: u
     browserId: input.browserId,
     hostWebContentsId: event.sender.id,
   });
-  if (input.isForeground === true) {
-    foregroundWorkspaceByHostWebContentsId.set(event.sender.id, input.workspaceId);
-    browserPopupTargets.parkTargetsOutsideWorkspace({
+  if (input.isForeground !== null) {
+    browserPopupTargets.setWorkspaceForeground({
       hostWebContentsId: event.sender.id,
       workspaceId: input.workspaceId,
+      isForeground: input.isForeground,
     });
-  } else if (
-    input.isForeground === false &&
-    foregroundWorkspaceByHostWebContentsId.get(event.sender.id) === input.workspaceId
-  ) {
-    foregroundWorkspaceByHostWebContentsId.delete(event.sender.id);
   }
 });
 
@@ -1193,7 +1180,6 @@ async function createWindow(
   mainWindow.on("closed", () => {
     pendingOpenProjectStore.delete(webContentsId);
     agentNavigationInbox.removeWindow(webContentsId);
-    foregroundWorkspaceByHostWebContentsId.delete(webContentsId);
     browserPopupTargets.closeHost(webContentsId);
     unregisterPaseoBrowserHost(webContentsId);
     browserKeyboard.detachHost(webContentsId);

@@ -920,7 +920,11 @@ interface ComposerProps {
   blurOnSubmit?: boolean;
   value: string;
   onChangeText: (text: string) => void;
+  /** Persists application-owned replacements and advances the native replacement revision. */
+  onReplaceText?: (text: string) => void;
   textReplacementKey: string;
+  /** Prevents edits until the persisted draft has completed its global hydration merge. */
+  isDraftHydrated?: boolean;
   attachments: UserComposerAttachment[];
   attachmentScopeKeys?: readonly string[];
   onOpenWorkspaceAttachment?: (attachment: WorkspaceComposerAttachment) => void;
@@ -1127,7 +1131,9 @@ export function Composer({
   blurOnSubmit = false,
   value,
   onChangeText,
+  onReplaceText,
   textReplacementKey,
+  isDraftHydrated = true,
   attachments,
   attachmentScopeKeys = EMPTY_ATTACHMENT_SCOPE_KEYS,
   onOpenWorkspaceAttachment,
@@ -1279,9 +1285,9 @@ export function Composer({
         messageInputRef.current.replaceText(text, selection);
         return;
       }
-      onChangeText(text);
+      (onReplaceText ?? onChangeText)(text);
     },
-    [onChangeText],
+    [onChangeText, onReplaceText],
   );
 
   const runClientSlashCommand = useCallback(
@@ -2371,6 +2377,7 @@ export function Composer({
                 ref={messageInputRef}
                 value={userInput}
                 onChangeText={setUserInput}
+                onReplaceText={onReplaceText}
                 onSubmit={handleSubmit}
                 hasExternalContent={hasExternalContent}
                 allowEmptySubmit={allowEmptySubmit}
@@ -2392,7 +2399,7 @@ export function Composer({
                 placeholder={messagePlaceholder}
                 autoFocus={messageInputAutoFocus}
                 autoFocusKey={`${serverId}:${agentId}:${autoFocusKey ?? ""}`}
-                disabled={isSubmitLoading}
+                disabled={isSubmitLoading || !isDraftHydrated}
                 isPaneFocused={isPaneFocused}
                 isSubmitOwner={isComposerOwner}
                 leftContent={leftContent}

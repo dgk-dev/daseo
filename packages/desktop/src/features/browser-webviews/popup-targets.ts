@@ -105,6 +105,13 @@ interface RootBrowserBinding {
   hostWebContentsId: number;
 }
 
+interface BrowserPopupPresentationIntent {
+  popupBrowserId: string | null;
+  visible: boolean;
+  bounds?: BrowserPopupBounds;
+  focus: boolean;
+}
+
 export interface BrowserPopupTargetManagerOptions {
   createBrowserId(): string;
   now?: () => number;
@@ -147,10 +154,17 @@ export class BrowserPopupTargetManager {
   private readonly onUnregisterTarget: (browserId: string) => void;
   private readonly onSetActiveTarget: BrowserPopupTargetManagerOptions["onSetActiveTarget"];
   private readonly onSnapshot: (snapshot: BrowserPopupTargetsSnapshot) => void;
-  private readonly isPresentationAllowed: BrowserPopupTargetManagerOptions["isPresentationAllowed"];
+  private readonly externalPresentationAllowed: BrowserPopupTargetManagerOptions["isPresentationAllowed"];
   private readonly targetsByBrowserId = new Map<string, BrowserPopupTargetRecord>();
   private readonly targetBrowserIdsByWebContentsId = new Map<number, string>();
   private readonly rootBindingsByWebContentsId = new Map<number, RootBrowserBinding>();
+  private readonly desiredPresentationByRootWebContentsId = new Map<
+    number,
+    BrowserPopupPresentationIntent
+  >();
+  // Missing = an older renderer has never reported foreground state (fail-open).
+  // null = the renderer explicitly reports that no workspace owns this host.
+  private readonly foregroundWorkspaceByHostWebContentsId = new Map<number, string | null>();
   private readonly openAttemptsByRootWebContentsId = new Map<number, number[]>();
   private revision = 0;
 
@@ -165,7 +179,7 @@ export class BrowserPopupTargetManager {
     this.onUnregisterTarget = options.onUnregisterTarget ?? (() => {});
     this.onSetActiveTarget = options.onSetActiveTarget;
     this.onSnapshot = options.onSnapshot ?? (() => {});
-    this.isPresentationAllowed = options.isPresentationAllowed;
+    this.externalPresentationAllowed = options.isPresentationAllowed;
   }
 
   public tryAdmit(input: { rootWebContentsId: number; hostWebContentsId: number }): boolean {
@@ -306,48 +320,18 @@ export class BrowserPopupTargetManager {
     focus?: boolean;
   }): boolean {
     const binding = this.findBinding(input);
-    if (!binding) {
+    if (!binding || !this.resolvePresentationSelection(binding, input)) {
       return false;
     }
-    if (
-      input.visible &&
-      this.isPresentationAllowed &&
-      !this.isPresentationAllowed({
-        workspaceId: binding.workspaceId,
-        hostWebContentsId: binding.hostWebContentsId,
-      })
-    ) {
-      input = { ...input, visible: false, focus: false };
-    }
-    const targets = this.targetsForRootWebContents(binding.rootWebContentsId);
-    const selection = this.resolvePresentationSelection(binding, input);
-    if (!selection) {
-      return false;
-    }
-    const { selected } = selection;
 
-    let changed = false;
-    for (const target of targets) {
-      changed =
-        this.applyTargetPresentation(
-          target,
-          Boolean(input.visible && selected === target),
-          input.bounds,
-        ) || changed;
-    }
-
-    const activeBrowserId = input.visible && selected ? selected.browserId : binding.rootBrowserId;
-    this.onSetActiveTarget?.({
-      browserId: activeBrowserId,
-      workspaceId: binding.workspaceId,
-      hostWebContentsId: binding.hostWebContentsId,
-    });
-    if (input.visible && selected && input.focus) {
-      selected.view.contents.focus();
-    }
-    if (changed || input.focus) {
-      this.emitSnapshot(binding.rootWebContentsId, "presentation");
-    }
+    const intent: BrowserPopupPresentationIntent = {
+      popupBrowserId: input.popupBrowserId,
+      visible: input.visible,
+      ...(input.bounds ? { bounds: { ...input.bounds } } : {}),
+      focus: input.focus === true,
+    };
+    this.desiredPresentationByRootWebContentsId.set(binding.rootWebContentsId, intent);
+    this.applyPresentationIntent(binding, intent);
     return true;
   }
 
@@ -386,6 +370,48 @@ export class BrowserPopupTargetManager {
   }
 
   /**
+   * Updates the authoritative foreground owner for one host window. A false
+   * report only clears the same workspace, so a delayed cleanup from an older
+   * route cannot override a newer foreground workspace.
+   */
+  public setWorkspaceForeground(input: {
+    hostWebContentsId: number;
+    workspaceId: string;
+    isForeground: boolean;
+  }): void {
+    const hasCurrent = this.foregroundWorkspaceByHostWebContentsId.has(input.hostWebContentsId);
+    const current = this.foregroundWorkspaceByHostWebContentsId.get(input.hostWebContentsId);
+
+    if (!input.isForeground) {
+      if (hasCurrent && current !== input.workspaceId) {
+        return;
+      }
+      this.foregroundWorkspaceByHostWebContentsId.set(input.hostWebContentsId, null);
+      this.parkAllTargetsForHost(input.hostWebContentsId);
+      return;
+    }
+
+    this.foregroundWorkspaceByHostWebContentsId.set(input.hostWebContentsId, input.workspaceId);
+    this.parkTargetsOutsideWorkspace({
+      hostWebContentsId: input.hostWebContentsId,
+      workspaceId: input.workspaceId,
+    });
+    this.reconcileDesiredPresentations({
+      hostWebContentsId: input.hostWebContentsId,
+      workspaceId: input.workspaceId,
+    });
+  }
+
+  /** Force-parks every popup when the host explicitly has no foreground workspace. */
+  public parkAllTargetsForHost(hostWebContentsId: number): void {
+    for (const binding of this.rootBindingsByWebContentsId.values()) {
+      if (binding.hostWebContentsId === hostWebContentsId) {
+        this.parkBindingTargets(binding);
+      }
+    }
+  }
+
+  /**
    * Force-parks every visible popup owned by a different workspace on the
    * given host window. Called on foreground-workspace changes so a stale or
    * racing renderer presentation can never linger over another workspace.
@@ -401,18 +427,7 @@ export class BrowserPopupTargetManager {
       ) {
         continue;
       }
-      let changed = false;
-      for (const target of this.targetsForRootWebContents(binding.rootWebContentsId)) {
-        changed = this.applyTargetPresentation(target, false, undefined) || changed;
-      }
-      if (changed) {
-        this.onSetActiveTarget?.({
-          browserId: binding.rootBrowserId,
-          workspaceId: binding.workspaceId,
-          hostWebContentsId: binding.hostWebContentsId,
-        });
-        this.emitSnapshot(binding.rootWebContentsId, "presentation");
-      }
+      this.parkBindingTargets(binding);
     }
   }
 
@@ -435,6 +450,7 @@ export class BrowserPopupTargetManager {
     }
     const binding = this.rootBindingsByWebContentsId.get(rootWebContentsId);
     this.rootBindingsByWebContentsId.delete(rootWebContentsId);
+    this.desiredPresentationByRootWebContentsId.delete(rootWebContentsId);
     this.openAttemptsByRootWebContentsId.delete(rootWebContentsId);
     if (binding) {
       this.onSetActiveTarget?.({
@@ -464,6 +480,101 @@ export class BrowserPopupTargetManager {
         this.removeTarget(target, "closed", false);
       }
     }
+    this.foregroundWorkspaceByHostWebContentsId.delete(hostWebContentsId);
+  }
+
+  private isWorkspacePresentationAllowed(binding: RootBrowserBinding): boolean {
+    const hasForeground = this.foregroundWorkspaceByHostWebContentsId.has(
+      binding.hostWebContentsId,
+    );
+    const foreground = this.foregroundWorkspaceByHostWebContentsId.get(binding.hostWebContentsId);
+    const internallyAllowed = !hasForeground || foreground === binding.workspaceId;
+    return (
+      internallyAllowed &&
+      (this.externalPresentationAllowed?.({
+        workspaceId: binding.workspaceId,
+        hostWebContentsId: binding.hostWebContentsId,
+      }) ??
+        true)
+    );
+  }
+
+  private applyPresentationIntent(
+    binding: RootBrowserBinding,
+    intent: BrowserPopupPresentationIntent,
+  ): void {
+    const selection = this.resolvePresentationSelection(binding, {
+      popupBrowserId: intent.popupBrowserId,
+      visible: intent.visible,
+      ...(intent.bounds ? { bounds: intent.bounds } : {}),
+      hostWebContentsId: binding.hostWebContentsId,
+    });
+    if (!selection) {
+      return;
+    }
+    const { selected } = selection;
+    const canShow = intent.visible && this.isWorkspacePresentationAllowed(binding);
+    const targets = this.targetsForRootWebContents(binding.rootWebContentsId);
+
+    let changed = false;
+    for (const target of targets) {
+      changed =
+        this.applyTargetPresentation(
+          target,
+          Boolean(canShow && selected === target),
+          intent.bounds,
+        ) || changed;
+    }
+
+    this.onSetActiveTarget?.({
+      browserId: canShow && selected ? selected.browserId : binding.rootBrowserId,
+      workspaceId: binding.workspaceId,
+      hostWebContentsId: binding.hostWebContentsId,
+    });
+    if (canShow && selected && intent.focus) {
+      selected.view.contents.focus();
+      this.desiredPresentationByRootWebContentsId.set(binding.rootWebContentsId, {
+        ...intent,
+        focus: false,
+      });
+    }
+    if (changed || (canShow && intent.focus)) {
+      this.emitSnapshot(binding.rootWebContentsId, "presentation");
+    }
+  }
+
+  private reconcileDesiredPresentations(input: {
+    hostWebContentsId: number;
+    workspaceId: string;
+  }): void {
+    for (const binding of this.rootBindingsByWebContentsId.values()) {
+      if (
+        binding.hostWebContentsId !== input.hostWebContentsId ||
+        binding.workspaceId !== input.workspaceId
+      ) {
+        continue;
+      }
+      const intent = this.desiredPresentationByRootWebContentsId.get(binding.rootWebContentsId);
+      if (intent) {
+        this.applyPresentationIntent(binding, intent);
+      }
+    }
+  }
+
+  private parkBindingTargets(binding: RootBrowserBinding): void {
+    let changed = false;
+    for (const target of this.targetsForRootWebContents(binding.rootWebContentsId)) {
+      changed = this.applyTargetPresentation(target, false, undefined) || changed;
+    }
+    if (!changed) {
+      return;
+    }
+    this.onSetActiveTarget?.({
+      browserId: binding.rootBrowserId,
+      workspaceId: binding.workspaceId,
+      hostWebContentsId: binding.hostWebContentsId,
+    });
+    this.emitSnapshot(binding.rootWebContentsId, "presentation");
   }
 
   private resolvePresentationSelection(
@@ -574,6 +685,14 @@ export class BrowserPopupTargetManager {
       return;
     }
     const binding = this.rootBindingsByWebContentsId.get(target.rootWebContentsId);
+    const desired = this.desiredPresentationByRootWebContentsId.get(target.rootWebContentsId);
+    if (desired?.popupBrowserId === target.browserId) {
+      this.desiredPresentationByRootWebContentsId.set(target.rootWebContentsId, {
+        popupBrowserId: null,
+        visible: false,
+        focus: false,
+      });
+    }
     this.targetsByBrowserId.delete(target.browserId);
     this.targetBrowserIdsByWebContentsId.delete(target.view.contents.id);
     try {

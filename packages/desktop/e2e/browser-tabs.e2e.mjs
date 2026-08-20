@@ -504,7 +504,9 @@ async function selectDeviceSize(page, label) {
 
   await page.locator('[aria-label="Device size"]').click();
   await item.waitFor({ state: "visible", timeout: timeoutMs });
-  await page.mouse.click(rect.x + rect.width / 2, rect.y + rect.height / 2);
+  const clickRect = await item.boundingBox();
+  assert(clickRect, `Device size menu item ${label} lost its bounds after reopening`);
+  await page.mouse.click(clickRect.x + clickRect.width / 2, clickRect.y + clickRect.height / 2);
   await page.keyboard.press("Escape");
   return !openPixels.equals(closedPixels);
 }
@@ -578,6 +580,7 @@ async function runPopupRegression({
   client,
   browserId,
   originalDeck,
+  serverId,
   targetUrl,
   artifactDir,
 }) {
@@ -776,6 +779,23 @@ async function runPopupRegression({
     popupState.popups.find((target) => target.browserId === postPopup.browserId)?.isActive === true,
     "Visible popup was not the active browser target",
   );
+
+  // Keep the popup selected while switching workspaces. Main may receive the
+  // pane presentation before the foreground report; the desired presentation
+  // must be replayed automatically when this workspace wins again.
+  await page.getByTestId(`sidebar-workspace-row-${serverId}:${workspaceIds[1]}`).click();
+  await waitForPopupVisibility(page, browserId, postPopup.browserId, false);
+  await page.getByTestId(`sidebar-workspace-row-${serverId}:${workspaceIds[0]}`).click();
+  await originalDeck.waitFor({ state: "visible", timeout: timeoutMs });
+  await waitForPopupVisibility(page, browserId, postPopup.browserId, true);
+
+  // A non-workspace route is an explicit no-owner state, not unknown/fail-open.
+  await page.getByTestId("sidebar-settings").click();
+  await page.getByTestId("settings-sidebar").waitFor({ state: "visible", timeout: timeoutMs });
+  await waitForPopupVisibility(page, browserId, postPopup.browserId, false);
+  await page.getByTestId("settings-back-to-workspace").click();
+  await originalDeck.waitFor({ state: "visible", timeout: timeoutMs });
+  await waitForPopupVisibility(page, browserId, postPopup.browserId, true);
 
   await page.evaluate(() => {
     const input = document.createElement("input");
@@ -1110,6 +1130,7 @@ async function runRegression({
     client,
     browserId,
     originalDeck,
+    serverId,
     targetUrl,
     artifactDir,
   });

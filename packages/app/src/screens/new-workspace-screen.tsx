@@ -2391,7 +2391,9 @@ export function NewWorkspaceScreen({
               blurOnSubmit={true}
               value={chatDraft.text}
               onChangeText={chatDraft.editText}
+              onReplaceText={chatDraft.replaceText}
               textReplacementKey={chatDraft.textReplacementKey}
+              isDraftHydrated={chatDraft.isHydrated}
               attachments={chatDraft.attachments}
               attachmentScopeKeys={visibleDraftContextScopeKeys}
               onChangeAttachments={chatDraft.setAttachments}

@@ -64,6 +64,11 @@ import {
   type EditingTextInputHandle as ComposerTextInputHandle,
   type EditingTextInputProps,
 } from "@/components/ui/text-input";
+import {
+  createPendingNativeTextReplacement,
+  resolveNativeTextChangeAfterReplacement,
+  type PendingNativeTextReplacement,
+} from "@/components/ui/text-input/native-replacement";
 
 const ComposerTextInput = withUnistyles(EditingTextInput, (theme) => ({
   placeholderTextColor: theme.colors.surface4,
@@ -98,6 +103,8 @@ export interface AttachmentMenuItem {
 export interface MessageInputProps {
   value: string;
   onChangeText: (text: string) => void;
+  /** Persists application-owned replacements separately from ordinary native edits. */
+  onReplaceText?: (text: string) => void;
   onSubmit: (payload: MessagePayload) => void;
   /** When true, the submit button is enabled even without text or images (e.g. external attachment selected). */
   hasExternalContent?: boolean;
@@ -1037,6 +1044,7 @@ function computeSendButtonState(input: SendButtonStateInput): SendButtonStateOut
 interface ResolvedMessageInputProps {
   value: string;
   onChangeText: (text: string) => void;
+  onReplaceText: ((text: string) => void) | undefined;
   onSubmit: (payload: MessagePayload) => void;
   hasExternalContent: boolean;
   allowEmptySubmit: boolean;
@@ -1087,6 +1095,7 @@ function resolveMessageInputProps(props: MessageInputProps): ResolvedMessageInpu
   return {
     value: props.value,
     onChangeText: props.onChangeText,
+    onReplaceText: props.onReplaceText,
     onSubmit: props.onSubmit,
     hasExternalContent: props.hasExternalContent ?? false,
     allowEmptySubmit: props.allowEmptySubmit ?? false,
@@ -1145,6 +1154,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const {
       value,
       onChangeText,
+      onReplaceText,
       onSubmit,
       hasExternalContent,
       allowEmptySubmit,
@@ -1210,16 +1220,33 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const isPaneFocusedRef = useRef(isPaneFocused);
     const wasPaneFocusedRef = useRef(isPaneFocused);
     const valueRef = useRef(value);
+    const pendingNativeReplacementRef = useRef<PendingNativeTextReplacement | null>(null);
+    const nativeReassertTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const appliedTextReplacementKeyRef = useRef(textReplacementKey);
     isPaneFocusedRef.current = isPaneFocused;
 
-    const replaceText = useCallback(
+    const replaceNativeText = useCallback(
       (nextText: string, selection?: { start: number; end: number }) => {
+        if (nativeReassertTimerRef.current) {
+          clearTimeout(nativeReassertTimerRef.current);
+          nativeReassertTimerRef.current = null;
+        }
+        pendingNativeReplacementRef.current = createPendingNativeTextReplacement(
+          valueRef.current,
+          nextText,
+        );
         valueRef.current = nextText;
         textInputRef.current?.replaceText(nextText, selection);
-        onChangeText(nextText);
       },
-      [onChangeText],
+      [],
+    );
+
+    const replaceText = useCallback(
+      (nextText: string, selection?: { start: number; end: number }) => {
+        replaceNativeText(nextText, selection);
+        (onReplaceText ?? onChangeText)(nextText);
+      },
+      [onChangeText, onReplaceText, replaceNativeText],
     );
 
     useImperativeHandle(ref, () => ({
@@ -1266,9 +1293,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     useEffect(() => {
       if (appliedTextReplacementKeyRef.current === textReplacementKey) return;
       appliedTextReplacementKeyRef.current = textReplacementKey;
-      valueRef.current = value;
-      textInputRef.current?.replaceText(value);
-    }, [textReplacementKey, value]);
+      replaceNativeText(value);
+    }, [replaceNativeText, textReplacementKey, value]);
 
     useLayoutEffect(() => {
       const wasPaneFocused = wasPaneFocusedRef.current;
@@ -1281,13 +1307,16 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       if (!wasPaneFocused) {
         // A retained input can receive an already-queued browser/IME event after its tab loses
         // ownership. Restore the newly active surface from its agent-scoped draft before paint.
-        valueRef.current = value;
-        textInputRef.current?.replaceText(value);
+        replaceNativeText(value);
       }
-    }, [isPaneFocused, value]);
+    }, [isPaneFocused, replaceNativeText, value]);
 
     useEffect(() => {
       return () => {
+        if (nativeReassertTimerRef.current) {
+          clearTimeout(nativeReassertTimerRef.current);
+          nativeReassertTimerRef.current = null;
+        }
         onFocusChange?.(false);
       };
     }, [onFocusChange]);
@@ -1721,6 +1750,33 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         // Retained panes stay mounted. Ignore late native/IME events from a composer that no
         // longer owns logical input, otherwise its text can overwrite another session's draft.
         if (!isPaneFocusedRef.current || !isSubmitOwner()) return;
+
+        const resolution = resolveNativeTextChangeAfterReplacement(
+          pendingNativeReplacementRef.current,
+          nextValue,
+        );
+        pendingNativeReplacementRef.current = resolution.pending;
+        if (resolution.action === "ignore") {
+          return;
+        }
+        if (resolution.action === "reassert") {
+          const pending = resolution.pending;
+          if (nativeReassertTimerRef.current) {
+            clearTimeout(nativeReassertTimerRef.current);
+          }
+          // Let the Fabric input commit the newer native eventCount before
+          // retrying the command. New user input clears `pending` and wins.
+          nativeReassertTimerRef.current = setTimeout(() => {
+            nativeReassertTimerRef.current = null;
+            if (pendingNativeReplacementRef.current !== pending) {
+              return;
+            }
+            valueRef.current = pending.expectedText;
+            textInputRef.current?.replaceText(pending.expectedText);
+          }, 0);
+          return;
+        }
+
         valueRef.current = nextValue;
         onChangeText(nextValue);
       },

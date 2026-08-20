@@ -20,7 +20,7 @@ import {
   resolveEffectiveComposerThinkingOptionId,
   type ProviderSelectionState,
 } from "@/provider-selection/provider-selection";
-import { useDraftStore } from "@/stores/draft-store";
+import { useDraftStore, waitForDraftStoreHydration } from "@/stores/draft-store";
 import { toDraftInputIfReady } from "@/stores/draft-store/state";
 
 type AttachmentUpdater =
@@ -145,6 +145,7 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
   useEffect(() => {
     let cancelled = false;
     void (async () => {
+      await waitForDraftStoreHydration();
       await useDraftStore.getState().hydrateDraftInput({ draftKey });
       if (!cancelled) {
         setTextReplacementRevision((revision) => revision + 1);

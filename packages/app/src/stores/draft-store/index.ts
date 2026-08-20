@@ -64,12 +64,32 @@ interface DraftStoreRuntimeState {
 type DraftStore = DraftStoreState & DraftStoreRuntimeState & DraftStoreActions;
 
 let gcScheduled = false;
+let draftStoreHydrationSettled = false;
+let resolveDraftStoreHydration: (() => void) | null = null;
+const draftStoreHydrationPromise = new Promise<void>((resolve) => {
+  resolveDraftStoreHydration = resolve;
+});
 const draftPersistStorage = createDraftPersistStorage(
   createValidatedPersistStorage(AsyncStorage, PersistedDraftStoreSchema),
 );
 
 export function flushDraftPersistStorage(): Promise<void> {
   return draftPersistStorage?.flush() ?? Promise.resolve();
+}
+
+function markDraftStoreHydrationSettled(): void {
+  if (draftStoreHydrationSettled) return;
+  draftStoreHydrationSettled = true;
+  resolveDraftStoreHydration?.();
+  resolveDraftStoreHydration = null;
+}
+
+/** Waits for Zustand's global persisted-state merge, not only per-draft migration. */
+export async function waitForDraftStoreHydration(): Promise<void> {
+  if (draftStoreHydrationSettled || useDraftStore.persist.hasHydrated()) {
+    return;
+  }
+  await draftStoreHydrationPromise;
 }
 
 function createDraftRecord(input: {
@@ -430,7 +450,12 @@ export const useDraftStore = create<DraftStore>()(
           nowMs: Date.now(),
         }),
       onRehydrateStorage: () => {
-        return () => {
+        return (_state, error) => {
+          markDraftStoreHydrationSettled();
+          if (error) {
+            console.warn("[DraftStore] Failed to hydrate persisted drafts", error);
+            return;
+          }
           void migrateAllLegacyDrafts();
           scheduleAttachmentGc();
         };

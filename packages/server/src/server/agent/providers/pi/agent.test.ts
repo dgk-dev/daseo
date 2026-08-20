@@ -192,6 +192,20 @@ class SessionEvents {
     );
   }
 
+  turnStartedEvents() {
+    return this.events.filter(
+      (event): event is Extract<AgentStreamEvent, { type: "turn_started" }> =>
+        event.type === "turn_started",
+    );
+  }
+
+  turnCanceledEvents() {
+    return this.events.filter(
+      (event): event is Extract<AgentStreamEvent, { type: "turn_canceled" }> =>
+        event.type === "turn_canceled",
+    );
+  }
+
   nextTurnCompletion(): Promise<Extract<AgentStreamEvent, { type: "turn_completed" }>> {
     return this.nextEvent(
       (event): event is Extract<AgentStreamEvent, { type: "turn_completed" }> =>
@@ -890,6 +904,7 @@ describe("PiRpcAgentSession", () => {
         content: [{ type: "text", text: "Extension command output" }],
       },
     });
+    await flushTurnScheduling();
 
     expect(events.timelineAndCompletionEvents()).toEqual([
       {
@@ -900,6 +915,7 @@ describe("PiRpcAgentSession", () => {
           phase: "commentary",
         },
       },
+      { type: "timeline", item: { type: "user_message", text: "/show-status" } },
       { type: "turn_completed" },
     ]);
   });
@@ -930,8 +946,28 @@ describe("PiRpcAgentSession", () => {
     });
   });
 
-  test("completes extension-triggered autonomous runs", async () => {
-    const { pi, events } = await createSession();
+  test("does not let an unrelated custom notification complete an ordinary prompt preflight", async () => {
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+    fakeSession.holdNextPrompt();
+
+    const { turnId } = await session.startTurn("ordinary prompt");
+    fakeSession.emit({
+      type: "message_end",
+      message: {
+        role: "custom",
+        content: [{ type: "text", text: "Background notification" }],
+      },
+    });
+    await flushTurnScheduling();
+
+    expect(events.turnCompletedEvents()).toHaveLength(0);
+    fakeSession.emit({ type: "process_exit", error: "audit shutdown" });
+    await expect(events.nextTurnFailure()).resolves.toMatchObject({ turnId });
+  });
+
+  test("completes extension-triggered autonomous runs with a stable steerable turn id", async () => {
+    const { pi, session, events } = await createSession();
     const fakeSession = pi.latestSession();
 
     fakeSession.emit({
@@ -943,6 +979,13 @@ describe("PiRpcAgentSession", () => {
     });
     fakeSession.emit({ type: "agent_start" });
     fakeSession.emit({ type: "turn_start" });
+    const autonomousTurnId = events.turnStartedEvents()[0]?.turnId;
+    expect(autonomousTurnId).toEqual(expect.any(String));
+    await expect(
+      session.steerTurn?.("include this follow-up", autonomousTurnId!, {
+        clientMessageId: "autonomous-steer",
+      }),
+    ).resolves.toEqual({ turnId: autonomousTurnId });
     fakeSession.emit({
       type: "message_start",
       message: { role: "assistant", content: [], responseId: "autonomous-response" },
@@ -955,12 +998,47 @@ describe("PiRpcAgentSession", () => {
     fakeSession.finishTurn();
 
     const completion = await events.nextTurnCompletion();
-    expect(completion.turnId).toBeUndefined();
+    expect(completion.turnId).toBe(autonomousTurnId);
     expect(events.turnCompletedEvents()).toHaveLength(1);
     expect(events.eventTypes()).toContain("turn_started");
   });
 
-  test("autonomous runs settle through the fallback timer when agent_settled is missing", async () => {
+  test("fails an autonomous run symmetrically when the Pi process exits", async () => {
+    const { pi, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    fakeSession.emit({ type: "agent_start" });
+    fakeSession.emit({ type: "turn_start" });
+    const autonomousTurnId = events.turnStartedEvents()[0]?.turnId;
+    fakeSession.emit({ type: "process_exit", error: "Pi exited during autonomous work" });
+
+    await expect(events.nextTurnFailure()).resolves.toMatchObject({
+      turnId: autonomousTurnId,
+      error: "Pi exited during autonomous work",
+    });
+  });
+
+  test("settlement fallback waits for authoritative runtime idleness", async () => {
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const { pi, events } = await createSession();
+    const fakeSession = pi.latestSession();
+    fakeSession.state.isStreaming = true;
+
+    fakeSession.emit({ type: "agent_start" });
+    fakeSession.emit({ type: "turn_start" });
+    fakeSession.emit({ type: "agent_end", messages: [] });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(events.turnCompletedEvents()).toHaveLength(0);
+
+    fakeSession.state.isStreaming = false;
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(events.turnCompletedEvents()).toHaveLength(1);
+  });
+
+  test("legacy fallback resumes after compaction when agent_settled is missing", async () => {
     vi.useFakeTimers();
     onTestFinished(() => {
       vi.useRealTimers();
@@ -971,9 +1049,44 @@ describe("PiRpcAgentSession", () => {
     fakeSession.emit({ type: "agent_start" });
     fakeSession.emit({ type: "turn_start" });
     fakeSession.emit({ type: "agent_end", messages: [] });
-    await vi.advanceTimersByTimeAsync(1_500);
+    fakeSession.emit({ type: "compaction_start", reason: "threshold" });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(events.turnCompletedEvents()).toHaveLength(0);
 
+    fakeSession.emit({ type: "compaction_end", reason: "threshold" });
+    await vi.advanceTimersByTimeAsync(1_500);
     expect(events.turnCompletedEvents()).toHaveLength(1);
+  });
+
+  test("ignores a stale settled event after fallback and a newer turn starts", async () => {
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    const first = await session.startTurn("first");
+    fakeSession.emit({ type: "agent_start" });
+    fakeSession.emit({ type: "turn_start" });
+    fakeSession.emit({ type: "agent_end", messages: [] });
+    await vi.advanceTimersByTimeAsync(5_500);
+    expect(events.turnCompletedEvents()).toHaveLength(1);
+
+    const second = await session.startTurn("second");
+    fakeSession.state.isStreaming = true;
+    fakeSession.emit({ type: "agent_start" });
+    fakeSession.emit({ type: "turn_start" });
+    fakeSession.emit({ type: "agent_end", messages: [] });
+    fakeSession.emit({ type: "agent_settled" });
+    await flushTurnScheduling();
+    expect(events.turnCompletedEvents()).toHaveLength(1);
+
+    fakeSession.state.isStreaming = false;
+    fakeSession.emit({ type: "agent_settled" });
+    await flushTurnScheduling();
+    expect(events.turnCompletedEvents()[0]).toMatchObject({ turnId: first.turnId });
+    expect(events.turnCompletedEvents().at(-1)).toMatchObject({ turnId: second.turnId });
   });
 
   test("holds the Pi turn open while auto-compaction runs after agent_end", async () => {
@@ -1142,6 +1255,35 @@ describe("PiRpcAgentSession", () => {
     expect(
       (events as unknown as { events: AgentStreamEvent[] }).events.map((e) => e.type),
     ).not.toContain("turn_failed");
+  });
+
+  test("does not let a previous interrupt suppress a later autonomous cancellation", async () => {
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+    fakeSession.abort = async () => {};
+
+    await session.startTurn("cancel foreground");
+    await session.interrupt();
+    expect(events.turnCanceledEvents()).toHaveLength(1);
+
+    fakeSession.emit({ type: "agent_start" });
+    fakeSession.emit({ type: "turn_start" });
+    const autonomousTurnId = events.turnStartedEvents().at(-1)?.turnId;
+    fakeSession.finishTurn({
+      role: "assistant",
+      provider: "openai-responses",
+      model: "gpt-5.6-terra",
+      responseId: "autonomous-aborted",
+      stopReason: "aborted",
+      content: [],
+    });
+    await flushTurnScheduling();
+
+    expect(events.turnCanceledEvents()).toHaveLength(2);
+    expect(events.turnCanceledEvents().at(-1)).toMatchObject({
+      turnId: autonomousTurnId,
+      reason: "aborted",
+    });
   });
 
   test("adds Pi assistant context to generic provider finish errors", async () => {

@@ -153,8 +153,10 @@ function mapPiSlashCommands(
 }
 
 // Current Pi emits agent_settled after retries, compaction continuations, and
-// steering queues drain. Keep a short fallback for older compatible runtimes.
-const PI_AGENT_SETTLEMENT_FALLBACK_MS = 1_000;
+// steering queues drain. A state-verified fallback covers older runtimes and a
+// lost settled event without ever treating agent_end itself as authoritative.
+const PI_AGENT_SETTLEMENT_RECHECK_MS = 1_000;
+const PI_AGENT_SETTLEMENT_QUIESCENCE_MS = 5_000;
 
 const PI_CAPABILITIES: AgentCapabilityFlags = {
   supportsStreaming: true,
@@ -1226,6 +1228,12 @@ function createRuntime(logger: Logger, runtimeSettings?: ProviderRuntimeSettings
   });
 }
 
+interface PiPendingAgentEnd {
+  turnId: string;
+  messages: PiAgentMessage[];
+  endedAt: number;
+}
+
 export class PiRpcAgentSession implements AgentSession {
   readonly provider: AgentProvider;
   readonly capabilities: AgentCapabilityFlags;
@@ -1240,8 +1248,9 @@ export class PiRpcAgentSession implements AgentSession {
   private awaitingInitialUserMessage = false;
   private readonly pendingSteeringCorrelations: Array<{ clientMessageId: string | null }> = [];
   private activeSteeringRequests = 0;
-  private pendingAgentEnd: { turnId: string | undefined; messages: PiAgentMessage[] } | null = null;
+  private pendingAgentEnd: PiPendingAgentEnd | null = null;
   private settlementFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  private settlementCompactionTurnId: string | null = null;
   private activeAssistantMessageId: string | null = null;
   private activeTurnStarted = false;
   private activeNoTurnPromptText: string | null = null;
@@ -1329,6 +1338,9 @@ export class PiRpcAgentSession implements AgentSession {
     void (async () => {
       try {
         const ack = await this.runtimeSession.prompt(payload.text, payload.images);
+        if (this.activeTurnId !== turnId) {
+          return;
+        }
         this.activePromptRequestId = ack.requestId ?? null;
         const correlatedResult = ack.requestId
           ? this.pendingPromptResults.get(ack.requestId)
@@ -1662,6 +1674,25 @@ export class PiRpcAgentSession implements AgentSession {
     return this.activeTurnId ?? undefined;
   }
 
+  private ensureAutonomousTurn(): string {
+    if (this.activeTurnId) {
+      return this.activeTurnId;
+    }
+
+    const turnId = randomUUID();
+    this.activeTurnId = turnId;
+    this.lastInterruptedTurnId = null;
+    this.activeClientMessageId = null;
+    this.awaitingInitialUserMessage = false;
+    this.pendingSteeringCorrelations.splice(0);
+    this.activeSteeringRequests = 0;
+    this.clearPendingSettlement();
+    this.activeAssistantMessageId = null;
+    this.activeTurnStarted = false;
+    this.clearNoTurnBuffers();
+    return turnId;
+  }
+
   private async completeNoTurnPrompt(turnId: string): Promise<void> {
     await new Promise<void>((resolve) => {
       setImmediate(resolve);
@@ -1710,46 +1741,130 @@ export class PiRpcAgentSession implements AgentSession {
       this.settlementFallbackTimer = null;
     }
     this.pendingAgentEnd = null;
+    this.settlementCompactionTurnId = null;
+  }
+
+  private cancelSettlementProbe(): void {
+    if (!this.settlementFallbackTimer) return;
+    clearTimeout(this.settlementFallbackTimer);
+    this.settlementFallbackTimer = null;
+  }
+
+  private scheduleSettlementProbe(delayMs = PI_AGENT_SETTLEMENT_RECHECK_MS): void {
+    const pending = this.pendingAgentEnd;
+    if (!pending || this.activeTurnId !== pending.turnId || this.settlementFallbackTimer) {
+      return;
+    }
+    this.settlementFallbackTimer = setTimeout(
+      () => {
+        this.settlementFallbackTimer = null;
+        void this.probePendingSettlement(pending.turnId);
+      },
+      Math.max(0, delayMs),
+    );
+    this.settlementFallbackTimer.unref?.();
+  }
+
+  private async probePendingSettlement(turnId: string): Promise<void> {
+    const pending = this.pendingAgentEnd;
+    if (!pending || pending.turnId !== turnId || this.activeTurnId !== turnId) {
+      return;
+    }
+    if (this.settlementCompactionTurnId === turnId || this.activeSteeringRequests > 0) {
+      this.scheduleSettlementProbe();
+      return;
+    }
+
+    let runtimeState: PiSessionState;
+    try {
+      runtimeState = await this.runtimeSession.getState();
+    } catch {
+      this.scheduleSettlementProbe();
+      return;
+    }
+    this.state = runtimeState;
+
+    const current = this.pendingAgentEnd;
+    if (!current || current.turnId !== turnId || this.activeTurnId !== turnId) {
+      return;
+    }
+    if (
+      runtimeState.isStreaming ||
+      runtimeState.isCompacting ||
+      runtimeState.pendingMessageCount > 0
+    ) {
+      this.scheduleSettlementProbe();
+      return;
+    }
+
+    const remainingQuiescenceMs = current.endedAt + PI_AGENT_SETTLEMENT_QUIESCENCE_MS - Date.now();
+    if (remainingQuiescenceMs > 0) {
+      this.scheduleSettlementProbe(remainingQuiescenceMs);
+      return;
+    }
+
+    this.pendingAgentEnd = null;
+    this.completeTurn(turnId, current.messages);
   }
 
   private handleAgentEnd(
     turnId: string | undefined,
     event: Extract<PiAgentSessionEvent, { type: "agent_end" }>,
   ): void {
-    // Extensions can start runs Paseo never prompted (for example a background
-    // web fetch waking the agent). Those runs have no activeTurnId but must
-    // still settle, otherwise the agent stays "working" forever.
-    if (!turnId && !this.isAutonomousRunActive()) return;
-    this.pendingAgentEnd = { turnId, messages: event.messages ?? [] };
-    if (event.willRetry === true || this.pendingSteeringCorrelations.length > 0) {
-      return;
-    }
-    if (this.settlementFallbackTimer) clearTimeout(this.settlementFallbackTimer);
-    this.settlementFallbackTimer = setTimeout(() => {
-      this.settlementFallbackTimer = null;
-      const pending = this.pendingAgentEnd;
-      if (!pending || this.activeTurnId !== (pending.turnId ?? null)) return;
-      if (!pending.turnId && !this.activeTurnStarted) return;
-      this.pendingAgentEnd = null;
-      this.completeTurn(pending.turnId, pending.messages);
-    }, PI_AGENT_SETTLEMENT_FALLBACK_MS);
-    this.settlementFallbackTimer.unref?.();
+    if (!turnId || this.activeTurnId !== turnId) return;
+    this.pendingAgentEnd = {
+      turnId,
+      messages: event.messages ?? [],
+      endedAt: Date.now(),
+    };
+    this.cancelSettlementProbe();
+    this.scheduleSettlementProbe();
   }
 
   private handleAgentSettled(turnId: string | undefined): void {
     const pending = this.pendingAgentEnd;
-    this.clearPendingSettlement();
-    if (!turnId && !this.isAutonomousRunActive()) return;
-    this.completeTurn(turnId, pending?.messages ?? []);
+    // agent_settled has no wire-level run id. Requiring the current run's
+    // agent_end and an idle runtime prevents a delayed settled event from
+    // closing a newer active run.
+    if (!turnId || !pending || pending.turnId !== turnId || this.activeTurnId !== turnId) {
+      return;
+    }
+    void this.completeAuthoritativeSettlement(turnId, pending);
   }
 
-  private isAutonomousRunActive(): boolean {
-    return this.activeTurnId === null && this.activeTurnStarted;
+  private async completeAuthoritativeSettlement(
+    turnId: string,
+    expected: PiPendingAgentEnd,
+  ): Promise<void> {
+    let runtimeState: PiSessionState;
+    try {
+      runtimeState = await this.runtimeSession.getState();
+    } catch {
+      this.scheduleSettlementProbe();
+      return;
+    }
+    this.state = runtimeState;
+
+    if (
+      this.activeTurnId !== turnId ||
+      this.pendingAgentEnd !== expected ||
+      runtimeState.isStreaming ||
+      runtimeState.isCompacting ||
+      runtimeState.pendingMessageCount > 0
+    ) {
+      this.scheduleSettlementProbe();
+      return;
+    }
+
+    const messages = expected.messages;
+    this.clearPendingSettlement();
+    this.completeTurn(turnId, messages);
   }
 
   private clearNoTurnBuffers(): void {
     this.activeNoTurnPromptText = null;
     this.activePromptRequestId = null;
+    this.pendingPromptResults.clear();
     this.pendingNoTurnOutputs.splice(0, this.pendingNoTurnOutputs.length);
   }
 
@@ -2176,15 +2291,13 @@ export class PiRpcAgentSession implements AgentSession {
   }
 
   private handleSessionEvent(event: PiAgentSessionEvent): void {
-    const turnId = this.currentTurnIdForEvent();
+    let turnId = this.currentTurnIdForEvent();
 
     switch (event.type) {
       case "agent_start":
+        turnId = this.ensureAutonomousTurn();
         this.activeTurnStarted = true;
-        if (this.settlementFallbackTimer) {
-          clearTimeout(this.settlementFallbackTimer);
-          this.settlementFallbackTimer = null;
-        }
+        this.cancelSettlementProbe();
         this.clearNoTurnBuffers();
         this.emit({
           type: "thread_started",
@@ -2193,11 +2306,9 @@ export class PiRpcAgentSession implements AgentSession {
         });
         return;
       case "turn_start":
+        turnId = this.ensureAutonomousTurn();
         this.activeTurnStarted = true;
-        if (this.settlementFallbackTimer) {
-          clearTimeout(this.settlementFallbackTimer);
-          this.settlementFallbackTimer = null;
-        }
+        this.cancelSettlementProbe();
         this.clearNoTurnBuffers();
         this.emit({
           type: "turn_started",
@@ -2236,12 +2347,11 @@ export class PiRpcAgentSession implements AgentSession {
         return;
       }
       case "compaction_start":
-        // Auto-compaction runs between agent_end and the continuation turn and
-        // routinely takes longer than the settlement fallback. Hold the turn
-        // open; turn_start or agent_settled still closes it afterwards.
-        if (this.settlementFallbackTimer) {
-          clearTimeout(this.settlementFallbackTimer);
-          this.settlementFallbackTimer = null;
+        // Auto-compaction runs between agent_end and a continuation. Mark it as
+        // active before emitting UI state so even legacy fallback cannot settle.
+        if (turnId) {
+          this.settlementCompactionTurnId = turnId;
+          this.cancelSettlementProbe();
         }
         this.emitCompactionTimeline({
           turnId,
@@ -2261,6 +2371,10 @@ export class PiRpcAgentSession implements AgentSession {
             trigger: event.reason === "manual" ? "manual" : "auto",
           },
         });
+        if (turnId && this.settlementCompactionTurnId === turnId) {
+          this.settlementCompactionTurnId = null;
+          this.scheduleSettlementProbe();
+        }
         return;
       case "agent_end":
         this.handleAgentEnd(turnId, event);
@@ -2398,12 +2512,9 @@ export class PiRpcAgentSession implements AgentSession {
           item: { type: "assistant_message", text, phase: "commentary" },
         });
       }
-      // Only a prompt Paseo itself started can be "handled without a turn".
-      // Idle extension messages (fetch notifications and similar) must not
-      // emit a turn-less turn_completed that closes an unrelated turn.
-      if (this.activeTurnId && !this.activeTurnStarted && this.activeSteeringRequests === 0) {
-        this.completeTurn(turnId, []);
-      }
+      // Completion is correlated by the prompt acknowledgement/no-turn probe.
+      // A custom message alone may be an unrelated background notification and
+      // therefore can never authoritatively close a user prompt.
       return;
     }
   }
@@ -2445,19 +2556,19 @@ export class PiRpcAgentSession implements AgentSession {
     return mapToolDetail(toolCall, result);
   }
 
-  private completeTurn(turnId: string | undefined, messages: PiAgentMessage[]): void {
+  private completeTurn(turnId: string, messages: PiAgentMessage[]): void {
+    if (this.activeTurnId !== turnId) {
+      return;
+    }
     const wasAborted = isPiAbortedTerminalResponse(messages);
-    if (turnId && this.interruptingTurnId === turnId && wasAborted) {
+    if (this.interruptingTurnId === turnId && wasAborted) {
       this.interruptedTerminalError = {
         turnId,
         error: latestPiErrorMessage(messages) ?? "Pi turn failed",
       };
       return;
     }
-    if (
-      wasAborted &&
-      (turnId === this.lastInterruptedTurnId || (!turnId && this.lastInterruptedTurnId !== null))
-    ) {
+    if (wasAborted && turnId === this.lastInterruptedTurnId) {
       this.lastInterruptedTurnId = null;
       return;
     }

@@ -345,6 +345,22 @@ function useSyncWorkspaceActiveBrowser(input: {
       isForeground: input.isRouteFocused,
     });
   }, [focusedBrowserId, input.isRouteFocused, input.workspaceId]);
+
+  useEffect(() => {
+    if (!getIsElectron()) {
+      return;
+    }
+    const workspaceId = input.workspaceId;
+    return () => {
+      // Route teardown can skip a final render with isRouteFocused=false.
+      // The main process ignores this cleanup if a newer workspace already won.
+      void getDesktopHost()?.browser?.setWorkspaceActiveBrowser?.({
+        workspaceId,
+        browserId: null,
+        isForeground: false,
+      });
+    };
+  }, [input.workspaceId]);
 }
 
 function getFallbackTabOptionLabel(

@@ -359,13 +359,15 @@ describe("BrowserPopupTargetManager", () => {
     expect(popup.contents.focusCalls).toBe(0);
   });
 
-  test("downgrades a background-workspace presentation to parking", () => {
-    let foregroundWorkspaceId = "workspace-b";
-    const harness = new PopupManagerHarness({
-      isPresentationAllowed: ({ workspaceId }) => workspaceId === foregroundWorkspaceId,
-    });
+  test("parks a background presentation intent and replays it when its workspace becomes foreground", () => {
+    const harness = new PopupManagerHarness();
     harness.bind();
     const popup = harness.adopt();
+    harness.manager.setWorkspaceForeground({
+      hostWebContentsId: 10,
+      workspaceId: "workspace-b",
+      isForeground: true,
+    });
 
     const accepted = harness.manager.setPresentation({
       rootBrowserId: "browser-root",
@@ -380,7 +382,20 @@ describe("BrowserPopupTargetManager", () => {
     expect(harness.host.visibility).toEqual([]);
     expect(popup.contents.focusCalls).toBe(0);
 
-    foregroundWorkspaceId = "workspace-a";
+    harness.manager.setWorkspaceForeground({
+      hostWebContentsId: 10,
+      workspaceId: "workspace-a",
+      isForeground: true,
+    });
+
+    expect(harness.host.visibility.at(-1)).toEqual({ view: popup.view, visible: true });
+    expect(popup.contents.focusCalls).toBe(1);
+  });
+
+  test("explicit no-foreground state parks every popup and preserves its desired presentation", () => {
+    const harness = new PopupManagerHarness();
+    harness.bind();
+    const popup = harness.adopt();
     harness.manager.setPresentation({
       rootBrowserId: "browser-root",
       hostWebContentsId: 10,
@@ -389,7 +404,62 @@ describe("BrowserPopupTargetManager", () => {
       bounds: PRESENTED_BOUNDS,
     });
 
+    harness.manager.setWorkspaceForeground({
+      hostWebContentsId: 10,
+      workspaceId: "workspace-a",
+      isForeground: false,
+    });
+    expect(harness.host.visibility.at(-1)).toEqual({ view: popup.view, visible: false });
+
+    harness.manager.setPresentation({
+      rootBrowserId: "browser-root",
+      hostWebContentsId: 10,
+      popupBrowserId: popup.browserId,
+      visible: true,
+      bounds: PRESENTED_BOUNDS,
+    });
+    expect(harness.host.visibility.at(-1)).toEqual({ view: popup.view, visible: false });
+
+    harness.manager.setWorkspaceForeground({
+      hostWebContentsId: 10,
+      workspaceId: "workspace-a",
+      isForeground: true,
+    });
     expect(harness.host.visibility.at(-1)).toEqual({ view: popup.view, visible: true });
+  });
+
+  test("ignores a stale false report after another workspace becomes foreground", () => {
+    const harness = new PopupManagerHarness();
+    harness.bind();
+    harness.manager.bindRoot({
+      rootWebContentsId: 101,
+      rootBrowserId: "browser-b",
+      workspaceId: "workspace-b",
+      hostWebContentsId: 10,
+    });
+    const popup = harness.adopt({ rootWebContentsId: 101, contentsId: 201 });
+    harness.manager.setWorkspaceForeground({
+      hostWebContentsId: 10,
+      workspaceId: "workspace-b",
+      isForeground: true,
+    });
+    harness.manager.setPresentation({
+      rootBrowserId: "browser-b",
+      hostWebContentsId: 10,
+      popupBrowserId: popup.browserId,
+      visible: true,
+      bounds: PRESENTED_BOUNDS,
+    });
+
+    const visibilityCount = harness.host.visibility.length;
+    harness.manager.setWorkspaceForeground({
+      hostWebContentsId: 10,
+      workspaceId: "workspace-a",
+      isForeground: false,
+    });
+
+    expect(harness.host.visibility).toHaveLength(visibilityCount);
+    expect(harness.snapshots.at(-1)?.targets[0]?.isVisible).toBe(true);
   });
 
   test("parks visible popups owned by other workspaces on foreground change", () => {

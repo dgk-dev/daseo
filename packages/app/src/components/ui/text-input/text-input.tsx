@@ -6,15 +6,15 @@ import PasteInput, {
   type PasteTextInputInstance,
 } from "@mattermost/react-native-paste-input";
 import type { EditingTextInputHandle, EditingTextInputProps } from "./types";
+import { replaceNativeInputText, type NativeTextReplacementTarget } from "./native-replacement";
 
-type NativeInput = (TextInput | PasteTextInputInstance) & {
-  blur(): void;
-  focus(): void;
-  isFocused(): boolean;
-  setNativeProps(props: { text: string; selection?: { start: number; end: number } }): void;
-  setSelection?(start: number, end: number): void;
-  getNativeRef?(): unknown;
-};
+type NativeInput = (TextInput | PasteTextInputInstance) &
+  NativeTextReplacementTarget & {
+    blur(): void;
+    focus(): void;
+    isFocused(): boolean;
+    getNativeRef?(): unknown;
+  };
 
 export const EditingTextInput = forwardRef<EditingTextInputHandle, EditingTextInputProps>(
   function EditingTextInputNative(allProps, ref) {
@@ -39,8 +39,10 @@ export const EditingTextInput = forwardRef<EditingTextInputHandle, EditingTextIn
       getText: () => textRef.current,
       replaceText: (nextText, selection) => {
         textRef.current = nextText;
-        inputRef.current?.setNativeProps({ text: nextText, ...(selection ? { selection } : {}) });
-        if (selection) inputRef.current?.setSelection?.(selection.start, selection.end);
+        const input = inputRef.current;
+        if (input) {
+          replaceNativeInputText(input, nextText, selection);
+        }
       },
       getNativeRef: () => inputRef.current?.getNativeRef?.() ?? inputRef.current,
     }));
