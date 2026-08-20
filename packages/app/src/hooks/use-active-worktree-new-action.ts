@@ -24,6 +24,7 @@ export function useActiveWorktreeNewAction() {
         serverId,
         sourceDirectory: activeGitWorkspace.projectRootPath,
         projectId: activeGitWorkspace.projectId,
+        autoCreate: true,
       }) as never,
     );
     return true;

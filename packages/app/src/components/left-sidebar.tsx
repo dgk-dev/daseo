@@ -514,6 +514,7 @@ const SidebarNewWorkspaceHeaderRow = memo(function SidebarNewWorkspaceHeaderRow(
                   serverId: activeWorkspaceServerId,
                   sourceDirectory: activeWorkspace.projectRootPath,
                   projectId: activeWorkspace.projectId,
+                  autoCreate: true,
                 }
               : { serverId: activeWorkspaceServerId },
           )

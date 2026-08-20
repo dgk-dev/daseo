@@ -35,6 +35,7 @@ export function useGlobalNewWorkspaceAction() {
                   serverId,
                   sourceDirectory: activeWorkspace.projectRootPath,
                   projectId: activeWorkspace.projectId,
+                  autoCreate: true,
                 }
               : { serverId },
           )

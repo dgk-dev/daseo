@@ -898,6 +898,7 @@ function ProjectHeaderRow({
         sourceDirectory: worktreeTarget.iconWorkingDir,
         displayName,
         projectId: worktreeTarget.projectId,
+        autoCreate: true,
       }) as Href,
     );
   }, [displayName, onWorkspacePress, worktreeTarget]);
