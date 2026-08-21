@@ -203,7 +203,9 @@ the provider boundary. Daemon-handled prompts follow the same identity rule.
 Content matching is limited to the dated compatibility path for daemon timelines created before
 that field existed. Canonical ingestion may match only an explicit unreconciled local candidate;
 the draft-create handoff is the one boundary that also permits the legacy canonical twin to have
-arrived first. Generic reducers and consumers do not reimplement message identity matching.
+arrived first. If provider output reaches a newly created agent pane before either user row, the
+handoff establishes the missing first-prompt boundary ahead of that output instead of appending it
+after the response. Generic reducers and consumers do not reimplement message identity matching.
 
 Ordinary bootstrap, same-epoch reset, and catch-up replacement preserve unmatched locally submitted
 rows because a provider may never echo them. A known epoch change or rewind replaces history and

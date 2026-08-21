@@ -692,6 +692,9 @@ async function expectCreatedAgentHandoff(
   await expect(page.getByTestId("turn-working-indicator")).toBeVisible();
   await expect(page.getByTestId("user-message").filter({ hasText: prompt })).toHaveCount(1);
   await expect(userMessage.getByRole("button", { name: "Open image attachment" })).toBeVisible();
+  const firstAssistantMessage = page.getByTestId("assistant-message").first();
+  await expect(firstAssistantMessage).toBeVisible({ timeout: 30_000 });
+  await expectRenderedBefore(userMessage, firstAssistantMessage);
 }
 
 interface DraftCreatePendingSubmission {

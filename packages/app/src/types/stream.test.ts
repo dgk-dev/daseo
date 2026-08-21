@@ -155,6 +155,81 @@ describe("user message identity", () => {
       },
     ]);
   });
+
+  it("places the first created-agent prompt before output that arrived during handoff", () => {
+    const streamedOutput: StreamItem = {
+      kind: "assistant_message",
+      id: "early-output",
+      messageId: "early-output",
+      text: "I started before the draft handoff finished.",
+      timestamp: new Date("2026-08-21T02:33:12.000Z"),
+    };
+    const submitted = createUserMessage({
+      clientMessageId: "client-first-prompt",
+      text: "Investigate this",
+      timestamp: new Date("2026-08-21T02:33:11.000Z"),
+    });
+
+    const result = handoffCreatedAgentUserMessageToStream({
+      tail: [streamedOutput],
+      head: [],
+      message: submitted,
+    });
+
+    expect(result.tail).toEqual([submitted, streamedOutput]);
+  });
+
+  it("places the first created-agent prompt before an early live-head response", () => {
+    const streamedOutput: StreamItem = {
+      kind: "assistant_message",
+      id: "early-live-output",
+      messageId: "early-live-output",
+      text: "Live output arrived first.",
+      timestamp: new Date("2026-08-21T02:33:12.000Z"),
+    };
+    const submitted = createUserMessage({
+      clientMessageId: "client-first-prompt",
+      text: "Investigate this",
+      timestamp: new Date("2026-08-21T02:33:11.000Z"),
+    });
+
+    const result = handoffCreatedAgentUserMessageToStream({
+      tail: [],
+      head: [streamedOutput],
+      message: submitted,
+    });
+
+    expect(result.tail).toEqual([submitted]);
+    expect(result.head).toEqual([streamedOutput]);
+  });
+
+  it("does not move a created-agent prompt ahead of an existing user turn", () => {
+    const existingUser = createUserMessage({
+      messageId: "existing-user",
+      text: "Earlier provider user row",
+      timestamp: new Date("2026-08-21T02:33:09.000Z"),
+    });
+    const existingAnswer: StreamItem = {
+      kind: "assistant_message",
+      id: "existing-answer",
+      messageId: "existing-answer",
+      text: "Earlier provider answer",
+      timestamp: new Date("2026-08-21T02:33:10.000Z"),
+    };
+    const submitted = createUserMessage({
+      clientMessageId: "client-next-prompt",
+      text: "Investigate this",
+      timestamp: new Date("2026-08-21T02:33:11.000Z"),
+    });
+
+    const result = handoffCreatedAgentUserMessageToStream({
+      tail: [existingUser, existingAnswer],
+      head: [],
+      message: submitted,
+    });
+
+    expect(result.tail).toEqual([existingUser, existingAnswer, submitted]);
+  });
 });
 
 describe("canonical replacement turn outcomes", () => {

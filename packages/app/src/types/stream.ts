@@ -1019,9 +1019,15 @@ export function handoffCreatedAgentUserMessageToStream(params: {
   head: StreamItem[];
   message: UserMessageItem;
 }): ApplyStreamEventResult {
+  const hasUserBoundary = [...params.tail, ...params.head].some(
+    (item) => item.kind === "user_message",
+  );
   return upsertUserMessageAcrossStream({
     ...params,
-    insert: "tail",
+    // A new provider can stream output before the draft-create response hands
+    // the first prompt to the agent pane. Without an existing user boundary,
+    // keep that prompt in front of the early output on web and native streams.
+    insert: hasUserBoundary ? "tail" : "prepend-tail",
     presentation: "incoming",
     matchPolicy: "handoff",
   });
