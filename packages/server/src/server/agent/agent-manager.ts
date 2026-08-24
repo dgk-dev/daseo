@@ -1710,6 +1710,7 @@ export class AgentManager {
     await this.drainSessionEvents(agentId);
 
     agent.config.model = normalizedModelId ?? undefined;
+    agent.features = agent.session.features;
     if (agent.runtimeInfo) {
       agent.runtimeInfo = { ...agent.runtimeInfo, model: normalizedModelId };
     }
@@ -1755,6 +1756,7 @@ export class AgentManager {
     await agent.session.setFeature(featureId, value);
     await this.drainSessionEvents(agentId);
     agent.config.featureValues = { ...agent.config.featureValues, [featureId]: value };
+    agent.features = agent.session.features;
     this.touchUpdatedAt(agent);
     this.emitState(agent);
   }

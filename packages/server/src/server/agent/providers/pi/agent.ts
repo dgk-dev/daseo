@@ -93,6 +93,8 @@ const DEFAULT_PI_THINKING_LEVEL: PiThinkingLevel = "medium";
 const PI_BINARY_COMMAND = process.env.PI_COMMAND ?? process.env.PI_ACP_PI_COMMAND ?? "pi";
 const PASEO_PI_TREE_EXTENSION_COMMAND = "paseo_tree";
 const PASEO_PI_CAPTURE_EXTENSION_COMMAND = "paseo_capture_entries";
+const PASEO_PI_FEATURE_EXTENSION_COMMAND = "paseo_features";
+const PI_AGENT_FEATURE_HOST_SYMBOL_KEY = "paseo.pi.agent-feature-host.v1";
 const PASEO_PI_ENTRY_CAPTURE_MARKER = "PASEO_ENTRY_CAPTURE";
 const PASEO_PI_SUBMITTED_USER_ENTRY_MARKER = "PASEO_SUBMITTED_USER_ENTRY";
 const PASEO_PI_COMMAND_RESULT_MARKER = "PASEO_COMMAND_RESULT";
@@ -110,6 +112,54 @@ export const PiProviderParamsSchema = z
   .strict();
 
 type PiProviderParams = z.infer<typeof PiProviderParamsSchema>;
+
+const PiAgentFeatureSchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      type: z.literal("toggle"),
+      id: z.string().min(1),
+      label: z.string().min(1),
+      description: z.string().optional(),
+      tooltip: z.string().optional(),
+      icon: z.string().optional(),
+      value: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("select"),
+      id: z.string().min(1),
+      label: z.string().min(1),
+      description: z.string().optional(),
+      tooltip: z.string().optional(),
+      icon: z.string().optional(),
+      value: z.string().nullable(),
+      options: z.array(
+        z
+          .object({
+            id: z.string(),
+            label: z.string(),
+            description: z.string().optional(),
+            isDefault: z.boolean().optional(),
+            metadata: z.record(z.string(), z.unknown()).optional(),
+          })
+          .strict(),
+      ),
+    })
+    .strict(),
+]);
+
+const PiAgentFeaturesResultSchema = z
+  .object({
+    features: z.array(PiAgentFeatureSchema),
+  })
+  .strict();
+
+const PI_INTERNAL_EXTENSION_COMMANDS = new Set([
+  PASEO_PI_TREE_EXTENSION_COMMAND,
+  PASEO_PI_CAPTURE_EXTENSION_COMMAND,
+  PASEO_PI_FEATURE_EXTENSION_COMMAND,
+]);
 
 const PI_HANDLED_BUILTIN_SLASH_COMMANDS: AgentSlashCommand[] = [
   {
@@ -141,6 +191,7 @@ function mapPiSlashCommands(
     handledCommands.map((command) => [command.name, { ...command }]),
   );
   for (const command of commands) {
+    if (PI_INTERNAL_EXTENSION_COMMANDS.has(command.name)) continue;
     const knownCommand = mappedCommands.get(command.name);
     mappedCommands.set(command.name, {
       name: command.name,
@@ -683,6 +734,17 @@ function createPiPaseoExtensionFile(systemPrompt?: string): PiTempFile {
 	  );
 	}
 
+	function readAgentFeatureHost() {
+	  const host = globalThis[Symbol.for("${PI_AGENT_FEATURE_HOST_SYMBOL_KEY}")];
+	  return host && host.version === 1 ? host : null;
+	}
+
+	function currentModel(ctx) {
+	  return ctx.model && typeof ctx.model.provider === "string" && typeof ctx.model.id === "string"
+	    ? { provider: ctx.model.provider, id: ctx.model.id }
+	    : null;
+	}
+
 	export default function paseoIntegration(pi) {
 	  const submittedUserMessages = [];
 
@@ -753,6 +815,36 @@ function createPiPaseoExtensionFile(systemPrompt?: string): PiTempFile {
 	        const result = await ctx.navigateTree(payload.targetId, { summarize: false });
 	        emitEntryCapture(ctx, "tree_navigation");
 	        emitCommandResult(ctx, payload.requestId, { ok: true, result });
+	      } catch (error) {
+	        const message = error instanceof Error ? error.message : String(error);
+	        emitCommandResult(ctx, payload.requestId, { ok: false, error: message });
+	        throw error;
+	      }
+	    },
+	  });
+
+	  pi.registerCommand("${PASEO_PI_FEATURE_EXTENSION_COMMAND}", {
+	    description: "Internal Paseo agent feature bridge",
+	    handler: async (args, ctx) => {
+	      const payload = decodePayload(args.trim());
+	      try {
+	        const host = readAgentFeatureHost();
+	        const model = currentModel(ctx);
+	        if (!host || !model) {
+	          emitCommandResult(ctx, payload.requestId, {
+	            ok: true,
+	            result: { features: [] },
+	          });
+	          return;
+	        }
+	        if (payload.action === "set") {
+	          await host.setFeature(model, payload.featureId, payload.value);
+	        }
+	        const features = await host.listFeatures(model);
+	        emitCommandResult(ctx, payload.requestId, {
+	          ok: true,
+	          result: { features },
+	        });
 	      } catch (error) {
 	        const message = error instanceof Error ? error.message : String(error);
 	        emitCommandResult(ctx, payload.requestId, { ok: false, error: message });
@@ -1266,6 +1358,7 @@ export class PiRpcAgentSession implements AgentSession {
   private outOfBandCompactionStarted = false;
   private outOfBandCompactionCompleted = false;
   private commandCache: AgentSlashCommand[] | null = null;
+  private featureState: AgentFeature[] = [];
   private state: PiSessionState;
   private readonly currentModeId: string | null;
   private closed = false;
@@ -1301,6 +1394,26 @@ export class PiRpcAgentSession implements AgentSession {
 
   get id(): string | null {
     return this.state.sessionId;
+  }
+
+  get features(): AgentFeature[] {
+    return this.featureState;
+  }
+
+  async initializeFeatures(): Promise<void> {
+    this.featureState = await this.requestFeatures();
+    const configuredValues = this.config.featureValues;
+    if (!configuredValues) return;
+
+    for (const feature of this.featureState) {
+      if (!Object.prototype.hasOwnProperty.call(configuredValues, feature.id)) continue;
+      const value = configuredValues[feature.id];
+      if (Object.is(feature.value, value)) continue;
+      this.featureState = await this.requestFeatures({
+        featureId: feature.id,
+        value,
+      });
+    }
   }
 
   async run(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<AgentRunResult> {
@@ -1651,6 +1764,7 @@ export class PiRpcAgentSession implements AgentSession {
       model,
     };
     this.config.model = `${model.provider}/${model.id}`;
+    await this.initializeFeatures();
   }
 
   async setThinkingOption(thinkingOptionId: string | null): Promise<void> {
@@ -1662,6 +1776,48 @@ export class PiRpcAgentSession implements AgentSession {
       ...this.state,
       thinkingLevel,
     };
+  }
+
+  async setFeature(featureId: string, value: unknown): Promise<void> {
+    const feature = this.featureState.find((candidate) => candidate.id === featureId);
+    if (!feature) {
+      throw new Error(`Pi feature '${featureId}' is not available for the selected model`);
+    }
+    if (feature.type === "toggle" && typeof value !== "boolean") {
+      throw new Error(`Pi feature '${featureId}' requires a boolean value`);
+    }
+    if (feature.type === "select" && typeof value !== "string" && value !== null) {
+      throw new Error(`Pi feature '${featureId}' requires a string or null value`);
+    }
+    this.featureState = await this.requestFeatures({ featureId, value });
+    this.config.featureValues = {
+      ...this.config.featureValues,
+      [featureId]: value,
+    };
+  }
+
+  private async requestFeatures(update?: {
+    featureId: string;
+    value: unknown;
+  }): Promise<AgentFeature[]> {
+    const requestId = randomUUID();
+    const resultPromise = this.waitForExtensionResult(requestId);
+    const payload = Buffer.from(
+      JSON.stringify({
+        requestId,
+        action: update ? "set" : "get",
+        ...update,
+      }),
+    ).toString("base64url");
+    try {
+      await this.runtimeSession.prompt(`/${PASEO_PI_FEATURE_EXTENSION_COMMAND} ${payload}`);
+      return PiAgentFeaturesResultSchema.parse(await resultPromise).features;
+    } catch (error) {
+      const featureError = error instanceof Error ? error : new Error(String(error));
+      this.rejectExtensionResult(requestId, featureError);
+      await resultPromise.catch(() => undefined);
+      throw featureError;
+    }
   }
 
   private emit(event: AgentStreamEvent): void {
@@ -2676,7 +2832,7 @@ export class PiRpcAgentClient implements AgentClient {
       throw error;
     }
     try {
-      return new PiRpcAgentSession({
+      const session = new PiRpcAgentSession({
         runtimeSession,
         config,
         initialState: await runtimeSession.getState(),
@@ -2684,6 +2840,8 @@ export class PiRpcAgentClient implements AgentClient {
         cleanup: combineCleanup([mcpConfig?.cleanup, paseoExtension?.cleanup]),
         extensionTimeoutMs: this.providerParams.extensionTimeoutMs,
       });
+      await session.initializeFeatures();
+      return session;
     } catch (error) {
       await runtimeSession.close().catch(() => undefined);
       mcpConfig?.cleanup();
@@ -2737,7 +2895,7 @@ export class PiRpcAgentClient implements AgentClient {
       throw error;
     }
     try {
-      return new PiRpcAgentSession({
+      const session = new PiRpcAgentSession({
         runtimeSession,
         config: resumeConfig.config,
         initialState: await runtimeSession.getState(),
@@ -2745,6 +2903,8 @@ export class PiRpcAgentClient implements AgentClient {
         cleanup: combineCleanup([mcpConfig?.cleanup, paseoExtension?.cleanup]),
         extensionTimeoutMs: this.providerParams.extensionTimeoutMs,
       });
+      await session.initializeFeatures();
+      return session;
     } catch (error) {
       await runtimeSession.close().catch(() => undefined);
       mcpConfig?.cleanup();
@@ -2791,8 +2951,45 @@ export class PiRpcAgentClient implements AgentClient {
     }
   }
 
-  async listFeatures(_config: AgentSessionConfig): Promise<AgentFeature[]> {
-    return [];
+  async listFeatures(config: AgentSessionConfig): Promise<AgentFeature[]> {
+    if (!config.model) return [];
+
+    const paseoExtension = createPiPaseoExtensionFile();
+    let runtimeSession: PiRuntimeSession;
+    try {
+      runtimeSession = await this.runtime.startSession({
+        cwd: config.cwd,
+        model: config.model,
+        thinkingOptionId:
+          normalizePiThinkingOption(config.thinkingOptionId) ?? DEFAULT_PI_THINKING_LEVEL,
+        noSession: true,
+        extensionPaths: [paseoExtension.path],
+      });
+    } catch (error) {
+      paseoExtension.cleanup();
+      throw error;
+    }
+
+    let session: PiRpcAgentSession | undefined;
+    try {
+      session = new PiRpcAgentSession({
+        runtimeSession,
+        config,
+        initialState: await runtimeSession.getState(),
+        capabilities: capabilitiesForSession(false),
+        cleanup: paseoExtension.cleanup,
+        extensionTimeoutMs: this.providerParams.extensionTimeoutMs,
+      });
+      await session.initializeFeatures();
+      return session.features;
+    } finally {
+      if (session) {
+        await session.close();
+      } else {
+        await runtimeSession.close().catch(() => undefined);
+        paseoExtension.cleanup();
+      }
+    }
   }
 
   async listImportableSessions(

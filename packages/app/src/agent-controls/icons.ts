@@ -12,8 +12,11 @@ import {
   ShieldPlus,
   ShieldQuestionMark,
   Zap,
+  ZapOff,
 } from "lucide-react-native";
+import type { AgentFeatureToggle } from "@getpaseo/protocol/agent-types";
 import { getModeVisuals, type AgentProviderDefinition } from "@getpaseo/protocol/provider-manifest";
+import { resolveFeatureToggleIconName } from "@/agent-controls/policy";
 
 export interface AgentControlIconProps {
   size: number;
@@ -40,6 +43,7 @@ const FEATURE_ICONS: Record<string, AgentControlIcon> = {
   "list-todo": ListTodo,
   "shield-check": ShieldCheck,
   zap: Zap,
+  "zap-off": ZapOff,
 };
 
 export function getAgentModeIcon(
@@ -62,4 +66,10 @@ export function getAgentModeOptionIcon(
 
 export function getAgentFeatureIcon(icon?: string): AgentControlIcon {
   return (icon ? FEATURE_ICONS[icon] : undefined) ?? Settings2;
+}
+
+export function getAgentFeatureToggleIcon(
+  feature: Pick<AgentFeatureToggle, "id" | "icon" | "value">,
+): AgentControlIcon {
+  return getAgentFeatureIcon(resolveFeatureToggleIconName(feature));
 }

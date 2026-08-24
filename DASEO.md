@@ -199,6 +199,14 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     stale sent text. Key files: `packages/app/src/components/ui/text-input/`,
     `packages/app/src/composer/`, `packages/app/src/stores/draft-store/`, and
     `patches/@mattermost+react-native-paste-input+2.0.1.patch`.
+19. **Provider-gated fast mode control** — the Composer renders a direct lightning toggle on desktop
+    and mobile whenever the selected provider/model advertises `fast_mode`; enabled uses the filled
+    bolt and disabled uses the slashed bolt. Native Codex and Claude keep their provider-owned
+    implementations. Pi discovers optional model features through the generated integration bridge,
+    so Pi Codex can control its request-local priority tier without exposing a false toggle for Fable,
+    Grok, DeepSeek, or other models that do not support it. Key files:
+    `packages/app/src/{agent-controls,composer/agent-controls}/`,
+    `packages/server/src/server/agent/providers/pi/agent.ts`, and the local Pi feature host.
 
 ## Product version policy
 

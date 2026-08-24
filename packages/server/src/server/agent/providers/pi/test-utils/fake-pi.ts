@@ -102,6 +102,7 @@ export class FakePiSession implements PiRuntimeSession {
   readonly setModelRequests: Array<{ provider: string; modelId: string }> = [];
   readonly setThinkingLevelRequests: string[] = [];
   readonly treeNavigationRequests: string[] = [];
+  readonly featureSetRequests: Array<{ featureId: string; value: unknown }> = [];
   readonly handoffRequests: Array<{ customInstructions?: string }> = [];
   readonly sessionNameRequests: string[] = [];
   readonly rawFrames: Array<object & { type: string }> = [];
@@ -113,6 +114,7 @@ export class FakePiSession implements PiRuntimeSession {
     response: { value?: string; confirmed?: boolean; cancelled?: boolean };
   }> = [];
   setModelResult: PiModel | null = null;
+  fastModeEnabled = false;
   models: PiModel[] = [];
   messages: PiAgentMessage[] = [];
   stats: PiSessionStats = {
@@ -138,8 +140,16 @@ export class FakePiSession implements PiRuntimeSession {
     null;
 
   constructor(launch: PiRuntimeLaunch) {
+    const modelSeparator = launch.model?.indexOf("/") ?? -1;
+    const model =
+      launch.model && modelSeparator > 0
+        ? {
+            provider: launch.model.slice(0, modelSeparator),
+            id: launch.model.slice(modelSeparator + 1),
+          }
+        : null;
     this.state = {
-      model: null,
+      model,
       thinkingLevel: "medium",
       isStreaming: false,
       isCompacting: false,
@@ -162,7 +172,10 @@ export class FakePiSession implements PiRuntimeSession {
     message: string,
     images?: Array<{ type: "image"; data: string; mimeType: string }>,
   ): Promise<PiPromptAck> {
-    this.prompts.push({ message, imageCount: images?.length ?? 0 });
+    const isInternalCommand = /^\/paseo_(?:capture_entries|features|tree)\b/.test(message);
+    if (!isInternalCommand) {
+      this.prompts.push({ message, imageCount: images?.length ?? 0 });
+    }
     const heldPrompt = this.nextHeldPrompt;
     if (heldPrompt) {
       this.nextHeldPrompt = null;
@@ -177,6 +190,7 @@ export class FakePiSession implements PiRuntimeSession {
     }
     this.handleTreeNavigationCommand(message);
     this.handleEntryCaptureCommand(message);
+    this.handleFeatureCommand(message);
     return this.promptAck;
   }
 
@@ -251,6 +265,7 @@ export class FakePiSession implements PiRuntimeSession {
     if (!this.setModelResult) {
       throw new Error("FakePi setModel requires setModelResult to be scripted");
     }
+    this.state = { ...this.state, model: this.setModelResult };
     return this.setModelResult;
   }
 
@@ -400,6 +415,54 @@ export class FakePiSession implements PiRuntimeSession {
     this.treeNavigationRequests.push(payload.targetId);
     this.emitEntryCapture(undefined, "tree_navigation");
     this.emitExtensionCommandResult(payload.requestId, { ok: true, result: {} });
+  }
+
+  private handleFeatureCommand(message: string): void {
+    const prefix = "/paseo_features ";
+    if (!message.startsWith(prefix)) {
+      return;
+    }
+    const payload = JSON.parse(
+      Buffer.from(message.slice(prefix.length), "base64url").toString("utf8"),
+    ) as {
+      requestId?: unknown;
+      action?: unknown;
+      featureId?: unknown;
+      value?: unknown;
+    };
+    if (typeof payload.requestId !== "string") {
+      return;
+    }
+    const model = this.state.model;
+    const supportsFastMode = model?.provider === "pi-codex" && model.id === "gpt-5.6-sol";
+    if (payload.action === "set") {
+      if (!supportsFastMode || payload.featureId !== "fast_mode") {
+        this.emitExtensionCommandResult(payload.requestId, {
+          ok: false,
+          error: "Unsupported Pi model feature",
+        });
+        return;
+      }
+      this.featureSetRequests.push({ featureId: payload.featureId, value: payload.value });
+      this.fastModeEnabled = Boolean(payload.value);
+    }
+    const features = supportsFastMode
+      ? [
+          {
+            type: "toggle",
+            id: "fast_mode",
+            label: "Fast",
+            description: "Priority inference at 2x usage",
+            tooltip: "Toggle fast mode",
+            icon: "zap",
+            value: this.fastModeEnabled,
+          },
+        ]
+      : [];
+    this.emitExtensionCommandResult(payload.requestId, {
+      ok: true,
+      result: { features },
+    });
   }
 
   private handleEntryCaptureCommand(message: string): void {

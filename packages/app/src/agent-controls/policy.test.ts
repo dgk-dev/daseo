@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
 import type { AgentMode } from "@getpaseo/protocol/agent-types";
-import { isPlanningAgentMode, resolveNonPlanningModeId } from "./policy";
+import {
+  isPlanningAgentMode,
+  resolveFeatureToggleIconName,
+  resolveNonPlanningModeId,
+} from "./policy";
+
+describe("resolveFeatureToggleIconName", () => {
+  it("uses filled and slashed lightning icons for fast mode state", () => {
+    expect(resolveFeatureToggleIconName({ id: "fast_mode", icon: "zap", value: true })).toBe("zap");
+    expect(resolveFeatureToggleIconName({ id: "fast_mode", icon: "zap", value: false })).toBe(
+      "zap-off",
+    );
+  });
+});
 
 describe("isPlanningAgentMode", () => {
   it("prefers planning metadata and recognizes existing provider ids", () => {

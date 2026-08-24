@@ -1,7 +1,16 @@
-import type { AgentMode } from "@getpaseo/protocol/agent-types";
+import type { AgentFeatureToggle, AgentMode } from "@getpaseo/protocol/agent-types";
 
 export const PLAN_MODE_FEATURE_ID = "plan_mode";
 export const FAST_MODE_FEATURE_ID = "fast_mode";
+
+export function resolveFeatureToggleIconName(
+  feature: Pick<AgentFeatureToggle, "id" | "icon" | "value">,
+): string | undefined {
+  if (feature.id === FAST_MODE_FEATURE_ID && !feature.value) {
+    return "zap-off";
+  }
+  return feature.icon;
+}
 
 export function isPlanningAgentMode(mode: Pick<AgentMode, "id" | "colorTier">): boolean {
   return mode.colorTier === "planning" || mode.id === "plan" || mode.id.endsWith("#plan");

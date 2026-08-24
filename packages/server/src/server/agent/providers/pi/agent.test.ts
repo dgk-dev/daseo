@@ -89,13 +89,16 @@ async function flushTurnScheduling(): Promise<void> {
   await waitForImmediate();
 }
 
-async function createSession(pi = new FakePi()): Promise<{
+async function createSession(
+  pi = new FakePi(),
+  configOverrides: Partial<AgentSessionConfig> = {},
+): Promise<{
   pi: FakePi;
   session: PiRpcAgentSession;
   events: SessionEvents;
 }> {
   const client = createClient(pi);
-  const session = (await client.createSession(createConfig())) as PiRpcAgentSession;
+  const session = (await client.createSession(createConfig(configOverrides))) as PiRpcAgentSession;
   const events = new SessionEvents(session);
   return { pi, session, events };
 }
@@ -1536,6 +1539,52 @@ describe("PiRpcAgentSession", () => {
     expect(fakeSession.setThinkingLevelRequests).toEqual(["high"]);
   });
 
+  test("exposes and updates fast mode for Pi Codex models", async () => {
+    const pi = new FakePi();
+    pi.queueSessionSetup((fakeSession) => {
+      fakeSession.fastModeEnabled = true;
+    });
+    const { session } = await createSession(pi, { model: "pi-codex/gpt-5.6-sol" });
+    const fakeSession = pi.latestSession();
+
+    expect(session.features).toEqual([
+      expect.objectContaining({ id: "fast_mode", type: "toggle", value: true }),
+    ]);
+
+    await session.setFeature("fast_mode", false);
+
+    expect(fakeSession.featureSetRequests).toEqual([{ featureId: "fast_mode", value: false }]);
+    expect(session.features).toEqual([
+      expect.objectContaining({ id: "fast_mode", type: "toggle", value: false }),
+    ]);
+  });
+
+  test("applies a saved fast-mode preference before the first Pi Codex turn", async () => {
+    const pi = new FakePi();
+    const { session } = await createSession(pi, {
+      model: "pi-codex/gpt-5.6-sol",
+      featureValues: { fast_mode: true },
+    });
+
+    expect(pi.latestSession().featureSetRequests).toEqual([
+      { featureId: "fast_mode", value: true },
+    ]);
+    expect(session.features).toEqual([
+      expect.objectContaining({ id: "fast_mode", type: "toggle", value: true }),
+    ]);
+  });
+
+  test("hides fast mode for Pi models without a feature host", async () => {
+    const { session } = await createSession(new FakePi(), {
+      model: "pi-claude/claude-fable-5",
+    });
+
+    expect(session.features).toEqual([]);
+    await expect(session.setFeature("fast_mode", true)).rejects.toThrow(
+      "is not available for the selected model",
+    );
+  });
+
   test("materializes image prompts as text hints for text-only Pi models", async () => {
     const { pi, session } = await createSession();
     const fakeSession = pi.latestSession();
@@ -1988,15 +2037,31 @@ describe("PiRpcAgentClient", () => {
     });
   });
 
-  test("lists no draft features without starting a Pi session", async () => {
+  test("lists no draft features without an explicit Pi model", async () => {
     const pi = new FakePi();
     const client = createClient(pi);
 
-    await expect(
-      client.listFeatures(createConfig({ model: "openrouter/test/model" })),
-    ).resolves.toEqual([]);
+    await expect(client.listFeatures(createConfig())).resolves.toEqual([]);
 
     expect(pi.recordedLaunches).toHaveLength(0);
+  });
+
+  test("discovers Pi Codex fast mode for a draft without creating a session file", async () => {
+    const pi = new FakePi();
+    pi.queueSessionSetup((fakeSession) => {
+      fakeSession.fastModeEnabled = true;
+    });
+    const client = createClient(pi);
+
+    await expect(
+      client.listFeatures(createConfig({ model: "pi-codex/gpt-5.6-sol" })),
+    ).resolves.toEqual([expect.objectContaining({ id: "fast_mode", type: "toggle", value: true })]);
+
+    expect(pi.recordedLaunches).toHaveLength(1);
+    expect(pi.recordedLaunches[0]).toMatchObject({
+      model: "pi-codex/gpt-5.6-sol",
+      noSession: true,
+    });
   });
 
   test("maps extension, prompt, and skill commands to Paseo slash commands", async () => {

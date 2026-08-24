@@ -24,7 +24,11 @@ import {
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useShallow } from "zustand/shallow";
 import { Settings2 } from "lucide-react-native";
-import { getAgentFeatureIcon, ThinkingIcon } from "@/agent-controls/icons";
+import {
+  getAgentFeatureIcon,
+  getAgentFeatureToggleIcon,
+  ThinkingIcon,
+} from "@/agent-controls/icons";
 import { formatThinkingOptionLabel } from "@/agent-controls/labels";
 import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
 import { CombinedModelSelector } from "@/components/combined-model-selector";
@@ -53,6 +57,7 @@ import type {
   AgentProvider,
 } from "@getpaseo/protocol/agent-types";
 import type { AgentProviderDefinition } from "@getpaseo/protocol/provider-manifest";
+import { FAST_MODE_FEATURE_ID } from "@/agent-controls/policy";
 import {
   getFeatureHighlightColor,
   getFeatureTooltip,
@@ -211,6 +216,12 @@ function getFeatureIconColor(
 }
 
 type ActiveSheet = "thinking" | "features" | null;
+
+function isFastModeToggle(
+  feature: AgentFeature,
+): feature is Extract<AgentFeature, { type: "toggle" }> {
+  return feature.id === FAST_MODE_FEATURE_ID && feature.type === "toggle";
+}
 
 function resolveHasAnyControl({
   providerOptions,
@@ -1127,6 +1138,11 @@ function SheetAgentControlsContent(props: SheetAgentControlsContentProps) {
   const thinkingAnchorRef = useRef<View | null>(null);
 
   const hasThinking = comboboxThinkingOptions.length > 0;
+  const fastModeFeature = useMemo(() => features?.find(isFastModeToggle), [features]);
+  const sheetFeatures = useMemo(
+    () => features?.filter((feature) => feature.id !== FAST_MODE_FEATURE_ID) ?? [],
+    [features],
+  );
 
   const handleOpenThinking = useCallback(() => handleOpenSheet("thinking"), [handleOpenSheet]);
   const handleThinkingSheetOpenChange = useCallback(
@@ -1175,7 +1191,7 @@ function SheetAgentControlsContent(props: SheetAgentControlsContentProps) {
 
       {modeControl ? <AgentModeControl {...modeControl} surface="sheet" /> : null}
 
-      {(features ?? []).map((feature) => (
+      {sheetFeatures.map((feature) => (
         <SheetFeatureItem
           key={`feature-${feature.id}`}
           feature={feature}
@@ -1188,27 +1204,86 @@ function SheetAgentControlsContent(props: SheetAgentControlsContentProps) {
     </View>
   );
 
-  return canSelectModel ? (
-    <CompactModelSheet
-      providers={modelSelectorProviders}
-      selectedProvider={provider}
-      selectedModel={selectedModelId ?? ""}
-      onSelect={handleSheetModelSelect}
-      profiles={agentProfiles}
-      onApplyProfile={onApplyAgentProfile}
-      onEditProfiles={onEditAgentProfiles}
-      isLoading={isModelLoading}
-      disabled={modelDisabled}
-      onOpen={onModelSelectorOpen}
-      onClose={onDropdownClose}
-      onRetryProvider={onRetryModelProvider}
-      isRetryingProvider={isRetryingModelProvider}
-      serverId={modelSelectorServerId}
-      glyphSize={glyphSize}
-    >
-      {sheetControls}
-    </CompactModelSheet>
-  ) : null;
+  return (
+    <>
+      {canSelectModel ? (
+        <CompactModelSheet
+          providers={modelSelectorProviders}
+          selectedProvider={provider}
+          selectedModel={selectedModelId ?? ""}
+          onSelect={handleSheetModelSelect}
+          profiles={agentProfiles}
+          onApplyProfile={onApplyAgentProfile}
+          onEditProfiles={onEditAgentProfiles}
+          isLoading={isModelLoading}
+          disabled={modelDisabled}
+          onOpen={onModelSelectorOpen}
+          onClose={onDropdownClose}
+          onRetryProvider={onRetryModelProvider}
+          isRetryingProvider={isRetryingModelProvider}
+          serverId={modelSelectorServerId}
+          glyphSize={glyphSize}
+        >
+          {sheetControls}
+        </CompactModelSheet>
+      ) : null}
+      {fastModeFeature ? (
+        <ToolbarToggleFeatureItem
+          feature={fastModeFeature}
+          disabled={disabled}
+          onSetFeature={onSetFeature}
+          onActionComplete={onDropdownClose}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function ToolbarToggleFeatureItem({
+  feature,
+  disabled,
+  onSetFeature,
+  onActionComplete,
+}: {
+  feature: Extract<AgentFeature, { type: "toggle" }>;
+  disabled: boolean;
+  onSetFeature?: (featureId: string, value: unknown) => void;
+  onActionComplete?: () => void;
+}) {
+  const { theme } = useUnistyles();
+  const FeatureIcon = getAgentFeatureToggleIcon(feature);
+  const accessibilityState = useMemo(() => ({ checked: feature.value }), [feature.value]);
+  const handleTogglePress = useCallback(() => {
+    onSetFeature?.(feature.id, !feature.value);
+    onActionComplete?.();
+  }, [feature.id, feature.value, onActionComplete, onSetFeature]);
+
+  return (
+    <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
+      <TooltipTrigger asChild triggerRefProp="ref">
+        <AgentControlTrigger
+          icon={FeatureIcon}
+          iconColor={getFeatureIconColor(
+            feature.id,
+            feature.value,
+            theme.colors.palette,
+            theme.colors.foregroundMuted,
+          )}
+          surface="toolbar"
+          label={feature.label}
+          showToolbarLabel={false}
+          disabled={disabled}
+          onPress={handleTogglePress}
+          accessibilityLabel={getFeatureTooltip(feature)}
+          accessibilityState={accessibilityState}
+          testID={`agent-feature-${feature.id}`}
+        />
+      </TooltipTrigger>
+      <TooltipContent side="top" align="center" offset={8}>
+        <Text style={styles.tooltipText}>{getFeatureTooltip(feature)}</Text>
+      </TooltipContent>
+    </Tooltip>
+  );
 }
 
 function DesktopFeatureItem({
@@ -1226,7 +1301,6 @@ function DesktopFeatureItem({
   onSetFeature?: (featureId: string, value: unknown) => void;
   onActionComplete?: () => void;
 }) {
-  const { theme } = useUnistyles();
   const featureSelector: AgentControlSelector = `feature-${feature.id}`;
   const featureAnchorRef = useRef<View>(null);
 
@@ -1238,13 +1312,6 @@ function DesktopFeatureItem({
     () => handleFeatureOpenChange(openSelector !== featureSelector),
     [featureSelector, handleFeatureOpenChange, openSelector],
   );
-
-  const handleTogglePress = useCallback(() => {
-    if (feature.type === "toggle") {
-      onSetFeature?.(feature.id, !feature.value);
-      onActionComplete?.();
-    }
-  }, [feature, onActionComplete, onSetFeature]);
 
   const handleSelectOption = useCallback(
     (optionId: string) => {
@@ -1261,31 +1328,13 @@ function DesktopFeatureItem({
   );
 
   if (feature.type === "toggle") {
-    const FeatureIcon = getAgentFeatureIcon(feature.icon);
     return (
-      <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
-        <TooltipTrigger asChild triggerRefProp="ref">
-          <AgentControlTrigger
-            icon={FeatureIcon}
-            iconColor={getFeatureIconColor(
-              feature.id,
-              feature.value,
-              theme.colors.palette,
-              theme.colors.foregroundMuted,
-            )}
-            surface="toolbar"
-            label={feature.label}
-            showToolbarLabel={false}
-            disabled={disabled}
-            onPress={handleTogglePress}
-            accessibilityLabel={getFeatureTooltip(feature)}
-            testID={`agent-feature-${feature.id}`}
-          />
-        </TooltipTrigger>
-        <TooltipContent side="top" align="center" offset={8}>
-          <Text style={styles.tooltipText}>{getFeatureTooltip(feature)}</Text>
-        </TooltipContent>
-      </Tooltip>
+      <ToolbarToggleFeatureItem
+        feature={feature}
+        disabled={disabled}
+        onSetFeature={onSetFeature}
+        onActionComplete={onActionComplete}
+      />
     );
   }
 
@@ -1356,6 +1405,10 @@ function SheetFeatureItem({
     [featureSelector, handleFeatureOpenChange, openSelector],
   );
   const sheetHeader = useMemo<SheetHeader>(() => ({ title: feature.label }), [feature.label]);
+  const accessibilityState = useMemo(
+    () => ({ checked: feature.type === "toggle" ? feature.value : undefined }),
+    [feature.type, feature.value],
+  );
 
   const handleTogglePress = useCallback(() => {
     if (feature.type === "toggle") {
@@ -1378,7 +1431,7 @@ function SheetFeatureItem({
   );
 
   if (feature.type === "toggle") {
-    const FeatureIcon = getAgentFeatureIcon(feature.icon);
+    const FeatureIcon = getAgentFeatureToggleIcon(feature);
     return (
       <AgentControlTrigger
         icon={FeatureIcon}
@@ -1394,6 +1447,7 @@ function SheetFeatureItem({
         disabled={disabled}
         onPress={handleTogglePress}
         accessibilityLabel={getFeatureTooltip(feature)}
+        accessibilityState={accessibilityState}
         testID={`agent-feature-${feature.id}`}
       />
     );
