@@ -3,12 +3,47 @@ import { describe, expect, it } from "vitest";
 import {
   AgentForkContextRequestMessageSchema,
   AgentForkContextResponseMessageSchema,
+  AgentTimelineItemPayloadSchema,
   CreateAgentRequestMessageSchema,
   CreatePaseoWorktreeRequestSchema,
   SendAgentMessageRequestSchema,
 } from "./messages.js";
 
 describe("shared messages attachments", () => {
+  it("retains attachment presentation on canonical user messages", () => {
+    expect(
+      AgentTimelineItemPayloadSchema.parse({
+        type: "user_message",
+        text: "",
+        messageId: "message-1",
+        clientMessageId: "message-1",
+        imageCount: 2,
+        attachments: [
+          {
+            type: "text",
+            mimeType: "text/plain",
+            title: "Browser element · button",
+            text: "<browser-element>button</browser-element>",
+          },
+        ],
+      }),
+    ).toEqual({
+      type: "user_message",
+      text: "",
+      messageId: "message-1",
+      clientMessageId: "message-1",
+      imageCount: 2,
+      attachments: [
+        {
+          type: "text",
+          mimeType: "text/plain",
+          title: "Browser element · button",
+          text: "<browser-element>button</browser-element>",
+        },
+      ],
+    });
+  });
+
   it("preserves an optional timeline cursor on fork-context messages", () => {
     const boundaryCursor = { epoch: "timeline-1", seq: 42 };
     const request = AgentForkContextRequestMessageSchema.parse({

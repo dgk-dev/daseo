@@ -1,6 +1,10 @@
 import { Buffer } from "buffer";
 import { z } from "zod";
-import { AgentStatusSchema, AgentTimelineItemPayloadSchema } from "@getpaseo/protocol/messages";
+import {
+  AgentAttachmentSchema,
+  AgentStatusSchema,
+  AgentTimelineItemPayloadSchema,
+} from "@getpaseo/protocol/messages";
 import { AgentProviderSchema } from "@getpaseo/protocol/provider-manifest";
 import {
   normalizeProjectDescriptor,
@@ -18,7 +22,7 @@ import { isUnreconciledLocalUserMessage, type StreamItem } from "@/types/stream"
 import { normalizeAgentSnapshot } from "@/utils/agent-snapshots";
 
 const STORAGE_KEY = "@paseo:replica-cache";
-const CACHE_VERSION = 6;
+const CACHE_VERSION = 7;
 const PERSIST_DELAY_MS = 750;
 const MAX_TIMELINE_ITEMS = 50;
 const MAX_CACHED_TIMELINES_PER_HOST = 5;
@@ -58,7 +62,9 @@ const StoredTimelineItemSchema = z.discriminatedUnion("kind", [
     clientMessageId: z.string().optional(),
     messageId: z.string().optional(),
     steering: z.boolean().optional(),
+    imageCount: z.number().int().nonnegative().optional(),
     text: z.string(),
+    attachments: z.array(AgentAttachmentSchema).optional(),
   }),
   z.strictObject({
     ...TimelineItemBaseShape,
@@ -345,7 +351,9 @@ function serializeUserMessage(
     ...(item.clientMessageId ? { clientMessageId: item.clientMessageId } : {}),
     ...(item.messageId ? { messageId: item.messageId } : {}),
     ...(item.steering ? { steering: true } : {}),
+    ...(item.imageCount !== undefined ? { imageCount: item.imageCount } : {}),
     text: item.text,
+    ...(item.attachments ? { attachments: item.attachments } : {}),
   };
 }
 
@@ -436,7 +444,9 @@ function deserializeUserMessage(
     ...(item.clientMessageId ? { clientMessageId: item.clientMessageId } : {}),
     ...(item.messageId ? { messageId: item.messageId } : {}),
     ...(item.steering ? { steering: true } : {}),
+    ...(item.imageCount !== undefined ? { imageCount: item.imageCount } : {}),
     text: item.text,
+    ...(item.attachments ? { attachments: item.attachments } : {}),
   };
 }
 
@@ -638,7 +648,7 @@ function serializeProject(project: ProjectDescriptor): StoredProject {
 function isTimelineItemStoredLosslessly(item: StreamItem): boolean {
   switch (item.kind) {
     case "user_message":
-      return (item.images?.length ?? 0) === 0 && (item.attachments?.length ?? 0) === 0;
+      return (item.images?.length ?? 0) === 0;
     case "activity_log":
       return item.metadata === undefined;
     case "tool_call":

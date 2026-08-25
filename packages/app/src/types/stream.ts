@@ -95,6 +95,8 @@ export interface UserMessageItem {
   timelineCursor?: TimelinePosition;
   /** Input accepted into the provider's already-active turn. */
   steering?: boolean;
+  /** Canonical image count used when image bytes are unavailable after history hydration. */
+  imageCount?: number;
   text: string;
   timestamp: Date;
   images?: UserMessageImageAttachment[];
@@ -107,6 +109,7 @@ export interface UserMessageInput {
   messageId?: string;
   timelineCursor?: TimelinePosition;
   steering?: boolean;
+  imageCount?: number;
   text: string;
   timestamp: Date;
   images?: UserMessageImageAttachment[];
@@ -125,6 +128,9 @@ export function createUserMessage(input: UserMessageInput): UserMessageItem {
     ...(input.messageId ? { messageId: input.messageId } : {}),
     ...(input.timelineCursor ? { timelineCursor: input.timelineCursor } : {}),
     ...(input.steering ? { steering: true } : {}),
+    ...((input.imageCount ?? input.images?.length ?? 0) > 0
+      ? { imageCount: input.imageCount ?? input.images?.length }
+      : {}),
     text: input.text,
     timestamp: input.timestamp,
     ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
@@ -227,6 +233,38 @@ interface UserMessageProductionResult {
   matched: boolean;
 }
 
+function mergeMatchedUserMessage(
+  existing: UserMessageItem,
+  incoming: UserMessageItem,
+  presentation: UserMessageItem,
+): UserMessageItem {
+  return createUserMessage({
+    ...presentation,
+    clientMessageId: incoming.clientMessageId ?? existing.clientMessageId,
+    messageId: incoming.messageId ?? existing.messageId,
+    timelineCursor: incoming.timelineCursor ?? existing.timelineCursor,
+    steering: incoming.steering ?? existing.steering,
+    imageCount: incoming.imageCount ?? existing.imageCount ?? existing.images?.length,
+    images: presentation.images ?? existing.images ?? incoming.images,
+    attachments: presentation.attachments ?? existing.attachments ?? incoming.attachments,
+  });
+}
+
+function userMessagesSharePresentation(left: UserMessageItem, right: UserMessageItem): boolean {
+  return (
+    left.id === right.id &&
+    left.clientMessageId === right.clientMessageId &&
+    left.messageId === right.messageId &&
+    left.timelineCursor === right.timelineCursor &&
+    left.steering === right.steering &&
+    left.imageCount === right.imageCount &&
+    left.text === right.text &&
+    left.timestamp === right.timestamp &&
+    left.images === right.images &&
+    left.attachments === right.attachments
+  );
+}
+
 function produceUserMessage(
   items: StreamItem[],
   incoming: UserMessageItem,
@@ -254,24 +292,8 @@ function produceUserMessage(
     throw new Error("User message upsert matched a non-user row");
   }
   const presentation = presentationPolicy === "incoming" ? incoming : existing;
-  const merged = createUserMessage({
-    ...presentation,
-    clientMessageId: incoming.clientMessageId ?? existing.clientMessageId,
-    messageId: incoming.messageId ?? existing.messageId,
-    timelineCursor: incoming.timelineCursor ?? existing.timelineCursor,
-    steering: incoming.steering ?? existing.steering,
-  });
-  if (
-    existing.id === merged.id &&
-    existing.clientMessageId === merged.clientMessageId &&
-    existing.messageId === merged.messageId &&
-    existing.timelineCursor === merged.timelineCursor &&
-    existing.steering === merged.steering &&
-    existing.text === merged.text &&
-    existing.timestamp === merged.timestamp &&
-    existing.images === merged.images &&
-    existing.attachments === merged.attachments
-  ) {
+  const merged = mergeMatchedUserMessage(existing, incoming, presentation);
+  if (userMessagesSharePresentation(existing, merged)) {
     return { items, index, message: existing, matched: true };
   }
   const next = [...items];
@@ -1033,6 +1055,14 @@ export function handoffCreatedAgentUserMessageToStream(params: {
   });
 }
 
+function hasUserMessagePresentation(input: {
+  hasText: boolean;
+  imageCount?: number;
+  attachments?: readonly AgentAttachment[];
+}): boolean {
+  return input.hasText || (input.imageCount ?? 0) > 0 || (input.attachments?.length ?? 0) > 0;
+}
+
 function appendUserMessage(
   state: StreamItem[],
   text: string,
@@ -1042,21 +1072,25 @@ function appendUserMessage(
   clientMessageId?: string,
   steering?: boolean,
   timelineCursor?: TimelinePosition,
+  imageCount?: number,
+  attachments?: AgentAttachment[],
 ): StreamItem[] {
   const { chunk, hasContent } = normalizeChunk(text);
-  if (!hasContent) {
+  if (!hasUserMessagePresentation({ hasText: hasContent, imageCount, attachments })) {
     return state;
   }
 
-  const chunkSeed = chunk.trim() || chunk;
+  const chunkSeed = chunk.trim() || "attachment";
   const nextItem = createUserMessage({
     id: messageId ?? createUniqueTimelineId(state, "user", chunkSeed, timestamp),
     clientMessageId,
     messageId,
     timelineCursor,
     steering,
+    imageCount,
     text: chunk,
     timestamp,
+    attachments,
   });
   return upsertUserMessage(state, nextItem);
 }
@@ -1676,6 +1710,8 @@ function reduceTimelineEvent(
           item.clientMessageId,
           item.steering,
           timelineCursor,
+          item.imageCount,
+          item.attachments,
         ),
       );
     case "assistant_message":
@@ -2067,6 +2103,11 @@ function applyCanonicalUserMessageEvent(params: {
   const { tail, head, event, timestamp, timelineCursor, source, unmatchedInsert = "tail" } = params;
   if (event.type !== "timeline" || event.item.type !== "user_message") return null;
   const normalized = normalizeChunk(event.item.text);
+  const hasPresentation = hasUserMessagePresentation({
+    hasText: normalized.hasContent,
+    imageCount: event.item.imageCount,
+    attachments: event.item.attachments,
+  });
 
   const flushedTail = head.length > 0 ? flushHeadToTail(tail, head) : tail;
   const flushedHead = head.length > 0 ? [] : head;
@@ -2077,15 +2118,17 @@ function applyCanonicalUserMessageEvent(params: {
     messageId: event.item.messageId,
     clientMessageId: event.item.clientMessageId,
     timelineCursor,
+    imageCount: event.item.imageCount,
     text: normalized.chunk,
     timestamp,
+    attachments: event.item.attachments,
   });
   if (unmatchedInsert === "head") {
     const reconciled = upsertUserMessageAcrossStream({
       tail,
       head,
       message: canonical,
-      insert: normalized.hasContent ? "head" : "none",
+      insert: hasPresentation ? "head" : "none",
       presentation: "existing",
     });
     return {
@@ -2104,7 +2147,7 @@ function applyCanonicalUserMessageEvent(params: {
   const reconciled = upsertCanonicalUserMessageInTail(
     flushedTail,
     canonical,
-    normalized.hasContent,
+    hasPresentation,
     source === "live" ? "preserve-existing" : "event-order",
   );
   return {

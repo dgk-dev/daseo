@@ -361,6 +361,10 @@ export type AgentTimelineItem =
       clientMessageId?: string;
       /** This input was accepted into an already-active turn. */
       steering?: boolean;
+      /** Number of image inputs delivered with this message; image bytes stay outside history. */
+      imageCount?: number;
+      /** Structured context delivered with this message, retained for transcript presentation. */
+      attachments?: AgentAttachment[];
     }
   | {
       type: "assistant_message";

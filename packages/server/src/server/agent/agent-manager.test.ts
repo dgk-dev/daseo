@@ -8831,7 +8831,14 @@ test("canonical submitted prompt keeps wire identity while rewind resolves provi
       options?: AgentRunOptions,
     ): Promise<{ turnId: string }> {
       const turnId = "turn-submitted-user-message";
-      const text = typeof prompt === "string" ? prompt : "";
+      const text =
+        typeof prompt === "string"
+          ? prompt
+          : ((
+              prompt.find((block) => block.type === "text" && !("mimeType" in block)) as
+                | { type: "text"; text: string }
+                | undefined
+            )?.text ?? "");
       setTimeout(async () => {
         this.pushEvent({ type: "turn_started", provider: this.provider, turnId });
         this.pushEvent({
@@ -8903,6 +8910,8 @@ test("canonical submitted prompt keeps wire identity while rewind resolves provi
                 text: item.text,
                 clientMessageId: item.clientMessageId,
                 messageId: item.messageId,
+                imageCount: item.imageCount,
+                attachments: item.attachments,
               }
             : {}),
         },
@@ -8914,9 +8923,21 @@ test("canonical submitted prompt keeps wire identity while rewind resolves provi
       workspaceId: undefined,
     });
 
-    const run = manager.runAgent(snapshot.id, "hello from composer", {
-      clientMessageId: "msg-client-1",
-    });
+    const attachment = {
+      type: "text" as const,
+      mimeType: "text/plain" as const,
+      title: "Browser element · button",
+      text: "<browser-element>button</browser-element>",
+    };
+    const run = manager.runAgent(
+      snapshot.id,
+      [
+        { type: "text", text: "hello from composer" },
+        { type: "image", data: "cG5n", mimeType: "image/png" },
+        attachment,
+      ],
+      { clientMessageId: "msg-client-1" },
+    );
     await manager.waitForAgentRunStart(snapshot.id);
 
     await expect(manager.rewind(snapshot.id, "msg-client-1", "files")).rejects.toThrow(
@@ -8935,6 +8956,8 @@ test("canonical submitted prompt keeps wire identity while rewind resolves provi
         text: "hello from composer",
         clientMessageId: "msg-client-1",
         messageId: "msg-client-1",
+        imageCount: 1,
+        attachments: [attachment],
       },
       { type: "assistant_message", seq: 2 },
       { type: "turn_completed" },
@@ -8951,6 +8974,8 @@ test("canonical submitted prompt keeps wire identity while rewind resolves provi
           text: "hello from composer",
           messageId: "msg-client-1",
           clientMessageId: "msg-client-1",
+          imageCount: 1,
+          attachments: [attachment],
         },
       },
       {

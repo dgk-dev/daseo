@@ -14,6 +14,7 @@ import {
 } from "@getpaseo/protocol/agent-labels";
 import type { Logger } from "pino";
 import type { ProviderOptions, ToolPolicy } from "@getpaseo/protocol/agent-types";
+import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import { z } from "zod";
 import type { TerminalManager } from "../../terminal/terminal-manager.js";
 
@@ -94,14 +95,24 @@ const STORED_AGENT_CAPABILITIES: AgentCapabilityFlags = {
 
 type TimeoutResult = "completed" | "timed_out";
 
-function submittedPromptText(prompt: AgentPromptInput): string {
+function submittedPromptPresentation(prompt: AgentPromptInput): {
+  text: string;
+  imageCount: number;
+  attachments: AgentAttachment[];
+} {
   if (typeof prompt === "string") {
-    return prompt;
+    return { text: prompt, imageCount: 0, attachments: [] };
   }
-  return prompt
-    .flatMap((block) => (block.type === "text" && !("mimeType" in block) ? [block.text] : []))
-    .join("\n")
-    .trim();
+  return {
+    text: prompt
+      .flatMap((block) => (block.type === "text" && !("mimeType" in block) ? [block.text] : []))
+      .join("\n")
+      .trim(),
+    imageCount: prompt.filter((block) => block.type === "image").length,
+    attachments: prompt.flatMap((block): AgentAttachment[] =>
+      "mimeType" in block && block.type !== "image" ? [block] : [],
+    ),
+  };
 }
 
 export class AgentManagerShuttingDownError extends Error {
@@ -4196,12 +4207,15 @@ export class AgentManager {
     }
     this.touchUpdatedAt(agent);
     agent.lastUserMessageAt = new Date();
+    const presentation = submittedPromptPresentation(prompt);
     const item: AgentTimelineItem = {
       type: "user_message",
-      text: submittedPromptText(prompt),
+      text: presentation.text,
       clientMessageId,
       ...(options?.messageId ? { messageId: options.messageId } : {}),
       ...(options?.steering ? { steering: true } : {}),
+      ...(presentation.imageCount > 0 ? { imageCount: presentation.imageCount } : {}),
+      ...(presentation.attachments.length > 0 ? { attachments: presentation.attachments } : {}),
     };
     this.recordAndDispatchTimelineItem(agent.id, item, agent.provider, undefined, options);
   }

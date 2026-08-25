@@ -170,8 +170,10 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     and native mobile paste remain available. The composer stays non-sendable until asynchronous
     persistence finishes; multi-image persistence rolls back atomically; unreadable, empty, or
     provider-incompatible image bytes fail the send and restore the draft instead of silently
-    reaching an agent as text-only. Desktop selection offers the four portable provider formats,
-    and native pick/paste converts other raster formats to PNG. Key files:
+    reaching an agent as text-only. Canonical user rows retain structured context attachments and
+    image counts, so authoritative reloads keep attachment-only prompts visible; image bytes remain
+    client-local and hydrate as an unavailable-preview placeholder. Desktop selection offers the four
+    portable provider formats, and native pick/paste converts other raster formats to PNG. Key files:
     `packages/app/src/{attachments,composer,utils/image-attachments-from-files.ts}` and
     `packages/desktop/src/features/clipboard-image.ts`.
 16. **Fork-owned update provenance** — Daseo never follows official Paseo npm or GitHub update

@@ -4,6 +4,7 @@ import React from "react";
 import {
   CircleDot,
   FileText,
+  Image as ImageIcon,
   GitPullRequest,
   MessageSquareCode,
   MousePointer2,
@@ -52,6 +53,14 @@ function getTextAttachmentSubtitle(
     return "Previous conversation";
   }
   return t("message.attachments.text");
+}
+
+export function getUnavailableImagePillContent(t: TFunction): AttachmentPillContent {
+  return {
+    icon: attachmentImageIcon,
+    title: t("message.attachments.imageUnavailable"),
+    subtitle: t("message.attachments.imagePreviewUnavailable"),
+  };
 }
 
 export function getAgentAttachmentPillContent(
@@ -141,6 +150,7 @@ export function getWorkspaceAttachmentPillContent(
 }
 
 const ThemedAttachmentFileText = withUnistyles(FileText);
+const ThemedAttachmentImage = withUnistyles(ImageIcon);
 const ThemedAttachmentGitPullRequest = withUnistyles(GitPullRequest);
 const ThemedAttachmentCircleDot = withUnistyles(CircleDot);
 const ThemedAttachmentMessageSquareCode = withUnistyles(MessageSquareCode);
@@ -159,6 +169,9 @@ const attachmentGithubIssueIcon = (
 );
 const attachmentFileIcon = (
   <ThemedAttachmentFileText size={ICON_SIZE.sm} uniProps={iconForegroundMutedMapping} />
+);
+const attachmentImageIcon = (
+  <ThemedAttachmentImage size={ICON_SIZE.sm} uniProps={iconForegroundMutedMapping} />
 );
 const attachmentBrowserIcon = (
   <ThemedAttachmentMousePointer size={ICON_SIZE.sm} uniProps={iconForegroundMutedMapping} />

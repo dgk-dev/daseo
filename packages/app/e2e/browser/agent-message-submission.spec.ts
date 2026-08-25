@@ -417,6 +417,11 @@ async function expectCompletedSubmissionClearsAfterMissedRunningTransition(
     await expect(page.getByText("(end of synthetic stream)", { exact: true }).last()).toBeVisible();
     await expect(page.getByTestId("turn-working-indicator")).toHaveCount(0);
     await expect(userMessage).toHaveAttribute("aria-busy", "false");
+
+    await page.reload();
+    await expectComposerVisible(page);
+    await expect(page.getByText("Image unavailable", { exact: true }).last()).toBeVisible();
+    await expect(page.getByText("(end of synthetic stream)", { exact: true }).last()).toBeVisible();
   } finally {
     gate.restore();
     await agent.cleanup();
@@ -1130,7 +1135,7 @@ test.describe("Agent message submission", () => {
     await expectHiddenStreamingSubmissionOrderAfterWorkspaceEviction(page, testInfo);
   });
 
-  test("clears an attachment-only submission when canonical history arrives after a missed running transition", async ({
+  test("keeps an attachment-only submission visible after canonical reload", async ({
     page,
   }, testInfo) => {
     test.setTimeout(90_000);

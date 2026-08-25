@@ -82,7 +82,10 @@ import { formatDuration, formatMessageTimestamp } from "@/utils/time";
 import { writeMarkdownToRichClipboard } from "@/utils/rich-clipboard";
 import { getDefaultMarkdownClipboardEnvironment } from "@/utils/rich-clipboard-default-environment";
 import { setAssistantMarkdownBlockHeight } from "@/utils/assistant-message-height-estimate";
-import { getAgentAttachmentPillContent } from "@/attachments/attachment-pill-content";
+import {
+  getAgentAttachmentPillContent,
+  getUnavailableImagePillContent,
+} from "@/attachments/attachment-pill-content";
 import { PlanCard } from "./plan-card";
 import { useToolCallSheet } from "./tool-call-sheet";
 import { ToolCallDetailsContent } from "./tool-call-details";
@@ -125,6 +128,7 @@ interface UserMessageProps {
   messageId?: string;
   message: string;
   images?: UserMessageImageAttachment[];
+  imageCount?: number;
   attachments?: AgentAttachment[];
   timestamp: number;
   capabilities?: AgentCapabilityFlags;
@@ -431,6 +435,7 @@ export const UserMessage = memo(function UserMessage({
   messageId,
   message,
   images = [],
+  imageCount = images.length,
   attachments = [],
   timestamp,
   capabilities,
@@ -448,8 +453,10 @@ export const UserMessage = memo(function UserMessage({
   const handleLightboxClose = useCallback(() => setLightboxMetadata(null), []);
   const resolvedDisableOuterSpacing = useDisableOuterSpacing(disableOuterSpacing);
   const hasText = message.trim().length > 0;
-  const hasImages = images.length > 0;
+  const missingImageCount = Math.max(0, imageCount - images.length);
+  const hasImages = imageCount > 0;
   const hasAttachments = attachments.length > 0;
+  const unavailableImageContent = useMemo(() => getUnavailableImagePillContent(t), [t]);
   const showTrailingRow = !isPending && hasText && (isCompact || isNative || isHovered);
   const formattedTimestamp = useMemo(
     () => formatMessageTimestamp(new Date(timestamp)),
@@ -519,6 +526,15 @@ export const UserMessage = memo(function UserMessage({
                   onOpen={setLightboxMetadata}
                   accessibilityLabel={t("composer.attachments.openImage")}
                 />
+              ))}
+              {Array.from({ length: missingImageCount }, (_, index) => (
+                <AttachmentFrame key={`unavailable-image:${index}`}>
+                  <AttachmentLabel
+                    icon={unavailableImageContent.icon}
+                    title={unavailableImageContent.title}
+                    subtitle={unavailableImageContent.subtitle}
+                  />
+                </AttachmentFrame>
               ))}
             </View>
           ) : null}

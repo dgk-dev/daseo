@@ -352,6 +352,44 @@ describe("ReplicaCache", () => {
     ]);
   });
 
+  it("restores canonical attachment presentation with authoritative coverage", async () => {
+    const storage = new MemoryStorage();
+    const writer = new ReplicaCache(storage);
+    writer.setHosts([SERVER_ID]);
+    seedSession();
+    const userMessage = createUserMessage({
+      clientMessageId: "attachment-user",
+      messageId: "attachment-user",
+      text: "",
+      imageCount: 1,
+      attachments: [
+        {
+          type: "text",
+          mimeType: "text/plain",
+          title: "Browser element · button",
+          text: "<browser-element>button</browser-element>",
+        },
+      ],
+      timelineCursor: { epoch: "epoch-1", seq: 12 },
+      timestamp: new Date("2026-07-18T08:01:59.000Z"),
+    });
+    useSessionStore.getState().setAgentStreamTail(SERVER_ID, new Map([["agent-1", [userMessage]]]));
+    await writer.flush();
+
+    useSessionStore.getState().clearSession(SERVER_ID);
+    const reader = new ReplicaCache(storage);
+    reader.setHosts([SERVER_ID]);
+    await reader.restore();
+
+    const session = useSessionStore.getState().sessions[SERVER_ID];
+    expect(session?.agentStreamTail.get("agent-1")).toEqual([userMessage]);
+    expect(session?.agentTimelineCursor.get("agent-1")).toEqual({
+      epoch: "epoch-1",
+      startSeq: 1,
+      endSeq: 12,
+    });
+  });
+
   it("restores tool calls inside an authoritative cached window", async () => {
     const storage = new MemoryStorage();
     const writer = new ReplicaCache(storage);
@@ -463,7 +501,7 @@ describe("ReplicaCache", () => {
       version: number;
       hosts: Array<{ timeline: Record<string, unknown> | null }>;
     };
-    expect(persisted.version).toBe(6);
+    expect(persisted.version).toBe(7);
     expect(Object.keys(persisted.hosts[0]?.timeline ?? {}).sort()).toEqual([
       "agentId",
       "hasOlder",
@@ -638,7 +676,7 @@ describe("ReplicaCache", () => {
 
     expect(useSessionStore.getState().sessions[SERVER_ID]).toBeUndefined();
     expect(JSON.parse(storage.values.get("@paseo:replica-cache") ?? "null")).toEqual({
-      version: 6,
+      version: 7,
       hosts: [],
     });
   });

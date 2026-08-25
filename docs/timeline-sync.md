@@ -149,7 +149,9 @@ Every path that sends a message to an agent — composer send, dictation accept-
 send-now, and the automatic queue drain in `HostRuntime` — goes through
 `dispatchComposerAgentMessage` with a submission writer. There is no second transport for the same
 product action: calling `client.sendAgentMessage` directly skips the submitted row and the pending
-footer, and permanently drops attachments because the daemon does not echo them back.
+footer. Canonical user rows retain structured attachment presentation and the image count; image bytes
+remain client-local, so hydration shows an unavailable-image placeholder instead of dropping an
+image-only prompt.
 
 A submitted prompt is one `UserMessageItem` row. That row is the authoritative local presentation:
 its stable identity, text, timestamp, images, and attachments do not change when the provider

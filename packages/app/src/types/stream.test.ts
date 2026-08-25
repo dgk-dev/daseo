@@ -1995,6 +1995,49 @@ describe("turn lifecycle events", () => {
     assert.deepStrictEqual(userMessage.attachments, [attachment]);
   });
 
+  it("hydrates attachment-only canonical prompts without an optimistic row", () => {
+    const attachment = {
+      type: "text" as const,
+      mimeType: "text/plain" as const,
+      title: "Browser element · button",
+      text: "<browser-element>button</browser-element>",
+    };
+    const state = reduceStreamUpdate(
+      [],
+      {
+        type: "timeline",
+        provider: "pi",
+        item: {
+          type: "user_message",
+          text: "",
+          messageId: "canonical-attachment-only",
+          clientMessageId: "canonical-attachment-only",
+          imageCount: 1,
+          attachments: [attachment],
+        },
+      },
+      new Date("2025-01-01T15:03:15Z"),
+      {
+        source: "canonical",
+        timelineCursor: { epoch: "epoch-1", seq: 43 },
+      },
+    );
+
+    expect(state).toEqual([
+      {
+        kind: "user_message",
+        id: "canonical-attachment-only",
+        messageId: "canonical-attachment-only",
+        clientMessageId: "canonical-attachment-only",
+        imageCount: 1,
+        text: "",
+        timestamp: new Date("2025-01-01T15:03:15Z"),
+        timelineCursor: { epoch: "epoch-1", seq: 43 },
+        attachments: [attachment],
+      },
+    ]);
+  });
+
   it("places submitted user messages through the identity producer", () => {
     const submitted = createUserMessage({
       clientMessageId: "msg_append_once",
@@ -2089,6 +2132,7 @@ describe("turn lifecycle events", () => {
         messageId: "provider-user",
         text: submitted.text,
         timestamp: submitted.timestamp,
+        imageCount: 1,
         images: submitted.images,
         attachments: submitted.attachments,
       },
