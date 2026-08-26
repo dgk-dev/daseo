@@ -310,7 +310,7 @@ export async function waitForPersistedCanonicalTimelineRange(
 ): Promise<PersistedCanonicalTimelineRange> {
   const readRange = async () => {
     const cache = await readReplicaCache(page);
-    if (cache?.version !== 6) return null;
+    if (cache?.version !== 7) return null;
     const range = cache.hosts?.find((host) => host.timeline?.agentId === agentId)?.timeline?.range;
     if (
       typeof range?.epoch !== "string" ||
