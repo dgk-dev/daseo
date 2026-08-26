@@ -12,7 +12,7 @@ each changed platform from the task commit, and update this file if the delta se
 
 |              | Paseo (upstream)                 | Daseo (this fork)                                                       |
 | ------------ | -------------------------------- | ----------------------------------------------------------------------- |
-| Repo         | `getpaseo/paseo`                 | `dgk-dev/daseo`, branch `local/patched-desktop`                         |
+| Repo         | `getpaseo/paseo`                 | `dgk-dev/daseo`, branch `main`                                          |
 | Mac app      | Paseo.app (App Store / releases) | `/Applications/Daseo.app`, stable locally signed Daseo SemVer build     |
 | Android      | `sh.paseo` (Play)                | `sh.paseo.dgk` ("Daseo"), matching product SemVer, parallel-installable |
 | Display name | Paseo                            | Daseo (display only)                                                    |
@@ -177,11 +177,11 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     `packages/app/src/{attachments,composer,utils/image-attachments-from-files.ts}` and
     `packages/desktop/src/features/clipboard-image.ts`.
 16. **Fork-owned update provenance** — Daseo never follows official Paseo npm or GitHub update
-    channels. The Mac packaging step writes `daseo-distribution.json`, removes `app-update.yml`,
-    and the packaged runtime disables Electron auto-update and quit-time installation. The marker
-    is propagated to the bundled daemon, which rejects live npm self-update. Daseo upgrades use the
-    stable local signing identity, recorded source commit, artifact hash, idle gate, and explicit
-    activation approval.
+    channels. The Mac packaging step writes `daseo-distribution.json` with the exact source commit,
+    product version, and Mac build number, removes `app-update.yml`, and the packaged runtime disables
+    Electron auto-update and quit-time installation. The marker is propagated to the bundled daemon,
+    which rejects live npm self-update. Daseo upgrades use the stable local signing identity, external
+    artifact hashes, an idle gate, and explicit activation approval.
 
 17. **Pi extension-turn lifecycle** — Pi extensions may wake the agent without a Paseo prompt
     (background web-fetch completions send `triggerTurn` messages) and may keep working after
@@ -223,7 +223,7 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
 
 - Before either platform build, run `npm run brand:check`; generated DΛ assets must match the
   canonical mark and manifest. Mac: build with `npm run build:desktop -- --publish never --mac --arm64 --dir`, then run
-  `node packages/desktop/scripts/daseo-app-package.mjs packages/desktop/release/mac-arm64/Paseo.app <product-version> <mac-build-version>`
+  `node packages/desktop/scripts/daseo-app-package.mjs packages/desktop/release/mac-arm64/Paseo.app <product-version> <mac-build-version> $(git rev-parse HEAD)`
   followed by
   `node packages/desktop/scripts/daseo-code-sign.mjs packages/desktop/release/mac-arm64/Paseo.app`.
   Verify `Contents/Resources/daseo-distribution.json` exists and `app-update.yml` does not before
@@ -247,6 +247,6 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
   download (omit the architecture property to retain a universal fallback). Artifacts live in
   `~/paseo-builds/`, served at `https://mac.tail29eaf5.ts.net/`; install over Wi-Fi ADB
   (`phone install`) when available.
-- Every artifact records its own source commit. When both platforms change together, build both
-  from the same commit. Push with the `dgk-dev` GitHub account, then switch `gh` back to
-  `ax-dfcorp`.
+- The Mac bundle embeds its exact source commit; the release manifest records source commits and
+  hashes for both Mac and Android artifacts. When both platforms change together, build both from
+  the same commit. Push with the `dgk-dev` GitHub account, then switch `gh` back to `ax-dfcorp`.

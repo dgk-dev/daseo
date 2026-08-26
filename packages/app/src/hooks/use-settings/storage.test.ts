@@ -87,6 +87,27 @@ describe("loadAppSettingsFromStorage", () => {
     expect(result.sendBehavior).toBe("steer");
   });
 
+  it("keeps valid settings when another build wrote unknown fields or enum values", async () => {
+    const stored = {
+      theme: "dark",
+      sendBehavior: "future-mode",
+      futureSetting: { enabled: true },
+      sidebarRowItems: { host: false, futureRowItem: true },
+    };
+    const deps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify(stored),
+      }),
+    });
+
+    const result = await loadAppSettingsFromStorage(deps);
+
+    expect(result.theme).toBe("dark");
+    expect(result.sendBehavior).toBe(DEFAULT_CLIENT_SETTINGS.sendBehavior);
+    expect(result.sidebarRowItems.host).toBe(false);
+    expect(JSON.parse(deps.storage.entries.get(APP_SETTINGS_KEY) ?? "null")).toEqual(stored);
+  });
+
   it("defaults language to system when storage is empty", async () => {
     const deps = makeDeps();
 
@@ -208,7 +229,11 @@ describe("loadAppSettingsFromStorage", () => {
       ...DEFAULT_CLIENT_SETTINGS,
       theme: "dark",
     });
-    expect(deps.storage.entries.get(APP_SETTINGS_KEY)).toBe(JSON.stringify(result));
+    expect(JSON.parse(deps.storage.entries.get(APP_SETTINGS_KEY) ?? "null")).toEqual({
+      manageBuiltInDaemon: false,
+      releaseChannel: "beta",
+      ...result,
+    });
   });
 
   it("loads a persisted explicit language", async () => {
@@ -336,6 +361,35 @@ describe("loadSettingsFromStorage", () => {
 });
 
 describe("saveAppSettings", () => {
+  it("round-trips fields written by a newer build", async () => {
+    const deps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({
+          theme: "dark",
+          sendBehavior: "future-mode",
+          futureSetting: { enabled: true },
+          sidebarRowItems: { host: false, futureRowItem: true },
+        }),
+      }),
+    });
+
+    await loadAppSettingsFromStorage(deps);
+    await saveAppSettings({
+      queryClient: new QueryClient(),
+      updates: { theme: "light" },
+      deps,
+    });
+
+    expect(JSON.parse(deps.storage.entries.get(APP_SETTINGS_KEY) ?? "null")).toMatchObject({
+      theme: "light",
+      futureSetting: { enabled: true },
+      sidebarRowItems: {
+        host: false,
+        futureRowItem: true,
+      },
+    });
+  });
+
   it("saves terminal scrollback through app settings persistence", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({

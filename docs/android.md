@@ -7,7 +7,11 @@ Controlled by `APP_VARIANT` in `packages/app/app.config.js` (vanilla Expo, no cu
 | Variant       | App name    | Package ID       |
 | ------------- | ----------- | ---------------- |
 | `production`  | Paseo       | `sh.paseo`       |
+| `personal`    | Daseo       | `sh.paseo.dgk`   |
 | `development` | Paseo Debug | `sh.paseo.debug` |
+
+The `personal` variant is the fork-owned Daseo build. It uses its own Firebase configuration and
+can remain installed beside upstream Paseo.
 
 EAS profiles: `development`, `production`, and `production-apk` in `packages/app/eas.json`.
 

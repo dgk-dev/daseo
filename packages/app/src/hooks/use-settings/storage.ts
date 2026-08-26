@@ -29,8 +29,7 @@ export type WorkspaceTitleSource = "title" | "branch";
 export type SidebarWorkspaceTrailing = "diff" | "timestamp" | "none";
 export type ToolCallDetailLevel = "overview" | "detailed";
 
-const VALID_THEMES = new Set<string>(THEME_OPTIONS.map((option) => option.name));
-const ThemePreferenceSchema = z.enum(THEME_OPTIONS.map((option) => option.name));
+const VALID_THEMES = new Set<ThemePreference>(THEME_OPTIONS.map((option) => option.name));
 const VALID_SERVICE_URL_BEHAVIORS = new Set<ServiceUrlBehavior>(["ask", "in-app", "external"]);
 const VALID_WORKSPACE_TITLE_SOURCES = new Set<WorkspaceTitleSource>(["title", "branch"]);
 const VALID_SIDEBAR_WORKSPACE_TRAILINGS = new Set<SidebarWorkspaceTrailing>([
@@ -39,6 +38,14 @@ const VALID_SIDEBAR_WORKSPACE_TRAILINGS = new Set<SidebarWorkspaceTrailing>([
   "none",
 ]);
 const VALID_TOOL_CALL_DETAIL_LEVELS = new Set<ToolCallDetailLevel>(["overview", "detailed"]);
+
+function isSetMember<Value extends string>(
+  values: ReadonlySet<Value>,
+  candidate: unknown,
+): candidate is Value {
+  return typeof candidate === "string" && values.has(candidate as Value);
+}
+
 export const DEFAULT_TERMINAL_SCROLLBACK_LINES = 10_000;
 export const MIN_TERMINAL_SCROLLBACK_LINES = 0;
 export const MAX_TERMINAL_SCROLLBACK_LINES = 1_000_000;
@@ -77,41 +84,33 @@ export interface Settings extends AppSettings {
   releaseChannel: ReleaseChannel;
 }
 
-const SidebarRowItemsSchema = z.strictObject({
-  host: z.boolean().optional(),
-  changeRequest: z.boolean().optional(),
-  services: z.boolean().optional(),
-  checks: z.boolean().optional(),
-  scripts: z.boolean().optional(),
-});
-
-const StoredAppSettingsSchema = z.strictObject({
-  theme: ThemePreferenceSchema.optional(),
-  language: z
-    .enum(["system", "ar", "en", "es", "fr", "ja", "ko", "pt-BR", "ru", "zh-CN"])
-    .optional(),
-  // COMPAT(interruptSendBehavior): old "interrupt" now migrates to native steering.
-  sendBehavior: z.enum(["steer", "queue", "interrupt"]).optional(),
-  serviceUrlBehavior: z.enum(["ask", "in-app", "external"]).optional(),
-  terminalScrollbackLines: z.union([z.number(), z.string()]).optional(),
-  useLegacyTerminalRenderer: z.boolean().optional(),
-  uiFontFamily: z.string().optional(),
-  monoFontFamily: z.string().optional(),
-  uiFontSize: z.union([z.number(), z.string()]).optional(),
-  codeFontSize: z.union([z.number(), z.string()]).optional(),
-  syntaxTheme: z.string().refine(isSyntaxThemeId).optional(),
-  workspaceTitleSource: z.enum(["title", "branch"]).optional(),
-  sidebarWorkspaceTrailing: z.enum(["diff", "timestamp", "none"]).optional(),
-  sidebarRowItems: SidebarRowItemsSchema.optional(),
-  sidebarChecksDisplay: z.enum(["iconAndText", "icon", "none"]).optional(),
-  autoExpandReasoning: z.boolean().optional(),
-  toolCallDetailLevel: z.enum(["overview", "detailed"]).optional(),
-  compactToolCalls: z.boolean().optional(),
-  chatOutlineEnabled: z.boolean().optional(),
-  vimKeybindings: z.boolean().optional(),
+// Settings blobs are shared across app revisions. Validate the container here, then normalize each
+// known field independently below. A strict object or one unknown future enum value must never turn
+// every otherwise-valid preference into a reset.
+const StoredAppSettingsSchema = z.looseObject({
+  theme: z.unknown().optional(),
+  language: z.unknown().optional(),
+  sendBehavior: z.unknown().optional(),
+  serviceUrlBehavior: z.unknown().optional(),
+  terminalScrollbackLines: z.unknown().optional(),
+  useLegacyTerminalRenderer: z.unknown().optional(),
+  uiFontFamily: z.unknown().optional(),
+  monoFontFamily: z.unknown().optional(),
+  uiFontSize: z.unknown().optional(),
+  codeFontSize: z.unknown().optional(),
+  syntaxTheme: z.unknown().optional(),
+  workspaceTitleSource: z.unknown().optional(),
+  sidebarWorkspaceTrailing: z.unknown().optional(),
+  sidebarRowItems: z.unknown().optional(),
+  sidebarChecksDisplay: z.unknown().optional(),
+  autoExpandReasoning: z.unknown().optional(),
+  toolCallDetailLevel: z.unknown().optional(),
+  compactToolCalls: z.unknown().optional(),
+  chatOutlineEnabled: z.unknown().optional(),
+  vimKeybindings: z.unknown().optional(),
   // COMPAT(rendererDesktopSettings): these fields used to share this renderer-owned key.
-  manageBuiltInDaemon: z.boolean().optional(),
-  releaseChannel: z.enum(["stable", "beta"]).optional(),
+  manageBuiltInDaemon: z.unknown().optional(),
+  releaseChannel: z.unknown().optional(),
 });
 
 const LegacyRendererSettingsSchema = StoredAppSettingsSchema;
@@ -166,6 +165,33 @@ export interface SettingsDeps {
   desktop: DesktopSettingsBridge;
 }
 
+function objectRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function mergeStoredAppSettings(
+  stored: StoredAppSettings | null,
+  settings: AppSettings,
+): Record<string, unknown> {
+  return {
+    ...stored,
+    ...settings,
+    sidebarRowItems: {
+      ...objectRecord(stored?.sidebarRowItems),
+      ...settings.sidebarRowItems,
+    },
+  };
+}
+
+function readStoredAppSettings(
+  storage: KeyValueStorage,
+  key = APP_SETTINGS_KEY,
+): Promise<StoredAppSettings | null> {
+  return readValidatedJson(storage, key, StoredAppSettingsSchema);
+}
+
 export async function saveAppSettings(input: {
   queryClient: QueryClient;
   updates: Partial<AppSettings>;
@@ -177,27 +203,30 @@ export async function saveAppSettings(input: {
   const current = normalizeAppSettings(storedCurrent);
   const next = { ...current, ...input.updates };
   input.queryClient.setQueryData<AppSettings>(APP_SETTINGS_QUERY_KEY, next);
-  await input.deps.storage.setItem(APP_SETTINGS_KEY, JSON.stringify(next));
+  const stored = await readStoredAppSettings(input.deps.storage);
+  await input.deps.storage.setItem(
+    APP_SETTINGS_KEY,
+    JSON.stringify(mergeStoredAppSettings(stored, next)),
+  );
 }
 
 export async function loadAppSettingsFromStorage(deps: SettingsDeps): Promise<AppSettings> {
   try {
-    const stored = await readValidatedJson(deps.storage, APP_SETTINGS_KEY, StoredAppSettingsSchema);
+    const stored = await readStoredAppSettings(deps.storage);
     if (stored) {
       return normalizeAppSettings(stored);
     }
 
-    const legacyStored = await readValidatedJson(
-      deps.storage,
-      LEGACY_SETTINGS_KEY,
-      LegacyRendererSettingsSchema,
-    );
+    const legacyStored = await readStoredAppSettings(deps.storage, LEGACY_SETTINGS_KEY);
     if (legacyStored) {
       const next = {
         ...DEFAULT_CLIENT_SETTINGS,
         ...pickAppSettingsFromLegacy(legacyStored),
       } satisfies AppSettings;
-      await deps.storage.setItem(APP_SETTINGS_KEY, JSON.stringify(next));
+      await deps.storage.setItem(
+        APP_SETTINGS_KEY,
+        JSON.stringify(mergeStoredAppSettings(legacyStored, next)),
+      );
       return next;
     }
 
@@ -245,15 +274,14 @@ export function normalizeAppSettings(value: unknown): AppSettings {
 
 function parseToolCallDetailLevel(stored: StoredAppSettings): ToolCallDetailLevel | null {
   if (stored.toolCallDetailLevel !== undefined) {
-    if (
-      typeof stored.toolCallDetailLevel === "string" &&
-      VALID_TOOL_CALL_DETAIL_LEVELS.has(stored.toolCallDetailLevel)
-    ) {
+    if (isSetMember(VALID_TOOL_CALL_DETAIL_LEVELS, stored.toolCallDetailLevel)) {
       return stored.toolCallDetailLevel;
     }
-    // COMPAT(toolCallDetailLevelConcise): removed in v0.1.107; legacy "concise" values
-    // deliberately follow the unknown-value fallback. Remove after 2027-01-14.
-    return "overview";
+    // COMPAT(toolCallDetailLevelConcise): removed in v0.1.107. Remove after 2027-01-14.
+    if (stored.toolCallDetailLevel === "concise") {
+      return "overview";
+    }
+    return null;
   }
   if (typeof stored.compactToolCalls === "boolean") {
     // COMPAT(compactToolCalls): migrated in v0.1.105, remove after 2027-01-12.
@@ -292,7 +320,7 @@ function pickBooleanAppSettings(stored: StoredAppSettings): Partial<AppSettings>
  */
 function pickEnumAppSettings(stored: StoredAppSettings): Partial<AppSettings> {
   const result: Partial<AppSettings> = {};
-  if (typeof stored.theme === "string" && VALID_THEMES.has(stored.theme)) {
+  if (isSetMember(VALID_THEMES, stored.theme)) {
     result.theme = stored.theme;
   }
   if (stored.sendBehavior === "steer" || stored.sendBehavior === "queue") {
@@ -300,25 +328,16 @@ function pickEnumAppSettings(stored: StoredAppSettings): Partial<AppSettings> {
   } else if (stored.sendBehavior === "interrupt") {
     result.sendBehavior = "steer";
   }
-  if (
-    typeof stored.serviceUrlBehavior === "string" &&
-    VALID_SERVICE_URL_BEHAVIORS.has(stored.serviceUrlBehavior)
-  ) {
+  if (isSetMember(VALID_SERVICE_URL_BEHAVIORS, stored.serviceUrlBehavior)) {
     result.serviceUrlBehavior = stored.serviceUrlBehavior;
   }
   if (typeof stored.syntaxTheme === "string" && isSyntaxThemeId(stored.syntaxTheme)) {
     result.syntaxTheme = stored.syntaxTheme;
   }
-  if (
-    typeof stored.workspaceTitleSource === "string" &&
-    VALID_WORKSPACE_TITLE_SOURCES.has(stored.workspaceTitleSource)
-  ) {
+  if (isSetMember(VALID_WORKSPACE_TITLE_SOURCES, stored.workspaceTitleSource)) {
     result.workspaceTitleSource = stored.workspaceTitleSource;
   }
-  if (
-    typeof stored.sidebarWorkspaceTrailing === "string" &&
-    VALID_SIDEBAR_WORKSPACE_TRAILINGS.has(stored.sidebarWorkspaceTrailing)
-  ) {
+  if (isSetMember(VALID_SIDEBAR_WORKSPACE_TRAILINGS, stored.sidebarWorkspaceTrailing)) {
     result.sidebarWorkspaceTrailing = stored.sidebarWorkspaceTrailing;
   }
   return result;
@@ -464,10 +483,10 @@ async function loadLegacyDesktopSettingsFromStorage(storage: KeyValueStorage): P
 async function loadRendererSettingsPayload(
   storage: KeyValueStorage,
 ): Promise<z.infer<typeof LegacyRendererSettingsSchema> | null> {
-  const current = await readValidatedJson(storage, APP_SETTINGS_KEY, LegacyRendererSettingsSchema);
+  const current = await readStoredAppSettings(storage);
   if (current) {
     return current;
   }
 
-  return readValidatedJson(storage, LEGACY_SETTINGS_KEY, LegacyRendererSettingsSchema);
+  return readStoredAppSettings(storage, LEGACY_SETTINGS_KEY);
 }

@@ -92,7 +92,7 @@ import {
   normalizeWorkspaceTabTarget,
   workspaceTabTargetsEqual,
 } from "@/workspace-tabs/identity";
-import { selectVisibleAgentIds } from "./visible-agent-ids";
+import { useVisibleAgentIds } from "./visible-agent-ids";
 import {
   getHostRuntimeStore,
   useHostRuntimeClient,
@@ -2195,16 +2195,16 @@ function WorkspaceScreenContent({
   const viewedTimelineSync = useSessionStore(
     (state) => state.sessions[normalizedServerId]?.viewedTimelineSync ?? null,
   );
-  const visibleAgentIds = useMemo(
-    () =>
-      selectVisibleAgentIds({
-        layout: workspaceLayout,
-        tabs: uiTabs,
-        routeFocused: isRouteFocused,
-        focusedPaneOnly: isMobile || isFocusModeEnabled || !supportsDesktopPaneSplits(),
-      }),
-    [isFocusModeEnabled, isMobile, isRouteFocused, uiTabs, workspaceLayout],
+  const syncFocusedPaneOnly = useMemo(
+    () => isMobile || isFocusModeEnabled || !supportsDesktopPaneSplits(),
+    [isFocusModeEnabled, isMobile],
   );
+  const visibleAgentIds = useVisibleAgentIds({
+    layout: workspaceLayout,
+    tabs: uiTabs,
+    routeFocused: isRouteFocused,
+    focusedPaneOnly: syncFocusedPaneOnly,
+  });
   useLayoutEffect(() => {
     if (!persistenceKey || !viewedTimelineSync) {
       return;

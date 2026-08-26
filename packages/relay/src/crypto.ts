@@ -28,6 +28,7 @@ export interface SigningKeyPair {
 export type SharedKey = Uint8Array; // 32 bytes (box.before)
 
 const NONCE_LENGTH = nacl.box.nonceLength; // 24
+const ZERO_X25519_SHARED_RESULT = new Uint8Array(nacl.box.sharedKeyLength);
 
 let prngReady = false;
 
@@ -71,6 +72,22 @@ function encodeBase64(bytes: Uint8Array): string {
 
 function decodeBase64(base64: string): Uint8Array {
   return toByteArray(base64);
+}
+
+function decodePublicKeyBase64(base64: string): Uint8Array {
+  if (
+    typeof base64 !== "string" ||
+    base64.length % 4 !== 0 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(base64)
+  ) {
+    throw new Error("Invalid public key encoding");
+  }
+
+  const bytes = decodeBase64(base64);
+  if (encodeBase64(bytes) !== base64) {
+    throw new Error("Invalid public key encoding");
+  }
+  return bytes;
 }
 
 function toUint8(data: string | ArrayBuffer): Uint8Array {
@@ -146,7 +163,7 @@ export function exportPublicKey(publicKey: Uint8Array): string {
 }
 
 export function importPublicKey(base64: string): Uint8Array {
-  const bytes = decodeBase64(base64);
+  const bytes = decodePublicKeyBase64(base64);
   if (bytes.byteLength !== nacl.box.publicKeyLength) {
     throw new Error(`Invalid public key length (expected ${nacl.box.publicKeyLength})`);
   }
@@ -205,6 +222,14 @@ export function deriveSharedKey(ourSecretKey: Uint8Array, peerPublicKey: Uint8Ar
   if (peerPublicKey.byteLength !== nacl.box.publicKeyLength) {
     throw new Error(`Invalid peer public key length (expected ${nacl.box.publicKeyLength})`);
   }
+
+  const rawSharedResult = nacl.scalarMult(ourSecretKey, peerPublicKey);
+  const isAllZero = nacl.verify(rawSharedResult, ZERO_X25519_SHARED_RESULT);
+  rawSharedResult.fill(0);
+  if (isAllZero) {
+    throw new Error("Invalid peer public key");
+  }
+
   return nacl.box.before(peerPublicKey, ourSecretKey);
 }
 

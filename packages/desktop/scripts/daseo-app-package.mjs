@@ -36,20 +36,47 @@ function writeLocalizedBundleName(appPath) {
   }
 }
 
-export function writeDaseoDistributionMetadata(appPath) {
+function assertDaseoSourceCommit(sourceCommit) {
+  if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(sourceCommit)) {
+    throw new Error(`Invalid Daseo source commit: ${sourceCommit}`);
+  }
+}
+
+export function writeDaseoDistributionMetadata(
+  appPath,
+  { displayVersion, buildVersion, sourceCommit },
+) {
+  assertDaseoSourceCommit(sourceCommit);
   const resourcesPath = path.join(appPath, "Contents", "Resources");
   mkdirSync(resourcesPath, { recursive: true });
   writeFileSync(
     path.join(resourcesPath, "daseo-distribution.json"),
-    `${JSON.stringify({ distribution: "daseo", updates: "signed-local-artifact" }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        distribution: "daseo",
+        updates: "signed-local-artifact",
+        sourceCommit,
+        displayVersion,
+        macBuildVersion: buildVersion,
+      },
+      null,
+      2,
+    )}\n`,
   );
   rmSync(path.join(resourcesPath, "app-update.yml"), { force: true });
 }
 
-export function patchDaseoMacBundleMetadata({ appPath, displayVersion, buildVersion }) {
+export function patchDaseoMacBundleMetadata({
+  appPath,
+  displayVersion,
+  buildVersion,
+  sourceCommit,
+}) {
   if (!/^\d+(?:\.\d+){0,2}$/.test(buildVersion)) {
     throw new Error(`Invalid macOS build version: ${buildVersion}`);
   }
+  assertDaseoSourceCommit(sourceCommit);
   const plistPath = path.join(appPath, "Contents", "Info.plist");
 
   setPlistValue(plistPath, "CFBundleName", "Paseo");
@@ -57,16 +84,16 @@ export function patchDaseoMacBundleMetadata({ appPath, displayVersion, buildVers
   setPlistValue(plistPath, "CFBundleShortVersionString", displayVersion);
   setPlistValue(plistPath, "CFBundleVersion", buildVersion);
   ensurePlistValue(plistPath, "LSHasLocalizedDisplayName", "bool", "true");
-  writeDaseoDistributionMetadata(appPath);
+  writeDaseoDistributionMetadata(appPath, { displayVersion, buildVersion, sourceCommit });
   writeLocalizedBundleName(appPath);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  const [appPath, displayVersion, buildVersion] = process.argv.slice(2);
-  if (!appPath || !displayVersion || !buildVersion) {
+  const [appPath, displayVersion, buildVersion, sourceCommit] = process.argv.slice(2);
+  if (!appPath || !displayVersion || !buildVersion || !sourceCommit) {
     throw new Error(
-      "Usage: daseo-app-package.mjs <app-path> <display-version> <mac-build-version>",
+      "Usage: daseo-app-package.mjs <app-path> <display-version> <mac-build-version> <source-commit>",
     );
   }
-  patchDaseoMacBundleMetadata({ appPath, displayVersion, buildVersion });
+  patchDaseoMacBundleMetadata({ appPath, displayVersion, buildVersion, sourceCommit });
 }

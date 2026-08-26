@@ -11,6 +11,15 @@ import {
 
 const PLIST_BUDDY = "/usr/libexec/PlistBuddy";
 const tempRoots = [];
+const SOURCE_COMMIT = "a".repeat(40);
+const DISTRIBUTION_METADATA = {
+  schemaVersion: 1,
+  distribution: "daseo",
+  updates: "signed-local-artifact",
+  sourceCommit: SOURCE_COMMIT,
+  displayVersion: "0.4.1",
+  macBuildVersion: "4001",
+};
 
 function readPlistValue(plistPath, key) {
   return execFileSync(PLIST_BUDDY, ["-c", `Print :${key}`, plistPath], {
@@ -51,10 +60,14 @@ afterEach(() => {
 });
 
 describe("Daseo distribution metadata", () => {
-  test("marks the fork and removes the upstream update feed on every platform", () => {
+  test("records exact source provenance and removes the upstream update feed", () => {
     const { appPath } = createPaseoAppFixture();
 
-    writeDaseoDistributionMetadata(appPath);
+    writeDaseoDistributionMetadata(appPath, {
+      displayVersion: "0.4.1",
+      buildVersion: "4001",
+      sourceCommit: SOURCE_COMMIT,
+    });
 
     expect(
       JSON.parse(
@@ -63,7 +76,7 @@ describe("Daseo distribution metadata", () => {
           "utf8",
         ),
       ),
-    ).toEqual({ distribution: "daseo", updates: "signed-local-artifact" });
+    ).toEqual(DISTRIBUTION_METADATA);
     expect(existsSync(path.join(appPath, "Contents", "Resources", "app-update.yml"))).toBe(false);
   });
 });
@@ -76,6 +89,7 @@ describe.skipIf(process.platform !== "darwin")("Daseo macOS package metadata", (
       appPath,
       displayVersion: "0.4.1",
       buildVersion: "4001",
+      sourceCommit: SOURCE_COMMIT,
     });
 
     expect(readPlistValue(plistPath, "CFBundleName")).toBe("Paseo");
@@ -90,7 +104,7 @@ describe.skipIf(process.platform !== "darwin")("Daseo macOS package metadata", (
           "utf8",
         ),
       ),
-    ).toEqual({ distribution: "daseo", updates: "signed-local-artifact" });
+    ).toEqual(DISTRIBUTION_METADATA);
     expect(existsSync(path.join(appPath, "Contents", "Resources", "app-update.yml"))).toBe(false);
   });
 
@@ -98,7 +112,7 @@ describe.skipIf(process.platform !== "darwin")("Daseo macOS package metadata", (
     const { appPath, plistPath } = createPaseoAppFixture();
     const scriptPath = fileURLToPath(new URL("./daseo-app-package.mjs", import.meta.url));
 
-    execFileSync(process.execPath, [scriptPath, appPath, "0.4.1", "4001"]);
+    execFileSync(process.execPath, [scriptPath, appPath, "0.4.1", "4001", SOURCE_COMMIT]);
 
     expect(readPlistValue(plistPath, "CFBundleName")).toBe("Paseo");
     expect(readPlistValue(plistPath, "CFBundleDisplayName")).toBe("Daseo");
@@ -114,8 +128,22 @@ describe.skipIf(process.platform !== "darwin")("Daseo macOS package metadata", (
         appPath,
         displayVersion: "0.4.1",
         buildVersion: "0.4.1-local.1",
+        sourceCommit: SOURCE_COMMIT,
       }),
     ).toThrow("Invalid macOS build version");
+  });
+
+  test("rejects abbreviated source provenance", () => {
+    const { appPath } = createPaseoAppFixture();
+
+    expect(() =>
+      patchDaseoMacBundleMetadata({
+        appPath,
+        displayVersion: "0.4.1",
+        buildVersion: "4001",
+        sourceCommit: "abc123",
+      }),
+    ).toThrow("Invalid Daseo source commit");
   });
 
   test("writes localized bundle names and marks the display name localized", () => {
@@ -124,6 +152,7 @@ describe.skipIf(process.platform !== "darwin")("Daseo macOS package metadata", (
       appPath,
       displayVersion: "0.4.1",
       buildVersion: "4001",
+      sourceCommit: SOURCE_COMMIT,
     });
     for (const locale of ["en", "ko"]) {
       const strings = path.join(
