@@ -68,6 +68,7 @@ describe("useDraftAgentCreateFlow", () => {
         text: "build this",
         timestamp: attempt.timestamp,
         images: [image],
+        imageCount: 1,
         attachments: [attachment],
       },
     ]);
