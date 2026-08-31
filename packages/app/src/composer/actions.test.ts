@@ -564,7 +564,7 @@ describe("dispatchComposerAgentMessage", () => {
     expect(readSubmission(stream, "agent").submissions).toEqual([]);
   });
 
-  it("moves a non-steering in-flight receipt out of the optimistic timeline for reconciliation", async () => {
+  it("keeps a non-steering in-flight message visible while its durable receipt reconciles", async () => {
     const client = createFakeSendClient({ receiptStatus: "in_flight" });
     const stream = createFakeStream();
     const outbox = createFakeOutbox();
@@ -582,8 +582,18 @@ describe("dispatchComposerAgentMessage", () => {
     });
 
     expect(outbox.records.get("message-in-flight")).toMatchObject({ status: "in_flight" });
-    expect(stream.tail.get("agent") ?? []).toEqual([]);
-    expect(readSubmission(stream, "agent").submissions).toEqual([]);
+    expect(stream.tail.get("agent")?.[0]).toMatchObject({
+      kind: "user_message",
+      text: "still processing",
+      clientMessageId: "message-in-flight",
+    });
+    expect(readSubmission(stream, "agent").submissions).toEqual([
+      {
+        clientMessageId: "message-in-flight",
+        providerAcknowledged: false,
+        rpcSettled: true,
+      },
+    ]);
   });
 
   it("keeps an in-flight steering message optimistic while its durable receipt reconciles", async () => {

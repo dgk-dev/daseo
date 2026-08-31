@@ -125,11 +125,14 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     `agent_settled`, and Claude pushes a priority-`next` SDK user message. Capability negotiation
     keeps unsupported or older providers on the queue/replacement fallback without model-specific
     branches. An active-turn command is durably admitted before the daemon waits for native steering,
-    so Pi compaction never holds the client RPC open. Desktop and mobile keep the optimistic message,
-    hide transient `in_flight`/delivery-unknown receipts from the manual retry queue, and reconcile
-    them until the provider accepts the steering input. Explicit queued messages and terminal
-    rejections retain their recovery controls. Steering identity survives optimistic UI, canonical
-    echo, cache, history, and completed-work folding, with a subtle user-message marker. Key files:
+    so Pi compaction never holds the client RPC open. Desktop and mobile keep every durably admitted
+    prompt visible even if client liveness misclassified it as non-steering, reconcile receipts with
+    bounded backoff, and reject interrupted receipts after daemon restart unless canonical history
+    proves delivery. Pi cannot settle a turn while native steering acknowledgement is pending, and a
+    terminal event racing after provider acknowledgement cannot discard the accepted prompt. Explicit
+    queued messages and terminal rejections retain their recovery controls. Steering identity survives
+    optimistic UI, canonical echo, cache, history, and completed-work folding, with a subtle
+    user-message marker. Key files:
     `packages/server/src/server/{session,agent/agent-prompt,agent/agent-manager}.ts`,
     `packages/server/src/server/agent/providers/{codex-app-server-agent,claude/agent,pi/agent}.ts`,
     `packages/app/src/composer/`, `packages/app/src/runtime/host-runtime.ts`, and

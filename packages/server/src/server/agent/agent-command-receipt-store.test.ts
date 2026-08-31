@@ -46,6 +46,35 @@ describe("AgentCommandReceiptStore", () => {
     ).resolves.toMatchObject({ kind: "existing", receipt: { status: "accepted" } });
   });
 
+  test("rejects persisted in-flight receipts after a daemon restart", async () => {
+    const paseoHome = await mkdtemp(join(tmpdir(), "paseo-command-receipt-restart-"));
+    const store = new AgentCommandReceiptStore(paseoHome, logger);
+    const payloadHash = hashAgentCommandPayload({ agentId: "agent-1", text: "interrupted" });
+    await store.admit({
+      commandId: "interrupted-command",
+      agentId: "agent-1",
+      payloadHash,
+      now: new Date("2026-08-30T00:00:00.000Z"),
+    });
+
+    const reloaded = new AgentCommandReceiptStore(paseoHome, logger);
+
+    await expect(reloaded.get("interrupted-command")).resolves.toMatchObject({
+      status: "rejected",
+      error: "Daemon restarted before command confirmation",
+    });
+    const onDisk = JSON.parse(
+      await readFile(join(paseoHome, "agent-command-receipts.json"), "utf8"),
+    ) as { receipts: Array<{ commandId: string; status: string; error: string | null }> };
+    expect(onDisk.receipts).toContainEqual(
+      expect.objectContaining({
+        commandId: "interrupted-command",
+        status: "rejected",
+        error: "Daemon restarted before command confirmation",
+      }),
+    );
+  });
+
   test("rejects reuse of one command id for a different target or payload", async () => {
     const paseoHome = await mkdtemp(join(tmpdir(), "paseo-command-receipt-conflict-"));
     const store = new AgentCommandReceiptStore(paseoHome, logger);

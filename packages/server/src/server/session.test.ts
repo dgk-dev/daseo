@@ -593,6 +593,118 @@ describe("durable agent command receipts", () => {
     expect(manager.streamAgent).not.toHaveBeenCalled();
   });
 
+  test("settles a deferred active-turn command as rejected when provider admission fails", async () => {
+    const paseoHome = mkdtempSync(join(tmpdir(), "paseo-command-steering-failure-session-"));
+    tempDirs.push(paseoHome);
+    const messages: SessionOutboundMessage[] = [];
+    const receiptStore = new AgentCommandReceiptStore(paseoHome, pino({ level: "silent" }));
+    const snapshot = {
+      id: "agent-steering-failure",
+      provider: "pi",
+      lifecycle: "running",
+      activeForegroundTurnId: "turn-ending",
+      persistence: { sessionId: "pi-session" },
+    };
+    let rejectSteering: ((error: Error) => void) | null = null;
+    const steeringAdmission = new Promise<boolean>((_resolve, reject) => {
+      rejectSteering = reject;
+    });
+    const trySteerAgentRun = vi.fn(() => steeringAdmission);
+    const manager = {
+      listAgents: vi.fn(() => [snapshot]),
+      listProviderSubagentActivity: vi.fn(() => []),
+      subscribe: vi.fn(() => () => {}),
+      getAgent: vi.fn(() => snapshot),
+      waitForAgentClose: vi.fn().mockResolvedValue(undefined),
+      tryRunOutOfBand: vi.fn(() => false),
+      trySteerAgentRun,
+      hasInFlightRun: vi.fn(() => true),
+      replaceAgentRun: vi.fn(),
+      streamAgent: vi.fn(emptyAgentStream),
+      waitForAgentRunStart: vi.fn().mockResolvedValue(undefined),
+      hasCanonicalSubmittedPrompt: vi.fn().mockResolvedValue(false),
+    };
+    const session = createSessionForTest({
+      paseoHome,
+      messages,
+      agentManager: manager,
+      agentStorage: {
+        get: vi.fn().mockResolvedValue(undefined),
+        list: vi.fn().mockResolvedValue([]),
+      },
+      agentCommandReceiptStore: receiptStore,
+    });
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "request-steering-failure",
+      agentId: "agent-steering-failure",
+      text: "do not disappear",
+      messageId: "command-steering-failure",
+      commandId: "command-steering-failure",
+      attachments: [],
+    });
+
+    expect(messages).toContainEqual({
+      type: "send_agent_message_response",
+      payload: {
+        requestId: "request-steering-failure",
+        agentId: "agent-steering-failure",
+        accepted: true,
+        error: null,
+        commandId: "command-steering-failure",
+        receiptStatus: "in_flight",
+      },
+    });
+
+    rejectSteering?.(new Error("Pi turn ended before steering was accepted"));
+
+    await vi.waitFor(async () => {
+      await expect(receiptStore.get("command-steering-failure")).resolves.toMatchObject({
+        status: "rejected",
+        error: "Pi turn ended before steering was accepted",
+      });
+    });
+    expect(trySteerAgentRun).toHaveBeenCalledTimes(1);
+    expect(manager.replaceAgentRun).not.toHaveBeenCalled();
+    expect(manager.streamAgent).not.toHaveBeenCalled();
+  });
+
+  test("recovers a restart-interrupted receipt when canonical history proves delivery", async () => {
+    const paseoHome = mkdtempSync(join(tmpdir(), "paseo-command-restart-recovery-session-"));
+    tempDirs.push(paseoHome);
+    const originalStore = new AgentCommandReceiptStore(paseoHome, pino({ level: "silent" }));
+    await originalStore.admit({
+      commandId: "restart-recovered-command",
+      agentId: "agent-1",
+      payloadHash: "sha256:test",
+    });
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({
+      paseoHome,
+      messages,
+      agentCommandReceiptStore: new AgentCommandReceiptStore(paseoHome, pino({ level: "silent" })),
+      agentManager: { hasCanonicalSubmittedPrompt: vi.fn().mockResolvedValue(true) },
+    });
+
+    await session.handleMessage({
+      type: "agent.command_receipt.get.request",
+      requestId: "get-restart-recovered",
+      commandId: "restart-recovered-command",
+    });
+
+    expect(messages).toContainEqual({
+      type: "agent.command_receipt.get.response",
+      payload: {
+        requestId: "get-restart-recovered",
+        commandId: "restart-recovered-command",
+        agentId: "agent-1",
+        status: "accepted",
+        error: null,
+      },
+    });
+  });
+
   test("looks up and explicitly resolves an ambiguous command receipt", async () => {
     const paseoHome = mkdtempSync(join(tmpdir(), "paseo-command-resolution-session-"));
     tempDirs.push(paseoHome);

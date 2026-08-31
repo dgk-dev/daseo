@@ -138,6 +138,8 @@ export class FakePiSession implements PiRuntimeSession {
   private nextHeldPrompt: { promise: Promise<void>; reject: (error: Error) => void } | null = null;
   private activeHeldPrompt: { promise: Promise<void>; reject: (error: Error) => void } | null =
     null;
+  private nextHeldSteer: { promise: Promise<void>; resolve: () => void } | null = null;
+  private activeHeldSteer: { promise: Promise<void>; resolve: () => void } | null = null;
 
   constructor(launch: PiRuntimeLaunch) {
     const modelSeparator = launch.model?.indexOf("/") ?? -1;
@@ -199,7 +201,39 @@ export class FakePiSession implements PiRuntimeSession {
     images?: Array<{ type: "image"; data: string; mimeType: string }>,
   ): Promise<PiPromptAck> {
     this.steers.push({ message, imageCount: images?.length ?? 0 });
+    const heldSteer = this.nextHeldSteer;
+    if (heldSteer) {
+      this.nextHeldSteer = null;
+      this.activeHeldSteer = heldSteer;
+      try {
+        await heldSteer.promise;
+      } finally {
+        if (this.activeHeldSteer === heldSteer) {
+          this.activeHeldSteer = null;
+        }
+      }
+    }
     return this.promptAck;
+  }
+
+  holdNextSteer(): void {
+    if (this.nextHeldSteer || this.activeHeldSteer) {
+      throw new Error("FakePi already has a held steer");
+    }
+    let resolve!: () => void;
+    const promise = new Promise<void>((resolvePromise) => {
+      resolve = resolvePromise;
+    });
+    this.nextHeldSteer = { promise, resolve };
+  }
+
+  async releaseHeldSteer(): Promise<void> {
+    const heldSteer = this.activeHeldSteer ?? this.nextHeldSteer;
+    if (!heldSteer) {
+      throw new Error("FakePi has no held steer");
+    }
+    heldSteer.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
 
   holdNextPrompt(): void {

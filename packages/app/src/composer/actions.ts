@@ -264,20 +264,21 @@ async function reconcileInFlightComposerMessage(
     return;
   }
   const rejected = receipt?.status === "rejected";
+  if (!rejected) {
+    // Durable admission is not rejection. Keep the submitted row visible while
+    // the host waits for canonical provider acknowledgement, regardless of a
+    // stale client-side steering classification.
+    input.submission.accept(input.agentId, input.clientMessageId);
+  }
   await input.outbox.mark({
     serverId: input.serverId,
     id: input.clientMessageId,
     status: rejected ? "rejected" : "in_flight",
     lastError: receipt?.error ?? null,
   });
-  if (input.steering && !rejected) {
-    // Active-turn commands are durably admitted before Pi may finish
-    // compaction and acknowledge the native steer. Keep the optimistic
-    // message in place while the host runtime reconciles that receipt.
-    input.submission.accept(input.agentId, input.clientMessageId);
-    return;
+  if (rejected) {
+    input.submission.reject(input.agentId, input.clientMessageId);
   }
-  input.submission.reject(input.agentId, input.clientMessageId);
 }
 
 async function preserveDeliveryUnknownComposerMessage(input: {

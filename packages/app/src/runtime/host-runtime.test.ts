@@ -23,6 +23,7 @@ import {
 } from "./host-runtime";
 import { ReplicaCache } from "./replica-cache";
 import { ComposerOutboxStore } from "@/composer/outbox/store";
+import { createUserMessage } from "@/types/stream";
 
 class FakeDaemonClient {
   private state: ConnectionState = { status: "idle" };
@@ -44,6 +45,7 @@ class FakeDaemonClient {
   public commandReceiptResponses: Array<
     Awaited<ReturnType<DaemonClient["getAgentCommandReceipt"]>>
   > = [];
+  public commandReceiptRequests: string[] = [];
   public resolvedCommandReceipts: Array<Parameters<DaemonClient["resolveAgentCommandReceipt"]>> =
     [];
   private agentUpdateListeners = new Set<
@@ -112,6 +114,7 @@ class FakeDaemonClient {
   async getAgentCommandReceipt(
     commandId: string,
   ): ReturnType<DaemonClient["getAgentCommandReceipt"]> {
+    this.commandReceiptRequests.push(commandId);
     return Promise.resolve(
       this.commandReceiptResponses.shift() ?? {
         commandId,
@@ -3017,6 +3020,87 @@ describe("HostRuntimeStore", () => {
     sessionStore.clearSession(host.serverId);
   });
 
+  it("keeps an active in-flight submission in the transcript without a duplicate recovery row", async () => {
+    const host = makeHost({ serverId: "srv_active_inflight_outbox" });
+    const fakeClient = new FakeDaemonClient();
+    fakeClient.setConnectionState({ status: "connected" });
+    fakeClient.commandReceiptResponses.push({
+      commandId: "active-inflight",
+      agentId: "agent-active",
+      status: "in_flight",
+      error: null,
+    });
+    const outbox = new ComposerOutboxStore();
+    await outbox.enqueue({
+      id: "active-inflight",
+      serverId: host.serverId,
+      agentId: "agent-active",
+      text: "keep this visible",
+      attachments: [],
+      intent: "dispatch",
+      now: 1,
+    });
+    await outbox.mark({
+      serverId: host.serverId,
+      id: "active-inflight",
+      status: "in_flight",
+      lastError: "Delivery requires confirmation",
+      now: 2,
+    });
+    const runtimeStore = new HostRuntimeStore({ composerOutbox: outbox });
+    const sessionStore = useSessionStore.getState();
+    sessionStore.initializeSession(host.serverId, fakeClient as unknown as DaemonClient, 1);
+    sessionStore.updateSessionServerInfo(host.serverId, {
+      serverId: host.serverId,
+      hostname: null,
+      version: "0.5.13",
+      features: {
+        canonicalSubmittedPrompts: true,
+        durableCommandReceipts: true,
+        commandReceiptResolution: true,
+      },
+    });
+    sessionStore.beginAgentMessageSubmission(
+      host.serverId,
+      "agent-active",
+      createUserMessage({
+        clientMessageId: "active-inflight",
+        text: "keep this visible",
+        timestamp: new Date("2026-08-31T00:00:00.000Z"),
+      }),
+    );
+
+    runtimeStore.drainComposerOutbox(host.serverId);
+
+    await vi.waitFor(() => {
+      expect(
+        useSessionStore.getState().sessions[host.serverId]?.agentStreamTail.get("agent-active"),
+      ).toMatchObject([
+        {
+          kind: "user_message",
+          clientMessageId: "active-inflight",
+          text: "keep this visible",
+        },
+      ]);
+      expect(
+        useSessionStore.getState().sessions[host.serverId]?.queuedMessages.get("agent-active"),
+      ).toBeUndefined();
+      expect(fakeClient.commandReceiptRequests).toEqual(["active-inflight"]);
+    });
+
+    fakeClient.commandReceiptResponses.push({
+      commandId: "active-inflight",
+      agentId: "agent-active",
+      status: "accepted",
+      error: null,
+    });
+    runtimeStore.drainComposerOutbox(host.serverId);
+    await vi.waitFor(async () => {
+      expect(await outbox.list({ serverId: host.serverId })).toEqual([]);
+    });
+    sessionStore.clearSession(host.serverId);
+  });
+
   it("keeps steering receipts out of the manual queue and reconciles them automatically", async () => {
     useHostRuntimeClock();
     const host = makeHost({ serverId: "srv_steering_outbox" });
@@ -3032,12 +3116,17 @@ describe("HostRuntimeStore", () => {
       {
         commandId: "steer-after-compaction",
         agentId: "agent-steering",
+        status: "in_flight",
+        error: null,
+      },
+      {
+        commandId: "steer-after-compaction",
+        agentId: "agent-steering",
         status: "accepted",
         error: null,
       },
     );
     const outbox = new ComposerOutboxStore();
-    const runtimeStore = new HostRuntimeStore({ composerOutbox: outbox });
     const sessionStore = useSessionStore.getState();
     sessionStore.initializeSession(host.serverId, fakeClient as unknown as DaemonClient, 1);
     sessionStore.updateSessionServerInfo(host.serverId, {
@@ -3066,13 +3155,9 @@ describe("HostRuntimeStore", () => {
       status: "delivery_unknown",
       now: 2,
     });
+    const runtimeStore = new HostRuntimeStore({ composerOutbox: outbox });
+    runtimeStore.drainComposerOutbox(host.serverId);
     await vi.advanceTimersByTimeAsync(0);
-
-    expect(
-      useSessionStore.getState().sessions[host.serverId]?.queuedMessages.get("agent-steering"),
-    ).toBeUndefined();
-
-    await vi.advanceTimersByTimeAsync(1_000);
 
     expect(await outbox.list({ serverId: host.serverId })).toMatchObject([
       { id: "steer-after-compaction", status: "in_flight", steering: true },
@@ -3080,15 +3165,31 @@ describe("HostRuntimeStore", () => {
     expect(
       useSessionStore.getState().sessions[host.serverId]?.queuedMessages.get("agent-steering"),
     ).toBeUndefined();
+    expect(fakeClient.commandReceiptRequests).toEqual(["steer-after-compaction"]);
 
-    await vi.advanceTimersByTimeAsync(1_000);
-    runtimeStore.drainComposerOutbox(host.serverId);
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(fakeClient.commandReceiptRequests).toEqual(["steer-after-compaction"]);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fakeClient.commandReceiptRequests).toEqual([
+      "steer-after-compaction",
+      "steer-after-compaction",
+    ]);
+
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(fakeClient.commandReceiptRequests).toHaveLength(2);
+
+    await vi.advanceTimersByTimeAsync(1);
 
     expect(await outbox.list({ serverId: host.serverId })).toEqual([]);
     expect(
       useSessionStore.getState().sessions[host.serverId]?.queuedMessages.get("agent-steering"),
     ).toBeUndefined();
+    expect(fakeClient.commandReceiptRequests).toEqual([
+      "steer-after-compaction",
+      "steer-after-compaction",
+      "steer-after-compaction",
+    ]);
     expect(fakeClient.sentAgentMessages).toEqual([]);
     sessionStore.clearSession(host.serverId);
   });

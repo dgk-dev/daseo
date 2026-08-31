@@ -4938,6 +4938,76 @@ test("native steering keeps one foreground turn and records an explicit steering
   }
 });
 
+test("native steering records the prompt when turn completion races after provider acknowledgement", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-steer-completion-race-"));
+  const turnId = "turn-steer-race-1";
+  class CompletingSteerSession extends SteerableControlledSession {
+    override async steerTurn(
+      prompt: AgentPromptInput,
+      expectedTurnId: string,
+      options?: AgentRunOptions,
+    ): Promise<{ turnId: string }> {
+      const result = await super.steerTurn(prompt, expectedTurnId, options);
+      this.pushEvent({ type: "turn_completed", provider: this.provider, turnId });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      return result;
+    }
+  }
+  const session = new CompletingSteerSession(
+    { provider: "codex", cwd: workdir },
+    turnId,
+    async () => undefined,
+  );
+  const client = new (class extends TestAgentClient {
+    override readonly capabilities = session.capabilities;
+
+    override async createSession(): Promise<AgentSession> {
+      return session;
+    }
+  })();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: new AgentStorage(join(workdir, "agents"), logger),
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000127",
+  });
+
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    const run = manager.streamAgent(agent.id, "initial prompt");
+    const drain = (async () => {
+      for await (const _event of run) {
+        // Drain through the terminal event emitted during steering acknowledgement.
+      }
+    })();
+    await manager.waitForAgentRunStart(agent.id);
+
+    await expect(
+      manager.trySteerAgentRun(agent.id, "last-second context", {
+        clientMessageId: "client-steer-race-1",
+      }),
+    ).resolves.toBe(true);
+
+    expect(manager.fetchTimeline(agent.id, { direction: "tail", limit: 10 }).rows).toContainEqual({
+      seq: 1,
+      timestamp: expect.any(String),
+      item: {
+        type: "user_message",
+        text: "last-second context",
+        messageId: "client-steer-race-1",
+        clientMessageId: "client-steer-race-1",
+        steering: true,
+      },
+    });
+    await drain;
+    expect(manager.getAgent(agent.id)?.lifecycle).toBe("idle");
+  } finally {
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
 test("native steering can target a provider-owned autonomous turn", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-autonomous-steer-"));
   const turnId = "autonomous-steer-1";

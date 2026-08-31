@@ -2147,9 +2147,12 @@ export class AgentManager {
     if (!activeTurnId) return false;
 
     const result = await agent.session.steerTurn(prompt, activeTurnId, options);
-    if (result.turnId !== activeTurnId || agent.activeTurnId !== activeTurnId) {
-      throw new Error(`Agent ${agentId} active turn changed before steering was accepted`);
+    if (result.turnId !== activeTurnId) {
+      throw new Error(`Agent ${agentId} accepted steering into an unexpected turn`);
     }
+    // Provider acknowledgement owns delivery. A terminal event can race after
+    // that acknowledgement; rejecting here would lose a prompt the provider
+    // already accepted and leave its durable command receipt unresolved.
     if (options?.clientMessageId) {
       this.recordSubmittedPrompt(agent, prompt, options.clientMessageId, {
         messageId: options.clientMessageId,

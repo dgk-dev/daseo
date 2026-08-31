@@ -7,6 +7,7 @@ import { writeJsonFileAtomic } from "../atomic-file.js";
 
 const RECEIPT_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 const MAX_RECEIPTS = 4_096;
+const INTERRUPTED_RECEIPT_ERROR = "Daemon restarted before command confirmation";
 
 const AgentCommandReceiptSchema = z.object({
   commandId: z.string().min(1),
@@ -209,10 +210,25 @@ export class AgentCommandReceiptStore {
       this.logger.warn({ issues: parsed.error.issues }, "Ignoring invalid command receipt file");
       return;
     }
+    const now = new Date();
+    let recoveredInterruptedReceipt = false;
     for (const receipt of parsed.data.receipts) {
-      this.receipts.set(receipt.commandId, receipt);
+      if (receipt.status !== "in_flight") {
+        this.receipts.set(receipt.commandId, receipt);
+        continue;
+      }
+      recoveredInterruptedReceipt = true;
+      this.receipts.set(receipt.commandId, {
+        ...receipt,
+        status: "rejected",
+        updatedAt: now.toISOString(),
+        error: INTERRUPTED_RECEIPT_ERROR,
+      });
     }
-    this.prune(new Date());
+    this.prune(now);
+    if (recoveredInterruptedReceipt) {
+      await this.persist(now);
+    }
   }
 
   private prune(now: Date): void {

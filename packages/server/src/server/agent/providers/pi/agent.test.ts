@@ -1164,6 +1164,34 @@ describe("PiRpcAgentSession", () => {
     });
   });
 
+  test("does not close the Pi turn while a native steer acknowledgement is pending", async () => {
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    const { turnId } = await session.startTurn("long task");
+    fakeSession.emit({ type: "agent_start" });
+    fakeSession.emit({ type: "turn_start" });
+    fakeSession.holdNextSteer();
+
+    const steering = session.steerTurn?.("last-second context", turnId, {
+      clientMessageId: "client-last-second-steer",
+    });
+    await vi.waitFor(() => {
+      expect(fakeSession.steers).toEqual([{ message: "last-second context", imageCount: 0 }]);
+    });
+
+    fakeSession.finishTurn();
+    await flushTurnScheduling();
+
+    expect(events.turnCompletedEvents()).toHaveLength(0);
+
+    await fakeSession.releaseHeldSteer();
+    await expect(steering).resolves.toEqual({ turnId });
+    fakeSession.settleTurn();
+
+    await expect(events.nextTurnCompletion()).resolves.toMatchObject({ turnId });
+  });
+
   test("does not complete an active Pi turn for a steered extension message", async () => {
     const { pi, session, events } = await createSession();
     const fakeSession = pi.latestSession();

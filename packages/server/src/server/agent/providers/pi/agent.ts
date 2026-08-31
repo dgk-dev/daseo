@@ -2004,6 +2004,7 @@ export class PiRpcAgentSession implements AgentSession {
     if (
       this.activeTurnId !== turnId ||
       this.pendingAgentEnd !== expected ||
+      this.activeSteeringRequests > 0 ||
       runtimeState.isStreaming ||
       runtimeState.isCompacting ||
       runtimeState.pendingMessageCount > 0

@@ -2511,7 +2511,8 @@ export class Session {
     if (msg.type === "agent.command_receipt.get.request") {
       let receipt = await this.agentCommandReceiptStore.get(msg.commandId);
       if (
-        receipt?.status === "in_flight" &&
+        receipt &&
+        receipt.status !== "accepted" &&
         (await this.agentManager.hasCanonicalSubmittedPrompt(receipt.agentId, msg.commandId))
       ) {
         receipt =
@@ -7092,7 +7093,12 @@ export class Session {
         emitResponse({ accepted: true, error: null, receiptStatus: "accepted" });
         return;
       }
-      emitResponse({ accepted: true, error: message, receiptStatus: "in_flight" });
+      await this.agentCommandReceiptStore.settle({
+        commandId,
+        status: "rejected",
+        error: message,
+      });
+      emitResponse({ accepted: false, error: message, receiptStatus: "rejected" });
     };
 
     if (commandId) {
@@ -7118,7 +7124,7 @@ export class Session {
       if (admission.kind === "existing") {
         let receipt = admission.receipt;
         if (
-          receipt.status === "in_flight" &&
+          receipt.status !== "accepted" &&
           (await this.agentManager.hasCanonicalSubmittedPrompt(agentId, commandId))
         ) {
           receipt =

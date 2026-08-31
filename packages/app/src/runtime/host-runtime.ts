@@ -195,7 +195,8 @@ const ADAPTIVE_SWITCH_THRESHOLD_MS = 40;
 const ADAPTIVE_SWITCH_CONSECUTIVE_PROBES = 3;
 const DEFAULT_AGENT_DIRECTORY_PAGE_LIMIT = 200;
 const CONFIGURED_OVERRIDE_BOOTSTRAP_RETRY_MS = 1_000;
-const STEERING_RECEIPT_RECHECK_MS = 1_000;
+const COMPOSER_RECEIPT_RECHECK_INITIAL_MS = 1_000;
+const COMPOSER_RECEIPT_RECHECK_MAX_MS = 30_000;
 
 function toActiveConnection(connection: HostConnection): ActiveConnection {
   if (connection.type === "directSocket") {
@@ -1390,6 +1391,7 @@ export class HostRuntimeStore {
   private directoryBootstrapInFlight = new Map<string, Promise<void>>();
   private queuedAgentDrainInFlight = new Set<string>();
   private composerOutboxRecheckTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private composerOutboxRecheckDelayByServer = new Map<string, number>();
   private composerOutboxProjectionIdsByServer = new Map<string, Set<string>>();
   private composerOutboxProjectionTails = new Map<string, Promise<void>>();
   private directorySyncByServer = new Map<string, DirectorySync>();
@@ -2209,29 +2211,37 @@ export class HostRuntimeStore {
 
   private clearComposerOutboxRecheck(serverId: string): void {
     const timer = this.composerOutboxRecheckTimers.get(serverId);
-    if (!timer) return;
-    clearTimeout(timer);
-    this.composerOutboxRecheckTimers.delete(serverId);
+    if (timer) {
+      clearTimeout(timer);
+      this.composerOutboxRecheckTimers.delete(serverId);
+    }
+    this.composerOutboxRecheckDelayByServer.delete(serverId);
   }
 
   private scheduleComposerOutboxRecheck(serverId: string): void {
     if (this.composerOutboxRecheckTimers.has(serverId)) return;
+    const delayMs =
+      this.composerOutboxRecheckDelayByServer.get(serverId) ?? COMPOSER_RECEIPT_RECHECK_INITIAL_MS;
     const timer = setTimeout(() => {
       this.composerOutboxRecheckTimers.delete(serverId);
       this.drainComposerOutbox(serverId);
-    }, STEERING_RECEIPT_RECHECK_MS);
+    }, delayMs);
     this.composerOutboxRecheckTimers.set(serverId, timer);
+    this.composerOutboxRecheckDelayByServer.set(
+      serverId,
+      Math.min(delayMs * 2, COMPOSER_RECEIPT_RECHECK_MAX_MS),
+    );
   }
 
   private async refreshComposerOutboxRecheck(serverId: string): Promise<void> {
-    const unresolvedSteering = (
+    const hasUnresolvedReceipt = (
       await this.composerOutbox.list({ serverId, intent: "dispatch" })
     ).some(
       (record) =>
-        record.steering === true &&
-        (record.status === "delivery_unknown" || record.status === "in_flight"),
+        record.status === "in_flight" ||
+        (record.steering === true && record.status === "delivery_unknown"),
     );
-    if (unresolvedSteering) {
+    if (hasUnresolvedReceipt) {
       this.scheduleComposerOutboxRecheck(serverId);
     } else {
       this.clearComposerOutboxRecheck(serverId);
@@ -2255,16 +2265,22 @@ export class HostRuntimeStore {
 
   private async applyQueuedOutboxProjection(serverId: string): Promise<void> {
     const records = await this.composerOutbox.list({ serverId });
-    if (!useSessionStore.getState().sessions[serverId]) {
+    const session = useSessionStore.getState().sessions[serverId];
+    if (!session) {
       this.composerOutboxProjectionIdsByServer.delete(serverId);
       return;
     }
+    const hasActiveSubmission = (record: (typeof records)[number]) =>
+      (session.messageSubmissions.get(record.agentId) ?? []).some(
+        (submission) => submission.clientMessageId === record.id,
+      );
     const visible = records.filter(
       (record) =>
         record.intent === "queued" ||
         record.status === "rejected" ||
         ((record.status === "delivery_unknown" || record.status === "in_flight") &&
-          record.steering !== true),
+          record.steering !== true &&
+          !hasActiveSubmission(record)),
     );
     const outboxIds = new Set(records.map((record) => `${record.agentId}\u0000${record.id}`));
     const previousOutboxIds =
@@ -2366,6 +2382,7 @@ export class HostRuntimeStore {
     void (async () => {
       const records = await this.composerOutbox.list({ serverId, intent: "dispatch" });
       for (const record of records) {
+        if (record.status === "rejected") continue;
         const drainKey = `outbox:${serverId}:${record.id}`;
         if (this.queuedAgentDrainInFlight.has(drainKey)) continue;
         this.queuedAgentDrainInFlight.add(drainKey);
@@ -2378,15 +2395,18 @@ export class HostRuntimeStore {
             continue;
           }
           if (receipt.status === "in_flight") {
-            await this.composerOutbox.mark({
-              serverId,
-              id: record.id,
-              status: "in_flight",
-              lastError: receipt.error ?? record.lastError ?? "Delivery requires confirmation",
-            });
+            const lastError = receipt.error ?? record.lastError ?? "Delivery requires confirmation";
+            if (record.status !== "in_flight" || record.lastError !== lastError) {
+              await this.composerOutbox.mark({
+                serverId,
+                id: record.id,
+                status: "in_flight",
+                lastError,
+              });
+            }
             continue;
           }
-          if (receipt.status === "rejected" || record.status === "rejected") {
+          if (receipt.status === "rejected") {
             await this.composerOutbox.mark({
               serverId,
               id: record.id,

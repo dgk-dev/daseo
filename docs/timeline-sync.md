@@ -159,11 +159,17 @@ acknowledges it. Submission lifecycle is a separate record keyed by agent, not a
 The transaction registry records two independent settlement facts: canonical acknowledgement and RPC
 settlement. Canonical acknowledgement retires optimistic activity immediately. When both facts are
 known, whichever arrives second deletes the record. A canonical acknowledgement that arrives first
-prevents a later transport error from rolling back a prompt already observed.
+prevents a later transport error from rolling back a prompt already observed. Durable `in_flight`
+admission is also not rejection: the submitted row stays visible even when the client classified a
+running turn as idle, while receipt checks back off from 1s to a 30s ceiling. Restarted daemons reject
+unfinished receipts unless canonical history proves that exact command was delivered, so interrupted
+commands become actionable instead of polling forever.
 
 The daemon's accepted response waits for the correlated run start and guarantees that the canonical
-submitted row has been recorded. It publishes the accepted turn's liveness before that row, so the
-client applies authoritative activity before canonical acknowledgement retires optimistic activity.
+submitted row has been recorded. Deferred active-turn admission may first return `in_flight`; its
+receipt becomes accepted only after provider acknowledgement and canonical recording, or rejected when
+that deferred dispatch fails. It publishes the accepted turn's liveness before that row, so the client
+applies authoritative activity before canonical acknowledgement retires optimistic activity.
 Timeline render batching does not delay lifecycle application. Directory status never settles a
 submission. Overlapping sends settle independently rather than collapsing to one newest pending
 message.
