@@ -20,6 +20,7 @@ import type { AgentProviderDefinition } from "@getpaseo/protocol/provider-manife
 import type {
   AgentModelDefinition,
   AgentProvider,
+  AgentProviderSelectionPolicy,
   ProviderSnapshotEntry,
 } from "@getpaseo/protocol/agent-types";
 
@@ -1277,7 +1278,11 @@ describe("resolveAgentForm", () => {
   });
 });
 
-describe("Daseo pinned Pi defaults", () => {
+describe("provider selection policy defaults", () => {
+  const DEFAULTS_POLICY: AgentProviderSelectionPolicy = {
+    preferenceMode: "defaults",
+    defaultModelId: "pi-codex/gpt-5.6-sol",
+  };
   const PI_THINKING = [
     { id: "medium", label: "Medium" },
     { id: "high", label: "High" },
@@ -1328,8 +1333,8 @@ describe("Daseo pinned Pi defaults", () => {
       PI_MODELS,
       INITIAL_USER_MODIFIED,
       makeState({ provider: "pi" }).form,
-
       piProviderMap,
+      DEFAULTS_POLICY,
     );
 
     expect(resolved.model).toBe("pi-codex/gpt-5.6-sol");
@@ -1343,8 +1348,8 @@ describe("Daseo pinned Pi defaults", () => {
       PI_MODELS,
       INITIAL_USER_MODIFIED,
       makeState({ provider: "pi" }).form,
-
       piProviderMap,
+      DEFAULTS_POLICY,
     );
 
     expect(resolved.model).toBe("pi-claude/claude-opus-4-8");
@@ -1365,6 +1370,7 @@ describe("Daseo pinned Pi defaults", () => {
       modelId: "pi-claude/claude-fable-5",
       availableModels: PI_MODELS,
       providerPrefs: prefs,
+      selectionPolicy: DEFAULTS_POLICY,
     });
     expect(fableNext.form.thinkingOptionId).toBe("high");
 
@@ -1373,6 +1379,7 @@ describe("Daseo pinned Pi defaults", () => {
       modelId: "pi-claude/claude-opus-4-8",
       availableModels: PI_MODELS,
       providerPrefs: prefs,
+      selectionPolicy: DEFAULTS_POLICY,
     });
     expect(opusNext.form.thinkingOptionId).toBe("xhigh");
   });

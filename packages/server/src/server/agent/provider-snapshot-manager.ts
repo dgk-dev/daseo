@@ -681,6 +681,7 @@ export class ProviderSnapshotManager {
         label: definition.label,
         description: definition.description,
         defaultModeId: definition.defaultModeId,
+        selectionPolicy: definition.selectionPolicy,
         error: toErrorMessage(error),
       };
     }
@@ -728,6 +729,7 @@ export class ProviderSnapshotManager {
         label: definition?.label,
         description: definition?.description,
         defaultModeId: definition?.defaultModeId ?? null,
+        selectionPolicy: definition?.selectionPolicy,
       });
     }
     return entries;
@@ -747,6 +749,7 @@ export class ProviderSnapshotManager {
         label: definition?.label,
         description: definition?.description,
         defaultModeId: definition?.defaultModeId ?? null,
+        selectionPolicy: definition?.selectionPolicy,
       };
 
       if (!definition?.enabled) {
@@ -915,6 +918,7 @@ export class ProviderSnapshotManager {
       label: definition.label,
       description: definition.description,
       defaultModeId: definition.defaultModeId,
+      selectionPolicy: definition.selectionPolicy,
     };
     const setEntry = (entry: ProviderSnapshotEntry) => {
       if (!this.isCurrentProviderLoad(snapshotCwd, provider, load)) {

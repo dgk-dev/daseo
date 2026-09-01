@@ -26,10 +26,12 @@ import {
 } from "./create-agent-mode.js";
 import { normalizeAgentModelDefinition } from "./agent-sdk-types.js";
 import { runProviderRefreshActivity } from "./provider-refresh-deadline.js";
+import { applySelectionPolicyToModels } from "./provider-selection-policy.js";
 import type { WorkspaceGitService } from "../workspace-git-service.js";
 import type { ManagedProcessRegistry } from "../managed-processes/managed-processes.js";
 import type {
   AgentProviderRuntimeSettingsMap,
+  AgentProviderSelectionPolicy,
   ProviderOverride,
   ProviderProfileModel,
   ProviderRuntimeSettings,
@@ -70,6 +72,7 @@ export { AGENT_PROVIDER_DEFINITIONS, getAgentProviderDefinition };
 
 export interface ProviderDefinition extends AgentProviderDefinition {
   enabled: boolean;
+  selectionPolicy?: AgentProviderSelectionPolicy;
   /**
    * The id of another *registered* provider this one extends (e.g. a Z.AI
    * profile that extends "claude"). null for built-in providers and for
@@ -115,6 +118,7 @@ interface ProviderClientFactoryOptions extends Pick<
   "workspaceGitService" | "managedProcesses" | "ompRuntime"
 > {
   providerParams?: unknown;
+  selectionPolicy?: AgentProviderSelectionPolicy;
   customProvider?: {
     id: string;
     label: string;
@@ -137,6 +141,7 @@ interface ResolvedProvider {
   enabled: boolean;
   derivedFromProviderId: string | null;
   providerParams?: unknown;
+  selectionPolicy?: AgentProviderSelectionPolicy;
   createBaseClient: (logger: Logger) => AgentClient;
   contract: ProviderContract;
 }
@@ -218,6 +223,7 @@ const PROVIDER_CLIENT_FACTORIES: Record<string, ProviderClientFactory> = {
       logger,
       runtimeSettings,
       providerParams: options?.providerParams,
+      selectionPolicy: options?.selectionPolicy,
     }),
   omp: (logger, runtimeSettings, options) =>
     new OmpAgentClient({
@@ -609,6 +615,7 @@ function createRegistryEntry(
   return {
     ...resolved.definition,
     enabled: resolved.enabled,
+    selectionPolicy: resolved.selectionPolicy,
     derivedFromProviderId: resolved.derivedFromProviderId,
     optionsSchema: resolved.contract.optionsSchema,
     supportsExactMcpPreapproval: resolved.contract.supportsExactMcpPreapproval,
@@ -641,7 +648,10 @@ function createRegistryEntry(
         // Replacement models skip runtime model discovery, but additionalModels
         // must still be merged on top. If modes are dynamic, probe for modes via
         // the single catalog API; otherwise use static/empty modes with no runtime.
-        const models = mergeModelAdditions(provider, replacementModels, additionalModels);
+        const models = applySelectionPolicyToModels(
+          mergeModelAdditions(provider, replacementModels, additionalModels),
+          resolved.selectionPolicy,
+        );
         // Pi has no selectable modes, so its empty manifest is authoritative.
         // Empty ACP manifests still require a runtime probe for dynamic modes.
         if (!hasRuntimeDiscoveredModes) {
@@ -670,9 +680,12 @@ function createRegistryEntry(
       const catalog = await catalogClient.fetchCatalog(options, context);
       return {
         ...catalog,
-        models: mergeModels(provider, profileModels, additionalModels, catalog.models, {
-          profileModelsAreAdditive: resolved.profileModelsAreAdditive,
-        }),
+        models: applySelectionPolicyToModels(
+          mergeModels(provider, profileModels, additionalModels, catalog.models, {
+            profileModelsAreAdditive: resolved.profileModelsAreAdditive,
+          }),
+          resolved.selectionPolicy,
+        ),
         modes: decorateModes(catalog.modes),
       };
     },
@@ -732,12 +745,14 @@ function buildResolvedBuiltinProviders(
       enabled: override?.enabled ?? definition.enabledByDefault ?? true,
       derivedFromProviderId: null,
       providerParams: override?.params,
+      selectionPolicy: override?.selectionPolicy,
       createBaseClient: (logger) =>
         factory(logger, mergedRuntimeSettings, {
           workspaceGitService: options.workspaceGitService,
           managedProcesses: options.managedProcesses,
           ompRuntime: options.ompRuntime,
           providerParams: override?.params,
+          selectionPolicy: override?.selectionPolicy,
         }),
       contract: PROVIDER_CONTRACTS[definition.id] ?? UNSUPPORTED_PROVIDER_CONTRACT,
     });
@@ -786,6 +801,7 @@ function addDerivedProviders(
         enabled: override.enabled !== false,
         derivedFromProviderId: null,
         providerParams: override.params,
+        selectionPolicy: override.selectionPolicy,
         createBaseClient: (logger) => {
           const acpOptions = {
             logger,
@@ -832,6 +848,7 @@ function addDerivedProviders(
     const baseDefinition = baseProvider.definition;
     const baseFactory = getProviderClientFactory(baseProviderId);
     const providerParams = override.params ?? baseProvider.providerParams;
+    const selectionPolicy = override.selectionPolicy ?? baseProvider.selectionPolicy;
 
     resolvedProviders.set(providerId, {
       definition: createDerivedDefinition(providerId, baseDefinition, override),
@@ -842,10 +859,12 @@ function addDerivedProviders(
       enabled: override.enabled !== false,
       derivedFromProviderId: baseProviderId,
       providerParams,
+      selectionPolicy,
       createBaseClient: (logger) =>
         baseFactory(logger, mergedRuntimeSettings, {
           managedProcesses: options.managedProcesses,
           providerParams,
+          selectionPolicy,
           customProvider: {
             id: providerId,
             label: override.label ?? providerId,

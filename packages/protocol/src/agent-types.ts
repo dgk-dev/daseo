@@ -106,6 +106,14 @@ export function normalizeAgentModelDefinition(model: AgentModelDefinition): Agen
   return { ...model, defaultThinkingOptionId };
 }
 
+export interface AgentProviderSelectionPolicy {
+  /** Sticky remembers the last selection; defaults starts fresh sessions from advertised defaults. */
+  preferenceMode: "sticky" | "defaults";
+  defaultModelId?: string;
+  thinkingDefaultsByModel?: Record<string, string>;
+  featureDefaultsByModel?: Record<string, Record<string, unknown>>;
+}
+
 export interface ProviderSnapshotEntry {
   provider: AgentProvider;
   status: ProviderStatus;
@@ -118,6 +126,7 @@ export interface ProviderSnapshotEntry {
   label?: string;
   description?: string;
   defaultModeId?: string | null;
+  selectionPolicy?: AgentProviderSelectionPolicy;
 }
 
 export interface AgentFeatureToggle {

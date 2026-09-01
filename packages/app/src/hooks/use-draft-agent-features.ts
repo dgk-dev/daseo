@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import type { AgentProvider, AgentSessionConfig } from "@getpaseo/protocol/agent-types";
+import type {
+  AgentProvider,
+  AgentProviderSelectionPolicy,
+  AgentSessionConfig,
+} from "@getpaseo/protocol/agent-types";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { mergeProviderPreferences, useFormPreferences } from "./use-form-preferences";
 import {
@@ -9,7 +13,7 @@ import {
   pruneFeatureValues,
   resolveFeatureValues,
 } from "./feature-preferences";
-import { hasPinnedProviderDefaults } from "@/provider-selection/pinned-provider-defaults";
+import { startsNewSessionsFromDefaults } from "@/provider-selection/provider-selection-policy";
 
 type DraftFeatureConfig = Pick<
   AgentSessionConfig,
@@ -24,10 +28,19 @@ export function useDraftAgentFeatures(input: {
   modelId: string | null | undefined;
   thinkingOptionId: string | null | undefined;
   initialFeatureValues?: Record<string, unknown>;
+  selectionPolicy?: AgentProviderSelectionPolicy;
 }) {
   const { t } = useTranslation();
-  const { serverId, provider, cwd, modeId, modelId, thinkingOptionId, initialFeatureValues } =
-    input;
+  const {
+    serverId,
+    provider,
+    cwd,
+    modeId,
+    modelId,
+    thinkingOptionId,
+    initialFeatureValues,
+    selectionPolicy,
+  } = input;
   const [localFeatureValues, setLocalFeatureValues] = useState<Record<string, unknown>>(
     () => initialFeatureValues ?? {},
   );
@@ -37,14 +50,12 @@ export function useDraftAgentFeatures(input: {
   const normalizedCwd = cwd?.trim() || "";
   const normalizedProvider = provider ?? null;
   const previousProviderRef = useRef<AgentProvider | null>(normalizedProvider);
-  // Daseo fork: pinned providers ignore sticky feature values so toggles like
-  // fast mode always start a new session at the provider default (off).
   const persistedFeatureValues = useMemo(
     () =>
-      provider && !hasPinnedProviderDefaults(provider)
+      provider && !startsNewSessionsFromDefaults(selectionPolicy)
         ? (preferences.providerPreferences?.[provider]?.featureValues ?? {})
         : {},
-    [preferences.providerPreferences, provider],
+    [preferences.providerPreferences, provider, selectionPolicy],
   );
 
   const draftConfig = useMemo<DraftFeatureConfig | null>(() => {

@@ -13,6 +13,7 @@ import {
   type ProviderSelectorProvider,
 } from "@/provider-selection/provider-selection";
 import { filterSelectableModels } from "@/provider-selection/model-catalog";
+import { buildProviderSelectionPolicyMap } from "@/provider-selection/provider-selection-policy";
 import { OptimisticFormPreferences } from "@/create-agent-preferences/optimistic-preferences";
 import { applyAgentProfilePreferences } from "@/create-agent-preferences/preferences";
 import { useProvidersSnapshot } from "./use-providers-snapshot";
@@ -68,6 +69,7 @@ export interface UseAgentFormStateResult {
   providerDefinitions: AgentProviderDefinition[];
   providerDefinitionMap: Map<AgentProvider, AgentProviderDefinition>;
   agentDefinition?: AgentProviderDefinition;
+  selectedProviderEntry?: ProviderSnapshotEntry;
   allProviderEntries?: ProviderSnapshotEntry[];
   modeOptions: AgentMode[];
   availableModels: AgentModelDefinition[];
@@ -304,6 +306,10 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
     () => buildProviderModelsByProvider(snapshotEntries),
     [snapshotEntries],
   );
+  const snapshotSelectionPoliciesByProvider = useMemo(
+    () => buildProviderSelectionPolicyMap(snapshotEntries),
+    [snapshotEntries],
+  );
   const snapshotModelSelectorProviders = useMemo(
     () => buildSelectableProviderSelectorProviders(snapshotEntries),
     [snapshotEntries],
@@ -374,6 +380,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
       preferences,
       providerModelsByProvider: snapshotProviderModelsByProvider,
       allowedProviderMap: snapshotResolvableProviderDefinitionMap,
+      selectionPoliciesByProvider: snapshotSelectionPoliciesByProvider,
     });
   }, [
     combinedInitialValues,
@@ -386,6 +393,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
     snapshotEntries,
     snapshotProviderModelsByProvider,
     snapshotResolvableProviderDefinitionMap,
+    snapshotSelectionPoliciesByProvider,
   ]);
 
   const onlineServerIdsKey = onlineServerIds.join("|");
@@ -438,6 +446,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
         providerDef,
         providerModels,
         providerPrefs,
+        selectionPolicy: snapshotSelectionPoliciesByProvider.get(provider),
       });
       void updateCurrentPreferences((current) =>
         mergeSelectedComposerPreferences({
@@ -449,7 +458,12 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
         }),
       );
     },
-    [allProviderModels, selectableProviderDefinitionMap, updateCurrentPreferences],
+    [
+      allProviderModels,
+      selectableProviderDefinitionMap,
+      snapshotSelectionPoliciesByProvider,
+      updateCurrentPreferences,
+    ],
   );
 
   const clearProviderSelectionFromUser = useCallback(() => {
@@ -476,6 +490,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
         providerDef,
         providerModels,
         providerPrefs,
+        selectionPolicy: snapshotSelectionPoliciesByProvider.get(provider),
       };
       const nextState = resolveAgentForm({ form: formState, userModified, resolution }, action);
       const previousProviderModeIds = previousProvider
@@ -505,6 +520,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
       providerDefinitionMap,
       resolution,
       selectableProviderDefinitionMap,
+      snapshotSelectionPoliciesByProvider,
       updateCurrentPreferences,
       userModified,
     ],
@@ -540,6 +556,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
         modelId,
         availableModels,
         providerPrefs,
+        selectionPolicy: provider ? snapshotSelectionPoliciesByProvider.get(provider) : undefined,
       });
       if (provider) {
         const normalizedModelId = normalizeSelectedModelId(modelId);
@@ -555,7 +572,12 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
         );
       }
     },
-    [availableModels, formState.provider, updateCurrentPreferences],
+    [
+      availableModels,
+      formState.provider,
+      snapshotSelectionPoliciesByProvider,
+      updateCurrentPreferences,
+    ],
   );
 
   const setThinkingOptionFromUser = useCallback(
@@ -646,6 +668,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
       providerDefinitions,
       providerDefinitionMap,
       agentDefinition,
+      selectedProviderEntry: snapshotSelectedEntry ?? undefined,
       allProviderEntries,
       modeOptions,
       availableModels: availableModels ?? [],
@@ -681,6 +704,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
       providerDefinitions,
       providerDefinitionMap,
       agentDefinition,
+      snapshotSelectedEntry,
       allProviderEntries,
       modeOptions,
       availableModels,

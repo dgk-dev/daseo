@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { homedir, tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import type { Logger } from "pino";
+import type { AgentProviderSelectionPolicy } from "@getpaseo/protocol/agent-types";
 import stripAnsi from "strip-ansi";
 import { z } from "zod";
 
@@ -41,6 +42,7 @@ import {
 } from "../../agent-sdk-types.js";
 import { importSessionFromPersistence } from "../../provider-session-import.js";
 import { runProviderRefreshActivity } from "../../provider-refresh-deadline.js";
+import { resolveSelectionPolicyThinkingDefault } from "../../provider-selection-policy.js";
 import { runProviderTurn } from "../provider-runner.js";
 import {
   checkProviderLaunchAvailable,
@@ -238,28 +240,30 @@ const PI_THINKING_OPTIONS: ReadonlyArray<{
   { id: "max", label: "Max", description: "Extreme reasoning" },
 ] as const;
 
-// Daseo fork: pinned per-model reasoning defaults — Sol and Fable open at
-// high, Opus opens at xhigh; every other Pi model keeps the stock default.
 export function resolvePiDefaultThinkingLevel(
   modelReference: string | null | undefined,
+  selectionPolicy?: AgentProviderSelectionPolicy,
 ): PiThinkingLevel {
-  const reference = (modelReference ?? "").toLowerCase();
-  if (reference.includes("opus")) return "xhigh";
-  if (reference.includes("fable")) return "high";
-  if (/(^|[-/._ ])sol($|[-/._ ])/.test(reference)) return "high";
-  return DEFAULT_PI_THINKING_LEVEL;
+  return (
+    normalizePiThinkingOption(
+      resolveSelectionPolicyThinkingDefault(selectionPolicy, modelReference),
+    ) ?? DEFAULT_PI_THINKING_LEVEL
+  );
 }
 
-// Daseo fork: new sessions default to Codex Sol instead of the first model
-// Pi happens to list.
-function isPiPinnedDefaultModel(model: PiModel): boolean {
-  return model.provider === "pi-codex" && /(^|[-._ ])sol($|[-._ ])/.test(model.id.toLowerCase());
+function isPiPolicyDefaultModel(
+  model: PiModel,
+  selectionPolicy: AgentProviderSelectionPolicy | undefined,
+): boolean {
+  const defaultModelId = selectionPolicy?.defaultModelId;
+  return defaultModelId === model.id || defaultModelId === `${model.provider}/${model.id}`;
 }
 
 export interface PiRpcAgentClientOptions {
   logger: Logger;
   runtimeSettings?: ProviderRuntimeSettings;
   providerParams?: unknown;
+  selectionPolicy?: AgentProviderSelectionPolicy;
   runtime?: PiRuntime;
 }
 
@@ -301,6 +305,7 @@ interface PiRpcAgentSessionOptions {
   currentModeId?: string | null;
   cleanup?: () => void;
   extensionTimeoutMs?: number;
+  selectionPolicy?: AgentProviderSelectionPolicy;
 }
 
 interface PiResumeConfig {
@@ -1317,14 +1322,21 @@ function buildExtensionUiResponse(
   return { value: answer };
 }
 
-function mapPiModel(model: PiModel, provider: AgentProvider): AgentModelDefinition {
-  const defaultThinkingLevel = resolvePiDefaultThinkingLevel(`${model.provider}/${model.id}`);
+function mapPiModel(
+  model: PiModel,
+  provider: AgentProvider,
+  selectionPolicy?: AgentProviderSelectionPolicy,
+): AgentModelDefinition {
+  const defaultThinkingLevel = resolvePiDefaultThinkingLevel(
+    `${model.provider}/${model.id}`,
+    selectionPolicy,
+  );
   return {
     provider,
     id: `${model.provider}/${model.id}`,
     label: `${model.provider}/${model.name ?? model.id}`,
     description: `${model.provider}/${model.id}`,
-    ...(isPiPinnedDefaultModel(model) ? { isDefault: true } : {}),
+    ...(isPiPolicyDefaultModel(model, selectionPolicy) ? { isDefault: true } : {}),
     metadata: {
       provider: model.provider,
       modelId: model.id,
@@ -1401,6 +1413,7 @@ export class PiRpcAgentSession implements AgentSession {
     this.provider = PI_PROVIDER;
     this.currentModeId = options.currentModeId ?? null;
     this.cleanup = options.cleanup;
+    this.selectionPolicy = options.selectionPolicy;
     this.lastKnownThinkingOptionId =
       normalizePiThinkingOption(options.config.thinkingOptionId) ??
       this.state.thinkingLevel ??
@@ -1416,6 +1429,7 @@ export class PiRpcAgentSession implements AgentSession {
   private readonly config: AgentSessionConfig;
   private readonly cleanup?: () => void;
   private readonly extensionTimeoutMs: number;
+  private readonly selectionPolicy?: AgentProviderSelectionPolicy;
 
   get id(): string | null {
     return this.state.sessionId;
@@ -1795,7 +1809,7 @@ export class PiRpcAgentSession implements AgentSession {
   async setThinkingOption(thinkingOptionId: string | null): Promise<void> {
     const thinkingLevel =
       normalizePiThinkingOption(thinkingOptionId) ??
-      resolvePiDefaultThinkingLevel(this.config.model);
+      resolvePiDefaultThinkingLevel(this.config.model, this.selectionPolicy);
     await this.runtimeSession.setThinkingLevel(thinkingLevel);
     this.lastKnownThinkingOptionId = thinkingLevel;
     this.config.thinkingOptionId = thinkingLevel;
@@ -2819,6 +2833,7 @@ export class PiRpcAgentClient implements AgentClient {
   private readonly logger: Logger;
   private readonly runtimeSettings?: ProviderRuntimeSettings;
   private readonly providerParams: PiProviderParams;
+  private readonly selectionPolicy?: AgentProviderSelectionPolicy;
   private readonly runtime: PiRuntime;
 
   constructor(options: PiRpcAgentClientOptions) {
@@ -2827,6 +2842,7 @@ export class PiRpcAgentClient implements AgentClient {
     this.logger = options.logger;
     this.runtimeSettings = options.runtimeSettings;
     this.providerParams = PiProviderParamsSchema.parse(options.providerParams ?? {});
+    this.selectionPolicy = options.selectionPolicy;
     this.runtime = options.runtime ?? createRuntime(options.logger, options.runtimeSettings);
   }
 
@@ -2849,7 +2865,7 @@ export class PiRpcAgentClient implements AgentClient {
         model: config.model,
         thinkingOptionId:
           normalizePiThinkingOption(config.thinkingOptionId) ??
-          resolvePiDefaultThinkingLevel(config.model),
+          resolvePiDefaultThinkingLevel(config.model, this.selectionPolicy),
         noSession: config.internal === true,
         env: launchContext?.env,
         mcpConfigPath: mcpConfig?.path,
@@ -2868,6 +2884,7 @@ export class PiRpcAgentClient implements AgentClient {
         capabilities: capabilitiesForSession(mcpConfig !== null),
         cleanup: combineCleanup([mcpConfig?.cleanup, paseoExtension?.cleanup]),
         extensionTimeoutMs: this.providerParams.extensionTimeoutMs,
+        selectionPolicy: this.selectionPolicy,
       });
       await session.initializeFeatures();
       return session;
@@ -2931,6 +2948,7 @@ export class PiRpcAgentClient implements AgentClient {
         capabilities: capabilitiesForSession(mcpConfig !== null),
         cleanup: combineCleanup([mcpConfig?.cleanup, paseoExtension?.cleanup]),
         extensionTimeoutMs: this.providerParams.extensionTimeoutMs,
+        selectionPolicy: this.selectionPolicy,
       });
       await session.initializeFeatures();
       return session;
@@ -2971,7 +2989,7 @@ export class PiRpcAgentClient implements AgentClient {
           await runProviderRefreshActivity(context, "get_available_models", () =>
             catalogSession.getAvailableModels(null),
           )
-        ).map((model) => mapPiModel(model, PI_PROVIDER)),
+        ).map((model) => mapPiModel(model, PI_PROVIDER, this.selectionPolicy)),
       );
       return { models, modes: [] };
     } finally {
@@ -2991,7 +3009,7 @@ export class PiRpcAgentClient implements AgentClient {
         model: config.model,
         thinkingOptionId:
           normalizePiThinkingOption(config.thinkingOptionId) ??
-          resolvePiDefaultThinkingLevel(config.model),
+          resolvePiDefaultThinkingLevel(config.model, this.selectionPolicy),
         noSession: true,
         extensionPaths: [paseoExtension.path],
       });
@@ -3009,6 +3027,7 @@ export class PiRpcAgentClient implements AgentClient {
         capabilities: capabilitiesForSession(false),
         cleanup: paseoExtension.cleanup,
         extensionTimeoutMs: this.providerParams.extensionTimeoutMs,
+        selectionPolicy: this.selectionPolicy,
       });
       await session.initializeFeatures();
       return session.features;

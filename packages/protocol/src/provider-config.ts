@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { AgentProvider } from "./agent-types.js";
+import type { AgentProvider, AgentProviderSelectionPolicy } from "./agent-types.js";
 import { AgentProviderSchema } from "./provider-manifest.js";
 
 const ProviderCommandDefaultSchema = z.object({
@@ -35,6 +35,13 @@ const ProviderProfileThinkingOptionSchema = z.object({
   isDefault: z.boolean().optional(),
 });
 
+export const AgentProviderSelectionPolicySchema = z.object({
+  preferenceMode: z.enum(["sticky", "defaults"]),
+  defaultModelId: z.string().min(1).optional(),
+  thinkingDefaultsByModel: z.record(z.string(), z.string().min(1)).optional(),
+  featureDefaultsByModel: z.record(z.string(), z.record(z.string(), z.unknown())).optional(),
+}) satisfies z.ZodType<AgentProviderSelectionPolicy>;
+
 export const ProviderProfileModelSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
@@ -52,6 +59,7 @@ export const ProviderOverrideSchema = z.object({
   params: z.record(z.string(), z.unknown()).optional(),
   models: z.array(ProviderProfileModelSchema).optional(),
   additionalModels: z.array(ProviderProfileModelSchema).optional(),
+  selectionPolicy: AgentProviderSelectionPolicySchema.optional(),
   disallowedTools: z.array(z.string()).optional(),
   enabled: z.boolean().optional(),
   order: z.number().optional(),
@@ -126,6 +134,7 @@ export const AgentProviderRuntimeSettingsMapSchema = z
   });
 
 export type ProviderCommand = z.infer<typeof ProviderCommandSchema>;
+export type { AgentProviderSelectionPolicy };
 export type ProviderRuntimeSettings = z.infer<typeof ProviderRuntimeSettingsSchema>;
 export type ProviderProfileModel = z.infer<typeof ProviderProfileModelSchema>;
 export type ProviderOverride = z.infer<typeof ProviderOverrideSchema>;

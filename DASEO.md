@@ -213,16 +213,16 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     Grok, DeepSeek, or other models that do not support it. Key files:
     `packages/app/src/{agent-controls,composer/agent-controls}/`,
     `packages/server/src/server/agent/providers/pi/agent.ts`, and the local Pi feature host.
-20. **Pinned Pi session defaults** — the Pi provider advertises per-model default effort
-    levels (Sol and Fable open at `high`, Opus at `xhigh`, other models keep `medium`) and marks
-    Codex Sol as the provider's default model. New-session forms for Pi ignore the sticky
-    last-used model, per-model thinking, and feature-value preferences, so a fresh session always
-    opens at Sol · high with fast mode off, and picking Fable or Opus snaps effort to that model's
-    default; explicit initial values (drafts, resume, profiles) still win. The standalone Pi CLI
-    mirrors this through `~/.pi/agent/settings.json` (`defaultThinkingLevel: high`, `enabledModels`
-    pins `sol:high`, `fable-5:high`, `opus:xhigh`). Key files:
+20. **Runtime capability plus launch-policy defaults** — Pi runtime discovery remains the model
+    capability SSOT; Daseo no longer replaces its catalog with hand-authored model definitions.
+    A generic provider `selectionPolicy` overlays only product intent: Pi starts new sessions from
+    Codex Sol · `high` with fast mode off, Fable defaults to `high`, and Opus to `xhigh`. The policy
+    travels in provider snapshots, so forms ignore sticky preferences without hard-coding the Pi
+    provider id; explicit drafts, resume data, and profiles still win. `~/.pi/agent/settings.json`
+    remains the standalone Pi projection and visibility allowlist. Key files:
+    `packages/{protocol/src/provider-config,server/src/server/agent/provider-selection-policy}.ts`,
     `packages/server/src/server/agent/providers/pi/agent.ts`,
-    `packages/app/src/provider-selection/{pinned-provider-defaults,resolve-agent-form}.ts`, and
+    `packages/app/src/provider-selection/{provider-selection-policy,resolve-agent-form}.ts`, and
     `packages/app/src/hooks/use-draft-agent-features.ts`.
 21. **Cross-host-safe Composer focus** — macOS uses `Ctrl+L`, matching Windows and avoiding the
     non-forwardable Windows `Win+L` lock-screen shortcut when the Mac is controlled through Parsec.

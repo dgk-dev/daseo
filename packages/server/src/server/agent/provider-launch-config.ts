@@ -12,6 +12,7 @@ export {
   ProviderProfileModelSchema,
   ProviderRuntimeSettingsSchema,
   type AgentProviderRuntimeSettingsMap,
+  type AgentProviderSelectionPolicy,
   type ProviderCommand,
   type ProviderOverride,
   type ProviderOverrides,

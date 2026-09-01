@@ -212,6 +212,7 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
     modelId: effectiveModelId,
     thinkingOptionId: effectiveThinkingOptionId,
     initialFeatureValues: composerOptions?.initialFeatureValues,
+    selectionPolicy: formState.selectedProviderEntry?.selectionPolicy,
   });
 
   const applyDraftAgentProfile = useCallback(

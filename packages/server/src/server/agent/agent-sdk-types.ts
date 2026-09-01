@@ -1,5 +1,6 @@
 import type {
   AgentProviderNotice,
+  AgentProviderSelectionPolicy,
   AgentTaskItem,
   AssistantMessagePhase,
   AssistantTurnOutcome,
@@ -127,6 +128,7 @@ export interface ProviderSnapshotEntry {
   label?: string;
   description?: string;
   defaultModeId?: string | null;
+  selectionPolicy?: AgentProviderSelectionPolicy;
 }
 
 export interface AgentCreateConfigParent {

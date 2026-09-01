@@ -2,6 +2,7 @@ import type { AgentProviderDefinition } from "@getpaseo/protocol/provider-manife
 import type {
   AgentModelDefinition,
   AgentProvider,
+  AgentProviderSelectionPolicy,
   ProviderSnapshotEntry,
 } from "@getpaseo/protocol/agent-types";
 import {
@@ -10,7 +11,10 @@ import {
   type ProviderPreferences,
 } from "@/hooks/use-form-preferences";
 import { findModelByReference } from "./model-catalog";
-import { hasPinnedProviderDefaults } from "./pinned-provider-defaults";
+import {
+  startsNewSessionsFromDefaults,
+  type ProviderSelectionPolicyMap,
+} from "./provider-selection-policy";
 
 export interface FormInitialValues {
   serverId?: string | null;
@@ -77,6 +81,7 @@ export type AgentFormAction =
       preferences: FormPreferences | null;
       providerModelsByProvider: ProviderModelsByProvider;
       allowedProviderMap: Map<AgentProvider, AgentProviderDefinition>;
+      selectionPoliciesByProvider?: ProviderSelectionPolicyMap;
     }
   | { type: "SET_SERVER_ID"; value: string | null }
   | { type: "SET_SERVER_ID_FROM_USER"; value: string | null }
@@ -87,6 +92,7 @@ export type AgentFormAction =
       providerDef: AgentProviderDefinition | undefined;
       providerModels: AgentModelDefinition[] | null;
       providerPrefs?: ProviderPrefs | undefined;
+      selectionPolicy?: AgentProviderSelectionPolicy;
     }
   | {
       type: "APPLY_PROFILE_FROM_USER";
@@ -97,6 +103,7 @@ export type AgentFormAction =
       providerDef: AgentProviderDefinition | undefined;
       providerModels: AgentModelDefinition[] | null;
       providerPrefs?: ProviderPrefs | undefined;
+      selectionPolicy?: AgentProviderSelectionPolicy;
     }
   | { type: "SET_MODE_FROM_USER"; modeId: string }
   | {
@@ -104,6 +111,7 @@ export type AgentFormAction =
       modelId: string;
       availableModels: AgentModelDefinition[] | null;
       providerPrefs: ProviderPrefs | undefined;
+      selectionPolicy?: AgentProviderSelectionPolicy;
     }
   | { type: "CLEAR_PROVIDER_SELECTION_FROM_USER" }
   | { type: "SET_THINKING_OPTION_FROM_USER"; thinkingOptionId: string }
@@ -152,11 +160,10 @@ function resolvePreferredThinkingOptionId(input: {
   availableModels: AgentModelDefinition[] | null;
   providerPrefs: ProviderPrefs | undefined;
   modelId: string;
+  selectionPolicy?: AgentProviderSelectionPolicy;
 }): string {
   const model = findModelByReference(input.availableModels, input.modelId);
-  // Daseo fork: pinned providers ignore sticky per-model thinking preferences
-  // so each model opens at its advertised default effort level.
-  if (model && hasPinnedProviderDefaults(model.provider)) return "";
+  if (startsNewSessionsFromDefaults(input.selectionPolicy)) return "";
   const modelReferences = model ? [model.id, ...(model.aliases ?? [])] : [input.modelId];
   for (const modelReference of modelReferences) {
     const thinkingOptionId = input.providerPrefs?.thinkingByModel?.[modelReference]?.trim();
@@ -337,9 +344,17 @@ function resolveModelField(input: {
   initialValues: FormInitialValues | undefined;
   providerPrefs: ProviderPrefs | undefined;
   availableModels: AgentModelDefinition[] | null;
+  selectionPolicy?: AgentProviderSelectionPolicy;
 }): string {
-  const { provider, userModified, currentModel, initialValues, providerPrefs, availableModels } =
-    input;
+  const {
+    provider,
+    userModified,
+    currentModel,
+    initialValues,
+    providerPrefs,
+    availableModels,
+    selectionPolicy,
+  } = input;
   if (userModified) return currentModel;
   if (!provider) return "";
   const initialModel = normalizeSelectedModelId(initialValues?.model);
@@ -350,9 +365,7 @@ function resolveModelField(input: {
       ? initialModel
       : resolveCanonicalModelId(availableModels, initialModel) || defaultModelId;
   }
-  // Daseo fork: pinned providers ignore the sticky last-used model so a new
-  // session always starts from the provider's default model.
-  if (hasPinnedProviderDefaults(provider)) {
+  if (startsNewSessionsFromDefaults(selectionPolicy)) {
     return defaultModelId;
   }
   if (preferredModel) {
@@ -371,6 +384,7 @@ function resolveThinkingOption(input: {
   initialValues: FormInitialValues | undefined;
   providerPrefs: ProviderPrefs | undefined;
   availableModels: AgentModelDefinition[] | null;
+  selectionPolicy?: AgentProviderSelectionPolicy;
 }): string {
   const {
     provider,
@@ -380,6 +394,7 @@ function resolveThinkingOption(input: {
     initialValues,
     providerPrefs,
     availableModels,
+    selectionPolicy,
   } = input;
   if (!provider) return "";
   if (userModified) return currentThinkingOptionId;
@@ -391,6 +406,7 @@ function resolveThinkingOption(input: {
     availableModels,
     providerPrefs,
     modelId,
+    selectionPolicy,
   });
   if (initialThinkingOptionId.length > 0) return initialThinkingOptionId;
   if (preferredThinking.length > 0) return preferredThinking;
@@ -404,6 +420,7 @@ export function resolveFormState(
   userModified: UserModifiedFields,
   currentState: FormState,
   allowedProviderMap: Map<AgentProvider, AgentProviderDefinition>,
+  selectionPolicy?: AgentProviderSelectionPolicy,
 ): FormState {
   const result = { ...currentState };
 
@@ -436,6 +453,7 @@ export function resolveFormState(
     initialValues,
     providerPrefs,
     availableModels,
+    selectionPolicy,
   });
 
   result.thinkingOptionId = resolveThinkingOption({
@@ -446,6 +464,7 @@ export function resolveFormState(
     initialValues,
     providerPrefs,
     availableModels,
+    selectionPolicy,
   });
 
   if (result.provider && availableModels) {
@@ -474,7 +493,13 @@ export function resolveFormStateFromProviderModels(
   userModified: UserModifiedFields,
   currentState: FormState,
   allowedProviderMap: Map<AgentProvider, AgentProviderDefinition>,
+  selectionPoliciesByProvider: ProviderSelectionPolicyMap = new Map(),
 ): FormState {
+  const preliminaryProvider =
+    initialValues?.provider ?? preferences?.provider ?? currentState.provider;
+  const preliminaryPolicy = preliminaryProvider
+    ? selectionPoliciesByProvider.get(preliminaryProvider)
+    : undefined;
   const providerResolved = resolveFormState(
     initialValues,
     preferences,
@@ -482,6 +507,7 @@ export function resolveFormStateFromProviderModels(
     userModified,
     currentState,
     allowedProviderMap,
+    preliminaryPolicy,
   );
   const availableModels = providerResolved.provider
     ? (providerModelsByProvider.get(providerResolved.provider) ?? null)
@@ -494,6 +520,9 @@ export function resolveFormStateFromProviderModels(
     userModified,
     currentState,
     allowedProviderMap,
+    providerResolved.provider
+      ? selectionPoliciesByProvider.get(providerResolved.provider)
+      : undefined,
   );
 }
 
@@ -527,12 +556,14 @@ function pickNextThinkingOptionForProvider(input: {
   providerModels: AgentModelDefinition[] | null;
   providerPrefs: ProviderPrefs | undefined;
   modelId: string;
+  selectionPolicy?: AgentProviderSelectionPolicy;
 }): string {
-  const { providerModels, providerPrefs, modelId } = input;
+  const { providerModels, providerPrefs, modelId, selectionPolicy } = input;
   const preferredThinking = resolvePreferredThinkingOptionId({
     availableModels: providerModels,
     providerPrefs,
     modelId,
+    selectionPolicy,
   });
   return resolveThinkingOptionId({
     availableModels: providerModels,
@@ -548,6 +579,7 @@ function pickNextThinkingOptionForTarget(input: {
   currentModelId: string;
   currentThinkingOptionId: string;
   isSameProvider: boolean;
+  selectionPolicy?: AgentProviderSelectionPolicy;
 }): string {
   const requestedThinkingOptionId =
     input.isSameProvider &&
@@ -557,6 +589,7 @@ function pickNextThinkingOptionForTarget(input: {
           availableModels: input.availableModels,
           providerPrefs: input.providerPrefs,
           modelId: input.modelId,
+          selectionPolicy: input.selectionPolicy,
         });
   return resolveThinkingOptionId({
     availableModels: input.availableModels,
@@ -579,6 +612,7 @@ function completeResolution(
     state.userModified,
     state.form,
     action.allowedProviderMap,
+    action.selectionPoliciesByProvider,
   );
   const nextState = { ...state, resolution: { status: "completed" } as const };
   if (!hasFormStateChanged(state.form, resolved)) return nextState;
@@ -604,6 +638,7 @@ function applyProfile(state: AgentFormReducerState, action: ApplyProfileAction) 
       providerModels: action.providerModels,
       providerPrefs: action.providerPrefs,
       modelId: nextModelId,
+      selectionPolicy: action.selectionPolicy,
     });
   return {
     ...state,
@@ -659,6 +694,7 @@ export function resolveAgentForm(
         currentModelId: state.form.model,
         currentThinkingOptionId: state.form.thinkingOptionId,
         isSameProvider: state.form.provider === action.provider,
+        selectionPolicy: action.selectionPolicy,
       });
       const nextModeId = pickNextModeForProviderAndModel({
         currentProvider: state.form.provider,
@@ -701,6 +737,7 @@ export function resolveAgentForm(
         currentModelId: state.form.model,
         currentThinkingOptionId: state.form.thinkingOptionId,
         isSameProvider: true,
+        selectionPolicy: action.selectionPolicy,
       });
       return {
         ...state,

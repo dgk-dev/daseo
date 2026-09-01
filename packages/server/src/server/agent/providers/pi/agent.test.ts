@@ -16,6 +16,7 @@ import { setImmediate as waitForImmediate } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { describe, expect, onTestFinished, test, vi } from "vitest";
 
+import type { AgentProviderSelectionPolicy } from "@getpaseo/protocol/agent-types";
 import type { AgentSession, AgentSessionConfig, AgentStreamEvent } from "../../agent-sdk-types.js";
 import { PiRpcAgentClient, PiRpcAgentSession, transformPiModels } from "./agent.js";
 import { FakePi } from "./test-utils/fake-pi.js";
@@ -23,10 +24,27 @@ import { FakePi } from "./test-utils/fake-pi.js";
 const ONE_BY_ONE_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
 
-function createClient(pi = new FakePi()): PiRpcAgentClient {
+const DASEO_PI_SELECTION_POLICY: AgentProviderSelectionPolicy = {
+  preferenceMode: "defaults",
+  defaultModelId: "pi-codex/gpt-5.6-sol",
+  thinkingDefaultsByModel: {
+    "pi-codex/gpt-5.6-sol": "high",
+    "pi-claude/claude-fable-5": "high",
+    "pi-claude/claude-opus-4-8": "xhigh",
+  },
+  featureDefaultsByModel: {
+    "pi-codex/gpt-5.6-sol": { fast_mode: false },
+  },
+};
+
+function createClient(
+  pi = new FakePi(),
+  selectionPolicy: AgentProviderSelectionPolicy | undefined = DASEO_PI_SELECTION_POLICY,
+): PiRpcAgentClient {
   return new PiRpcAgentClient({
     logger: pino({ level: "silent" }),
     runtime: pi,
+    selectionPolicy,
   });
 }
 
