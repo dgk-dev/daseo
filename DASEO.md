@@ -248,7 +248,9 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
   the outer installed directory to `/Applications/Daseo.app`. Run the idle-gated activation script
   through
   `node packages/desktop/scripts/daseo-activate-once.mjs /absolute/path/to/activate-daseo-<version>.sh`.
-  The launcher detaches one unsupervised process so it survives the current daemon stopping and
+  The launcher removes any ambient `FORCE_NOW` inherited through an older Daseo process; pass the
+  explicit `--force-now` flag only after immediate restart approval. It detaches one unsupervised
+  process so it survives the current daemon stopping and
   exits permanently with the script. Never use `launchctl submit` or `KeepAlive` for activation;
   either one can relaunch a successful finalizer into an endless app/daemon replacement loop.
   Never change `CFBundleName`, `CFBundleExecutable`, helper names, bundle IDs, or the user-data
