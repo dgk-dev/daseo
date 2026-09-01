@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, test } from "vitest";
+import { afterAll, beforeEach, describe, expect, test } from "vitest";
 import {
   DaemonSelfUpdateInProgressError,
   DaemonSelfUpdater,
@@ -27,6 +27,19 @@ const cliPackagePath = `${globalNodeModules}/@getpaseo/cli`;
 const npmServerPackageRoot = `${cliPackagePath}/node_modules/@getpaseo/server`;
 const sourceServerPackageRoot = "/repo/packages/server";
 const SERVER_UPDATE_ID = "00000000-0000-4000-8000-000000000094";
+const ORIGINAL_DASEO_DISTRIBUTION = process.env.DASEO_DISTRIBUTION;
+
+beforeEach(() => {
+  delete process.env.DASEO_DISTRIBUTION;
+});
+
+afterAll(() => {
+  if (ORIGINAL_DASEO_DISTRIBUTION === undefined) {
+    delete process.env.DASEO_DISTRIBUTION;
+  } else {
+    process.env.DASEO_DISTRIBUTION = ORIGINAL_DASEO_DISTRIBUTION;
+  }
+});
 
 function npmGlobalPaseoInstall(
   version: string,
@@ -108,6 +121,25 @@ async function runUpdate(input: {
 }
 
 describe("DaemonSelfUpdater", () => {
+  test("refuses npm mutation in the Daseo signed-local distribution", async () => {
+    process.env.DASEO_DISTRIBUTION = "1";
+    const calls: RuntimeCall[] = [];
+    const runtime = createRuntime({ calls, inspections: [] });
+
+    const { result, phases } = await runUpdate({ runtime });
+
+    expect(result).toEqual({
+      success: false,
+      error: "Daseo updates use signed local release artifacts.",
+      newVersion: null,
+      updateId: null,
+      targetVersion: null,
+      rolledBack: false,
+    });
+    expect(phases).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
   test("refuses a Desktop-managed daemon without touching npm", async () => {
     const calls: RuntimeCall[] = [];
     const runtime = createRuntime({ calls, inspections: [] });
