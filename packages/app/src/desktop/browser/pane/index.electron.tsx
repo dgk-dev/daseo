@@ -77,7 +77,7 @@ import {
   takeResidentBrowserWebview,
 } from "../resident-webviews";
 import { selectAvailablePopupTarget, useDesktopBrowserPopupTargets } from "../popup-targets";
-import { shouldClaimBrowserSurfaceFocus } from "../focus-policy";
+import { shouldClaimBrowserSurfaceFocus, shouldRepelBrowserSurfaceFocus } from "../focus-policy";
 import { hasActiveWebOverlay, subscribeWebOverlayActivity } from "@/lib/overlay-root";
 import {
   createElementSelectorController,
@@ -962,8 +962,30 @@ export function BrowserPane({
         applyAnnotationMarkers(webview, markers);
       }
     };
-    const handleWebviewFocus = () => {
-      if (!isPresentedRef.current || !isInteractiveRef.current) {
+    const handleWebviewFocus = (event: Event) => {
+      if (
+        shouldRepelBrowserSurfaceFocus({
+          isInteractive: isInteractiveRef.current,
+          isPresented: isPresentedRef.current,
+        })
+      ) {
+        // Chromium can bubble a guest's programmatic focus up to the embedder's
+        // <webview> element even while the pane is hidden or non-interactive,
+        // silently blurring whatever the user was typing into. Push focus back.
+        const previous = (event as FocusEvent).relatedTarget;
+        console.warn("[browser-webview] repelled background surface focus", {
+          browserId: browserIdRef.current,
+          presented: isPresentedRef.current,
+          interactive: isInteractiveRef.current,
+          previousElement:
+            previous instanceof HTMLElement
+              ? `${previous.tagName.toLowerCase()}${previous.id ? `#${previous.id}` : ""}`
+              : null,
+        });
+        webview.blur();
+        if (previous instanceof HTMLElement && previous.isConnected) {
+          previous.focus();
+        }
         return;
       }
       onFocusPane?.();

@@ -1,5 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { resolveWorkspaceActiveBrowserId, shouldClaimBrowserSurfaceFocus } from "./focus-policy";
+import {
+  resolveWorkspaceActiveBrowserId,
+  shouldClaimBrowserSurfaceFocus,
+  shouldRepelBrowserSurfaceFocus,
+} from "./focus-policy";
 
 describe("desktop browser focus policy", () => {
   test("only advertises a browser from the foreground workspace", () => {
@@ -9,6 +13,13 @@ describe("desktop browser focus policy", () => {
     expect(
       resolveWorkspaceActiveBrowserId({ focusedBrowserId: "browser-1", isRouteFocused: false }),
     ).toBeNull();
+  });
+
+  test("repels surface focus whenever the pane is hidden or non-interactive", () => {
+    expect(shouldRepelBrowserSurfaceFocus({ isInteractive: true, isPresented: true })).toBe(false);
+    expect(shouldRepelBrowserSurfaceFocus({ isInteractive: false, isPresented: true })).toBe(true);
+    expect(shouldRepelBrowserSurfaceFocus({ isInteractive: true, isPresented: false })).toBe(true);
+    expect(shouldRepelBrowserSurfaceFocus({ isInteractive: false, isPresented: false })).toBe(true);
   });
 
   test("claims physical focus only for a trusted pointer in the visible interactive pane", () => {

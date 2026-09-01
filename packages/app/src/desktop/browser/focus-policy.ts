@@ -5,6 +5,13 @@ export function resolveWorkspaceActiveBrowserId(input: {
   return input.isRouteFocused ? input.focusedBrowserId : null;
 }
 
+export function shouldRepelBrowserSurfaceFocus(input: {
+  isInteractive: boolean;
+  isPresented: boolean;
+}): boolean {
+  return !input.isInteractive || !input.isPresented;
+}
+
 export function shouldClaimBrowserSurfaceFocus(input: {
   isInteractive: boolean;
   isPresented: boolean;
