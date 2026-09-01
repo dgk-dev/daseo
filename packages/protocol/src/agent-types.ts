@@ -109,8 +109,6 @@ export function normalizeAgentModelDefinition(model: AgentModelDefinition): Agen
 export interface AgentProviderSelectionPolicy {
   /** Sticky remembers the last selection; defaults starts fresh sessions from advertised defaults. */
   preferenceMode: "sticky" | "defaults";
-  /** Product allowlist applied after runtime discovery; capability metadata still comes from runtime. */
-  enabledModelIds?: string[];
   defaultModelId?: string;
   thinkingDefaultsByModel?: Record<string, string>;
   featureDefaultsByModel?: Record<string, Record<string, unknown>>;

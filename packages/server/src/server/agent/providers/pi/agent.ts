@@ -262,12 +262,24 @@ function isPiPolicyDefaultModel(
   return defaultModelId === model.id || defaultModelId === `${model.provider}/${model.id}`;
 }
 
+export interface PiCatalogScopedModel {
+  provider: string;
+  id: string;
+  thinkingLevel?: PiThinkingLevel;
+}
+
+interface PiCatalogScopeProjection extends PiTempFile {
+  read(): PiCatalogScopedModel[];
+}
+
 export interface PiRpcAgentClientOptions {
   logger: Logger;
   runtimeSettings?: ProviderRuntimeSettings;
   providerParams?: unknown;
   selectionPolicy?: AgentProviderSelectionPolicy;
   runtime?: PiRuntime;
+  /** Test seam; production reads Pi's effective ctx.scopedModels through a temporary extension. */
+  catalogScopeProjectionFactory?: () => PiCatalogScopeProjection | null;
 }
 
 interface PiPromptPayload {
@@ -706,6 +718,54 @@ function createPiMcpConfigFile(
   });
   return {
     path: filePath,
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
+const PiCatalogScopeSchema = z.object({
+  models: z.array(
+    z.object({
+      provider: z.string().min(1),
+      id: z.string().min(1),
+      thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
+    }),
+  ),
+});
+
+function createPiCatalogScopeProjection(): PiCatalogScopeProjection {
+  const dir = mkdtempSync(join(tmpdir(), "paseo-pi-catalog-scope-"));
+  const outputPath = join(dir, "scoped-models.json");
+  const extensionPath = join(dir, "catalog-scope.mjs");
+  writeFileSync(
+    extensionPath,
+    `
+      import { writeFileSync } from "node:fs";
+
+      export default function paseoCatalogScope(pi) {
+        pi.on("session_start", (_event, ctx) => {
+          const models = ctx.scopedModels.map((entry) => ({
+            provider: entry.model.provider,
+            id: entry.model.id,
+            ...(entry.thinkingLevel ? { thinkingLevel: entry.thinkingLevel } : {}),
+          }));
+          writeFileSync(${JSON.stringify(outputPath)}, JSON.stringify({ models }), {
+            encoding: "utf8",
+            mode: 0o600,
+          });
+        });
+      }
+    `,
+    { encoding: "utf8", mode: 0o600 },
+  );
+
+  return {
+    path: extensionPath,
+    read: () => {
+      if (!existsSync(outputPath)) {
+        throw new Error("Pi did not publish its effective scoped model catalog");
+      }
+      return PiCatalogScopeSchema.parse(JSON.parse(readFileSync(outputPath, "utf8"))).models;
+    },
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
 }
@@ -1329,17 +1389,22 @@ function mapPiModel(
   model: PiModel,
   provider: AgentProvider,
   selectionPolicy?: AgentProviderSelectionPolicy,
+  runtimeDefault?: { isDefault: boolean; thinkingLevel?: PiThinkingLevel },
 ): AgentModelDefinition {
-  const defaultThinkingLevel = resolvePiDefaultThinkingLevel(
-    `${model.provider}/${model.id}`,
-    selectionPolicy,
+  const policyThinkingLevel = normalizePiThinkingOption(
+    resolveSelectionPolicyThinkingDefault(selectionPolicy, `${model.provider}/${model.id}`),
   );
+  const defaultThinkingLevel =
+    policyThinkingLevel ?? runtimeDefault?.thinkingLevel ?? DEFAULT_PI_THINKING_LEVEL;
+  const isDefault = selectionPolicy?.defaultModelId
+    ? isPiPolicyDefaultModel(model, selectionPolicy)
+    : runtimeDefault?.isDefault === true;
   return {
     provider,
     id: `${model.provider}/${model.id}`,
     label: `${model.provider}/${model.name ?? model.id}`,
     description: `${model.provider}/${model.id}`,
-    ...(isPiPolicyDefaultModel(model, selectionPolicy) ? { isDefault: true } : {}),
+    ...(isDefault ? { isDefault: true } : {}),
     metadata: {
       provider: model.provider,
       modelId: model.id,
@@ -1349,6 +1414,36 @@ function mapPiModel(
       : undefined,
     defaultThinkingOptionId: model.reasoning ? defaultThinkingLevel : undefined,
   };
+}
+
+export function projectPiScopedCatalog(input: {
+  models: PiModel[];
+  scopedModels: PiCatalogScopedModel[];
+  activeModel: PiModelReference | null;
+  activeThinkingLevel?: PiThinkingLevel;
+  selectionPolicy?: AgentProviderSelectionPolicy;
+}): AgentModelDefinition[] {
+  const { models, scopedModels, activeModel, activeThinkingLevel, selectionPolicy } = input;
+  const modelByReference = new Map(
+    models.map((model) => [`${model.provider}/${model.id}`, model] as const),
+  );
+  const projected =
+    scopedModels.length > 0
+      ? scopedModels.flatMap((scopedModel) => {
+          const model = modelByReference.get(`${scopedModel.provider}/${scopedModel.id}`);
+          return model ? [{ model, thinkingLevel: scopedModel.thinkingLevel }] : [];
+        })
+      : models.map((model) => ({ model, thinkingLevel: undefined }));
+
+  return transformPiModels(
+    projected.map(({ model, thinkingLevel }) => {
+      const isActive = activeModel?.provider === model.provider && activeModel.id === model.id;
+      return mapPiModel(model, PI_PROVIDER, selectionPolicy, {
+        isDefault: isActive,
+        thinkingLevel: thinkingLevel ?? (isActive ? activeThinkingLevel : undefined),
+      });
+    }),
+  );
 }
 
 function createRuntime(logger: Logger, runtimeSettings?: ProviderRuntimeSettings): PiRuntime {
@@ -2867,6 +2962,7 @@ export class PiRpcAgentClient implements AgentClient {
   private readonly providerParams: PiProviderParams;
   private readonly selectionPolicy?: AgentProviderSelectionPolicy;
   private readonly runtime: PiRuntime;
+  private readonly catalogScopeProjectionFactory: () => PiCatalogScopeProjection | null;
 
   constructor(options: PiRpcAgentClientOptions) {
     this.provider = PI_PROVIDER;
@@ -2876,6 +2972,8 @@ export class PiRpcAgentClient implements AgentClient {
     this.providerParams = PiProviderParamsSchema.parse(options.providerParams ?? {});
     this.selectionPolicy = options.selectionPolicy;
     this.runtime = options.runtime ?? createRuntime(options.logger, options.runtimeSettings);
+    this.catalogScopeProjectionFactory =
+      options.catalogScopeProjectionFactory ?? createPiCatalogScopeProjection;
   }
 
   async createSession(
@@ -2996,6 +3094,7 @@ export class PiRpcAgentClient implements AgentClient {
     options: FetchCatalogOptions,
     context?: ProviderRefreshContext,
   ): Promise<ProviderCatalog> {
+    const catalogScopeProjection = this.catalogScopeProjectionFactory();
     let runtimeSession: PiRuntimeSession | undefined;
     let closePromise: Promise<void> | undefined;
     const closeSession = () => {
@@ -3011,22 +3110,30 @@ export class PiRpcAgentClient implements AgentClient {
           cwd: options.scope === "global" ? homedir() : options.cwd,
           noSession: true,
           signal: context?.signal,
+          extensionPaths: catalogScopeProjection ? [catalogScopeProjection.path] : undefined,
         });
         if (context?.signal.aborted) await closeSession();
       });
       if (!runtimeSession) throw new Error("Pi catalog runtime did not start");
       const catalogSession = runtimeSession;
-      const models = transformPiModels(
-        (
-          await runProviderRefreshActivity(context, "get_available_models", () =>
-            catalogSession.getAvailableModels(null),
-          )
-        ).map((model) => mapPiModel(model, PI_PROVIDER, this.selectionPolicy)),
-      );
+      const [availableModels, state] = await Promise.all([
+        runProviderRefreshActivity(context, "get_available_models", () =>
+          catalogSession.getAvailableModels(null),
+        ),
+        catalogSession.getState(),
+      ]);
+      const models = projectPiScopedCatalog({
+        models: availableModels,
+        scopedModels: catalogScopeProjection?.read() ?? [],
+        activeModel: state.model ?? null,
+        activeThinkingLevel: normalizePiThinkingOption(state.thinkingLevel) ?? undefined,
+        selectionPolicy: this.selectionPolicy,
+      });
       return { models, modes: [] };
     } finally {
       context?.signal.removeEventListener("abort", handleAbort);
       await closeSession();
+      catalogScopeProjection?.cleanup();
     }
   }
 

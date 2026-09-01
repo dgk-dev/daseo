@@ -60,13 +60,8 @@ export function applySelectionPolicyToModels(
 ): AgentModelDefinition[] {
   if (!policy) return models;
 
-  const enabledModelIds = policy.enabledModelIds ? new Set(policy.enabledModelIds) : null;
-  const visibleModels = enabledModelIds
-    ? models.filter((model) => modelReferences(model).some((id) => enabledModelIds.has(id)))
-    : models;
-
   const decoratedModels: AgentModelDefinition[] = [];
-  for (const model of visibleModels) {
+  for (const model of models) {
     const isDefault = policy.defaultModelId
       ? modelReferences(model).includes(policy.defaultModelId)
       : model.isDefault;

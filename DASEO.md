@@ -213,16 +213,15 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     Grok, DeepSeek, or other models that do not support it. Key files:
     `packages/app/src/{agent-controls,composer/agent-controls}/`,
     `packages/server/src/server/agent/providers/pi/agent.ts`, and the local Pi feature host.
-20. **Runtime capability plus launch-policy defaults** — Pi runtime discovery remains the model
-    capability SSOT; Daseo no longer replaces its catalog with hand-authored model definitions.
-    A generic provider `selectionPolicy` overlays only product intent: `enabledModelIds` limits the
-    visible merged runtime/additional catalog without copying capability metadata, and Pi starts new
-    sessions from Codex Sol · `high` with fast mode off, Fable defaults to `high`, and Opus to
-    `xhigh`. The policy travels in provider snapshots, so forms ignore sticky preferences without
-    hard-coding the Pi
-    provider id; explicit drafts, resume data, and profiles still win. `~/.pi/agent/settings.json`
-    remains the standalone Pi projection and visibility allowlist. Key files:
-    `packages/{protocol/src/provider-config,server/src/server/agent/provider-selection-policy}.ts`,
+20. **Pi model-selection SSOT plus Daseo launch policy** — Pi runtime discovery remains the model
+    capability SSOT, while `~/.pi/agent/settings.json` `enabledModels` is the single visibility,
+    ordering, and per-model thinking-default source shared by standalone Pi and Daseo. A temporary
+    catalog extension publishes Pi's effective `ctx.scopedModels` after global/project settings and
+    trust are resolved; Daseo projects that exact scope onto runtime-discovered capability metadata
+    and uses Pi's active runtime model as the default. Daseo no longer carries a duplicate model
+    list, model default, or thinking map. Generic `selectionPolicy` remains only for product launch
+    behavior such as ignoring sticky preferences and starting Sol Fast off; explicit drafts, resume
+    data, and profiles still win. Key files:
     `packages/server/src/server/agent/providers/pi/agent.ts`,
     `packages/app/src/provider-selection/{provider-selection-policy,resolve-agent-form}.ts`, and
     `packages/app/src/hooks/use-draft-agent-features.ts`.

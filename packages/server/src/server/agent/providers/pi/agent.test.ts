@@ -18,7 +18,12 @@ import { describe, expect, onTestFinished, test, vi } from "vitest";
 
 import type { AgentProviderSelectionPolicy } from "@getpaseo/protocol/agent-types";
 import type { AgentSession, AgentSessionConfig, AgentStreamEvent } from "../../agent-sdk-types.js";
-import { PiRpcAgentClient, PiRpcAgentSession, transformPiModels } from "./agent.js";
+import {
+  PiRpcAgentClient,
+  PiRpcAgentSession,
+  projectPiScopedCatalog,
+  transformPiModels,
+} from "./agent.js";
 import { FakePi } from "./test-utils/fake-pi.js";
 
 const ONE_BY_ONE_PNG_BASE64 =
@@ -45,6 +50,7 @@ function createClient(
     logger: pino({ level: "silent" }),
     runtime: pi,
     selectionPolicy,
+    catalogScopeProjectionFactory: () => null,
   });
 }
 
@@ -2116,6 +2122,45 @@ describe("PiRpcAgentClient", () => {
       noSession: true,
       argv: ["pi", "--mode", "rpc", "--no-session"],
     });
+  });
+
+  test("projects Pi scopedModels as the ordered visible catalog and its pinned defaults", () => {
+    const projected = projectPiScopedCatalog({
+      models: [
+        { provider: "pi-claude", id: "claude-fable-5", reasoning: true },
+        { provider: "pi-claude", id: "claude-opus-4-8", reasoning: true },
+        { provider: "pi-claude", id: "claude-opus-5", reasoning: true },
+        { provider: "pi-codex", id: "gpt-5.6-sol", reasoning: true },
+        { provider: "xai-auth", id: "grok-4.6", reasoning: true },
+        { provider: "deepseek", id: "deepseek-v4-flash", reasoning: true },
+      ],
+      scopedModels: [
+        { provider: "pi-codex", id: "gpt-5.6-sol", thinkingLevel: "high" },
+        { provider: "pi-claude", id: "claude-fable-5", thinkingLevel: "high" },
+        { provider: "pi-claude", id: "claude-opus-4-8", thinkingLevel: "xhigh" },
+        { provider: "pi-claude", id: "claude-opus-5", thinkingLevel: "xhigh" },
+        { provider: "xai-auth", id: "grok-4.6", thinkingLevel: "high" },
+      ],
+      activeModel: { provider: "pi-codex", id: "gpt-5.6-sol" },
+      activeThinkingLevel: "high",
+      selectionPolicy: { preferenceMode: "defaults" },
+    });
+
+    expect(projected.map((model) => model.id)).toEqual([
+      "pi-codex/gpt-5.6-sol",
+      "pi-claude/claude-fable-5",
+      "pi-claude/claude-opus-4-8",
+      "pi-claude/claude-opus-5",
+      "xai-auth/grok-4.6",
+    ]);
+    expect(projected.map((model) => model.defaultThinkingOptionId)).toEqual([
+      "high",
+      "high",
+      "xhigh",
+      "xhigh",
+      "high",
+    ]);
+    expect(projected.find((model) => model.isDefault)?.id).toBe("pi-codex/gpt-5.6-sol");
   });
 
   test("pins Daseo per-model defaults: Sol default model, Sol/Fable high, Opus xhigh", async () => {

@@ -1633,43 +1633,6 @@ describe("model merging", () => {
     expect(defaultModel?.id).toBe("profile-default");
   });
 
-  test("selection policy filters the merged runtime and additional model catalog", async () => {
-    mockState.runtimeModels.set("claude", [
-      {
-        provider: "claude",
-        id: "runtime-default",
-        label: "Runtime Default",
-        isDefault: true,
-        thinkingOptions: [{ id: "high", label: "High", isDefault: true }],
-      },
-      { provider: "claude", id: "runtime-hidden", label: "Runtime Hidden" },
-    ]);
-
-    const registry = buildProviderRegistry(logger, {
-      providerOverrides: {
-        claude: {
-          additionalModels: [{ id: "profile-extra", label: "Profile Extra" }],
-          selectionPolicy: {
-            preferenceMode: "defaults",
-            enabledModelIds: ["runtime-default", "profile-extra"],
-            defaultModelId: "runtime-default",
-          },
-        },
-      },
-    });
-
-    const catalog = await registry.claude.fetchCatalog({
-      scope: "workspace",
-      cwd: "/tmp/registry-models",
-      force: false,
-    });
-
-    expect(catalog.models.map((model) => model.id)).toEqual(["runtime-default", "profile-extra"]);
-    expect(catalog.models[0]?.thinkingOptions).toEqual([
-      { id: "high", label: "High", isDefault: true },
-    ]);
-  });
-
   test("explicit additional models override hidden compatibility entries", async () => {
     mockState.runtimeModels.set("claude", [
       {
