@@ -10,6 +10,7 @@ import {
   type ProviderPreferences,
 } from "@/hooks/use-form-preferences";
 import { findModelByReference } from "./model-catalog";
+import { hasPinnedProviderDefaults } from "./pinned-provider-defaults";
 
 export interface FormInitialValues {
   serverId?: string | null;
@@ -153,6 +154,9 @@ function resolvePreferredThinkingOptionId(input: {
   modelId: string;
 }): string {
   const model = findModelByReference(input.availableModels, input.modelId);
+  // Daseo fork: pinned providers ignore sticky per-model thinking preferences
+  // so each model opens at its advertised default effort level.
+  if (model && hasPinnedProviderDefaults(model.provider)) return "";
   const modelReferences = model ? [model.id, ...(model.aliases ?? [])] : [input.modelId];
   for (const modelReference of modelReferences) {
     const thinkingOptionId = input.providerPrefs?.thinkingByModel?.[modelReference]?.trim();
@@ -345,6 +349,11 @@ function resolveModelField(input: {
     return !availableModels
       ? initialModel
       : resolveCanonicalModelId(availableModels, initialModel) || defaultModelId;
+  }
+  // Daseo fork: pinned providers ignore the sticky last-used model so a new
+  // session always starts from the provider's default model.
+  if (hasPinnedProviderDefaults(provider)) {
+    return defaultModelId;
   }
   if (preferredModel) {
     return !availableModels

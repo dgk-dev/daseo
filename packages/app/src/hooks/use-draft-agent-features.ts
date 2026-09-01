@@ -9,6 +9,7 @@ import {
   pruneFeatureValues,
   resolveFeatureValues,
 } from "./feature-preferences";
+import { hasPinnedProviderDefaults } from "@/provider-selection/pinned-provider-defaults";
 
 type DraftFeatureConfig = Pick<
   AgentSessionConfig,
@@ -36,8 +37,13 @@ export function useDraftAgentFeatures(input: {
   const normalizedCwd = cwd?.trim() || "";
   const normalizedProvider = provider ?? null;
   const previousProviderRef = useRef<AgentProvider | null>(normalizedProvider);
+  // Daseo fork: pinned providers ignore sticky feature values so toggles like
+  // fast mode always start a new session at the provider default (off).
   const persistedFeatureValues = useMemo(
-    () => (provider ? (preferences.providerPreferences?.[provider]?.featureValues ?? {}) : {}),
+    () =>
+      provider && !hasPinnedProviderDefaults(provider)
+        ? (preferences.providerPreferences?.[provider]?.featureValues ?? {})
+        : {},
     [preferences.providerPreferences, provider],
   );
 

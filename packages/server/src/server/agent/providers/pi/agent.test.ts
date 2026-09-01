@@ -2065,6 +2065,43 @@ describe("PiRpcAgentClient", () => {
     });
   });
 
+  test("pins Daseo per-model defaults: Sol default model, Sol/Fable high, Opus xhigh", async () => {
+    const pi = new FakePi();
+    const client = createClient(pi);
+    const catalogPromise = client.fetchCatalog({
+      scope: "workspace",
+      cwd: "/workspace",
+      force: false,
+    });
+    pi.latestSession().models = [
+      { provider: "pi-claude", id: "claude-fable-5", reasoning: true },
+      { provider: "pi-claude", id: "claude-opus-4-8", reasoning: true },
+      { provider: "pi-codex", id: "gpt-5.6-sol", reasoning: true },
+      { provider: "deepseek", id: "deepseek-v4-flash", reasoning: true },
+    ];
+
+    const catalog = await catalogPromise;
+    const byId = new Map(catalog.models.map((model) => [model.id, model]));
+    expect(byId.get("pi-claude/claude-fable-5")).toMatchObject({
+      defaultThinkingOptionId: "high",
+    });
+    expect(byId.get("pi-claude/claude-fable-5")?.isDefault).toBeUndefined();
+    expect(byId.get("pi-claude/claude-opus-4-8")).toMatchObject({
+      defaultThinkingOptionId: "xhigh",
+    });
+    expect(byId.get("pi-codex/gpt-5.6-sol")).toMatchObject({
+      isDefault: true,
+      defaultThinkingOptionId: "high",
+    });
+    expect(
+      byId.get("pi-codex/gpt-5.6-sol")?.thinkingOptions?.find((option) => option.isDefault)?.id,
+    ).toBe("high");
+    expect(byId.get("deepseek/deepseek-v4-flash")).toMatchObject({
+      defaultThinkingOptionId: "medium",
+    });
+    expect(byId.get("deepseek/deepseek-v4-flash")?.isDefault).toBeUndefined();
+  });
+
   test("lists no draft features without an explicit Pi model", async () => {
     const pi = new FakePi();
     const client = createClient(pi);

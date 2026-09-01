@@ -1276,3 +1276,104 @@ describe("resolveAgentForm", () => {
     });
   });
 });
+
+describe("Daseo pinned Pi defaults", () => {
+  const PI_THINKING = [
+    { id: "medium", label: "Medium" },
+    { id: "high", label: "High" },
+    { id: "xhigh", label: "XHigh" },
+    { id: "max", label: "Max" },
+  ];
+  const PI_MODELS: AgentModelDefinition[] = [
+    {
+      provider: "pi",
+      id: "pi-codex/gpt-5.6-sol",
+      label: "gpt-5.6-sol",
+      isDefault: true,
+      defaultThinkingOptionId: "high",
+      thinkingOptions: PI_THINKING,
+    },
+    {
+      provider: "pi",
+      id: "pi-claude/claude-fable-5",
+      label: "claude-fable-5",
+      defaultThinkingOptionId: "high",
+      thinkingOptions: PI_THINKING,
+    },
+    {
+      provider: "pi",
+      id: "pi-claude/claude-opus-4-8",
+      label: "claude-opus-4-8",
+      defaultThinkingOptionId: "xhigh",
+      thinkingOptions: PI_THINKING,
+    },
+  ];
+  const piProviderMap = makeProviderMap(TEST_PI_DEFINITION);
+
+  it("ignores sticky last-used model and thinking so new sessions open at Sol high", () => {
+    const resolved = resolveFormState(
+      undefined,
+      {
+        provider: "pi",
+        providerPreferences: {
+          pi: {
+            model: "pi-claude/claude-fable-5",
+            thinkingByModel: {
+              "pi-claude/claude-fable-5": "medium",
+              "pi-codex/gpt-5.6-sol": "max",
+            },
+          },
+        },
+      },
+      PI_MODELS,
+      INITIAL_USER_MODIFIED,
+      makeState({ provider: "pi" }).form,
+
+      piProviderMap,
+    );
+
+    expect(resolved.model).toBe("pi-codex/gpt-5.6-sol");
+    expect(resolved.thinkingOptionId).toBe("high");
+  });
+
+  it("keeps explicit initial values ahead of the pinned default", () => {
+    const resolved = resolveFormState(
+      { model: "pi-claude/claude-opus-4-8", thinkingOptionId: "max" },
+      { provider: "pi" },
+      PI_MODELS,
+      INITIAL_USER_MODIFIED,
+      makeState({ provider: "pi" }).form,
+
+      piProviderMap,
+    );
+
+    expect(resolved.model).toBe("pi-claude/claude-opus-4-8");
+    expect(resolved.thinkingOptionId).toBe("max");
+  });
+
+  it("snaps effort to the model default and ignores sticky thinking when picking Fable or Opus", () => {
+    const state = makeState({ provider: "pi", model: "pi-codex/gpt-5.6-sol" });
+    const prefs = {
+      thinkingByModel: {
+        "pi-claude/claude-fable-5": "medium",
+        "pi-claude/claude-opus-4-8": "medium",
+      },
+    };
+
+    const fableNext = resolveAgentForm(state, {
+      type: "SET_MODEL_FROM_USER",
+      modelId: "pi-claude/claude-fable-5",
+      availableModels: PI_MODELS,
+      providerPrefs: prefs,
+    });
+    expect(fableNext.form.thinkingOptionId).toBe("high");
+
+    const opusNext = resolveAgentForm(state, {
+      type: "SET_MODEL_FROM_USER",
+      modelId: "pi-claude/claude-opus-4-8",
+      availableModels: PI_MODELS,
+      providerPrefs: prefs,
+    });
+    expect(opusNext.form.thinkingOptionId).toBe("xhigh");
+  });
+});

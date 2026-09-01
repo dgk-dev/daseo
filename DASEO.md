@@ -212,6 +212,17 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     Grok, DeepSeek, or other models that do not support it. Key files:
     `packages/app/src/{agent-controls,composer/agent-controls}/`,
     `packages/server/src/server/agent/providers/pi/agent.ts`, and the local Pi feature host.
+20. **Pinned Pi session defaults** — the Pi provider advertises per-model default effort
+    levels (Sol and Fable open at `high`, Opus at `xhigh`, other models keep `medium`) and marks
+    Codex Sol as the provider's default model. New-session forms for Pi ignore the sticky
+    last-used model, per-model thinking, and feature-value preferences, so a fresh session always
+    opens at Sol · high with fast mode off, and picking Fable or Opus snaps effort to that model's
+    default; explicit initial values (drafts, resume, profiles) still win. The standalone Pi CLI
+    mirrors this through `~/.pi/agent/settings.json` (`defaultThinkingLevel: high`, `enabledModels`
+    pins `sol:high`, `fable-5:high`, `opus:xhigh`). Key files:
+    `packages/server/src/server/agent/providers/pi/agent.ts`,
+    `packages/app/src/provider-selection/{pinned-provider-defaults,resolve-agent-form}.ts`, and
+    `packages/app/src/hooks/use-draft-agent-features.ts`.
 
 ## Product version policy
 

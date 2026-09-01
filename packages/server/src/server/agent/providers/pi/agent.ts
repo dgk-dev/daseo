@@ -232,11 +232,29 @@ const PI_THINKING_OPTIONS: ReadonlyArray<{
   { id: "off", label: "Off", description: "No extra reasoning" },
   { id: "minimal", label: "Minimal", description: "Light reasoning" },
   { id: "low", label: "Low", description: "Faster reasoning" },
-  { id: "medium", label: "Medium", description: "Balanced reasoning", isDefault: true },
+  { id: "medium", label: "Medium", description: "Balanced reasoning" },
   { id: "high", label: "High", description: "Deeper reasoning" },
   { id: "xhigh", label: "XHigh", description: "Very deep reasoning" },
   { id: "max", label: "Max", description: "Extreme reasoning" },
 ] as const;
+
+// Daseo fork: pinned per-model reasoning defaults — Sol and Fable open at
+// high, Opus opens at xhigh; every other Pi model keeps the stock default.
+export function resolvePiDefaultThinkingLevel(
+  modelReference: string | null | undefined,
+): PiThinkingLevel {
+  const reference = (modelReference ?? "").toLowerCase();
+  if (reference.includes("opus")) return "xhigh";
+  if (reference.includes("fable")) return "high";
+  if (/(^|[-/._ ])sol($|[-/._ ])/.test(reference)) return "high";
+  return DEFAULT_PI_THINKING_LEVEL;
+}
+
+// Daseo fork: new sessions default to Codex Sol instead of the first model
+// Pi happens to list.
+function isPiPinnedDefaultModel(model: PiModel): boolean {
+  return model.provider === "pi-codex" && /(^|[-._ ])sol($|[-._ ])/.test(model.id.toLowerCase());
+}
 
 export interface PiRpcAgentClientOptions {
   logger: Logger;
@@ -411,13 +429,16 @@ function parseAutoCompactMode(value: string | undefined): AutoCompactMode {
   return "unknown";
 }
 
-function mapThinkingOption(option: (typeof PI_THINKING_OPTIONS)[number]) {
+function mapThinkingOption(
+  option: (typeof PI_THINKING_OPTIONS)[number],
+  defaultThinkingLevel: PiThinkingLevel,
+) {
   const mappedOption = {
     id: option.id,
     label: option.label,
     description: option.description,
   };
-  if (option.isDefault) {
+  if (option.id === defaultThinkingLevel) {
     return {
       ...mappedOption,
       isDefault: true,
@@ -1297,17 +1318,21 @@ function buildExtensionUiResponse(
 }
 
 function mapPiModel(model: PiModel, provider: AgentProvider): AgentModelDefinition {
+  const defaultThinkingLevel = resolvePiDefaultThinkingLevel(`${model.provider}/${model.id}`);
   return {
     provider,
     id: `${model.provider}/${model.id}`,
     label: `${model.provider}/${model.name ?? model.id}`,
     description: `${model.provider}/${model.id}`,
+    ...(isPiPinnedDefaultModel(model) ? { isDefault: true } : {}),
     metadata: {
       provider: model.provider,
       modelId: model.id,
     },
-    thinkingOptions: model.reasoning ? PI_THINKING_OPTIONS.map(mapThinkingOption) : undefined,
-    defaultThinkingOptionId: model.reasoning ? DEFAULT_PI_THINKING_LEVEL : undefined,
+    thinkingOptions: model.reasoning
+      ? PI_THINKING_OPTIONS.map((option) => mapThinkingOption(option, defaultThinkingLevel))
+      : undefined,
+    defaultThinkingOptionId: model.reasoning ? defaultThinkingLevel : undefined,
   };
 }
 
@@ -1768,7 +1793,9 @@ export class PiRpcAgentSession implements AgentSession {
   }
 
   async setThinkingOption(thinkingOptionId: string | null): Promise<void> {
-    const thinkingLevel = normalizePiThinkingOption(thinkingOptionId) ?? DEFAULT_PI_THINKING_LEVEL;
+    const thinkingLevel =
+      normalizePiThinkingOption(thinkingOptionId) ??
+      resolvePiDefaultThinkingLevel(this.config.model);
     await this.runtimeSession.setThinkingLevel(thinkingLevel);
     this.lastKnownThinkingOptionId = thinkingLevel;
     this.config.thinkingOptionId = thinkingLevel;
@@ -2821,7 +2848,8 @@ export class PiRpcAgentClient implements AgentClient {
         cwd: config.cwd,
         model: config.model,
         thinkingOptionId:
-          normalizePiThinkingOption(config.thinkingOptionId) ?? DEFAULT_PI_THINKING_LEVEL,
+          normalizePiThinkingOption(config.thinkingOptionId) ??
+          resolvePiDefaultThinkingLevel(config.model),
         noSession: config.internal === true,
         env: launchContext?.env,
         mcpConfigPath: mcpConfig?.path,
@@ -2962,7 +2990,8 @@ export class PiRpcAgentClient implements AgentClient {
         cwd: config.cwd,
         model: config.model,
         thinkingOptionId:
-          normalizePiThinkingOption(config.thinkingOptionId) ?? DEFAULT_PI_THINKING_LEVEL,
+          normalizePiThinkingOption(config.thinkingOptionId) ??
+          resolvePiDefaultThinkingLevel(config.model),
         noSession: true,
         extensionPaths: [paseoExtension.path],
       });
