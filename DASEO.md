@@ -215,9 +215,11 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     `packages/server/src/server/agent/providers/pi/agent.ts`, and the local Pi feature host.
 20. **Runtime capability plus launch-policy defaults** — Pi runtime discovery remains the model
     capability SSOT; Daseo no longer replaces its catalog with hand-authored model definitions.
-    A generic provider `selectionPolicy` overlays only product intent: Pi starts new sessions from
-    Codex Sol · `high` with fast mode off, Fable defaults to `high`, and Opus to `xhigh`. The policy
-    travels in provider snapshots, so forms ignore sticky preferences without hard-coding the Pi
+    A generic provider `selectionPolicy` overlays only product intent: `enabledModelIds` limits the
+    visible merged runtime/additional catalog without copying capability metadata, and Pi starts new
+    sessions from Codex Sol · `high` with fast mode off, Fable defaults to `high`, and Opus to
+    `xhigh`. The policy travels in provider snapshots, so forms ignore sticky preferences without
+    hard-coding the Pi
     provider id; explicit drafts, resume data, and profiles still win. `~/.pi/agent/settings.json`
     remains the standalone Pi projection and visibility allowlist. Key files:
     `packages/{protocol/src/provider-config,server/src/server/agent/provider-selection-policy}.ts`,

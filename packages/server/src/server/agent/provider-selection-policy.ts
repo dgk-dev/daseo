@@ -60,7 +60,13 @@ export function applySelectionPolicyToModels(
 ): AgentModelDefinition[] {
   if (!policy) return models;
 
-  return models.map((model) => {
+  const enabledModelIds = policy.enabledModelIds ? new Set(policy.enabledModelIds) : null;
+  const visibleModels = enabledModelIds
+    ? models.filter((model) => modelReferences(model).some((id) => enabledModelIds.has(id)))
+    : models;
+
+  const decoratedModels: AgentModelDefinition[] = [];
+  for (const model of visibleModels) {
     const isDefault = policy.defaultModelId
       ? modelReferences(model).includes(policy.defaultModelId)
       : model.isDefault;
@@ -78,11 +84,12 @@ export function applySelectionPolicyToModels(
         }))
       : model.thinkingOptions;
 
-    return {
+    decoratedModels.push({
       ...model,
       ...(policy.defaultModelId ? { isDefault } : {}),
       ...(thinkingOptions ? { thinkingOptions } : {}),
       ...(defaultThinkingOptionId ? { defaultThinkingOptionId } : {}),
-    };
-  });
+    });
+  }
+  return decoratedModels;
 }

@@ -60,6 +60,21 @@ describe("provider selection policy", () => {
     ]);
   });
 
+  test("filters runtime models by enabled ids while preserving runtime capabilities", () => {
+    const decorated = applySelectionPolicyToModels(models, {
+      ...policy,
+      enabledModelIds: ["model-b"],
+    });
+
+    expect(decorated).toHaveLength(1);
+    expect(decorated[0]).toMatchObject({
+      id: "runtime/model-b",
+      isDefault: true,
+      defaultThinkingOptionId: "xhigh",
+    });
+    expect(decorated[0]?.thinkingOptions?.map((option) => option.id)).toEqual(["high", "xhigh"]);
+  });
+
   test("ignores a policy default the runtime does not support", () => {
     const decorated = applySelectionPolicyToModels(models, {
       ...policy,

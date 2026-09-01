@@ -37,6 +37,7 @@ const ProviderProfileThinkingOptionSchema = z.object({
 
 export const AgentProviderSelectionPolicySchema = z.object({
   preferenceMode: z.enum(["sticky", "defaults"]),
+  enabledModelIds: z.array(z.string().min(1)).min(1).optional(),
   defaultModelId: z.string().min(1).optional(),
   thinkingDefaultsByModel: z.record(z.string(), z.string().min(1)).optional(),
   featureDefaultsByModel: z.record(z.string(), z.record(z.string(), z.unknown())).optional(),
