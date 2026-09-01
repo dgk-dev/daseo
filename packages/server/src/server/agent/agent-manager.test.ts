@@ -3479,6 +3479,45 @@ test("persists live mode, model, and thinking changes without an external snapsh
   expect(persisted?.runtimeInfo?.model).toBe("gpt-5.4");
 });
 
+test("model changes prune feature values that the new model cannot advertise", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-model-feature-scope-"));
+  class ModelScopedFeatureSession extends TestAgentSession {
+    features: AgentFeature[] = [{ type: "toggle", id: "fast_mode", label: "Fast", value: true }];
+
+    async setModel(modelId: string | null): Promise<void> {
+      this.features = modelId?.includes("claude")
+        ? []
+        : [{ type: "toggle", id: "fast_mode", label: "Fast", value: false }];
+    }
+  }
+  class ModelScopedFeatureClient extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      return new ModelScopedFeatureSession(config);
+    }
+  }
+
+  const manager = new AgentManager({
+    clients: { codex: new ModelScopedFeatureClient() },
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000135",
+  });
+  const snapshot = await manager.createAgent(
+    {
+      provider: "codex",
+      cwd: workdir,
+      model: "pi-codex/gpt-5.6-sol",
+      featureValues: { fast_mode: true },
+    },
+    undefined,
+    { workspaceId: undefined },
+  );
+
+  await manager.setAgentModel(snapshot.id, "pi-claude/claude-fable-5");
+
+  expect(manager.getAgent(snapshot.id)?.features).toEqual([]);
+  expect(manager.getAgent(snapshot.id)?.config.featureValues).toEqual({});
+});
+
 test("later explicit config mutations win over events emitted by earlier mutations", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-config-mutation-order-"));
   class ConfigMutationSession extends TestAgentSession {

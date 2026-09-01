@@ -229,6 +229,14 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     The shortcut remains disabled while a terminal owns focus, preserving terminal clear-screen
     behavior. The legacy binding id stays stable so existing user overrides survive the migration.
     Key file: `packages/app/src/keyboard/keyboard-shortcuts.ts`.
+22. **Model-scoped acknowledged features** — feature preferences are stored by model rather than as
+    provider-wide flat state. Live toggles render an optimistic value, reject repeated input while
+    pending, persist only after the daemon accepts the runtime mutation, and roll back to canonical
+    agent state on failure. Model changes prune unavailable session features; Pi resets Sol Fast to
+    its policy default before entering Claude, so no latent Fast value crosses that capability
+    boundary. Key files: `packages/app/src/{create-agent-preferences,hooks}/`,
+    `packages/app/src/composer/agent-controls/`, and
+    `packages/server/src/server/agent/{agent-manager,providers/pi/agent}.ts`.
 
 ## Product version policy
 

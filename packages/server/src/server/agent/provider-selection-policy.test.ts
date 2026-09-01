@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { AgentProviderSelectionPolicy } from "@getpaseo/protocol/agent-types";
 import {
   applySelectionPolicyToModels,
+  resolveSelectionPolicyFeatureDefaults,
   resolveSelectionPolicyThinkingDefault,
 } from "./provider-selection-policy.js";
 
@@ -66,6 +67,20 @@ describe("provider selection policy", () => {
     });
 
     expect(decorated[0]?.defaultThinkingOptionId).toBe("medium");
+  });
+
+  test("resolves model-scoped feature defaults without crossing models", () => {
+    const withFeatures: AgentProviderSelectionPolicy = {
+      ...policy,
+      featureDefaultsByModel: {
+        "runtime/model-a": { fast_mode: false },
+      },
+    };
+
+    expect(resolveSelectionPolicyFeatureDefaults(withFeatures, "runtime/model-a")).toEqual({
+      fast_mode: false,
+    });
+    expect(resolveSelectionPolicyFeatureDefaults(withFeatures, "runtime/model-b")).toEqual({});
   });
 
   test("resolves qualified and unqualified model references", () => {

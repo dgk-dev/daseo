@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CreateAgentPreferencesService } from "./service";
 import {
   applyAgentProfilePreferences,
+  getFeatureValuesForModel,
   mergeCreateAgentSelectionPreferences,
   mergeProviderPreferences,
   parseFormPreferences,
@@ -95,7 +96,7 @@ describe("create agent preferences", () => {
           model: "gpt-5.5",
           mode: "full-access",
           thinkingByModel: { "gpt-5.5": "high" },
-          featureValues: { fast_mode: true },
+          featureValuesByModel: { "gpt-5.5": { fast_mode: true } },
         },
       },
     });
@@ -173,9 +174,49 @@ describe("create agent preferences", () => {
       provider: "mock",
       providerPreferences: {
         pi: { model: "anthropic/sonnet" },
-        mock: { model: "one-minute-stream", mode: "approval-test", featureValues: {} },
+        mock: {
+          model: "one-minute-stream",
+          mode: "approval-test",
+          featureValuesByModel: { "one-minute-stream": {} },
+        },
       },
     });
+  });
+
+  it("migrates flat feature values onto the last selected model", () => {
+    expect(
+      parseFormPreferences({
+        provider: "pi",
+        providerPreferences: {
+          pi: {
+            model: "pi-claude/claude-fable-5",
+            featureValues: { fast_mode: true },
+          },
+        },
+      }),
+    ).toMatchObject({
+      providerPreferences: {
+        pi: {
+          featureValuesByModel: {
+            "pi-claude/claude-fable-5": { fast_mode: true },
+          },
+        },
+      },
+    });
+  });
+
+  it("reads only the selected model's feature values", () => {
+    const preferences = {
+      model: "sol",
+      featureValuesByModel: {
+        sol: { fast_mode: true },
+        fable: { web_search: true },
+      },
+    };
+
+    expect(getFeatureValuesForModel(preferences, "sol")).toEqual({ fast_mode: true });
+    expect(getFeatureValuesForModel(preferences, "fable")).toEqual({ web_search: true });
+    expect(getFeatureValuesForModel(preferences, "opus")).toEqual({});
   });
 
   it("loads invalid stored preferences as empty preferences", () => {

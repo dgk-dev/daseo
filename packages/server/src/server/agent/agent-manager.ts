@@ -1721,7 +1721,7 @@ export class AgentManager {
     await this.drainSessionEvents(agentId);
 
     agent.config.model = normalizedModelId ?? undefined;
-    agent.features = agent.session.features;
+    this.syncFeaturesFromSession(agent);
     if (agent.runtimeInfo) {
       agent.runtimeInfo = { ...agent.runtimeInfo, model: normalizedModelId };
     }
@@ -1767,7 +1767,7 @@ export class AgentManager {
     await agent.session.setFeature(featureId, value);
     await this.drainSessionEvents(agentId);
     agent.config.featureValues = { ...agent.config.featureValues, [featureId]: value };
-    agent.features = agent.session.features;
+    this.syncFeaturesFromSession(agent);
     this.touchUpdatedAt(agent);
     this.emitState(agent);
   }
@@ -4362,9 +4362,16 @@ export class AgentManager {
   }
 
   private syncFeaturesFromSession(agent: ManagedAgent): void {
-    if ("session" in agent && agent.session?.features) {
-      agent.features = agent.session.features;
-    }
+    if (!("session" in agent) || !agent.session?.features) return;
+    agent.features = agent.session.features;
+    if (!agent.config.featureValues) return;
+
+    const availableFeatureIds = new Set(agent.features.map((feature) => feature.id));
+    agent.config.featureValues = Object.fromEntries(
+      Object.entries(agent.config.featureValues).filter(([featureId]) =>
+        availableFeatureIds.has(featureId),
+      ),
+    );
   }
 
   private checkAndSetAttention(agent: ManagedAgent): void {

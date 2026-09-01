@@ -8,6 +8,7 @@ import type {
 } from "@getpaseo/protocol/agent-types";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { mergeProviderPreferences, useFormPreferences } from "./use-form-preferences";
+import { getFeatureValuesForModel } from "@/create-agent-preferences/preferences";
 import {
   applyFeatureValues,
   pruneFeatureValues,
@@ -41,22 +42,30 @@ export function useDraftAgentFeatures(input: {
     initialFeatureValues,
     selectionPolicy,
   } = input;
-  const [localFeatureValues, setLocalFeatureValues] = useState<Record<string, unknown>>(
-    () => initialFeatureValues ?? {},
+  const normalizedModelId = modelId?.trim() ?? "";
+  const [localFeatureValuesByModel, setLocalFeatureValuesByModel] = useState<
+    Record<string, Record<string, unknown>>
+  >(() =>
+    normalizedModelId && initialFeatureValues ? { [normalizedModelId]: initialFeatureValues } : {},
   );
+  const pendingInitialFeatureValuesRef = useRef(initialFeatureValues);
   const client = useHostRuntimeClient(serverId ?? "");
   const isConnected = useHostRuntimeIsConnected(serverId ?? "");
   const { preferences, updatePreferences } = useFormPreferences();
   const normalizedCwd = cwd?.trim() || "";
   const normalizedProvider = provider ?? null;
   const previousProviderRef = useRef<AgentProvider | null>(normalizedProvider);
-  const persistedFeatureValues = useMemo(
-    () =>
-      provider && !startsNewSessionsFromDefaults(selectionPolicy)
-        ? (preferences.providerPreferences?.[provider]?.featureValues ?? {})
-        : {},
-    [preferences.providerPreferences, provider, selectionPolicy],
+  const localFeatureValues = useMemo(
+    () => localFeatureValuesByModel[normalizedModelId] ?? {},
+    [localFeatureValuesByModel, normalizedModelId],
   );
+  const persistedFeatureValues = useMemo(() => {
+    if (!provider || !normalizedModelId) return {};
+    if (startsNewSessionsFromDefaults(selectionPolicy)) {
+      return selectionPolicy?.featureDefaultsByModel?.[normalizedModelId] ?? {};
+    }
+    return getFeatureValuesForModel(preferences.providerPreferences?.[provider], normalizedModelId);
+  }, [normalizedModelId, preferences.providerPreferences, provider, selectionPolicy]);
 
   const draftConfig = useMemo<DraftFeatureConfig | null>(() => {
     if (!normalizedProvider || !normalizedCwd) {
@@ -118,40 +127,56 @@ export function useDraftAgentFeatures(input: {
       return;
     }
     if (previousProvider !== normalizedProvider) {
-      setLocalFeatureValues({});
+      setLocalFeatureValuesByModel({});
+      pendingInitialFeatureValuesRef.current = undefined;
     }
   }, [normalizedProvider]);
 
   useEffect(() => {
-    if (availableFeaturesRaw === undefined) {
+    const initialValues = pendingInitialFeatureValuesRef.current;
+    if (!normalizedModelId || !initialValues) return;
+    setLocalFeatureValuesByModel((current) => {
+      if (current[normalizedModelId]) return current;
+      return { ...current, [normalizedModelId]: initialValues };
+    });
+    pendingInitialFeatureValuesRef.current = undefined;
+  }, [normalizedModelId]);
+
+  useEffect(() => {
+    if (availableFeaturesRaw === undefined || !normalizedModelId) {
       return;
     }
     const next = pruneFeatureValues(localFeatureValues, availableFeatures);
     if (next !== localFeatureValues) {
-      setLocalFeatureValues(next);
+      setLocalFeatureValuesByModel((current) => ({
+        ...current,
+        [normalizedModelId]: next,
+      }));
     }
-  }, [availableFeatures, availableFeaturesRaw, localFeatureValues]);
+  }, [availableFeatures, availableFeaturesRaw, localFeatureValues, normalizedModelId]);
 
   const effectiveFeatureValues = Object.keys(featureValues).length > 0 ? featureValues : undefined;
   const setFeatureValue = useCallback(
     (featureId: string, value: unknown) => {
-      setLocalFeatureValues((current) => {
-        if (Object.is(current[featureId], value)) {
+      if (!normalizedModelId) return;
+      setLocalFeatureValuesByModel((current) => {
+        const currentModelValues = current[normalizedModelId] ?? {};
+        if (Object.is(currentModelValues[featureId], value)) {
           return current;
         }
-
-        return { ...current, [featureId]: value };
+        return {
+          ...current,
+          [normalizedModelId]: { ...currentModelValues, [featureId]: value },
+        };
       });
-      if (!provider) {
-        return;
-      }
+      if (!provider) return;
       void updatePreferences((current) =>
         mergeProviderPreferences({
           preferences: current,
           provider,
           updates: {
-            featureValues: {
-              [featureId]: value,
+            featureValuesByModel: {
+              [normalizedModelId]: { [featureId]: value },
             },
           },
         }),
@@ -159,12 +184,19 @@ export function useDraftAgentFeatures(input: {
         console.warn("[useDraftAgentFeatures] persist feature preference failed", error);
       });
     },
-    [provider, updatePreferences],
+    [normalizedModelId, provider, updatePreferences],
   );
 
-  const applyProfileFeatureValues = useCallback((values: Record<string, unknown>) => {
-    setLocalFeatureValues(values);
-  }, []);
+  const applyProfileFeatureValues = useCallback(
+    (values: Record<string, unknown>) => {
+      if (!normalizedModelId) return;
+      setLocalFeatureValuesByModel((current) => ({
+        ...current,
+        [normalizedModelId]: values,
+      }));
+    },
+    [normalizedModelId],
+  );
 
   return {
     features,

@@ -7,6 +7,8 @@ export interface ProviderPreferences {
   model?: string;
   mode?: string;
   thinkingByModel?: Record<string, string>;
+  featureValuesByModel?: Record<string, Record<string, unknown>>;
+  /** Legacy flat values, read only to migrate the last selected model. */
   featureValues?: Record<string, unknown>;
 }
 
@@ -24,6 +26,7 @@ const providerPreferencesSchema: z.ZodType<ProviderPreferences> = z.strictObject
   model: z.string().optional(),
   mode: z.string().optional(),
   thinkingByModel: z.record(z.string(), z.string()).optional(),
+  featureValuesByModel: z.record(z.string(), featureValuesSchema).optional(),
   featureValues: featureValuesSchema.optional(),
 });
 
@@ -92,9 +95,43 @@ export const StoredFormPreferencesSchema: z.ZodType<FormPreferences> = z.union([
 
 export const DEFAULT_FORM_PREFERENCES: FormPreferences = {};
 
+function migrateFlatFeatureValues(preferences: FormPreferences): FormPreferences {
+  let changed = false;
+  const providerPreferences: Record<string, ProviderPreferences> = {};
+
+  for (const [provider, current] of Object.entries(preferences.providerPreferences ?? {})) {
+    if (current.model && current.featureValues && !current.featureValuesByModel?.[current.model]) {
+      changed = true;
+      providerPreferences[provider] = {
+        ...current,
+        featureValuesByModel: {
+          ...current.featureValuesByModel,
+          [current.model]: current.featureValues,
+        },
+      };
+    } else {
+      providerPreferences[provider] = current;
+    }
+  }
+
+  return changed ? { ...preferences, providerPreferences } : preferences;
+}
+
 export function parseFormPreferences(value: unknown): FormPreferences {
   const result = StoredFormPreferencesSchema.safeParse(value);
-  return result.success ? result.data : DEFAULT_FORM_PREFERENCES;
+  return result.success ? migrateFlatFeatureValues(result.data) : DEFAULT_FORM_PREFERENCES;
+}
+
+export function getFeatureValuesForModel(
+  preferences: ProviderPreferences | undefined,
+  modelId: string | null | undefined,
+): Record<string, unknown> {
+  if (!preferences || !modelId) return {};
+  return (
+    preferences.featureValuesByModel?.[modelId] ??
+    (preferences.model === modelId ? preferences.featureValues : undefined) ??
+    {}
+  );
 }
 
 function mergeDefinedRecord<T>(
@@ -117,6 +154,13 @@ function applyProviderPreferenceUpdates(
   const next: ProviderPreferences = { ...existing };
   const nextThinkingByModel = mergeDefinedRecord(existing.thinkingByModel, updates.thinkingByModel);
   const nextFeatureValues = mergeDefinedRecord(existing.featureValues, updates.featureValues);
+  const nextFeatureValuesByModel = { ...existing.featureValuesByModel };
+  for (const [modelId, featureValues] of Object.entries(updates.featureValuesByModel ?? {})) {
+    nextFeatureValuesByModel[modelId] = {
+      ...nextFeatureValuesByModel[modelId],
+      ...featureValues,
+    };
+  }
 
   if (updates.model !== undefined) {
     next.model = updates.model;
@@ -131,6 +175,9 @@ function applyProviderPreferenceUpdates(
   }
   if (nextFeatureValues !== undefined) {
     next.featureValues = nextFeatureValues;
+  }
+  if (Object.keys(nextFeatureValuesByModel).length > 0) {
+    next.featureValuesByModel = nextFeatureValuesByModel;
   }
 
   return next;
@@ -179,7 +226,9 @@ export function mergeCreateAgentSelectionPreferences(args: {
       model: modelId || undefined,
       mode: args.modeId === undefined ? undefined : modeId || null,
       ...(modelId && thinkingOptionId ? { thinkingByModel: { [modelId]: thinkingOptionId } } : {}),
-      ...(featureValues.success ? { featureValues: featureValues.data } : {}),
+      ...(modelId && featureValues.success
+        ? { featureValuesByModel: { [modelId]: featureValues.data } }
+        : {}),
     },
   });
 }
@@ -215,7 +264,7 @@ export function applyAgentProfilePreferences(args: {
       ...(args.modelId && args.thinkingOptionId
         ? { thinkingByModel: { [args.modelId]: args.thinkingOptionId } }
         : {}),
-      featureValues: args.featureValues,
+      ...(args.modelId ? { featureValuesByModel: { [args.modelId]: args.featureValues } } : {}),
     },
   });
 }

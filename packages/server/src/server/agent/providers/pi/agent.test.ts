@@ -1631,6 +1631,41 @@ describe("PiRpcAgentSession", () => {
     );
   });
 
+  test("resets fast mode before switching from Sol to Claude and does not restore stale state", async () => {
+    const pi = new FakePi();
+    const { session } = await createSession(pi, {
+      model: "pi-codex/gpt-5.6-sol",
+      featureValues: { fast_mode: true },
+    });
+    const fakeSession = pi.latestSession();
+
+    fakeSession.setModelResult = {
+      provider: "pi-claude",
+      id: "claude-fable-5",
+      name: "Claude Fable 5",
+      reasoning: true,
+    };
+    await session.setModel("pi-claude/claude-fable-5");
+
+    expect(session.features).toEqual([]);
+    expect(fakeSession.featureSetRequests).toEqual([
+      { featureId: "fast_mode", value: true },
+      { featureId: "fast_mode", value: false },
+    ]);
+    await expect(session.setFeature("fast_mode", true)).rejects.toThrow(
+      "is not available for the selected model",
+    );
+
+    fakeSession.setModelResult = {
+      provider: "pi-codex",
+      id: "gpt-5.6-sol",
+      name: "GPT-5.6 Sol",
+      reasoning: true,
+    };
+    await session.setModel("pi-codex/gpt-5.6-sol");
+    expect(session.features).toEqual([expect.objectContaining({ id: "fast_mode", value: false })]);
+  });
+
   test("materializes image prompts as text hints for text-only Pi models", async () => {
     const { pi, session } = await createSession();
     const fakeSession = pi.latestSession();

@@ -42,7 +42,10 @@ import {
 } from "../../agent-sdk-types.js";
 import { importSessionFromPersistence } from "../../provider-session-import.js";
 import { runProviderRefreshActivity } from "../../provider-refresh-deadline.js";
-import { resolveSelectionPolicyThinkingDefault } from "../../provider-selection-policy.js";
+import {
+  resolveSelectionPolicyFeatureDefaults,
+  resolveSelectionPolicyThinkingDefault,
+} from "../../provider-selection-policy.js";
 import { runProviderTurn } from "../provider-runner.js";
 import {
   checkProviderLaunchAvailable,
@@ -1442,16 +1445,42 @@ export class PiRpcAgentSession implements AgentSession {
   async initializeFeatures(): Promise<void> {
     this.featureState = await this.requestFeatures();
     const configuredValues = this.config.featureValues;
-    if (!configuredValues) return;
+    if (configuredValues) {
+      for (const feature of this.featureState) {
+        if (!Object.prototype.hasOwnProperty.call(configuredValues, feature.id)) continue;
+        const value = configuredValues[feature.id];
+        if (Object.is(feature.value, value)) continue;
+        this.featureState = await this.requestFeatures({
+          featureId: feature.id,
+          value,
+        });
+      }
+    }
 
+    const availableFeatureIds = new Set(this.featureState.map((feature) => feature.id));
+    this.config.featureValues = Object.fromEntries(
+      Object.entries(configuredValues ?? {}).filter(([featureId]) =>
+        availableFeatureIds.has(featureId),
+      ),
+    );
+  }
+
+  private async resetCurrentFeaturesBeforeModelChange(nextModelReference: string): Promise<void> {
+    const currentModel = this.state.model;
+    const currentModelReference = currentModel
+      ? `${currentModel.provider}/${currentModel.id}`
+      : this.config.model;
+    if (!currentModelReference || currentModelReference === nextModelReference) return;
+
+    const defaults = resolveSelectionPolicyFeatureDefaults(
+      this.selectionPolicy,
+      currentModelReference,
+    );
     for (const feature of this.featureState) {
-      if (!Object.prototype.hasOwnProperty.call(configuredValues, feature.id)) continue;
-      const value = configuredValues[feature.id];
+      if (!Object.prototype.hasOwnProperty.call(defaults, feature.id)) continue;
+      const value = defaults[feature.id];
       if (Object.is(feature.value, value)) continue;
-      this.featureState = await this.requestFeatures({
-        featureId: feature.id,
-        value,
-      });
+      this.featureState = await this.requestFeatures({ featureId: feature.id, value });
     }
   }
 
@@ -1797,6 +1826,9 @@ export class PiRpcAgentSession implements AgentSession {
       throw new Error(`Pi model id must include a provider: ${modelId}`);
     }
 
+    await this.resetCurrentFeaturesBeforeModelChange(
+      `${parsedReference.provider}/${parsedReference.id}`,
+    );
     const model = await this.runtimeSession.setModel(parsedReference.provider, parsedReference.id);
     this.state = {
       ...this.state,

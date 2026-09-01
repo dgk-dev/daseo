@@ -81,6 +81,7 @@ import {
 import { ComposerControlLayoutProvider } from "@/composer/agent-controls/layout-context";
 import { ComposerToolbarGlyph } from "@/composer/agent-controls/glyph";
 import { AgentControlTrigger } from "@/composer/agent-controls/control";
+import { useAcknowledgedAgentFeatures } from "@/composer/agent-controls/use-acknowledged-agent-features";
 import { CompactModelSheet } from "@/composer/agent-controls/model-sheet";
 import {
   useAgentProfilePicker,
@@ -1509,6 +1510,19 @@ function ThinkingComboboxOption({
   );
 }
 
+function useLiveAgentFeatureControls(
+  input: Omit<Parameters<typeof useAcknowledgedAgentFeatures>[0], "features" | "provider"> & {
+    agent: ReturnType<typeof selectAgentControlsSlice>;
+  },
+) {
+  const { agent, ...options } = input;
+  return useAcknowledgedAgentFeatures({
+    ...options,
+    features: agent?.features,
+    provider: agent?.provider,
+  });
+}
+
 export const AgentControls = memo(function AgentControls({
   agentId,
   serverId,
@@ -1581,6 +1595,14 @@ export const AgentControls = memo(function AgentControls({
 
   const agentProvider = agent?.provider;
   const activeModelId = modelSelection.activeModelId;
+  const { displayedFeatures, setFeature: handleSetFeature } = useLiveAgentFeatureControls({
+    agent,
+    client,
+    agentId,
+    modelId: activeModelId,
+    updatePreferences,
+    onError: (error) => toast.error(toErrorMessage(error)),
+  });
 
   const handleSelectModel = useCallback(
     async (modelId: string) => {
@@ -1658,32 +1680,6 @@ export const AgentControls = memo(function AgentControls({
     [activeModelId, agentId, agentProvider, client, toast, updatePreferences],
   );
 
-  const handleSetFeature = useCallback(
-    (featureId: string, value: unknown) => {
-      if (!client || !agentProvider) {
-        return;
-      }
-      void updatePreferences((current) =>
-        mergeProviderPreferences({
-          preferences: current,
-          provider: agentProvider,
-          updates: {
-            featureValues: {
-              [featureId]: value,
-            },
-          },
-        }),
-      ).catch((error) => {
-        console.warn("[AgentControls] persist feature preference failed", error);
-      });
-      void client.setAgentFeature(agentId, featureId, value).catch((error) => {
-        console.warn("[AgentControls] setAgentFeature failed", error);
-        toast.error(toErrorMessage(error));
-      });
-    },
-    [agentId, agentProvider, client, toast, updatePreferences],
-  );
-
   useAgentControlCommandCenterActions({
     sourceId: `agent:${serverId}:${agentId}`,
     enabled: isPaneFocused && Boolean(client),
@@ -1739,7 +1735,7 @@ export const AgentControls = memo(function AgentControls({
       thinkingOptions={thinkingOptions.length > 1 ? thinkingOptions : undefined}
       selectedThinkingOptionId={modelSelection.selectedThinkingId ?? undefined}
       onSelectThinkingOption={handleSelectThinkingOption}
-      features={agent.features}
+      features={displayedFeatures}
       onSetFeature={handleSetFeature}
       isModelLoading={snapshotIsLoading || selectedProviderIsLoading}
       onModelSelectorOpen={handleModelSelectorOpen}

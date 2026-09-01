@@ -36,6 +36,24 @@ export function resolveSelectionPolicyThinkingDefault(
     : undefined;
 }
 
+export function resolveSelectionPolicyFeatureDefaults(
+  policy: AgentProviderSelectionPolicy | undefined,
+  modelReference: string | null | undefined,
+): Record<string, unknown> {
+  if (!modelReference) return {};
+  const values = policy?.featureDefaultsByModel;
+  if (!values) return {};
+  if (Object.prototype.hasOwnProperty.call(values, modelReference)) {
+    return values[modelReference] ?? {};
+  }
+  const unqualified = modelReference.includes("/")
+    ? modelReference.slice(modelReference.indexOf("/") + 1)
+    : modelReference;
+  return Object.prototype.hasOwnProperty.call(values, unqualified)
+    ? (values[unqualified] ?? {})
+    : {};
+}
+
 export function applySelectionPolicyToModels(
   models: AgentModelDefinition[],
   policy: AgentProviderSelectionPolicy | undefined,

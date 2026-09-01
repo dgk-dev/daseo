@@ -55,7 +55,41 @@ describe("mergeProviderPreferences", () => {
     });
   });
 
-  it("merges feature values without dropping existing entries", () => {
+  it("merges model-scoped feature values without leaking across models", () => {
+    expect(
+      mergeProviderPreferences({
+        preferences: {
+          provider: "pi",
+          providerPreferences: {
+            pi: {
+              model: "sol",
+              featureValuesByModel: {
+                sol: { fast_mode: true },
+                fable: {},
+              },
+            },
+          },
+        },
+        provider: "pi",
+        updates: {
+          featureValuesByModel: {
+            sol: { plan_mode: true },
+          },
+        },
+      }),
+    ).toMatchObject({
+      providerPreferences: {
+        pi: {
+          featureValuesByModel: {
+            sol: { fast_mode: true, plan_mode: true },
+            fable: {},
+          },
+        },
+      },
+    });
+  });
+
+  it("keeps legacy flat feature values readable during migration", () => {
     expect(
       mergeProviderPreferences({
         preferences: {
