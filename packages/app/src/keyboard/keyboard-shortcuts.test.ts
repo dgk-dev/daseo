@@ -313,6 +313,13 @@ describe("keyboard-shortcuts", () => {
       action: "sidebar.toggle.both",
     },
     {
+      name: "routes Ctrl+L to focus the message input on macOS without Parsec lock conflict",
+      event: { key: "l", code: "KeyL", ctrlKey: true },
+      context: { isMac: true, focusScope: "other" },
+      action: "message-input.action",
+      payload: { kind: "focus" },
+    },
+    {
       name: "routes Mod+D to message-input action outside terminal",
       event: { key: "d", code: "KeyD", metaKey: true },
       context: { isMac: true, focusScope: "message-input" },
@@ -412,6 +419,16 @@ describe("keyboard-shortcuts", () => {
   });
 
   const nonMatchingCases: NonMatchingShortcutCase[] = [
+    {
+      name: "does not reserve Ctrl+L from a macOS terminal",
+      event: { key: "l", code: "KeyL", ctrlKey: true },
+      context: { isMac: true, focusScope: "terminal" },
+    },
+    {
+      name: "does not advertise Win+L through Cmd+L on macOS",
+      event: { key: "l", code: "KeyL", metaKey: true },
+      context: { isMac: true, focusScope: "other" },
+    },
     {
       name: "does not keep old Mod+Alt+N binding",
       event: { key: "n", code: "KeyN", metaKey: true, altKey: true },

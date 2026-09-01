@@ -952,10 +952,12 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
 
   // --- Message input ---
   {
+    // Keep the legacy id so existing shortcut overrides survive. Ctrl+L is intentional on macOS:
+    // Windows reserves Win+L for the local lock screen before Parsec can translate Win to Command.
     id: "message-input-focus-cmd-l-mac",
     action: "message-input.action",
-    combo: "Cmd+L",
-    when: { mac: true, commandCenter: false },
+    combo: "Ctrl+L",
+    when: { mac: true, commandCenter: false, terminal: false },
     payload: { type: "message-input", kind: "focus" },
     help: {
       id: "focus-message-input",
