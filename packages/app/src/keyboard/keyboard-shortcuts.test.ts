@@ -313,7 +313,14 @@ describe("keyboard-shortcuts", () => {
       action: "sidebar.toggle.both",
     },
     {
-      name: "routes Ctrl+L to focus the message input on macOS without Parsec lock conflict",
+      name: "routes a PC keyboard's Windows+L through Cmd+L to focus input on macOS",
+      event: { key: "l", code: "KeyL", metaKey: true },
+      context: { isMac: true, focusScope: "other" },
+      action: "message-input.action",
+      payload: { kind: "focus" },
+    },
+    {
+      name: "keeps Ctrl+L as the cross-platform input focus fallback on macOS",
       event: { key: "l", code: "KeyL", ctrlKey: true },
       context: { isMac: true, focusScope: "other" },
       action: "message-input.action",
@@ -425,9 +432,9 @@ describe("keyboard-shortcuts", () => {
       context: { isMac: true, focusScope: "terminal" },
     },
     {
-      name: "does not advertise Win+L through Cmd+L on macOS",
+      name: "does not reserve Cmd+L from a macOS terminal",
       event: { key: "l", code: "KeyL", metaKey: true },
-      context: { isMac: true, focusScope: "other" },
+      context: { isMac: true, focusScope: "terminal" },
     },
     {
       name: "does not keep old Mod+Alt+N binding",

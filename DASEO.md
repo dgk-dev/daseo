@@ -224,11 +224,12 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     `packages/server/src/server/agent/providers/pi/agent.ts`,
     `packages/app/src/provider-selection/{provider-selection-policy,resolve-agent-form}.ts`, and
     `packages/app/src/hooks/use-draft-agent-features.ts`.
-21. **Cross-host-safe Composer focus** — macOS uses `Ctrl+L`, matching Windows and avoiding the
-    non-forwardable Windows `Win+L` lock-screen shortcut when the Mac is controlled through Parsec.
-    The shortcut remains disabled while a terminal owns focus, preserving terminal clear-screen
-    behavior. The legacy binding id stays stable so existing user overrides survive the migration.
-    Key file: `packages/app/src/keyboard/keyboard-shortcuts.ts`.
+21. **PC-keyboard-aware Composer focus** — macOS uses `Cmd+L` as the primary shortcut, so a PC
+    keyboard's physical `Win+L` focuses the Composer when Daseo is frontmost; the local Karabiner
+    lock-screen rule explicitly exempts Daseo. `Ctrl+L` remains a Mac/Windows fallback, and both
+    chords are disabled while a terminal owns focus to preserve terminal clear-screen behavior.
+    The legacy binding id stays stable so existing user overrides survive the migration. Key file:
+    `packages/app/src/keyboard/keyboard-shortcuts.ts`.
 22. **Model-scoped acknowledged features** — feature preferences are stored by model rather than as
     provider-wide flat state. Live toggles render an optimistic value, reject repeated input while
     pending, persist only after the daemon accepts the runtime mutation, and roll back to canonical
