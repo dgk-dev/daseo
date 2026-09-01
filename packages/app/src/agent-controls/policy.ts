@@ -6,8 +6,8 @@ export const FAST_MODE_FEATURE_ID = "fast_mode";
 export function resolveFeatureToggleIconName(
   feature: Pick<AgentFeatureToggle, "id" | "icon" | "value">,
 ): string | undefined {
-  if (feature.id === FAST_MODE_FEATURE_ID && !feature.value) {
-    return "zap-off";
+  if (feature.id === FAST_MODE_FEATURE_ID) {
+    return feature.value ? "zap-filled" : "zap-off";
   }
   return feature.icon;
 }

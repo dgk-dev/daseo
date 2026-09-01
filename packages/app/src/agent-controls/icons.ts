@@ -1,4 +1,4 @@
-import type { ComponentType } from "react";
+import { createElement, type ComponentType } from "react";
 import {
   Bot,
   Brain,
@@ -39,10 +39,14 @@ const MODE_ICONS: Record<string, AgentControlIcon> = {
   ShieldQuestionMark,
 };
 
+const FilledZap: AgentControlIcon = ({ size, color }) =>
+  createElement(Zap, { size, color, fill: color });
+
 const FEATURE_ICONS: Record<string, AgentControlIcon> = {
   "list-todo": ListTodo,
   "shield-check": ShieldCheck,
   zap: Zap,
+  "zap-filled": FilledZap,
   "zap-off": ZapOff,
 };
 

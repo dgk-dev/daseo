@@ -8,7 +8,9 @@ import {
 
 describe("resolveFeatureToggleIconName", () => {
   it("uses filled and slashed lightning icons for fast mode state", () => {
-    expect(resolveFeatureToggleIconName({ id: "fast_mode", icon: "zap", value: true })).toBe("zap");
+    expect(resolveFeatureToggleIconName({ id: "fast_mode", icon: "zap", value: true })).toBe(
+      "zap-filled",
+    );
     expect(resolveFeatureToggleIconName({ id: "fast_mode", icon: "zap", value: false })).toBe(
       "zap-off",
     );
