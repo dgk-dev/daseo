@@ -701,6 +701,76 @@ describe("PiRpcAgentSession", () => {
     ]);
   });
 
+  test("marks a phase-less Pi assistant message that stopped on its own as a final answer", async () => {
+    // Claude through the bridge never attaches a phase signature. Without this,
+    // the real answer folded behind a later background-fetch follow-up because
+    // only the message that ended the Daseo turn counted as an answer.
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    await session.startTurn("hello");
+    fakeSession.emit({
+      type: "message_start",
+      message: { role: "assistant", content: [], responseId: "response-stop" },
+    });
+    fakeSession.emit({
+      type: "message_update",
+      message: { role: "assistant", content: [], responseId: "response-stop", stopReason: "stop" },
+      assistantMessageEvent: { type: "text_delta", delta: "Real answer." },
+    });
+    fakeSession.emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        responseId: "response-stop",
+        stopReason: "stop",
+        content: [{ type: "text", text: "Real answer." }],
+      },
+    });
+    fakeSession.finishTurn();
+
+    await events.nextTurnCompletion();
+    expect(events.timelineItems()).toEqual([
+      // The streaming placeholder stopReason must not leak a phase per delta.
+      { type: "assistant_message", text: "Real answer.", messageId: "response-stop" },
+      { type: "assistant_message", text: "", messageId: "response-stop", phase: "final_answer" },
+    ]);
+  });
+
+  test("leaves narration before a Pi tool call phase-less", async () => {
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    await session.startTurn("hello");
+    fakeSession.emit({
+      type: "message_start",
+      message: { role: "assistant", content: [], responseId: "response-tool" },
+    });
+    fakeSession.emit({
+      type: "message_update",
+      message: { role: "assistant", content: [], responseId: "response-tool" },
+      assistantMessageEvent: { type: "text_delta", delta: "Checking the file." },
+    });
+    fakeSession.emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        responseId: "response-tool",
+        stopReason: "toolUse",
+        content: [
+          { type: "text", text: "Checking the file." },
+          { type: "toolCall", id: "tool-1", name: "read", arguments: { path: "note.txt" } },
+        ],
+      },
+    });
+    fakeSession.finishTurn();
+
+    await events.nextTurnCompletion();
+    expect(events.timelineItems()).toEqual([
+      { type: "assistant_message", text: "Checking the file.", messageId: "response-tool" },
+    ]);
+  });
+
   test("streams Pi task calls as sub-agent cards with lifecycle status", async () => {
     const { pi, session, events } = await createSession();
     const fakeSession = pi.latestSession();

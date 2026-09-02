@@ -79,6 +79,34 @@ export function getPiAssistantMessagePhase(
   return undefined;
 }
 
+/**
+ * Phase derived from why Pi says the model stopped, for providers that never
+ * attach a phase signature (Claude through the bridge). `stop` on a message
+ * with text means the model finished speaking on its own: that text is its
+ * answer at that point, even if a queued follow-up (a background fetch
+ * notification, a steer) wakes it again inside the same turn. `toolUse` text
+ * is narration before work and stays phase-less so it folds. Only valid once
+ * the message is complete; a streaming message carries a placeholder
+ * `stopReason` until then.
+ */
+export function getPiStopReasonPhase(
+  message: Extract<PiAgentMessage, { role: "assistant" }>,
+): AssistantMessagePhase | undefined {
+  if (message.stopReason?.toLowerCase() !== "stop") return undefined;
+  const hasText = message.content.some(
+    (content) => content.type === "text" && content.text.trim().length > 0,
+  );
+  return hasText ? "final_answer" : undefined;
+}
+
+/** Phase for a completed assistant message: an explicit signature wins, else
+ *  the stop-reason derivation. */
+export function getPiAssistantMessageEndPhase(
+  message: Extract<PiAgentMessage, { role: "assistant" }>,
+): AssistantMessagePhase | undefined {
+  return getPiAssistantMessagePhase(message) ?? getPiStopReasonPhase(message);
+}
+
 export class PiHistoryMapper {
   private readonly pendingToolCalls = new Map<string, PiTrackedToolCall>();
   private userIndex = 0;
@@ -179,11 +207,18 @@ export class PiHistoryMapper {
     this.assistantIndex += 1;
     const messageId =
       message.responseId || `${this.provider}-history-assistant-${this.assistantIndex}`;
+    // The stop-reason fallback applies only to messages with no signature at
+    // all, and it deliberately leaves the steering flags alone: those track
+    // explicit provider phases, and a derived answer must not start classifying
+    // later user messages as steers.
+    const derivedPhase =
+      getPiAssistantMessagePhase(message) === undefined ? getPiStopReasonPhase(message) : undefined;
     for (const content of message.content) {
       if (content.type === "text" && content.text) {
-        const phase = getPiTextContentPhase(content);
-        if (phase) this.sawExplicitAssistantPhase = true;
-        if (phase === "final_answer") this.currentTurnHasFinalAnswer = true;
+        const explicitPhase = getPiTextContentPhase(content);
+        if (explicitPhase) this.sawExplicitAssistantPhase = true;
+        if (explicitPhase === "final_answer") this.currentTurnHasFinalAnswer = true;
+        const phase = explicitPhase ?? derivedPhase;
         events.push({
           type: "timeline",
           provider: this.provider,

@@ -63,6 +63,7 @@ import {
   toDiagnosticErrorMessage,
 } from "../diagnostic-utils.js";
 import {
+  getPiAssistantMessageEndPhase,
   getPiAssistantMessagePhase,
   getUserMessageText,
   streamPiHistory,
@@ -2813,10 +2814,13 @@ export class PiRpcAgentSession implements AgentSession {
   ): void {
     if (event.message.role === "assistant") {
       const messageId = event.message.responseId || this.activeAssistantMessageId;
-      const phase = getPiAssistantMessagePhase(event.message);
+      // Signature phases are finalized at text_end/message_end, and the
+      // stop-reason fallback is only meaningful on the completed message (see
+      // getPiStopReasonPhase), so both are resolved here rather than per delta.
+      const phase = getPiAssistantMessageEndPhase(event.message);
       if (messageId && phase) {
-        // textSignature is finalized at text_end/message_end. Emit a metadata-only
-        // update so streamed text receives the same phase as replayed history.
+        // Emit a metadata-only update so streamed text receives the same phase
+        // as replayed history.
         this.emit({
           type: "timeline",
           provider: this.provider,

@@ -72,8 +72,12 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
    every provider-authored `final_answer`, while thought/tool/todo/activity/compaction and explicit
    `commentary` fold behind one expandable "Worked for …" row. The optional phase follows Codex's
    official `commentary | final_answer` contract through Pi/Codex live events, history, coalescing,
-   protocol validation, canonical projection, replica cache, and rendering; phase-less providers
-   retain the legacy final-suffix fallback. Expansion restores the original stream items and order
+   protocol validation, canonical projection, replica cache, and rendering. Providers that never
+   sign a phase (Claude through the Pi bridge) get `final_answer` derived from Pi's `stop`
+   reason on the completed message, so an answer the model finished on its own stays visible
+   when a queued follow-up (background fetch notification, steer) wakes it again in the same
+   turn; `toolUse` narration stays phase-less and folds. Fully phase-less streams retain the
+   legacy final-suffix fallback. Expansion restores the original stream items and order
    losslessly. Claude, Codex/ChatGPT, Grok-through-Pi, OpenCode, and other providers share the same
    UI contract; `blockGroupId` is used when available but never required. Active,
    partial/detached, permission-blocked, failed, and canceled turns stay open, while error and
