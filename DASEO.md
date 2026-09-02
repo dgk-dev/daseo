@@ -219,9 +219,10 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     catalog extension publishes Pi's effective `ctx.scopedModels` after global/project settings and
     trust are resolved; Daseo projects that exact scope onto runtime-discovered capability metadata
     and uses Pi's active runtime model as the default. Daseo no longer carries a duplicate model
-    list, model default, or thinking map. Generic `selectionPolicy` remains only for product launch
-    behavior such as ignoring sticky preferences and starting Sol Fast off; explicit drafts, resume
-    data, and profiles still win. Key files:
+    list, model default, or thinking map. Generic `selectionPolicy` remains only for product behavior
+    such as ignoring sticky preferences, applying each selected model's default effort in new and
+    live sessions, and starting Sol Fast off; explicit drafts, resume data, and profiles still win.
+    Key files:
     `packages/server/src/server/agent/providers/pi/agent.ts`,
     `packages/app/src/provider-selection/{provider-selection-policy,resolve-agent-form}.ts`, and
     `packages/app/src/hooks/use-draft-agent-features.ts`.

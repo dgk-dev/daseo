@@ -1,4 +1,8 @@
-import type { AgentFeature, AgentModelDefinition } from "@getpaseo/protocol/agent-types";
+import type {
+  AgentFeature,
+  AgentModelDefinition,
+  AgentProviderSelectionPolicy,
+} from "@getpaseo/protocol/agent-types";
 import { i18n } from "@/i18n/i18next";
 import { formatThinkingOptionLabel } from "@/agent-controls/labels";
 import { PLAN_MODE_FEATURE_ID } from "@/agent-controls/policy";
@@ -91,6 +95,22 @@ function resolveThinkingId(
     return explicitThinkingOptionId;
   }
   return selectedModel?.defaultThinkingOptionId ?? null;
+}
+
+export function resolveModelChangeThinkingOptionId(input: {
+  models: AgentModelDefinition[] | null;
+  modelId: string;
+  selectionPolicy: AgentProviderSelectionPolicy | null | undefined;
+}): string | null {
+  if (input.selectionPolicy?.preferenceMode !== "defaults") {
+    return null;
+  }
+  const selectedModel = findModelById(input.models, input.modelId);
+  return (
+    selectedModel?.defaultThinkingOptionId ??
+    selectedModel?.thinkingOptions?.find((option) => option.isDefault)?.id ??
+    null
+  );
 }
 
 type ThinkingOption = NonNullable<AgentModelDefinition["thinkingOptions"]>[number];

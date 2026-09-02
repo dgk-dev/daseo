@@ -41,7 +41,12 @@ import { filterSelectableModels } from "@/provider-selection/model-catalog";
 import { useSessionStore } from "@/stores/session-store";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { resolveProviderDefinition } from "@/utils/provider-definitions";
-import { mergeProviderPreferences, useFormPreferences } from "@/hooks/use-form-preferences";
+import {
+  mergeProviderPreferences,
+  useFormPreferences,
+  type UseFormPreferencesReturn,
+} from "@/hooks/use-form-preferences";
+import type { ProviderPreferences } from "@/create-agent-preferences/preferences";
 import { Combobox, ComboboxItem, type ComboboxOption } from "@/components/ui/combobox";
 import {
   AgentModeControl,
@@ -55,7 +60,9 @@ import type {
   AgentMode,
   AgentModelDefinition,
   AgentProvider,
+  AgentProviderNotice,
 } from "@getpaseo/protocol/agent-types";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { AgentProviderDefinition } from "@getpaseo/protocol/provider-manifest";
 import { FAST_MODE_FEATURE_ID } from "@/agent-controls/policy";
 import {
@@ -63,6 +70,7 @@ import {
   getFeatureTooltip,
   getAgentControlHintKey,
   resolveAgentModelSelection,
+  resolveModelChangeThinkingOptionId,
 } from "@/composer/agent-controls/utils";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { readMeasuredWidth } from "@/hooks/use-container-width";
@@ -1523,6 +1531,47 @@ function useLiveAgentFeatureControls(
   });
 }
 
+interface LiveAgentModelSelectionInput {
+  agentId: string;
+  client: Pick<DaemonClient, "setAgentModel" | "setAgentThinkingOption"> | null;
+  modelId: string;
+  models: AgentModelDefinition[] | null;
+  provider: AgentProvider | undefined;
+  snapshotEntry: ReturnType<typeof resolveSnapshotSelectedEntry>;
+  updatePreferences: UseFormPreferencesReturn["updatePreferences"];
+}
+
+async function selectLiveAgentModel(
+  input: LiveAgentModelSelectionInput,
+): Promise<AgentProviderNotice | null> {
+  const { client, provider } = input;
+  if (!client || !provider) {
+    return null;
+  }
+  const defaultThinkingOptionId = resolveModelChangeThinkingOptionId({
+    models: input.models,
+    modelId: input.modelId,
+    selectionPolicy: input.snapshotEntry?.selectionPolicy,
+  });
+  const preferenceUpdates: ProviderPreferences = { model: input.modelId };
+  if (defaultThinkingOptionId) {
+    preferenceUpdates.thinkingByModel = { [input.modelId]: defaultThinkingOptionId };
+  }
+
+  await client.setAgentModel(input.agentId, input.modelId);
+  const notice = defaultThinkingOptionId
+    ? await client.setAgentThinkingOption(input.agentId, defaultThinkingOptionId)
+    : null;
+  await input.updatePreferences((current) =>
+    mergeProviderPreferences({
+      preferences: current,
+      provider,
+      updates: preferenceUpdates,
+    }),
+  );
+  return notice;
+}
+
 export const AgentControls = memo(function AgentControls({
   agentId,
   serverId,
@@ -1606,24 +1655,26 @@ export const AgentControls = memo(function AgentControls({
 
   const handleSelectModel = useCallback(
     async (modelId: string) => {
-      if (!client || !agentProvider) {
-        return;
-      }
       try {
-        await client.setAgentModel(agentId, modelId);
-        await updatePreferences((current) =>
-          mergeProviderPreferences({
-            preferences: current,
-            provider: agentProvider,
-            updates: { model: modelId },
-          }),
-        );
+        const notice = await selectLiveAgentModel({
+          agentId,
+          client,
+          modelId,
+          models,
+          provider: agentProvider,
+          snapshotEntry: snapshotSelectedEntry,
+          updatePreferences,
+        });
+        showProviderNoticeToast(toast, notice);
       } catch (error) {
-        console.warn("[AgentControls] setAgentModel or persist preference failed", error);
+        console.warn(
+          "[AgentControls] setAgentModel, apply thinking default, or persist preference failed",
+          error,
+        );
         toast.error(toErrorMessage(error));
       }
     },
-    [agentId, agentProvider, client, toast, updatePreferences],
+    [agentId, agentProvider, client, models, snapshotSelectedEntry, toast, updatePreferences],
   );
   const handleSelectCommandCenterModel = useCallback(
     (_provider: AgentProvider, modelId: string) => handleSelectModel(modelId),

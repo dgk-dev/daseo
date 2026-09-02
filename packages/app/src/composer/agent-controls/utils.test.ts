@@ -5,6 +5,7 @@ import {
   getAgentControlHintKey,
   normalizeModelId,
   resolveAgentModelSelection,
+  resolveModelChangeThinkingOptionId,
 } from "./utils";
 
 describe("getAgentControlHintKey", () => {
@@ -49,6 +50,42 @@ describe("normalizeModelId", () => {
   it("returns trimmed model ids", () => {
     expect(normalizeModelId(" gpt-5.1-codex ")).toBe("gpt-5.1-codex");
     expect(normalizeModelId(" default ")).toBe("default");
+  });
+});
+
+describe("resolveModelChangeThinkingOptionId", () => {
+  const models = [
+    {
+      provider: "pi",
+      id: "pi-claude/claude-fable-5-1",
+      aliases: ["fable"],
+      label: "Fable 5.1",
+      thinkingOptions: [
+        { id: "medium", label: "Medium" },
+        { id: "high", label: "High", isDefault: true },
+      ],
+      defaultThinkingOptionId: "high",
+    },
+  ];
+
+  it("uses the selected model default when the provider starts from defaults", () => {
+    expect(
+      resolveModelChangeThinkingOptionId({
+        models,
+        modelId: "fable",
+        selectionPolicy: { preferenceMode: "defaults" },
+      }),
+    ).toBe("high");
+  });
+
+  it("preserves live thinking for sticky providers", () => {
+    expect(
+      resolveModelChangeThinkingOptionId({
+        models,
+        modelId: "fable",
+        selectionPolicy: { preferenceMode: "sticky" },
+      }),
+    ).toBeNull();
   });
 });
 
