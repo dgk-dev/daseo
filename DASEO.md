@@ -221,9 +221,10 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     capability SSOT, while `~/.pi/agent/settings.json` `enabledModels` is the single visibility,
     ordering, and per-model thinking-default source shared by standalone Pi and Daseo. A temporary
     catalog extension publishes Pi's effective `ctx.scopedModels` after global/project settings and
-    trust are resolved; Daseo projects that exact scope onto runtime-discovered capability metadata
-    and uses Pi's active runtime model as the default. Daseo no longer carries a duplicate model
-    list, model default, or thinking map. Generic `selectionPolicy` remains only for product behavior
+    trust are resolved; Daseo projects that exact scope onto runtime-discovered capability metadata,
+    filters each model to provider-native effort values, removes duplicate aliases, and uses Pi's
+    active runtime model as the default. Daseo no longer carries a duplicate model list, model
+    default, or thinking map. Generic `selectionPolicy` remains only for product behavior
     such as ignoring sticky preferences, applying each selected model's default effort in new and
     live sessions, and starting Sol Fast off; explicit drafts, resume data, and profiles still win.
     Key files:
