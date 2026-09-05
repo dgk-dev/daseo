@@ -2198,8 +2198,18 @@ describe("PiRpcAgentClient", () => {
     const projected = projectPiScopedCatalog({
       models: [
         { provider: "pi-claude", id: "claude-fable-5", reasoning: true },
-        { provider: "pi-claude", id: "claude-opus-4-8", reasoning: true },
-        { provider: "pi-claude", id: "claude-opus-5", reasoning: true },
+        {
+          provider: "pi-claude",
+          id: "claude-opus-4-8",
+          reasoning: true,
+          thinkingLevelMap: { xhigh: "xhigh", max: "max" },
+        },
+        {
+          provider: "pi-claude",
+          id: "claude-opus-5",
+          reasoning: true,
+          thinkingLevelMap: { xhigh: "xhigh", max: "max" },
+        },
         { provider: "pi-codex", id: "gpt-5.6-sol", reasoning: true },
         { provider: "xai-auth", id: "grok-4.6", reasoning: true },
         { provider: "deepseek", id: "deepseek-v4-flash", reasoning: true },
@@ -2233,6 +2243,93 @@ describe("PiRpcAgentClient", () => {
     expect(projected.find((model) => model.isDefault)?.id).toBe("pi-codex/gpt-5.6-sol");
   });
 
+  test("projects only provider-native effort levels and removes mapped aliases", () => {
+    const fiveLevels = {
+      off: null,
+      minimal: null,
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "xhigh",
+      max: "max",
+    } as const;
+    const projected = projectPiScopedCatalog({
+      models: [
+        {
+          provider: "pi-codex",
+          id: "gpt-5.6-sol",
+          reasoning: true,
+          thinkingLevelMap: { off: null, minimal: "low", xhigh: "xhigh", max: "max" },
+        },
+        {
+          provider: "pi-codex",
+          id: "gpt-6-astra",
+          reasoning: true,
+          thinkingLevelMap: fiveLevels,
+        },
+        {
+          provider: "pi-claude",
+          id: "claude-fable-5-1",
+          reasoning: true,
+          thinkingLevelMap: fiveLevels,
+        },
+        {
+          provider: "pi-claude",
+          id: "claude-fable-5",
+          reasoning: true,
+          thinkingLevelMap: fiveLevels,
+        },
+        {
+          provider: "pi-claude",
+          id: "claude-opus-4-8",
+          reasoning: true,
+          thinkingLevelMap: fiveLevels,
+        },
+        {
+          provider: "pi-claude",
+          id: "claude-opus-5",
+          reasoning: true,
+          thinkingLevelMap: fiveLevels,
+        },
+        {
+          provider: "xai-auth",
+          id: "grok-4.6",
+          reasoning: true,
+          thinkingLevelMap: {
+            off: null,
+            minimal: "low",
+            low: "low",
+            medium: "medium",
+            high: "high",
+            xhigh: "xhigh",
+            max: null,
+          },
+        },
+      ],
+      scopedModels: [],
+      activeModel: null,
+      selectionPolicy: {
+        preferenceMode: "defaults",
+        thinkingDefaultsByModel: { "pi-codex/gpt-5.6-sol": "minimal" },
+      },
+    });
+    const optionsByModel: Record<string, string[] | undefined> = {};
+    for (const model of projected) {
+      optionsByModel[model.id] = model.thinkingOptions?.map((option) => option.id);
+    }
+
+    expect(optionsByModel).toEqual({
+      "pi-codex/gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max"],
+      "pi-codex/gpt-6-astra": ["low", "medium", "high", "xhigh", "max"],
+      "pi-claude/claude-fable-5-1": ["low", "medium", "high", "xhigh", "max"],
+      "pi-claude/claude-fable-5": ["low", "medium", "high", "xhigh", "max"],
+      "pi-claude/claude-opus-4-8": ["low", "medium", "high", "xhigh", "max"],
+      "pi-claude/claude-opus-5": ["low", "medium", "high", "xhigh", "max"],
+      "xai-auth/grok-4.6": ["low", "medium", "high", "xhigh"],
+    });
+    expect(projected[0]?.defaultThinkingOptionId).toBe("low");
+  });
+
   test("pins Daseo per-model defaults: Sol default model, Sol/Fable high, Opus xhigh", async () => {
     const pi = new FakePi();
     const client = createClient(pi);
@@ -2243,7 +2340,12 @@ describe("PiRpcAgentClient", () => {
     });
     pi.latestSession().models = [
       { provider: "pi-claude", id: "claude-fable-5", reasoning: true },
-      { provider: "pi-claude", id: "claude-opus-4-8", reasoning: true },
+      {
+        provider: "pi-claude",
+        id: "claude-opus-4-8",
+        reasoning: true,
+        thinkingLevelMap: { xhigh: "xhigh", max: "max" },
+      },
       { provider: "pi-codex", id: "gpt-5.6-sol", reasoning: true },
       { provider: "deepseek", id: "deepseek-v4-flash", reasoning: true },
     ];

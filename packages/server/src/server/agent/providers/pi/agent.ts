@@ -436,6 +436,77 @@ function normalizePiThinkingOption(value: string | null | undefined): PiThinking
   return isPiThinkingLevel(value) ? value : null;
 }
 
+function resolveProviderThinkingLevel(model: PiModel, level: PiThinkingLevel): string | null {
+  const mappedLevel = model.thinkingLevelMap?.[level];
+  if (mappedLevel === null) {
+    return null;
+  }
+  if ((level === "xhigh" || level === "max") && mappedLevel === undefined) {
+    return null;
+  }
+  return mappedLevel ?? level;
+}
+
+function getPiThinkingOptions(model: PiModel): typeof PI_THINKING_OPTIONS {
+  if (!model.reasoning) {
+    return [];
+  }
+
+  const candidates = PI_THINKING_OPTIONS.flatMap((option) => {
+    const providerLevel = resolveProviderThinkingLevel(model, option.id);
+    return providerLevel === null ? [] : [{ option, providerLevel }];
+  });
+  const directProviderLevels = new Set(
+    candidates
+      .filter(({ option, providerLevel }) => option.id === providerLevel)
+      .map(({ providerLevel }) => providerLevel),
+  );
+  const seenProviderLevels = new Set<string>();
+
+  return candidates.flatMap(({ option, providerLevel }) => {
+    if (option.id !== providerLevel && directProviderLevels.has(providerLevel)) {
+      return [];
+    }
+    if (seenProviderLevels.has(providerLevel)) {
+      return [];
+    }
+    seenProviderLevels.add(providerLevel);
+    return [option];
+  });
+}
+
+function resolvePiModelDefaultThinkingLevel(
+  model: PiModel,
+  requestedLevel: PiThinkingLevel,
+  options: typeof PI_THINKING_OPTIONS,
+): PiThinkingLevel {
+  const optionIds = new Set(options.map((option) => option.id));
+  if (optionIds.has(requestedLevel)) {
+    return requestedLevel;
+  }
+
+  const providerLevel = resolveProviderThinkingLevel(model, requestedLevel);
+  const providerLevelOption = normalizePiThinkingOption(providerLevel);
+  if (providerLevelOption && optionIds.has(providerLevelOption)) {
+    return providerLevelOption;
+  }
+
+  const requestedIndex = PI_THINKING_OPTIONS.findIndex((option) => option.id === requestedLevel);
+  for (let index = requestedIndex + 1; index < PI_THINKING_OPTIONS.length; index += 1) {
+    const candidate = PI_THINKING_OPTIONS[index]?.id;
+    if (candidate && optionIds.has(candidate)) {
+      return candidate;
+    }
+  }
+  for (let index = requestedIndex - 1; index >= 0; index -= 1) {
+    const candidate = PI_THINKING_OPTIONS[index]?.id;
+    if (candidate && optionIds.has(candidate)) {
+      return candidate;
+    }
+  }
+  return DEFAULT_PI_THINKING_LEVEL;
+}
+
 function parseAutoCompactMode(value: string | undefined): AutoCompactMode {
   const mode = (value ?? "toggle").trim().toLowerCase();
   if (mode === "on" || mode === "true" || mode === "enable" || mode === "enabled") {
@@ -1395,8 +1466,14 @@ function mapPiModel(
   const policyThinkingLevel = normalizePiThinkingOption(
     resolveSelectionPolicyThinkingDefault(selectionPolicy, `${model.provider}/${model.id}`),
   );
-  const defaultThinkingLevel =
+  const requestedThinkingLevel =
     policyThinkingLevel ?? runtimeDefault?.thinkingLevel ?? DEFAULT_PI_THINKING_LEVEL;
+  const availableThinkingOptions = getPiThinkingOptions(model);
+  const defaultThinkingLevel = resolvePiModelDefaultThinkingLevel(
+    model,
+    requestedThinkingLevel,
+    availableThinkingOptions,
+  );
   const isDefault = selectionPolicy?.defaultModelId
     ? isPiPolicyDefaultModel(model, selectionPolicy)
     : runtimeDefault?.isDefault === true;
@@ -1411,7 +1488,7 @@ function mapPiModel(
       modelId: model.id,
     },
     thinkingOptions: model.reasoning
-      ? PI_THINKING_OPTIONS.map((option) => mapThinkingOption(option, defaultThinkingLevel))
+      ? availableThinkingOptions.map((option) => mapThinkingOption(option, defaultThinkingLevel))
       : undefined,
     defaultThinkingOptionId: model.reasoning ? defaultThinkingLevel : undefined,
   };
