@@ -9,8 +9,10 @@ import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
 import { getProviderIcon } from "@/components/provider-icons";
 import { ModelBrowser, useModelBrowser } from "@/components/model-browser";
 import { ComposerToolbarGlyph } from "@/composer/agent-controls/glyph";
+import { resolveModelSheetLayout } from "@/composer/agent-controls/model-sheet-layout";
 import type { ProviderSelectorProvider } from "@/provider-selection/provider-selection";
 import { useIsCompactFormFactor } from "@/constants/layout";
+import { useKeyboardVisible } from "@/hooks/use-keyboard-visible";
 
 const SNAP_POINTS = ["80%", "90%"];
 const MODEL_LIST_TOP_INSET = 4;
@@ -64,6 +66,12 @@ export function CompactModelSheet({
   const { t } = useTranslation();
   const usesBottomSheet = useIsCompactFormFactor();
   const [isOpen, setIsOpen] = useState(false);
+  const isKeyboardVisible = useKeyboardVisible(isOpen);
+  const layout = resolveModelSheetLayout({
+    usesBottomSheet,
+    isKeyboardVisible,
+    hasControls: true,
+  });
   const browser = useModelBrowser({
     providers,
     selectedProvider,
@@ -77,13 +85,13 @@ export function CompactModelSheet({
     selectedProvider.trim().length > 0 ? getProviderIcon(selectedProvider) : null;
   const compactFooter = useMemo(
     () =>
-      usesBottomSheet ? (
+      layout.showControlsFooter ? (
         <View style={styles.compactFooter} testID="agent-controls-settings-list">
           <View style={styles.modelViewportDivider} />
           <View style={[styles.controlsContent, styles.compactControlsContent]}>{children}</View>
         </View>
       ) : undefined,
-    [children, usesBottomSheet],
+    [children, layout.showControlsFooter],
   );
 
   const open = useCallback(() => {
@@ -94,6 +102,9 @@ export function CompactModelSheet({
   }, [onOpen, prepareToOpen]);
 
   const close = useCallback(() => {
+    // Dismiss before unmounting the search field: a keyboard left open over a
+    // disappearing sheet lands on the composer and reopens it.
+    Keyboard.dismiss();
     setIsOpen(false);
     reset();
     onClose?.();
@@ -188,7 +199,7 @@ export function CompactModelSheet({
             onEditProfiles={onEditProfiles ? handleEditProfiles : undefined}
             onRetryProvider={onRetryProvider}
             isRetryingProvider={isRetryingProvider}
-            scrolling="independent"
+            scrolling={layout.scrolling}
           />
         </View>
         {!usesBottomSheet ? (

@@ -13,7 +13,7 @@ import {
   type StyleProp,
   type ViewStyle,
 } from "react-native";
-import { BottomSheetFlatList } from "@gorhom/bottom-sheet";
+import { BottomSheetFlatList, BottomSheetScrollView } from "@gorhom/bottom-sheet";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {
@@ -167,6 +167,19 @@ export interface ModelBrowserState {
   drillDown: (providerId: string, providerLabel: string) => void;
 }
 
+/**
+ * Who owns the scroll viewport.
+ *
+ * - `sheet`: the surrounding sheet scrolls; the browser renders plain rows.
+ * - `independent`: the browser owns a bounded viewport of its own (desktop
+ *   popover, and compact web where no bottom sheet gesture is in play).
+ * - `bottom-sheet`: the browser owns the viewport *inside* a @gorhom bottom
+ *   sheet. A plain FlatList there never scrolls on iOS — the sheet's content
+ *   panning gesture swallows the drag — so the scroller has to be the
+ *   sheet-aware one.
+ */
+export type ModelBrowserScrolling = "sheet" | "independent" | "bottom-sheet";
+
 interface ModelBrowserProps {
   state: ModelBrowserState;
   onSelect: (provider: string, modelId: string) => void;
@@ -175,7 +188,7 @@ interface ModelBrowserProps {
   onEditProfiles?: () => void;
   onRetryProvider?: (provider: AgentProvider) => void;
   isRetryingProvider?: boolean;
-  scrolling?: "sheet" | "independent";
+  scrolling?: ModelBrowserScrolling;
 }
 
 interface ModelBrowserContentProps extends Omit<ModelBrowserProps, "state" | "scrolling"> {
@@ -186,7 +199,7 @@ interface ModelBrowserContentProps extends Omit<ModelBrowserProps, "state" | "sc
   searchQuery: string;
   profiles: AgentProfilePicker | null;
   onDrillDown: (providerId: string, providerLabel: string) => void;
-  scrolling: "sheet" | "independent";
+  scrolling: ModelBrowserScrolling;
 }
 
 type ProviderGlyphTone = "muted" | "foreground";
@@ -869,6 +882,69 @@ function getModelRowKey(row: ProviderSelectionModelRow): string {
   return row.favoriteKey;
 }
 
+/**
+ * The list inside a bottom sheet. `BottomSheetFlatList` hands its scroll state
+ * to the sheet, which is what lets the last rows be reached instead of the drag
+ * turning into a sheet pan. Web has no such gesture conflict and no native
+ * virtualization to gain, so it scrolls a plain sheet scroller instead.
+ */
+function BottomSheetModelList({
+  rows,
+  renderItem,
+  header,
+}: {
+  rows: ProviderSelectionModelRow[];
+  renderItem: ({ item }: { item: ProviderSelectionModelRow }) => React.ReactElement;
+  header?: React.ReactElement;
+}) {
+  if (isWeb) {
+    return (
+      <BottomSheetScrollView
+        style={styles.virtualizedModelList}
+        contentContainerStyle={styles.virtualizedModelListContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        testID="compact-model-list"
+      >
+        {header}
+        {rows.map((row) => (
+          <View key={row.favoriteKey}>{renderItem({ item: row })}</View>
+        ))}
+      </BottomSheetScrollView>
+    );
+  }
+  return (
+    <BottomSheetFlatList
+      data={rows}
+      renderItem={renderItem}
+      ListHeaderComponent={header}
+      keyExtractor={getModelRowKey}
+      style={styles.virtualizedModelList}
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}
+      contentContainerStyle={styles.virtualizedModelListContent}
+      testID="compact-model-list"
+    />
+  );
+}
+
+function BottomSheetProviderList({ children }: { children: React.ReactNode }) {
+  return (
+    <BottomSheetScrollView
+      style={styles.virtualizedModelList}
+      contentContainerStyle={[
+        styles.virtualizedModelListContent,
+        styles.virtualizedProviderListContent,
+      ]}
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}
+      testID="compact-provider-list"
+    >
+      {children}
+    </BottomSheetScrollView>
+  );
+}
+
 function IndependentProviderList({ children }: { children: React.ReactNode }) {
   return (
     <IndependentScrollBoundary>
@@ -904,7 +980,7 @@ function ModelRowList({
   onSelect: (provider: string, modelId: string) => void;
   showProviderLabel?: boolean;
   header?: React.ReactElement;
-  scrolling: "sheet" | "independent";
+  scrolling: ModelBrowserScrolling;
 }) {
   const isCompact = useIsCompactFormFactor();
   const renderItem = useCallback(
@@ -919,6 +995,10 @@ function ModelRowList({
     [onSelect, selectedModel, selectedProvider, showProviderLabel],
   );
   const keyExtractor = useCallback((row: ProviderSelectionModelRow) => row.favoriteKey, []);
+
+  if (scrolling === "bottom-sheet") {
+    return <BottomSheetModelList rows={rows} renderItem={renderItem} header={header} />;
+  }
 
   if (scrolling === "independent") {
     return <IndependentModelList rows={rows} renderItem={renderItem} header={header} />;
@@ -1012,7 +1092,7 @@ function ProviderModelBrowserContent({
   onEditProfiles?: () => void;
   onRetryProvider?: (provider: AgentProvider) => void;
   isRetryingProvider: boolean;
-  scrolling: "sheet" | "independent";
+  scrolling: ModelBrowserScrolling;
 }) {
   const { t } = useTranslation();
   const visibleRows = useMemo(
@@ -1168,6 +1248,9 @@ function ModelBrowserContent({
     </View>
   );
 
+  if (scrolling === "bottom-sheet") {
+    return <BottomSheetProviderList>{allProvidersContent}</BottomSheetProviderList>;
+  }
   return scrolling === "independent" ? (
     <IndependentProviderList>{allProvidersContent}</IndependentProviderList>
   ) : (

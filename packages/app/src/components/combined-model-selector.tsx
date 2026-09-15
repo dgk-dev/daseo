@@ -8,7 +8,8 @@ import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { Combobox, type ComboboxOption, type ComboboxProps } from "@/components/ui/combobox";
 import { ModelBrowser, ModelProviderGlyph, useModelBrowser } from "@/components/model-browser";
-import { isNative, isWeb } from "@/constants/platform";
+import { useIsCompactFormFactor } from "@/constants/layout";
+import { isWeb } from "@/constants/platform";
 import type { ProviderSelectorProvider } from "@/provider-selection/provider-selection";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 
@@ -20,6 +21,19 @@ const foregroundMutedMapping = (theme: Theme) => ({
 });
 
 function noop() {}
+
+/**
+ * Compact presents the Combobox as a bottom sheet, where only the sheet-aware
+ * scroller reaches the last rows. A desktop popover owns a bounded viewport of
+ * its own, and a native wide layout lets the surrounding surface scroll.
+ */
+function resolveCombinedSelectorScrolling(input: {
+  isCompact: boolean;
+  isWeb: boolean;
+}): "bottom-sheet" | "independent" | "sheet" {
+  if (input.isCompact) return "bottom-sheet";
+  return input.isWeb ? "independent" : "sheet";
+}
 
 interface CombinedModelSelectorProps {
   providers: ProviderSelectorProvider[];
@@ -84,6 +98,10 @@ export function CombinedModelSelector({
 }: CombinedModelSelectorProps) {
   const { t } = useTranslation();
   const anchorRef = useRef<View>(null);
+  // Compact presents the Combobox as a bottom sheet, where only the sheet-aware
+  // scroller reaches the last rows; nesting a second scroller inside the
+  // sheet's own would collapse it instead.
+  const isCompact = useIsCompactFormFactor();
   const [isOpen, setIsOpen] = useState(false);
   const [isContentReady, setIsContentReady] = useState(isWeb);
   const browser = useModelBrowser({
@@ -168,6 +186,8 @@ export function CombinedModelSelector({
     onEditProfiles?.();
   }, [handleOpenChange, onEditProfiles]);
 
+  const browserScrolling = resolveCombinedSelectorScrolling({ isCompact, isWeb });
+
   const selectorBody = isContentReady ? (
     <ModelBrowser
       state={browser}
@@ -176,7 +196,7 @@ export function CombinedModelSelector({
       onEditProfiles={onEditProfiles ? handleEditProfiles : undefined}
       onRetryProvider={onRetryProvider}
       isRetryingProvider={isRetryingProvider}
-      scrolling={isWeb ? "independent" : "sheet"}
+      scrolling={browserScrolling}
     />
   ) : (
     <View style={styles.sheetLoadingState}>
@@ -251,8 +271,7 @@ export function CombinedModelSelector({
         desktopFixedHeight={browser.desktopFixedHeight}
         desktopChildrenScrollEnabled={false}
         header={browser.header}
-        mobileChildrenScrollEnabled={!browser.isProviderView || !isNative}
-        mobileChildrenContentContainerStyle={styles.mobileBrowserContent}
+        mobileChildrenScrollEnabled={false}
       >
         {selectorBody}
       </Combobox>
@@ -261,9 +280,6 @@ export function CombinedModelSelector({
 }
 
 const styles = StyleSheet.create((theme) => ({
-  mobileBrowserContent: {
-    paddingHorizontal: 0,
-  },
   trigger: {
     height: 28,
     minWidth: 0,
