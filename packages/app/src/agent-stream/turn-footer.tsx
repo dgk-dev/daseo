@@ -1,5 +1,6 @@
 import React, { memo, useCallback, useMemo, type ReactNode } from "react";
-import { View } from "react-native";
+import { Text, View } from "react-native";
+import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { MAX_CONTENT_WIDTH } from "@/constants/layout";
 import type { Theme } from "@/styles/theme";
@@ -21,6 +22,7 @@ import { AssistantForkMenu } from "@/components/assistant-fork-menu";
 import { SyncedLoader } from "@/components/synced-loader";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { useCollapsedWork } from "./collapsed-work-context";
+import type { ActiveCompaction } from "./compaction-presentation";
 
 const ThemedSyncedLoader = withUnistyles(SyncedLoader);
 const workingIndicatorColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
@@ -45,6 +47,7 @@ export type InFlightTurnForkHandler = (target: AssistantForkTarget) => Promise<v
 export const TurnFooter = memo(function TurnFooter({
   isRunning,
   inFlightTurnStartedAt,
+  activeCompaction = null,
   host,
   strategy,
   supportsTimelineCursor,
@@ -53,6 +56,7 @@ export const TurnFooter = memo(function TurnFooter({
 }: {
   isRunning: boolean;
   inFlightTurnStartedAt: Date | null;
+  activeCompaction?: ActiveCompaction | null;
   host: TurnFooterHost | null;
   strategy: TurnContentStrategy;
   supportsTimelineCursor: boolean;
@@ -64,6 +68,7 @@ export const TurnFooter = memo(function TurnFooter({
       <TurnFooterRow>
         <RunningTurnFooter
           inFlightTurnStartedAt={inFlightTurnStartedAt}
+          activeCompaction={activeCompaction}
           onForkInFlightTurn={onForkInFlightTurn}
         />
       </TurnFooterRow>
@@ -115,22 +120,34 @@ export const CompletedTurnFooterRow = memo(function CompletedTurnFooterRow({
 
 const WorkingIndicator = memo(function WorkingIndicator({
   inFlightTurnStartedAt = null,
+  activeCompaction = null,
   onForkInFlightTurn,
 }: {
   inFlightTurnStartedAt?: Date | null;
+  activeCompaction?: ActiveCompaction | null;
   onForkInFlightTurn?: InFlightTurnForkHandler;
 }) {
   const active = useRetainedPanelActive();
+  const { t } = useTranslation();
+  // Compaction owns its own wall clock while it runs, like Codex's status
+  // header: the turn's elapsed time keeps counting but says nothing about how
+  // long the model has been waiting for context to shrink.
+  const startedAt = activeCompaction?.startedAt ?? inFlightTurnStartedAt;
   return (
     <View style={stylesheet.turnFooterContent}>
       <View style={stylesheet.workingLoader}>
         <ThemedSyncedLoader size={14} uniProps={workingIndicatorColorMapping} />
       </View>
+      {activeCompaction ? (
+        <Text style={stylesheet.compactingLabel} testID="turn-compacting-label">
+          {t("message.compaction.loading")}
+        </Text>
+      ) : null}
       {/* Match the completed-turn footer: actions precede timing metadata. */}
       {onForkInFlightTurn ? <AssistantForkMenu onFork={onForkInFlightTurn} /> : null}
-      {inFlightTurnStartedAt ? (
+      {startedAt ? (
         <LiveElapsed
-          startedAt={inFlightTurnStartedAt}
+          startedAt={startedAt}
           active={active}
           style={stylesheet.workingElapsed}
           testID="turn-working-elapsed"
@@ -142,15 +159,18 @@ const WorkingIndicator = memo(function WorkingIndicator({
 
 function RunningTurnFooter({
   inFlightTurnStartedAt,
+  activeCompaction,
   onForkInFlightTurn,
 }: {
   inFlightTurnStartedAt: Date | null;
+  activeCompaction: ActiveCompaction | null;
   onForkInFlightTurn?: InFlightTurnForkHandler;
 }) {
   return (
     <View style={stylesheet.turnFooterSlot} testID="turn-working-indicator">
       <WorkingIndicator
         inFlightTurnStartedAt={inFlightTurnStartedAt}
+        activeCompaction={activeCompaction}
         onForkInFlightTurn={onForkInFlightTurn}
       />
     </View>
@@ -245,6 +265,10 @@ const stylesheet = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: STREAM_METADATA_FONT_SIZE,
     fontVariant: ["tabular-nums"],
+  },
+  compactingLabel: {
+    color: theme.colors.foregroundMuted,
+    fontSize: STREAM_METADATA_FONT_SIZE,
   },
   workingLoader: {
     marginLeft: -2,

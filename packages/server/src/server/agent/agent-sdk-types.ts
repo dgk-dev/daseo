@@ -380,9 +380,14 @@ export type ToolCallTimelineItem =
 export interface CompactionTimelineItem {
   [key: string]: unknown;
   type: "compaction";
+  /** `loading` is progress; `completed` is terminal regardless of outcome. */
   status: "loading" | "completed";
   trigger?: "auto" | "manual";
   preTokens?: number;
+  /** Absent means the compaction succeeded. */
+  outcome?: "failed" | "canceled";
+  /** Why a `failed` or `canceled` compaction ended. */
+  error?: string;
 }
 
 export type AgentTimelineItem =

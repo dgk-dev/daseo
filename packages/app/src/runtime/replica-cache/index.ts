@@ -101,6 +101,8 @@ const StoredTimelineItemSchema = z.discriminatedUnion("kind", [
     status: z.enum(["loading", "completed"]),
     trigger: z.enum(["auto", "manual"]).optional(),
     preTokens: z.number().nonnegative().optional(),
+    outcome: z.enum(["failed", "canceled"]).optional(),
+    error: z.string().optional(),
   }),
   z.strictObject({
     ...TimelineItemBaseShape,
@@ -404,6 +406,8 @@ function serializeTimelineItem(item: StreamItem): StoredTimelineItem | null {
         status: item.status,
         ...(item.trigger ? { trigger: item.trigger } : {}),
         ...(item.preTokens !== undefined ? { preTokens: item.preTokens } : {}),
+        ...(item.outcome ? { outcome: item.outcome } : {}),
+        ...(item.error ? { error: item.error } : {}),
       };
     case "tool_call":
       if (item.payload.source !== "agent") return null;
@@ -497,6 +501,8 @@ function deserializeTimelineItem(item: StoredTimelineItem): StreamItem {
         status: item.status,
         ...(item.trigger ? { trigger: item.trigger } : {}),
         ...(item.preTokens !== undefined ? { preTokens: item.preTokens } : {}),
+        ...(item.outcome ? { outcome: item.outcome } : {}),
+        ...(item.error ? { error: item.error } : {}),
       };
     case "tool_call": {
       const tool = item.item;

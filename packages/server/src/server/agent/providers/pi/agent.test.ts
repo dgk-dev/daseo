@@ -1219,6 +1219,100 @@ describe("PiRpcAgentSession", () => {
     expect(events.turnCompletedEvents()).toHaveLength(1);
   });
 
+  test("closes an open compaction when the Pi process dies mid-compaction", async () => {
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    const { turnId } = await session.startTurn("long research task");
+    fakeSession.emit({ type: "agent_start" });
+    fakeSession.emit({ type: "turn_start" });
+    fakeSession.emit({ type: "agent_end", messages: [] });
+    fakeSession.emit({ type: "compaction_start", reason: "auto" });
+    fakeSession.emit({ type: "process_exit", error: "Pi RPC process exited with code 143" });
+
+    await expect(events.nextTurnFailure()).resolves.toMatchObject({ turnId });
+    expect(events.timelineItems()).toContainEqual({
+      type: "compaction",
+      status: "completed",
+      trigger: "auto",
+      outcome: "failed",
+      error: "Pi RPC process exited with code 143",
+    });
+    expect(
+      events
+        .timelineItems()
+        .filter((item) => item.type === "compaction" && item.status === "loading"),
+    ).toHaveLength(1);
+  });
+
+  test("closes a stale compaction before opening the next one", async () => {
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    await session.startTurn("long research task");
+    fakeSession.emit({ type: "agent_start" });
+    fakeSession.emit({ type: "turn_start" });
+    fakeSession.emit({ type: "compaction_start", reason: "auto" });
+    fakeSession.emit({ type: "compaction_start", reason: "auto" });
+    fakeSession.emit({ type: "compaction_end", reason: "auto" });
+
+    const compactions = events.timelineItems().filter((item) => item.type === "compaction");
+    expect(compactions).toEqual([
+      { type: "compaction", status: "loading", trigger: "auto" },
+      {
+        type: "compaction",
+        status: "completed",
+        trigger: "auto",
+        outcome: "canceled",
+        error: "Compaction was interrupted",
+      },
+      { type: "compaction", status: "loading", trigger: "auto" },
+      { type: "compaction", status: "completed", trigger: "auto" },
+    ]);
+  });
+
+  test("reports an aborted compaction as canceled instead of compacted", async () => {
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    await session.startTurn("long research task");
+    fakeSession.emit({ type: "agent_start" });
+    fakeSession.emit({ type: "turn_start" });
+    fakeSession.emit({ type: "compaction_start", reason: "auto" });
+    fakeSession.emit({ type: "compaction_end", reason: "auto", aborted: true });
+
+    expect(events.timelineItems().at(-1)).toEqual({
+      type: "compaction",
+      status: "completed",
+      trigger: "auto",
+      outcome: "canceled",
+      error: "Compaction canceled",
+    });
+  });
+
+  test("reports a failed compaction with its provider error", async () => {
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    await session.startTurn("long research task");
+    fakeSession.emit({ type: "agent_start" });
+    fakeSession.emit({ type: "turn_start" });
+    fakeSession.emit({ type: "compaction_start", reason: "threshold" });
+    fakeSession.emit({
+      type: "compaction_end",
+      reason: "threshold",
+      errorMessage: "summarizer failed",
+    });
+
+    expect(events.timelineItems().at(-1)).toEqual({
+      type: "compaction",
+      status: "completed",
+      trigger: "auto",
+      outcome: "failed",
+      error: "summarizer failed",
+    });
+  });
+
   test("accepts steering during auto-compaction and delivers it in the continued Pi turn", async () => {
     const { pi, session, events } = await createSession();
     const fakeSession = pi.latestSession();
@@ -2520,7 +2614,13 @@ describe("PiRpcAgentClient", () => {
       {
         type: "timeline",
         provider: "pi",
-        item: { type: "compaction", status: "completed", trigger: "manual" },
+        item: {
+          type: "compaction",
+          status: "completed",
+          trigger: "manual",
+          outcome: "failed",
+          error: "summarizer failed",
+        },
       },
       {
         type: "timeline",

@@ -527,7 +527,7 @@ function mergeRetainedLifecycleItem(tail: StreamItem[], retained: StreamItem): S
     return next;
   }
   if (retained.kind === "compaction" && retained.status === "completed") {
-    const tailIndex = tail.findIndex(
+    const tailIndex = tail.findLastIndex(
       (item) => item.kind === "compaction" && item.status === "loading",
     );
     const existing = tail[tailIndex];
@@ -541,6 +541,8 @@ function mergeRetainedLifecycleItem(tail: StreamItem[], retained: StreamItem): S
       status: "completed",
       trigger: retained.trigger ?? existing.trigger,
       preTokens: retained.preTokens ?? existing.preTokens,
+      ...(retained.outcome ? { outcome: retained.outcome } : {}),
+      ...(retained.error ? { error: retained.error } : {}),
     };
     return next;
   }
@@ -979,6 +981,9 @@ export interface CompactionItem {
   status: "loading" | "completed";
   trigger?: "auto" | "manual";
   preTokens?: number;
+  /** Absent on a completed row means the compaction succeeded. */
+  outcome?: "failed" | "canceled";
+  error?: string;
 }
 
 export interface TodoEntry {
@@ -1261,6 +1266,28 @@ function finalizeActiveThoughts(state: StreamItem[]): StreamItem[] {
     if (entry.kind === "thought" && entry.status !== "ready") {
       mutated = true;
       return markThoughtReady(entry);
+    }
+    return entry;
+  });
+
+  return mutated ? nextState : state;
+}
+
+/**
+ * A turn cannot end with compaction still running. A row left loading came from
+ * a daemon or provider that stopped reporting, and the client owns the same
+ * termination guarantee the daemon does so a restart cannot strand a spinner.
+ */
+function finalizeActiveCompactions(state: StreamItem[]): StreamItem[] {
+  let mutated = false;
+  const nextState = state.map((entry) => {
+    if (entry.kind === "compaction" && entry.status === "loading") {
+      mutated = true;
+      return {
+        ...entry,
+        status: "completed",
+        outcome: "canceled",
+      } satisfies CompactionItem;
     }
     return entry;
   });
@@ -1649,6 +1676,16 @@ function reduceTimelineToolCall(
   );
 }
 
+// Wire timeline items carry an index signature, so a refinement added after the
+// fact reads as unknown until it is narrowed here.
+function readCompactionOutcome(value: unknown): CompactionItem["outcome"] {
+  return value === "failed" || value === "canceled" ? value : undefined;
+}
+
+function readCompactionError(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
 function reduceTimelineCompaction(
   state: StreamItem[],
   item: Extract<
@@ -1658,8 +1695,14 @@ function reduceTimelineCompaction(
   timestamp: Date,
   timelineCursor?: TimelinePosition,
 ): StreamItem[] {
+  const outcome = readCompactionOutcome(item.outcome);
+  const error = readCompactionError(item.error);
   if (item.status === "completed") {
-    const loadingIdx = state.findIndex((s) => s.kind === "compaction" && s.status === "loading");
+    // Match the newest open row. An interrupted compaction can leave an older
+    // one behind, and closing that one instead would strand the live marker.
+    const loadingIdx = state.findLastIndex(
+      (s) => s.kind === "compaction" && s.status === "loading",
+    );
     const existing = loadingIdx >= 0 ? state[loadingIdx] : undefined;
     if (loadingIdx >= 0 && existing && existing.kind === "compaction") {
       const updated: CompactionItem = {
@@ -1668,11 +1711,10 @@ function reduceTimelineCompaction(
         status: "completed",
         trigger: item.trigger ?? existing.trigger,
         preTokens: item.preTokens ?? existing.preTokens,
+        ...(outcome ? { outcome } : {}),
+        ...(error ? { error } : {}),
       };
       return [...state.slice(0, loadingIdx), updated, ...state.slice(loadingIdx + 1)];
-    }
-    if (loadingIdx >= 0) {
-      return state;
     }
   }
   const compaction: CompactionItem = {
@@ -1683,6 +1725,8 @@ function reduceTimelineCompaction(
     status: item.status,
     trigger: item.trigger,
     preTokens: item.preTokens,
+    ...(outcome ? { outcome } : {}),
+    ...(error ? { error } : {}),
   };
   return [...state, compaction];
 }
@@ -1785,11 +1829,20 @@ export function reduceStreamUpdate(
         options?.timelineCursor,
       );
     case "turn_completed":
-      return markLastTurnAssistantOutcome(finalizeActiveThoughts(state), "completed");
+      return markLastTurnAssistantOutcome(
+        finalizeActiveCompactions(finalizeActiveThoughts(state)),
+        "completed",
+      );
     case "turn_failed":
-      return markLastTurnAssistantOutcome(finalizeActiveThoughts(state), "failed");
+      return markLastTurnAssistantOutcome(
+        finalizeActiveCompactions(finalizeActiveThoughts(state)),
+        "failed",
+      );
     case "turn_canceled":
-      return markLastTurnAssistantOutcome(finalizeActiveThoughts(state), "canceled");
+      return markLastTurnAssistantOutcome(
+        finalizeActiveCompactions(finalizeActiveThoughts(state)),
+        "canceled",
+      );
     case "thread_started":
     case "turn_started":
     case "permission_requested":

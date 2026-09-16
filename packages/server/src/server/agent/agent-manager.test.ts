@@ -9194,6 +9194,146 @@ test("canonical submitted prompt keeps wire identity while rewind resolves provi
   }
 });
 
+test("a restarted daemon closes a compaction its predecessor left open", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-stranded-compaction-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const durableTimelineStore = new FileBackedAgentTimelineStore(join(workdir, "timelines"));
+
+  try {
+    const first = new AgentManager({
+      clients: { codex: new TestAgentClient() },
+      registry: storage,
+      durableTimelineStore,
+      logger,
+      idFactory: () => "00000000-0000-4000-8000-000000000405",
+    });
+    const snapshot = await first.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    await first.appendTimelineItem(snapshot.id, {
+      type: "compaction",
+      status: "loading",
+      trigger: "auto",
+    });
+    await first.flush();
+    await storage.flush();
+
+    // A fresh manager is what a daemon restart looks like: the in-memory
+    // timeline is gone and the durable rows are the only history.
+    const restarted = new AgentManager({
+      clients: { codex: new TestAgentClient() },
+      registry: storage,
+      durableTimelineStore,
+      logger,
+    });
+    await ensureAgentLoaded(snapshot.id, {
+      agentManager: restarted,
+      agentStorage: storage,
+      logger,
+    });
+
+    const compactions = restarted
+      .getTimeline(snapshot.id)
+      .filter((item) => item.type === "compaction");
+    expect(compactions).toEqual([
+      {
+        type: "compaction",
+        status: "completed",
+        trigger: "auto",
+        outcome: "canceled",
+        error: "Compaction was interrupted",
+      },
+    ]);
+
+    await restarted.flush();
+    const durableRows = await durableTimelineStore.getCommittedRows(snapshot.id);
+    expect(durableRows.filter((row) => row.item.type === "compaction")).toEqual([
+      expect.objectContaining({
+        item: expect.objectContaining({ status: "completed", outcome: "canceled" }),
+      }),
+    ]);
+  } finally {
+    await storage.flush().catch(() => undefined);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("a provider echo that lost its client identity completes the submitted row", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-unidentified-echo-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+
+  class RespawnedProviderSession extends TestAgentSession {
+    override async startTurn(prompt: AgentPromptInput): Promise<{ turnId: string }> {
+      const turnId = "turn-respawned-provider";
+      const text =
+        typeof prompt === "string"
+          ? prompt
+          : ((
+              prompt.find((block) => block.type === "text" && !("mimeType" in block)) as
+                | { type: "text"; text: string }
+                | undefined
+            )?.text ?? "");
+      setTimeout(() => {
+        this.pushEvent({ type: "turn_started", provider: this.provider, turnId });
+        // A respawned provider re-delivers the prompt with its own entry id and
+        // no client correlation, exactly like Pi after its process is replaced.
+        this.pushEvent({
+          type: "timeline",
+          provider: this.provider,
+          turnId,
+          item: { type: "user_message", text, messageId: "pi-entry-1" },
+        });
+        this.pushEvent({
+          type: "timeline",
+          provider: this.provider,
+          turnId,
+          item: { type: "assistant_message", text: "resumed work" },
+        });
+        this.pushEvent({ type: "turn_completed", provider: this.provider, turnId });
+      }, 0);
+      return { turnId };
+    }
+  }
+
+  class RespawnedProviderClient extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      return new RespawnedProviderSession(config);
+    }
+  }
+
+  const manager = new AgentManager({
+    clients: { codex: new RespawnedProviderClient() },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000404",
+  });
+
+  try {
+    const snapshot = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+
+    await manager.runAgent(snapshot.id, [{ type: "text", text: "continue" }], {
+      clientMessageId: "client-1",
+    });
+
+    const rows = manager.fetchTimeline(snapshot.id, { direction: "tail", limit: 20 }).rows;
+    const userRows = rows.filter((row) => row.item.type === "user_message");
+    expect(userRows).toHaveLength(1);
+    expect(userRows[0]).toMatchObject({
+      seq: 1,
+      providerMessageId: "pi-entry-1",
+      item: { type: "user_message", text: "continue", clientMessageId: "client-1" },
+    });
+    expect(rows.map((row) => row.item.type)).toEqual(["user_message", "assistant_message"]);
+  } finally {
+    await manager.flush().catch(() => undefined);
+    await storage.flush().catch(() => undefined);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
 test("authoritative timeline records a daemon-handled submitted prompt before its output", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-daemon-handled-prompt-"));
   const storagePath = join(workdir, "agents");

@@ -81,6 +81,11 @@ import {
 const RELOAD_SESSION_CLOSE_TIMEOUT_MS = 3_000;
 const INTERRUPT_SESSION_TIMEOUT_MS = 2_000;
 const STEERING_TURN_START_TIMEOUT_MS = 15_000;
+const INTERRUPTED_COMPACTION_ERROR = "Compaction was interrupted";
+// How long a submitted prompt stays eligible to absorb a provider echo that lost
+// its client correlation. Long enough to cover a provider restart mid-turn,
+// short enough that repeating the same text later is still its own message.
+const UNIDENTIFIED_PROMPT_ECHO_WINDOW_MS = 30 * 60 * 1_000;
 const STORED_AGENT_CAPABILITIES: AgentCapabilityFlags = {
   supportsStreaming: false,
   supportsSessionPersistence: true,
@@ -3163,6 +3168,17 @@ export class AgentManager {
     if (timelineSeed || !this.timelineStore.has(agentId)) {
       this.timelineStore.initialize(agentId, timelineSeed ?? { timestamp: now.toISOString() });
     }
+    if (!timelineAlreadyPrimed) {
+      // Nothing is running against a timeline this registration just seeded, so a
+      // compaction row still marked loading belongs to a daemon that stopped
+      // mid-compaction. Close it here rather than letting it render forever.
+      for (const row of this.timelineStore.terminalizeOpenCompactions(
+        agentId,
+        INTERRUPTED_COMPACTION_ERROR,
+      )) {
+        this.enqueueDurableTimelineUpdate(agentId, row);
+      }
+    }
     if (options?.timelineRows?.length) {
       this.enqueueDurableTimelineBulkInsert(agentId, options.timelineRows);
     }
@@ -3950,6 +3966,16 @@ export class AgentManager {
       return;
     }
 
+    if (
+      event.item.type === "user_message" &&
+      !event.item.clientMessageId &&
+      this.reconcileUnidentifiedPromptEcho(agent, event.item)
+    ) {
+      flags.shouldDispatchEvent = false;
+      flags.shouldNotifyWaiters = false;
+      return;
+    }
+
     if (options?.fromHistory) {
       this.recordTimeline(
         agent.id,
@@ -4249,6 +4275,47 @@ export class AgentManager {
       if (enriched) this.enqueueDurableTimelineUpdate(agent.id, enriched);
     }
     return existing;
+  }
+
+  /**
+   * Absorb a provider echo that arrives without its client identity.
+   *
+   * A provider that restarts or re-delivers a prompt reports it as a fresh user
+   * message. Recording that produces a second row for one prompt: the original
+   * stays where the user sent it, the duplicate lands after the response, and
+   * the message the user is looking for appears to slide down the transcript.
+   * The submitted row is authoritative, so the echo only completes its identity.
+   */
+  private reconcileUnidentifiedPromptEcho(
+    agent: ActiveManagedAgent,
+    item: Extract<AgentTimelineItem, { type: "user_message" }>,
+  ): boolean {
+    if (item.clientMessageId || !item.text.trim()) return false;
+    if (!this.timelineStore.has(agent.id)) return false;
+    const submitted = this.timelineStore.findUnacknowledgedSubmittedUserMessage(
+      agent.id,
+      item.text,
+      new Date(Date.now() - UNIDENTIFIED_PROMPT_ECHO_WINDOW_MS),
+    );
+    const clientMessageId =
+      submitted?.item.type === "user_message" ? submitted.item.clientMessageId : undefined;
+    if (!clientMessageId) return false;
+    const enriched = this.timelineStore.enrichSubmittedUserMessage(
+      agent.id,
+      clientMessageId,
+      item.messageId ?? clientMessageId,
+    );
+    if (enriched) this.enqueueDurableTimelineUpdate(agent.id, enriched);
+    this.logger.debug(
+      {
+        agentId: agent.id,
+        provider: agent.provider,
+        clientMessageId,
+        providerMessageId: item.messageId,
+      },
+      "agent.manager.prompt.echo.reconciled",
+    );
+    return true;
   }
 
   private async appendSystemErrorTimelineMessage(

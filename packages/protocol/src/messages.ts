@@ -740,9 +740,13 @@ export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknow
   }),
   z.object({
     type: z.literal("compaction"),
+    // The status enum stays two-valued so an older app keeps parsing terminal
+    // rows; `outcome` carries the refinement it can safely ignore.
     status: z.enum(["loading", "completed"]),
     trigger: z.enum(["auto", "manual"]).optional(),
     preTokens: z.number().optional(),
+    outcome: z.enum(["failed", "canceled"]).optional(),
+    error: z.string().optional(),
   }),
 ]);
 

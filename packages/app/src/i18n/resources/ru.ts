@@ -357,12 +357,15 @@ export const ru: TranslationResources = {
         completed: "Завершена",
       },
     },
+    pending: "Отправка...",
     compaction: {
       loading: "Уплотнение...",
       auto: "Контекст автоматически сжимается",
       manual: "Контекст сжимается вручную",
       withTokens: "Сжатый контекст (токены{{tokens}}K)",
       completed: "Контекст сжат",
+      failed: "Не удалось сжать контекст",
+      canceled: "Сжатие контекста прервано",
     },
   },
   importSession: {

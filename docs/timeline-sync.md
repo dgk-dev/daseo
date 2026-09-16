@@ -215,6 +215,13 @@ arrived first. If provider output reaches a newly created agent pane before eith
 handoff establishes the missing first-prompt boundary ahead of that output instead of appending it
 after the response. Generic reducers and consumers do not reimplement message identity matching.
 
+A provider can lose that identity on its own. A restarted Pi process re-delivers the prompt it was
+running and reports it as a fresh user message with only its own entry id. The daemon absorbs such
+an echo into the submitted row it duplicates — same text, still unacknowledged, submitted within
+the last 30 minutes — instead of recording a second row. Without that, one prompt exists twice: at
+the position the user sent it and again after the response, which reads as the user's message
+sliding down the transcript.
+
 Ordinary bootstrap, same-epoch reset, and catch-up replacement preserve unmatched locally submitted
 rows because a provider may never echo them. A known epoch change or rewind replaces history and
 drops acknowledged local rows omitted by the new canonical epoch; every transaction not yet
@@ -229,6 +236,26 @@ arrive, while a destructive replacement retains only active submission transacti
 Canonical replacement owns both timeline lanes. A matching local row keeps its presentation ID and
 payload while taking the canonical row's ordered position. If a live assistant head is the
 canonical assistant prefix, it stays in the head lane. No row may be returned in both lanes.
+
+## Compaction progress is not history
+
+Compaction start and end are timeline rows because the timeline is the daemon's one ordered,
+resumable channel. Only the end is history. A `loading` row survives a killed provider, a stopped
+daemon, and a Mac that halts mid-compaction, so rendering it as progress puts a permanent spinner
+in scrollback.
+
+Termination is therefore guaranteed at three layers, and none of them trusts the one below it: the
+provider closes its open compaction when a second one starts, when the turn reaches a terminal
+state, and when its process exits; the daemon closes rows still marked `loading` when it seeds a
+timeline from durable storage at registration; the app closes them when a turn ends. A terminal row
+carries `outcome` — absent for success, `failed` or `canceled` otherwise — so an interrupted
+compaction never presents as a completed one. `status` stays `loading | completed` on the wire so
+older apps keep parsing terminal rows.
+
+The app renders terminal rows only. An open compaction becomes turn-footer status with its own
+elapsed clock. A manual `/compact` is a daemon-handled command with no foreground turn, so that
+status follows turn liveness _or_ a compaction younger than fifteen minutes; anything older is
+abandoned work, not progress.
 
 ## Relevant code
 

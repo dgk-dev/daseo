@@ -349,9 +349,21 @@ export type ToolCallTimelineItem =
 export interface CompactionTimelineItem {
   [key: string]: unknown;
   type: "compaction";
+  /**
+   * `loading` is progress, `completed` is terminal. The enum never grows: an
+   * older app parses a strict two-value enum, so a failed compaction still
+   * arrives as `completed` and refines itself through `outcome`.
+   */
   status: "loading" | "completed";
   trigger?: "auto" | "manual";
   preTokens?: number;
+  /**
+   * How a terminal compaction ended. Absent means it succeeded, which is what
+   * every row recorded before this field existed means.
+   */
+  outcome?: "failed" | "canceled";
+  /** Why a `failed` or `canceled` compaction ended. */
+  error?: string;
 }
 
 export interface AgentTaskItem {

@@ -1,5 +1,6 @@
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { collapseCompletedWorkStream } from "./collapsed-work";
+import { projectCompactionPresentation } from "./compaction-presentation";
 import { CollapsedWorkRow } from "./collapsed-work-row";
 import { CollapsedWorkProvider, type CollapsedWorkController } from "./collapsed-work-context";
 import React, {
@@ -528,18 +529,27 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       !isAuthoritativeHistoryReady ||
       isTimelineDetached ||
       pendingPermissions.size > 0;
+    const projectedCompaction = useMemo(
+      () =>
+        projectCompactionPresentation({
+          tail: projectedToolCalls.tail,
+          head: projectedToolCalls.head,
+          isTurnActive,
+        }),
+      [isTurnActive, projectedToolCalls.head, projectedToolCalls.tail],
+    );
     const collapsedStream = useMemo(
       () =>
         collapseCompletedWorkStream({
-          tail: projectedToolCalls.tail,
-          head: projectedToolCalls.head,
+          tail: projectedCompaction.tail,
+          head: projectedCompaction.head,
           expandedTurnKeys: expandedWorkTurnKeys,
           isTurnActive: shouldProtectTrailingTurn,
         }),
       [
         expandedWorkTurnKeys,
-        projectedToolCalls.head,
-        projectedToolCalls.tail,
+        projectedCompaction.head,
+        projectedCompaction.tail,
         shouldProtectTrailingTurn,
       ],
     );
@@ -896,6 +906,8 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
                 status={item.status}
                 trigger={item.trigger}
                 preTokens={item.preTokens}
+                outcome={item.outcome}
+                error={item.error}
               />
             );
 
@@ -947,6 +959,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           <TurnFooter
             isRunning={isTurnActive}
             inFlightTurnStartedAt={baseRenderModel.turnTiming.runningStartedAt}
+            activeCompaction={projectedCompaction.active}
             host={bottomTurnFooterHost}
             strategy={streamRenderStrategy}
             supportsTimelineCursor={supportsAgentForkContextCursor}
@@ -961,6 +974,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         isTurnActive,
         baseRenderModel.turnTiming.runningStartedAt,
         bottomTurnFooterHost,
+        projectedCompaction.active,
         streamRenderStrategy,
         supportsAgentForkContextCursor,
       ],

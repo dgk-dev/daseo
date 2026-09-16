@@ -353,12 +353,15 @@ export const en = {
         completed: "Completed",
       },
     },
+    pending: "Sending...",
     compaction: {
       loading: "Compacting...",
       auto: "Context automatically compacted",
       manual: "Context manually compacted",
       withTokens: "Context compacted ({{tokens}}K tokens)",
       completed: "Context compacted",
+      failed: "Context compaction failed",
+      canceled: "Context compaction interrupted",
     },
   },
   importSession: {

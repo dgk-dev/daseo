@@ -262,6 +262,21 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
   PR-context or chat-history attachment failed validation and took the whole page with it. The pin
   stays at or above 0.20.5 and `packages/protocol/tests/validation/ws-outbound.test.ts` covers both
   the compiler behaviour and every attachment branch on real timeline messages.
+- Compaction progress never becomes permanent scrollback. The provider closes an open compaction on
+  a second start, a terminal turn, and process exit; the daemon closes rows still marked `loading`
+  when it seeds a timeline from durable storage; the app closes them when a turn ends and renders
+  only terminal rows, showing a live compaction as turn-footer status instead. A terminal row
+  carries `outcome` (`failed`/`canceled`, absent for success) while the wire `status` stays
+  `loading | completed`, so an interrupted compaction stops reading as a successful one without
+  breaking an older app. This is the fix for a Mac that halted mid-compaction leaving "압축하는 중"
+  on screen indefinitely. See [docs/timeline-sync.md](docs/timeline-sync.md#compaction-progress-is-not-history).
+- One prompt is one row even when a provider forgets it. A respawned Pi process re-delivers the
+  running prompt as a fresh user message with only its own entry id; the daemon absorbs that echo
+  into the unacknowledged submitted row it duplicates instead of appending a second row after the
+  response, which is what made a sent message appear to slide down the transcript. Submitted rows
+  awaiting delivery are marked in the transcript rather than looking already delivered. Key files:
+  `packages/server/src/server/agent/{agent-manager,agent-timeline-store}.ts` and
+  `packages/app/src/components/message.tsx`.
 - A page of older history that fails to load is remembered by its cursor. Returning to the history
   start does not silently re-request it; the history-start slot offers an explicit Retry instead,
   and the block clears as soon as the start cursor moves or a retry succeeds. Key files:

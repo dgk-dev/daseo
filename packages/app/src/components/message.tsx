@@ -411,6 +411,39 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
   },
 }));
 
+/**
+ * Delivery is not instant while a turn is running or compacting, so an unmarked
+ * row looks identical to one the agent already has.
+ */
+const UserMessageDeliveryLabel = memo(function UserMessageDeliveryLabel({
+  isPending,
+  isSteering,
+}: {
+  isPending: boolean;
+  isSteering: boolean;
+}) {
+  const { t } = useTranslation();
+  if (isPending) {
+    return (
+      <Text
+        accessibilityLabel={t("message.pending")}
+        style={userMessageStylesheet.steeringLabel}
+        testID="user-message-pending"
+      >
+        {t("message.pending")}
+      </Text>
+    );
+  }
+  if (isSteering) {
+    return (
+      <Text accessibilityLabel={t("message.steering")} style={userMessageStylesheet.steeringLabel}>
+        {t("message.steering")}
+      </Text>
+    );
+  }
+  return null;
+});
+
 interface UserMessageImagePillProps {
   image: UserMessageImageAttachment;
   onOpen: (image: UserMessageImageAttachment) => void;
@@ -564,14 +597,7 @@ export const UserMessage = memo(function UserMessage({
               {message}
             </Text>
           ) : null}
-          {isSteering ? (
-            <Text
-              accessibilityLabel={t("message.steering")}
-              style={userMessageStylesheet.steeringLabel}
-            >
-              {t("message.steering")}
-            </Text>
-          ) : null}
+          <UserMessageDeliveryLabel isPending={isPending} isSteering={isSteering} />
         </View>
         {hasText ? (
           <View
@@ -2249,6 +2275,8 @@ interface CompactionMarkerProps {
   status: "loading" | "completed";
   trigger?: "auto" | "manual";
   preTokens?: number;
+  outcome?: "failed" | "canceled";
+  error?: string;
 }
 
 const compactionStylesheet = StyleSheet.create((theme) => ({
@@ -2280,8 +2308,10 @@ export const CompactionMarker = memo(function CompactionMarker({
   status,
   trigger,
   preTokens,
+  outcome,
+  error,
 }: CompactionMarkerProps) {
-  const label = getCompactionMarkerLabel({ status, trigger, preTokens });
+  const label = getCompactionMarkerLabel({ status, trigger, preTokens, outcome, error });
 
   return (
     <View style={compactionStylesheet.container}>

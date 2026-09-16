@@ -354,12 +354,15 @@ export const zhCN: TranslationResources = {
         completed: "已完成",
       },
     },
+    pending: "正在发送...",
     compaction: {
       loading: "正在压缩...",
       auto: "上下文已自动压缩",
       manual: "上下文已手动压缩",
       withTokens: "上下文已压缩（{{tokens}}K tokens）",
       completed: "上下文已压缩",
+      failed: "上下文压缩失败",
+      canceled: "上下文压缩已中断",
     },
   },
   importSession: {

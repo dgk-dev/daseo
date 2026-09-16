@@ -219,6 +219,24 @@ function mapPiSlashCommands(
 const PI_AGENT_SETTLEMENT_RECHECK_MS = 1_000;
 const PI_AGENT_SETTLEMENT_QUIESCENCE_MS = 5_000;
 
+const PI_INTERRUPTED_COMPACTION_ERROR = "Compaction was interrupted";
+
+/**
+ * Pi reports an aborted or failed compaction through the same end event as a
+ * successful one. Only a successful end may present as plain "context compacted".
+ */
+function readPiCompactionFailure(
+  event: Extract<PiAgentSessionEvent, { type: "compaction_end" }>,
+): { outcome: "failed" | "canceled"; error: string } | Record<string, never> {
+  if (event.aborted) {
+    return { outcome: "canceled", error: event.errorMessage ?? "Compaction canceled" };
+  }
+  if (event.errorMessage) {
+    return { outcome: "failed", error: event.errorMessage };
+  }
+  return {};
+}
+
 const PI_CAPABILITIES: AgentCapabilityFlags = {
   supportsStreaming: true,
   supportsSessionPersistence: true,
@@ -1565,6 +1583,10 @@ export class PiRpcAgentSession implements AgentSession {
   private pendingAgentEnd: PiPendingAgentEnd | null = null;
   private settlementFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   private settlementCompactionTurnId: string | null = null;
+  // A compaction row is progress the timeline has already committed. Track the
+  // open one so every exit — a second compaction, a terminal turn, a dead Pi
+  // process — closes it instead of leaving a permanent "compacting" marker.
+  private openCompaction: { turnId: string | undefined; trigger: "auto" | "manual" } | null = null;
   private activeAssistantMessageId: string | null = null;
   private activeTurnStarted = false;
   private activeNoTurnPromptText: string | null = null;
@@ -1955,6 +1977,7 @@ export class PiRpcAgentSession implements AgentSession {
     try {
       await this.runtimeSession.close();
     } finally {
+      this.terminalizeOpenCompaction("canceled", PI_INTERRUPTED_COMPACTION_ERROR);
       this.clearTurnInputCorrelations();
       this.clearPendingSettlement();
       this.rejectAllExtensionResults(new Error("Pi session closed"));
@@ -2354,12 +2377,15 @@ export class PiRpcAgentSession implements AgentSession {
         this.outOfBandCompactionStarted &&
         !this.outOfBandCompactionCompleted
       ) {
+        this.openCompaction = null;
         this.emitCompactionTimeline({
           turnId: undefined,
           item: {
             type: "compaction",
             status: "completed",
             trigger: "manual",
+            outcome: "failed",
+            error: message,
           },
         });
       }
@@ -2689,6 +2715,7 @@ export class PiRpcAgentSession implements AgentSession {
       return;
     }
     const turnId = this.activeTurnId;
+    this.terminalizeOpenCompaction("failed", error);
     this.activeTurnId = null;
     this.clearTurnInputCorrelations();
     this.clearPendingSettlement();
@@ -2759,34 +2786,10 @@ export class PiRpcAgentSession implements AgentSession {
         return;
       }
       case "compaction_start":
-        // Auto-compaction runs between agent_end and a continuation. Mark it as
-        // active before emitting UI state so even legacy fallback cannot settle.
-        if (turnId) {
-          this.settlementCompactionTurnId = turnId;
-          this.cancelSettlementProbe();
-        }
-        this.emitCompactionTimeline({
-          turnId,
-          item: {
-            type: "compaction",
-            status: "loading",
-            trigger: event.reason === "manual" ? "manual" : "auto",
-          },
-        });
+        this.handleCompactionStart(event, turnId);
         return;
       case "compaction_end":
-        this.emitCompactionTimeline({
-          turnId,
-          item: {
-            type: "compaction",
-            status: "completed",
-            trigger: event.reason === "manual" ? "manual" : "auto",
-          },
-        });
-        if (turnId && this.settlementCompactionTurnId === turnId) {
-          this.settlementCompactionTurnId = null;
-          this.scheduleSettlementProbe();
-        }
+        this.handleCompactionEnd(event, turnId);
         return;
       case "agent_end":
         this.handleAgentEnd(turnId, event);
@@ -2817,6 +2820,70 @@ export class PiRpcAgentSession implements AgentSession {
     const error = event.isError ? event.result : null;
     const status = event.isError ? "failed" : "completed";
     this.emitToolCallEvent(event.toolCallId, toolCall, status, result, error);
+  }
+
+  private handleCompactionStart(
+    event: Extract<PiAgentSessionEvent, { type: "compaction_start" }>,
+    turnId: string | undefined,
+  ): void {
+    // Auto-compaction runs between agent_end and a continuation. Mark it as
+    // active before emitting UI state so even legacy fallback cannot settle.
+    if (turnId) {
+      this.settlementCompactionTurnId = turnId;
+      this.cancelSettlementProbe();
+    }
+    // Pi can start a second compaction after a first one was interrupted without
+    // reporting its end. Close the stale row before opening a new one.
+    this.terminalizeOpenCompaction("canceled", PI_INTERRUPTED_COMPACTION_ERROR);
+    const trigger = event.reason === "manual" ? "manual" : "auto";
+    this.openCompaction = { turnId, trigger };
+    this.emitCompactionTimeline({
+      turnId,
+      item: { type: "compaction", status: "loading", trigger },
+    });
+  }
+
+  private handleCompactionEnd(
+    event: Extract<PiAgentSessionEvent, { type: "compaction_end" }>,
+    turnId: string | undefined,
+  ): void {
+    const open = this.openCompaction;
+    this.openCompaction = null;
+    const failure = readPiCompactionFailure(event);
+    this.emitCompactionTimeline({
+      turnId,
+      item: {
+        type: "compaction",
+        status: "completed",
+        trigger: event.reason === "manual" ? "manual" : (open?.trigger ?? "auto"),
+        ...failure,
+      },
+    });
+    if (turnId && this.settlementCompactionTurnId === turnId) {
+      this.settlementCompactionTurnId = null;
+      this.scheduleSettlementProbe();
+    }
+  }
+
+  /**
+   * Close an open compaction row without a matching `compaction_end`. Pi stops
+   * reporting one when its process dies or a turn ends around it, and a row left
+   * in `loading` renders as a spinner that outlives the work forever.
+   */
+  private terminalizeOpenCompaction(outcome: "failed" | "canceled", error: string): void {
+    const open = this.openCompaction;
+    if (!open) return;
+    this.openCompaction = null;
+    this.emitCompactionTimeline({
+      turnId: open.turnId,
+      item: {
+        type: "compaction",
+        status: "completed",
+        trigger: open.trigger,
+        outcome,
+        error,
+      },
+    });
   }
 
   private emitCompactionTimeline(input: {
@@ -2987,6 +3054,7 @@ export class PiRpcAgentSession implements AgentSession {
       this.lastInterruptedTurnId = null;
       return;
     }
+    this.terminalizeOpenCompaction("canceled", PI_INTERRUPTED_COMPACTION_ERROR);
     this.activeTurnId = null;
     this.clearTurnInputCorrelations();
     this.clearPendingSettlement();

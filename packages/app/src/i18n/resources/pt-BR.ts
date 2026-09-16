@@ -358,12 +358,15 @@ export const ptBR: TranslationResources = {
         completed: "Concluída",
       },
     },
+    pending: "Enviando...",
     compaction: {
       loading: "Compactando...",
       auto: "Contexto compactado automaticamente",
       manual: "Contexto compactado manualmente",
       withTokens: "Contexto compactado ({{tokens}}K tokens)",
       completed: "Contexto compactado",
+      failed: "Falha ao compactar o contexto",
+      canceled: "Compactação de contexto interrompida",
     },
   },
   importSession: {

@@ -18,6 +18,22 @@ describe("getCompactionMarkerLabel", () => {
     expect(getCompactionMarkerLabel({ status: "completed" })).toBe("Context compacted");
   });
 
+  it("never reports an interrupted or failed compaction as done", () => {
+    expect(
+      getCompactionMarkerLabel({ status: "completed", trigger: "auto", outcome: "canceled" }),
+    ).toBe("Context compaction interrupted");
+    expect(getCompactionMarkerLabel({ status: "completed", outcome: "failed" })).toBe(
+      "Context compaction failed",
+    );
+    expect(
+      getCompactionMarkerLabel({
+        status: "completed",
+        outcome: "failed",
+        error: "Prompt is too long",
+      }),
+    ).toBe("Context compaction failed: Prompt is too long");
+  });
+
   it("renders labels in the active app language", async () => {
     await i18n.changeLanguage("zh-CN");
     try {

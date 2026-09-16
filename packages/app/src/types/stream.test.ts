@@ -459,6 +459,7 @@ function todoTimeline(
 function compactionTimeline(
   status: "loading" | "completed",
   trigger?: "auto" | "manual",
+  terminal?: { outcome: "failed" | "canceled"; error?: string },
 ): AgentStreamEventPayload {
   return {
     type: "timeline",
@@ -467,8 +468,15 @@ function compactionTimeline(
       type: "compaction",
       status,
       ...(trigger ? { trigger } : {}),
+      ...(terminal ? terminal : {}),
     },
   };
+}
+
+function compactionItems(state: StreamItem[]): Extract<StreamItem, { kind: "compaction" }>[] {
+  return state.filter(
+    (item): item is Extract<StreamItem, { kind: "compaction" }> => item.kind === "compaction",
+  );
 }
 
 function findToolByCallId(state: StreamItem[], callId: string): AgentToolCallItem | undefined {
@@ -1515,6 +1523,68 @@ describe("stream reducer canonical tool calls", () => {
       state.some((item) => item.kind === "compaction" && item.status === "loading"),
       false,
     );
+  });
+
+  it("completes the newest compaction when an earlier one was never closed", () => {
+    const state = hydrateStreamState([
+      {
+        event: compactionTimeline("loading", "auto"),
+        timestamp: new Date("2026-09-15T15:16:57Z"),
+      },
+      {
+        event: compactionTimeline("loading", "auto"),
+        timestamp: new Date("2026-09-16T00:01:04Z"),
+      },
+      {
+        event: compactionTimeline("completed", "auto"),
+        timestamp: new Date("2026-09-16T00:02:45Z"),
+      },
+    ]);
+
+    const compactions = compactionItems(state);
+    assert.strictEqual(compactions.length, 2);
+    assert.strictEqual(compactions[0].status, "loading");
+    assert.strictEqual(compactions[1].status, "completed");
+  });
+
+  it("keeps a failed compaction distinguishable from a successful one", () => {
+    const state = hydrateStreamState([
+      {
+        event: compactionTimeline("loading", "auto"),
+        timestamp: new Date("2026-09-16T00:01:04Z"),
+      },
+      {
+        event: compactionTimeline("completed", "auto", {
+          outcome: "failed",
+          error: "Prompt is too long",
+        }),
+        timestamp: new Date("2026-09-16T00:02:45Z"),
+      },
+    ]);
+
+    const compactions = compactionItems(state);
+    assert.strictEqual(compactions.length, 1);
+    assert.strictEqual(compactions[0].status, "completed");
+    assert.strictEqual(compactions[0].outcome, "failed");
+    assert.strictEqual(compactions[0].error, "Prompt is too long");
+  });
+
+  it("terminalizes an abandoned compaction when the turn ends", () => {
+    const state = hydrateStreamState([
+      {
+        event: compactionTimeline("loading", "auto"),
+        timestamp: new Date("2026-09-15T15:16:57Z"),
+      },
+      {
+        event: { type: "turn_failed", provider: "pi", error: "Pi RPC process exited" },
+        timestamp: new Date("2026-09-15T15:17:10Z"),
+      },
+    ]);
+
+    const compactions = compactionItems(state);
+    assert.strictEqual(compactions.length, 1);
+    assert.strictEqual(compactions[0].status, "completed");
+    assert.strictEqual(compactions[0].outcome, "canceled");
   });
 
   it("renders Claude TodoWrite as todo_list and suppresses tool call badge", () => {

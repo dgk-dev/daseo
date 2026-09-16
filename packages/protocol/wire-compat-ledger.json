@@ -54,13 +54,13 @@
   "compatibleChanges": [
     {
       "root": "src/messages.ts#WSInboundMessageSchema",
-      "digest": "sha256:94e51f613d1c77594a589fe2d12b056c90c535d37e22f9f76c619ad8ab5dd9d4",
-      "rationale": "Retains the additive optional commandId plus device-pairing and command-receipt request variants while sharing the existing attachment declarations with canonical timeline payloads. Existing request fields and variants remain unchanged; older daemons continue parsing old requests and reject only newly invoked RPC variants they do not implement."
+      "digest": "sha256:4d7f7d547853ab8e16356f90b78c4324e5bc0e5c12c566427891f6d2cbb18d71",
+      "rationale": "Retains the additive optional commandId plus device-pairing and command-receipt request variants while sharing the existing attachment declarations with canonical timeline payloads. Existing request fields and variants remain unchanged; older daemons continue parsing old requests and reject only newly invoked RPC variants they do not implement. The compaction timeline item additionally gains optional outcome and error fields; its status enum stays loading|completed, so an older app parses every terminal compaction exactly as before and simply ignores the refinement."
     },
     {
       "root": "src/messages.ts#WSOutboundMessageSchema",
-      "digest": "sha256:c58ce24113eddc1ff3c6812e10195d45854c734bf7a0eb0de1d713dacbbdf51b",
-      "rationale": "Retains the additive optional turnOutcome, feature flags, device-pairing, push-catch-up, and command-receipt responses, and adds optional imageCount and attachments to canonical user timeline rows. Existing response fields and variants remain unchanged; older clients ignore optional object fields and never receive new RPC responses unless they send the corresponding new request."
+      "digest": "sha256:91abbf5ea21b710161567ef065b3a7cc2e5e5173e3cfcfa6271c14b2c15b241e",
+      "rationale": "Retains the additive optional turnOutcome, feature flags, device-pairing, push-catch-up, and command-receipt responses, and adds optional imageCount and attachments to canonical user timeline rows. Existing response fields and variants remain unchanged; older clients ignore optional object fields and never receive new RPC responses unless they send the corresponding new request. The compaction timeline item additionally gains optional outcome and error fields; its status enum stays loading|completed, so an older app parses every terminal compaction exactly as before and simply ignores the refinement."
     },
     {
       "root": "src/connection-offer.ts#ConnectionOfferSchema",

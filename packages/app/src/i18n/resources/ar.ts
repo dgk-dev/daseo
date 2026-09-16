@@ -355,12 +355,15 @@ export const ar: TranslationResources = {
         completed: "اكتملت",
       },
     },
+    pending: "جارٍ الإرسال...",
     compaction: {
       loading: "الضغط...",
       auto: "يتم ضغط السياق تلقائيًا",
       manual: "تم ضغط السياق يدويًا",
       withTokens: "تم ضغط السياق (رموز{{tokens}}K)",
       completed: "تم ضغط السياق",
+      failed: "فشل ضغط السياق",
+      canceled: "تم إيقاف ضغط السياق",
     },
   },
   importSession: {

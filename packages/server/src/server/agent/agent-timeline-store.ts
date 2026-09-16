@@ -176,6 +176,29 @@ export class InMemoryAgentTimelineStore {
     return row ? cloneRow(row) : null;
   }
 
+  /**
+   * Find a submitted prompt the provider has never echoed back. A provider that
+   * lost its client correlation — a respawned Pi process re-delivering the same
+   * prompt, say — reports the prompt as if it were new, and recording that as a
+   * second row makes the user's message appear again below the response.
+   */
+  findUnacknowledgedSubmittedUserMessage(
+    agentId: string,
+    text: string,
+    notBefore: Date,
+  ): AgentTimelineRow | null {
+    const state = this.requireState(agentId);
+    for (let index = state.rows.length - 1; index >= 0; index -= 1) {
+      const row = state.rows[index];
+      if (!row || row.item.type !== "user_message") continue;
+      if (!row.item.clientMessageId || row.providerMessageId) continue;
+      if (row.item.text !== text) continue;
+      if (new Date(row.timestamp).getTime() < notBefore.getTime()) return null;
+      return cloneRow(row);
+    }
+    return null;
+  }
+
   enrichSubmittedUserMessage(
     agentId: string,
     clientMessageId: string,
@@ -194,6 +217,26 @@ export class InMemoryAgentTimelineStore {
     const enriched: AgentTimelineRow = { ...row, providerMessageId };
     state.rows[index] = enriched;
     return cloneRow(enriched);
+  }
+
+  /**
+   * Close compaction rows that were still `loading` when this timeline was last
+   * written. Compaction progress is committed history, so a daemon that died
+   * mid-compaction leaves a row nothing will ever complete.
+   */
+  terminalizeOpenCompactions(agentId: string, error: string): AgentTimelineRow[] {
+    const state = this.requireState(agentId);
+    const updated: AgentTimelineRow[] = [];
+    for (const [index, row] of state.rows.entries()) {
+      if (row.item.type !== "compaction" || row.item.status !== "loading") continue;
+      const next: AgentTimelineRow = {
+        ...row,
+        item: { ...row.item, status: "completed", outcome: "canceled", error },
+      };
+      state.rows[index] = next;
+      updated.push(cloneRow(next));
+    }
+    return updated;
   }
 
   markTurnAssistantOutcome(

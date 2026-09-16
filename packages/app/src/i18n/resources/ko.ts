@@ -356,12 +356,15 @@ export const ko: TranslationResources = {
         completed: "완료됨",
       },
     },
+    pending: "보내는 중...",
     compaction: {
       loading: "압축하는 중...",
       auto: "컨텍스트가 자동으로 압축되었습니다",
       manual: "컨텍스트가 수동으로 압축되었습니다",
       withTokens: "컨텍스트가 압축되었습니다 ({{tokens}}K 토큰)",
       completed: "컨텍스트가 압축되었습니다",
+      failed: "컨텍스트 압축이 실패했습니다",
+      canceled: "컨텍스트 압축이 중단되었습니다",
     },
   },
   importSession: {

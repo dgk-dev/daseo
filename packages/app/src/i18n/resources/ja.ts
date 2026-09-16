@@ -358,12 +358,15 @@ export const ja: TranslationResources = {
         completed: "完了",
       },
     },
+    pending: "送信中...",
     compaction: {
       loading: "コンテキストを圧縮中...",
       auto: "コンテキストが自動的に圧縮されました",
       manual: "コンテキストが手動で圧縮されました",
       withTokens: "コンテキストを圧縮しました（{{tokens}}Kトークン）",
       completed: "コンテキストを圧縮しました",
+      failed: "コンテキストの圧縮に失敗しました",
+      canceled: "コンテキストの圧縮が中断されました",
     },
   },
   importSession: {
