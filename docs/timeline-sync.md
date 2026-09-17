@@ -266,10 +266,15 @@ compaction younger than fifteen minutes; anything older is abandoned work, not p
 completed marker keeps the start time and appends the duration.
 
 A prompt sent while Pi compacts is parked, not rejected. Pi refuses the prompt RPC for the whole
-compaction window, so the daemon holds the payload in one slot, keeps the turn allocated so the row
-stays visible as submitted, and sends it at `compaction_end` — also when the compaction failed or
-was canceled, since Pi is idle again either way. The manager only starts a turn when none is active,
-so one slot is the entire queue.
+compaction window, so the daemon holds the payload in one slot and sends it at `compaction_end` —
+also when the compaction failed or was canceled, since Pi is idle again either way. The manager only
+starts a turn when none is active, so one slot is the entire queue.
+
+Parking is invisible to the user, by design. `startTurn` returns its turn id right away, so the
+manager opens the turn and records the submitted prompt with `messageId` set to the client message
+id; the canonical row acknowledges that client message id on its own, so the delivery label clears
+and the message reads as an ordinary sent one while the footer reports the compaction. Nothing in
+the transcript distinguishes a parked prompt from a delivered one.
 
 ## Relevant code
 

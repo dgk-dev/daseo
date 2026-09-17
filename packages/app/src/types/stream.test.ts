@@ -16,6 +16,7 @@ import {
   upsertUserMessage,
   upsertUserMessageAcrossStream,
 } from "./stream";
+import { getCompactionMarkerLabel } from "@/components/message-compaction-label";
 import type { AgentProvider, ToolCallDetail } from "@getpaseo/protocol/agent-types";
 import type { AgentStreamEventPayload } from "@getpaseo/protocol/messages";
 import { buildToolCallDisplayModel } from "@getpaseo/protocol/tool-call-display";
@@ -309,6 +310,63 @@ describe("canonical replacement turn outcomes", () => {
     );
 
     expect(messages.map((message) => message.turnOutcome)).toEqual([undefined, "canceled"]);
+  });
+
+  it("keeps the compaction duration when a canonical page still holds the loading row", () => {
+    // The live `compaction_end` lands in the head while the canonical page's
+    // coverage still ends at the loading row, so the merge happens here rather
+    // than in `reduceTimelineCompaction`. Both paths must produce the same row.
+    const startedAt = new Date("2026-09-17T10:50:00.000Z");
+    const completedAt = new Date("2026-09-17T10:51:14.000Z");
+    const canonical: StreamItem[] = [
+      {
+        kind: "compaction",
+        id: "canonical-compaction-loading",
+        timelineCursor: { epoch: "epoch-1", seq: 1 },
+        timestamp: startedAt,
+        status: "loading",
+        trigger: "manual",
+        startedAt,
+      },
+    ];
+    const previousHead: StreamItem[] = [
+      {
+        kind: "compaction",
+        id: "live-compaction-completed",
+        timelineCursor: { epoch: "epoch-1", seq: 2 },
+        timestamp: completedAt,
+        status: "completed",
+        trigger: "manual",
+      },
+    ];
+
+    const result = replaceWithCanonicalStream({
+      canonical,
+      previousTail: [],
+      previousHead,
+      sendingClientMessageIds: [],
+      preserveContinuity: true,
+      canonicalCoverage: { epoch: "epoch-1", endSeq: 1 },
+    });
+
+    const compactions = compactionItems([...result.tail, ...result.head]);
+    assert.strictEqual(compactions.length, 1);
+    const merged = compactions[0];
+    assert.strictEqual(merged.status, "completed");
+    assert.strictEqual(merged.outcome, undefined);
+    assert.strictEqual(merged.startedAt?.toISOString(), startedAt.toISOString());
+    assert.strictEqual(merged.timestamp.toISOString(), completedAt.toISOString());
+    expect(
+      getCompactionMarkerLabel({
+        status: merged.status,
+        trigger: merged.trigger,
+        preTokens: merged.preTokens,
+        startedAt: merged.startedAt,
+        completedAt: merged.timestamp,
+        outcome: merged.outcome,
+        error: merged.error,
+      }),
+    ).toBe("Context manually compacted · 1m 14s");
   });
 
   it("does not transfer an outcome by generic text across a partial page", () => {

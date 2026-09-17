@@ -274,8 +274,10 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
   turn footer mounts on an active compaction even with no foreground turn, so the spinner, the
   "압축하는 중" label, and the compaction's own elapsed clock stay on screen; the completed marker
   then carries the duration. Pi rejects a prompt outright while it compacts, so the daemon parks it
-  in a single slot, keeps the turn allocated and the row visible as "보내는 중", and sends it at
-  `compaction_end` — including a failed or canceled one, because Pi is idle again either way. Turn
+  in a single slot and sends it at `compaction_end` — including a failed or canceled one, because Pi
+  is idle again either way. `startTurn` still returns its turn id immediately, so the daemon opens
+  the turn and records the submitted prompt as usual: the user's row clears "보내는 중" and reads as
+  an ordinary sent message while the footer shows "압축하는 중". There is no queued state. Turn
   cancellation and process exit clear the slot through their existing terminal paths. Key files:
   `packages/app/src/agent-stream/view.tsx`, `packages/app/src/types/stream.ts`, and
   `packages/server/src/server/agent/providers/pi/agent.ts`.

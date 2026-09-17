@@ -527,26 +527,42 @@ function mergeRetainedLifecycleItem(tail: StreamItem[], retained: StreamItem): S
     return next;
   }
   if (retained.kind === "compaction" && retained.status === "completed") {
-    const tailIndex = tail.findLastIndex(
-      (item) => item.kind === "compaction" && item.status === "loading",
-    );
-    const existing = tail[tailIndex];
-    if (tailIndex < 0 || !existing || existing.kind !== "compaction") {
-      return null;
-    }
-    const next = [...tail];
-    next[tailIndex] = {
-      ...existing,
-      timelineCursor: retained.timelineCursor,
-      status: "completed",
-      trigger: retained.trigger ?? existing.trigger,
-      preTokens: retained.preTokens ?? existing.preTokens,
-      ...(retained.outcome ? { outcome: retained.outcome } : {}),
-      ...(retained.error ? { error: retained.error } : {}),
-    };
-    return next;
+    return mergeRetainedCompaction(tail, retained);
   }
   return null;
+}
+
+/**
+ * Same merge as `reduceTimelineCompaction`, on the canonical-replacement path:
+ * the surviving row is the completion marker, so it takes the retained row's
+ * position and time while the loading row's time stays the duration anchor.
+ */
+function mergeRetainedCompaction(
+  tail: StreamItem[],
+  retained: CompactionItem,
+): StreamItem[] | null {
+  const tailIndex = tail.findLastIndex(
+    (item) => item.kind === "compaction" && item.status === "loading",
+  );
+  const existing = tail[tailIndex];
+  if (tailIndex < 0 || !existing || existing.kind !== "compaction") {
+    return null;
+  }
+  const turnId = retained.turnId ?? existing.turnId;
+  const next = [...tail];
+  next[tailIndex] = {
+    ...existing,
+    timelineCursor: retained.timelineCursor,
+    timestamp: retained.timestamp,
+    startedAt: existing.startedAt ?? existing.timestamp,
+    status: "completed",
+    trigger: retained.trigger ?? existing.trigger,
+    preTokens: retained.preTokens ?? existing.preTokens,
+    ...(turnId ? { turnId } : {}),
+    ...(retained.outcome ? { outcome: retained.outcome } : {}),
+    ...(retained.error ? { error: retained.error } : {}),
+  };
+  return next;
 }
 
 function reconcileReplacementHeadAgainstTail(
