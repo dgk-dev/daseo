@@ -460,10 +460,12 @@ function compactionTimeline(
   status: "loading" | "completed",
   trigger?: "auto" | "manual",
   terminal?: { outcome: "failed" | "canceled"; error?: string },
+  turnId?: string,
 ): AgentStreamEventPayload {
   return {
     type: "timeline",
     provider: "pi",
+    ...(turnId ? { turnId } : {}),
     item: {
       type: "compaction",
       status,
@@ -1525,6 +1527,61 @@ describe("stream reducer canonical tool calls", () => {
     );
   });
 
+  it("keeps an out-of-band compaction running when an unrelated turn fails", () => {
+    // Replays the daemon rows recorded for a manual `/compact` on 2026-09-17:
+    // the compaction has no turn, a prompt sent during it failed, and the real
+    // completion arrived 74 seconds later.
+    const state = hydrateStreamState([
+      {
+        event: {
+          type: "timeline",
+          provider: "pi",
+          item: { type: "user_message", text: "/compact" },
+        },
+        timestamp: new Date("2026-09-17T10:50:00Z"),
+      },
+      {
+        event: compactionTimeline("loading", "manual"),
+        timestamp: new Date("2026-09-17T10:50:00Z"),
+      },
+      {
+        event: {
+          type: "timeline",
+          provider: "pi",
+          turnId: "df7112b7",
+          item: { type: "user_message", text: "follow-up while compacting" },
+        },
+        timestamp: new Date("2026-09-17T10:50:20Z"),
+      },
+      {
+        event: {
+          type: "turn_failed",
+          provider: "pi",
+          error: "Cannot submit a prompt while compaction is in progress",
+          turnId: "df7112b7",
+        },
+        timestamp: new Date("2026-09-17T10:50:20Z"),
+      },
+      {
+        event: compactionTimeline("completed", "manual"),
+        timestamp: new Date("2026-09-17T10:51:14Z"),
+      },
+    ]);
+
+    const compactions = compactionItems(state);
+    assert.strictEqual(compactions.length, 1);
+    assert.strictEqual(compactions[0].status, "completed");
+    assert.strictEqual(compactions[0].outcome, undefined);
+    assert.strictEqual(
+      compactions[0].startedAt?.toISOString(),
+      new Date("2026-09-17T10:50:00Z").toISOString(),
+    );
+    assert.strictEqual(
+      compactions[0].timestamp.toISOString(),
+      new Date("2026-09-17T10:51:14Z").toISOString(),
+    );
+  });
+
   it("completes the newest compaction when an earlier one was never closed", () => {
     const state = hydrateStreamState([
       {
@@ -1569,14 +1626,19 @@ describe("stream reducer canonical tool calls", () => {
     assert.strictEqual(compactions[0].error, "Prompt is too long");
   });
 
-  it("terminalizes an abandoned compaction when the turn ends", () => {
+  it("terminalizes an abandoned compaction when its own turn ends", () => {
     const state = hydrateStreamState([
       {
-        event: compactionTimeline("loading", "auto"),
+        event: compactionTimeline("loading", "auto", undefined, "turn-1"),
         timestamp: new Date("2026-09-15T15:16:57Z"),
       },
       {
-        event: { type: "turn_failed", provider: "pi", error: "Pi RPC process exited" },
+        event: {
+          type: "turn_failed",
+          provider: "pi",
+          error: "Pi RPC process exited",
+          turnId: "turn-1",
+        },
         timestamp: new Date("2026-09-15T15:17:10Z"),
       },
     ]);

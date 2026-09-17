@@ -22,7 +22,7 @@ import { isUnreconciledLocalUserMessage, type StreamItem } from "@/types/stream"
 import { normalizeAgentSnapshot } from "@/utils/agent-snapshots";
 
 const STORAGE_KEY = "@paseo:replica-cache";
-const CACHE_VERSION = 7;
+const CACHE_VERSION = 8;
 const PERSIST_DELAY_MS = 750;
 const MAX_TIMELINE_ITEMS = 50;
 const MAX_CACHED_TIMELINES_PER_HOST = 5;
@@ -101,6 +101,8 @@ const StoredTimelineItemSchema = z.discriminatedUnion("kind", [
     status: z.enum(["loading", "completed"]),
     trigger: z.enum(["auto", "manual"]).optional(),
     preTokens: z.number().nonnegative().optional(),
+    turnId: z.string().optional(),
+    startedAt: IsoDateSchema.optional(),
     outcome: z.enum(["failed", "canceled"]).optional(),
     error: z.string().optional(),
   }),
@@ -406,6 +408,8 @@ function serializeTimelineItem(item: StreamItem): StoredTimelineItem | null {
         status: item.status,
         ...(item.trigger ? { trigger: item.trigger } : {}),
         ...(item.preTokens !== undefined ? { preTokens: item.preTokens } : {}),
+        ...(item.turnId ? { turnId: item.turnId } : {}),
+        ...(item.startedAt ? { startedAt: item.startedAt.toISOString() } : {}),
         ...(item.outcome ? { outcome: item.outcome } : {}),
         ...(item.error ? { error: item.error } : {}),
       };
@@ -501,6 +505,8 @@ function deserializeTimelineItem(item: StoredTimelineItem): StreamItem {
         status: item.status,
         ...(item.trigger ? { trigger: item.trigger } : {}),
         ...(item.preTokens !== undefined ? { preTokens: item.preTokens } : {}),
+        ...(item.turnId ? { turnId: item.turnId } : {}),
+        ...(item.startedAt ? { startedAt: new Date(item.startedAt) } : {}),
         ...(item.outcome ? { outcome: item.outcome } : {}),
         ...(item.error ? { error: item.error } : {}),
       };

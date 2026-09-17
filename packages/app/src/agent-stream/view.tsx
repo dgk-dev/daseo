@@ -906,6 +906,8 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
                 status={item.status}
                 trigger={item.trigger}
                 preTokens={item.preTokens}
+                startedAt={item.startedAt}
+                completedAt={item.timestamp}
                 outcome={item.outcome}
                 error={item.error}
               />
@@ -953,32 +955,36 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         }),
       [client, pendingPermissionItems],
     );
-    const turnFooterNode = useMemo(
-      () =>
-        isTurnActive || bottomTurnFooterHost ? (
-          <TurnFooter
-            isRunning={isTurnActive}
-            inFlightTurnStartedAt={baseRenderModel.turnTiming.runningStartedAt}
-            activeCompaction={projectedCompaction.active}
-            host={bottomTurnFooterHost}
-            strategy={streamRenderStrategy}
-            supportsTimelineCursor={supportsAgentForkContextCursor}
-            onForkAssistantTurn={readOnly ? undefined : handleForkAssistantTurn}
-            onForkInFlightTurn={readOnly ? undefined : handleForkInFlightTurn}
-          />
-        ) : null,
-      [
-        handleForkAssistantTurn,
-        handleForkInFlightTurn,
-        readOnly,
-        isTurnActive,
-        baseRenderModel.turnTiming.runningStartedAt,
-        bottomTurnFooterHost,
-        projectedCompaction.active,
-        streamRenderStrategy,
-        supportsAgentForkContextCursor,
-      ],
-    );
+    const turnFooterNode = useMemo(() => {
+      // A compaction is running state even without a foreground turn: a manual
+      // `/compact` is a daemon-handled command, so turn liveness alone would
+      // leave the whole compaction with nothing on screen. There is no turn to
+      // fork in that case, so the in-flight fork menu stays off.
+      const isFooterRunning = isTurnActive || projectedCompaction.active !== null;
+      const onForkInFlightTurn = readOnly || !isTurnActive ? undefined : handleForkInFlightTurn;
+      return isFooterRunning || bottomTurnFooterHost ? (
+        <TurnFooter
+          isRunning={isFooterRunning}
+          inFlightTurnStartedAt={baseRenderModel.turnTiming.runningStartedAt}
+          activeCompaction={projectedCompaction.active}
+          host={bottomTurnFooterHost}
+          strategy={streamRenderStrategy}
+          supportsTimelineCursor={supportsAgentForkContextCursor}
+          onForkAssistantTurn={readOnly ? undefined : handleForkAssistantTurn}
+          onForkInFlightTurn={onForkInFlightTurn}
+        />
+      ) : null;
+    }, [
+      handleForkAssistantTurn,
+      handleForkInFlightTurn,
+      readOnly,
+      isTurnActive,
+      baseRenderModel.turnTiming.runningStartedAt,
+      bottomTurnFooterHost,
+      projectedCompaction.active,
+      streamRenderStrategy,
+      supportsAgentForkContextCursor,
+    ]);
     const renderModel = useMemo<AgentStreamRenderModel>(() => {
       return {
         ...baseRenderModel,

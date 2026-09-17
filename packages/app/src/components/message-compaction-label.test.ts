@@ -34,6 +34,47 @@ describe("getCompactionMarkerLabel", () => {
     ).toBe("Context compaction failed: Prompt is too long");
   });
 
+  it("reports how long a successful compaction took", () => {
+    const startedAt = new Date("2026-09-17T10:50:00Z");
+    const completedAt = new Date("2026-09-17T10:51:14Z");
+    expect(
+      getCompactionMarkerLabel({ status: "completed", trigger: "manual", startedAt, completedAt }),
+    ).toBe("Context manually compacted · 1m 14s");
+    expect(
+      getCompactionMarkerLabel({ status: "completed", trigger: "auto", startedAt, completedAt }),
+    ).toBe("Context automatically compacted · 1m 14s");
+    expect(getCompactionMarkerLabel({ status: "completed", startedAt, completedAt })).toBe(
+      "Context compacted · 1m 14s",
+    );
+  });
+
+  it("omits the duration when it is unknown or the compaction did not finish", () => {
+    const startedAt = new Date("2026-09-17T10:50:00Z");
+    const completedAt = new Date("2026-09-17T10:51:14Z");
+    // Rows recorded before the start time was tracked.
+    expect(getCompactionMarkerLabel({ status: "completed", trigger: "manual", completedAt })).toBe(
+      "Context manually compacted",
+    );
+    expect(
+      getCompactionMarkerLabel({
+        status: "completed",
+        trigger: "manual",
+        startedAt,
+        completedAt,
+        outcome: "canceled",
+      }),
+    ).toBe("Context compaction interrupted");
+    expect(
+      getCompactionMarkerLabel({
+        status: "completed",
+        trigger: "manual",
+        startedAt,
+        completedAt,
+        outcome: "failed",
+      }),
+    ).toBe("Context compaction failed");
+  });
+
   it("renders labels in the active app language", async () => {
     await i18n.changeLanguage("zh-CN");
     try {

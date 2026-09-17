@@ -981,6 +981,15 @@ export interface CompactionItem {
   status: "loading" | "completed";
   trigger?: "auto" | "manual";
   preTokens?: number;
+  /**
+   * Turn that owns this compaction, when one does. A manual `/compact` runs
+   * out of band with no foreground turn, and a row without an owner is the
+   * daemon's to terminate — the app must not close it when an unrelated turn
+   * ends.
+   */
+  turnId?: string;
+  /** Start of the compaction, kept when the completed event merges in place. */
+  startedAt?: Date;
   /** Absent on a completed row means the compaction succeeded. */
   outcome?: "failed" | "canceled";
   error?: string;
@@ -1274,14 +1283,23 @@ function finalizeActiveThoughts(state: StreamItem[]): StreamItem[] {
 }
 
 /**
- * A turn cannot end with compaction still running. A row left loading came from
- * a daemon or provider that stopped reporting, and the client owns the same
- * termination guarantee the daemon does so a restart cannot strand a spinner.
+ * A turn cannot end with its own compaction still running. A row left loading
+ * came from a daemon or provider that stopped reporting, and the client owns the
+ * same termination guarantee the daemon does so a restart cannot strand a
+ * spinner.
+ *
+ * Scoped to the ended turn on purpose. A manual `/compact` runs out of band with
+ * no turn, so an unrelated turn ending must not mark it canceled while it is
+ * still working — the provider, the daemon seed, and process exit already
+ * guarantee its termination.
  */
-function finalizeActiveCompactions(state: StreamItem[]): StreamItem[] {
+function finalizeActiveCompactions(state: StreamItem[], turnId: string | undefined): StreamItem[] {
+  if (!turnId) {
+    return state;
+  }
   let mutated = false;
   const nextState = state.map((entry) => {
-    if (entry.kind === "compaction" && entry.status === "loading") {
+    if (entry.kind === "compaction" && entry.status === "loading" && entry.turnId === turnId) {
       mutated = true;
       return {
         ...entry,
@@ -1693,6 +1711,7 @@ function reduceTimelineCompaction(
     { type: "compaction" }
   >,
   timestamp: Date,
+  turnId?: string,
   timelineCursor?: TimelinePosition,
 ): StreamItem[] {
   const outcome = readCompactionOutcome(item.outcome);
@@ -1705,9 +1724,14 @@ function reduceTimelineCompaction(
     );
     const existing = loadingIdx >= 0 ? state[loadingIdx] : undefined;
     if (loadingIdx >= 0 && existing && existing.kind === "compaction") {
+      // The merged row is the completion marker, so it takes the completed
+      // event's position and time; the loading row's time becomes the duration
+      // anchor.
       const updated: CompactionItem = {
         ...existing,
         ...(timelineCursor ? { timelineCursor } : {}),
+        timestamp,
+        startedAt: existing.startedAt ?? existing.timestamp,
         status: "completed",
         trigger: item.trigger ?? existing.trigger,
         preTokens: item.preTokens ?? existing.preTokens,
@@ -1725,6 +1749,8 @@ function reduceTimelineCompaction(
     status: item.status,
     trigger: item.trigger,
     preTokens: item.preTokens,
+    ...(turnId ? { turnId } : {}),
+    ...(item.status === "loading" ? { startedAt: timestamp } : {}),
     ...(outcome ? { outcome } : {}),
     ...(error ? { error } : {}),
   };
@@ -1801,7 +1827,7 @@ function reduceTimelineEvent(
     }
     case "compaction":
       return finalizeActiveThoughts(
-        reduceTimelineCompaction(state, item, timestamp, timelineCursor),
+        reduceTimelineCompaction(state, item, timestamp, event.turnId, timelineCursor),
       );
     default:
       return state;
@@ -1830,17 +1856,17 @@ export function reduceStreamUpdate(
       );
     case "turn_completed":
       return markLastTurnAssistantOutcome(
-        finalizeActiveCompactions(finalizeActiveThoughts(state)),
+        finalizeActiveCompactions(finalizeActiveThoughts(state), event.turnId),
         "completed",
       );
     case "turn_failed":
       return markLastTurnAssistantOutcome(
-        finalizeActiveCompactions(finalizeActiveThoughts(state)),
+        finalizeActiveCompactions(finalizeActiveThoughts(state), event.turnId),
         "failed",
       );
     case "turn_canceled":
       return markLastTurnAssistantOutcome(
-        finalizeActiveCompactions(finalizeActiveThoughts(state)),
+        finalizeActiveCompactions(finalizeActiveThoughts(state), event.turnId),
         "canceled",
       );
     case "thread_started":

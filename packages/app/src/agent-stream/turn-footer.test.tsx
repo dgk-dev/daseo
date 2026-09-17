@@ -10,6 +10,13 @@ vi.mock("react-native", () => ({
   View: ({ children, testID }: { children?: React.ReactNode; testID?: string }) => (
     <div data-testid={testID}>{children}</div>
   ),
+  Text: ({ children, testID }: { children?: React.ReactNode; testID?: string }) => (
+    <span data-testid={testID}>{children}</span>
+  ),
+}));
+
+vi.mock("react-i18next", () => ({
+  useTranslation: () => ({ t: (key: string) => key }),
 }));
 
 vi.mock("react-native-unistyles", () => ({
@@ -54,6 +61,11 @@ import { TurnFooter } from "./turn-footer";
 const unusedRunningTurnStrategy = null as unknown as React.ComponentProps<
   typeof TurnFooter
 >["strategy"];
+
+const manualCompaction = {
+  startedAt: new Date("2026-09-17T10:00:00.000Z"),
+  trigger: "manual",
+} as const;
 
 describe("TurnFooter", () => {
   let root: Root | null = null;
@@ -101,6 +113,36 @@ describe("TurnFooter", () => {
     expect(controls).toEqual([
       "running-turn-loader",
       "running-turn-fork",
+      "running-turn-timestamp",
+    ]);
+  });
+
+  it("shows a compaction with no foreground turn as running status without a fork", () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    act(() => {
+      root?.render(
+        <TurnFooter
+          isRunning
+          inFlightTurnStartedAt={null}
+          activeCompaction={manualCompaction}
+          host={null}
+          strategy={unusedRunningTurnStrategy}
+          supportsTimelineCursor
+        />,
+      );
+    });
+
+    const footer = container.querySelector('[data-testid="turn-working-indicator"]');
+    const controls = Array.from(footer?.querySelectorAll("[data-testid]") ?? []).map((node) =>
+      node.getAttribute("data-testid"),
+    );
+
+    expect(controls).toEqual([
+      "running-turn-loader",
+      "turn-compacting-label",
       "running-turn-timestamp",
     ]);
   });

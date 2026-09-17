@@ -1313,6 +1313,85 @@ describe("PiRpcAgentSession", () => {
     });
   });
 
+  test("holds a prompt sent during compaction and delivers it once at compaction_end", async () => {
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    fakeSession.emit({ type: "compaction_start", reason: "manual" });
+    const { turnId } = await session.startTurn("work on the next thing");
+    await flushTurnScheduling();
+
+    // Pi rejects a prompt while compacting, so nothing may reach it yet and the
+    // turn must stay alive instead of failing.
+    expect(fakeSession.prompts).toEqual([]);
+    expect(events.eventTypes()).not.toContain("turn_failed");
+
+    fakeSession.emit({ type: "compaction_end", reason: "manual" });
+    await flushTurnScheduling();
+
+    expect(fakeSession.prompts).toEqual([{ message: "work on the next thing", imageCount: 0 }]);
+    expect(events.eventTypes()).not.toContain("turn_failed");
+
+    fakeSession.emit({ type: "agent_start" });
+    fakeSession.emit({ type: "turn_start" });
+    fakeSession.emit({ type: "agent_end", messages: [] });
+    fakeSession.emit({ type: "agent_settled" });
+    await expect(events.nextTurnCompletion()).resolves.toMatchObject({ turnId });
+    expect(fakeSession.prompts).toHaveLength(1);
+  });
+
+  test("sends a prompt held behind a compaction that ended in failure", async () => {
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    fakeSession.emit({ type: "compaction_start", reason: "threshold" });
+    await session.startTurn("keep going");
+    await flushTurnScheduling();
+    expect(fakeSession.prompts).toEqual([]);
+
+    fakeSession.emit({
+      type: "compaction_end",
+      reason: "threshold",
+      errorMessage: "summarizer failed",
+    });
+    await flushTurnScheduling();
+
+    expect(fakeSession.prompts).toEqual([{ message: "keep going", imageCount: 0 }]);
+    expect(events.eventTypes()).not.toContain("turn_failed");
+  });
+
+  test("drops a prompt held behind a compaction when the turn is canceled", async () => {
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    fakeSession.emit({ type: "compaction_start", reason: "manual" });
+    const { turnId } = await session.startTurn("never mind");
+    await flushTurnScheduling();
+
+    await session.interrupt();
+    await expect(events.nextTurnCancellation()).resolves.toMatchObject({ turnId });
+
+    fakeSession.emit({ type: "compaction_end", reason: "manual" });
+    await flushTurnScheduling();
+    expect(fakeSession.prompts).toEqual([]);
+  });
+
+  test("fails a prompt held behind a compaction when the Pi process exits", async () => {
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    fakeSession.emit({ type: "compaction_start", reason: "manual" });
+    const { turnId } = await session.startTurn("work on the next thing");
+    await flushTurnScheduling();
+
+    fakeSession.emit({ type: "process_exit", error: "Pi RPC process exited with code 143" });
+    await expect(events.nextTurnFailure()).resolves.toMatchObject({ turnId });
+
+    fakeSession.emit({ type: "compaction_end", reason: "manual" });
+    await flushTurnScheduling();
+    expect(fakeSession.prompts).toEqual([]);
+  });
+
   test("accepts steering during auto-compaction and delivers it in the continued Pi turn", async () => {
     const { pi, session, events } = await createSession();
     const fakeSession = pi.latestSession();

@@ -2275,6 +2275,8 @@ interface CompactionMarkerProps {
   status: "loading" | "completed";
   trigger?: "auto" | "manual";
   preTokens?: number;
+  startedAt?: Date;
+  completedAt?: Date;
   outcome?: "failed" | "canceled";
   error?: string;
 }
@@ -2308,10 +2310,20 @@ export const CompactionMarker = memo(function CompactionMarker({
   status,
   trigger,
   preTokens,
+  startedAt,
+  completedAt,
   outcome,
   error,
 }: CompactionMarkerProps) {
-  const label = getCompactionMarkerLabel({ status, trigger, preTokens, outcome, error });
+  const label = getCompactionMarkerLabel({
+    status,
+    trigger,
+    preTokens,
+    startedAt,
+    completedAt,
+    outcome,
+    error,
+  });
 
   return (
     <View style={compactionStylesheet.container}>

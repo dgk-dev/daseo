@@ -264,12 +264,21 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
   the compiler behaviour and every attachment branch on real timeline messages.
 - Compaction progress never becomes permanent scrollback. The provider closes an open compaction on
   a second start, a terminal turn, and process exit; the daemon closes rows still marked `loading`
-  when it seeds a timeline from durable storage; the app closes them when a turn ends and renders
-  only terminal rows, showing a live compaction as turn-footer status instead. A terminal row
-  carries `outcome` (`failed`/`canceled`, absent for success) while the wire `status` stays
-  `loading | completed`, so an interrupted compaction stops reading as a successful one without
+  when it seeds a timeline from durable storage; the app closes only the rows owned by the turn that
+  ends and renders only terminal rows, showing a live compaction as turn-footer status instead. A
+  terminal row carries `outcome` (`failed`/`canceled`, absent for success) while the wire `status`
+  stays `loading | completed`, so an interrupted compaction stops reading as a successful one without
   breaking an older app. This is the fix for a Mac that halted mid-compaction leaving "압축하는 중"
   on screen indefinitely. See [docs/timeline-sync.md](docs/timeline-sync.md#compaction-progress-is-not-history).
+- A manual `/compact` is visible for its whole duration and does not reject the next prompt. The
+  turn footer mounts on an active compaction even with no foreground turn, so the spinner, the
+  "압축하는 중" label, and the compaction's own elapsed clock stay on screen; the completed marker
+  then carries the duration. Pi rejects a prompt outright while it compacts, so the daemon parks it
+  in a single slot, keeps the turn allocated and the row visible as "보내는 중", and sends it at
+  `compaction_end` — including a failed or canceled one, because Pi is idle again either way. Turn
+  cancellation and process exit clear the slot through their existing terminal paths. Key files:
+  `packages/app/src/agent-stream/view.tsx`, `packages/app/src/types/stream.ts`, and
+  `packages/server/src/server/agent/providers/pi/agent.ts`.
 - One prompt is one row even when a provider forgets it. A respawned Pi process re-delivers the
   running prompt as a fresh user message with only its own entry id; the daemon absorbs that echo
   into the unacknowledged submitted row it duplicates instead of appending a second row after the

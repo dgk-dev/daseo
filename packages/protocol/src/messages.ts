@@ -784,6 +784,10 @@ export const AgentStreamEventPayloadSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("timeline"),
     provider: AgentProviderSchema,
+    // Turn that produced the item, when the daemon knows one. Out-of-band
+    // commands (a manual `/compact`) have no turn, and the app relies on that
+    // absence to leave their rows alone when an unrelated turn ends.
+    turnId: z.string().optional(),
     item: AgentTimelineItemPayloadSchema,
   }),
   z.object({

@@ -1587,6 +1587,15 @@ export class PiRpcAgentSession implements AgentSession {
   // open one so every exit — a second compaction, a terminal turn, a dead Pi
   // process — closes it instead of leaving a permanent "compacting" marker.
   private openCompaction: { turnId: string | undefined; trigger: "auto" | "manual" } | null = null;
+  // Pi rejects a prompt outright while it is compacting. The turn is already
+  // allocated and visible by then, so the payload waits here and goes out at
+  // `compaction_end` instead of failing the user's message. The manager only
+  // starts a turn when none is active, so one slot is the whole queue.
+  private deferredPromptWhileCompacting: {
+    turnId: string;
+    payload: PiPromptPayload;
+    shouldProbeForNoTurnPrompt: boolean;
+  } | null = null;
   private activeAssistantMessageId: string | null = null;
   private activeTurnStarted = false;
   private activeNoTurnPromptText: string | null = null;
@@ -1720,6 +1729,46 @@ export class PiRpcAgentSession implements AgentSession {
     this.activeNoTurnPromptText = payload.text;
     const shouldProbeForNoTurnPrompt = this.parseSlashCommandInput(payload.text) !== null;
 
+    if (this.isCompacting()) {
+      if (this.deferredPromptWhileCompacting) {
+        throw new Error("A Pi prompt is already waiting for compaction to finish");
+      }
+      this.deferredPromptWhileCompacting = { turnId, payload, shouldProbeForNoTurnPrompt };
+      return { turnId };
+    }
+
+    this.sendTurnPrompt(turnId, payload, shouldProbeForNoTurnPrompt);
+    return { turnId };
+  }
+
+  /**
+   * True while this session is compacting, from the moment the command is
+   * issued rather than from `compaction_start`: Pi rejects a prompt for the
+   * whole window, including the gap before it reports the start.
+   */
+  private isCompacting(): boolean {
+    return this.openCompaction !== null || this.outOfBandCompactionEmit !== null;
+  }
+
+  private sendDeferredPromptAfterCompaction(): void {
+    const deferred = this.deferredPromptWhileCompacting;
+    if (!deferred || this.isCompacting()) {
+      return;
+    }
+    this.deferredPromptWhileCompacting = null;
+    if (this.activeTurnId !== deferred.turnId) {
+      return;
+    }
+    // A failed or canceled compaction still leaves Pi idle, so the prompt goes
+    // out either way; dropping it would lose the user's message.
+    this.sendTurnPrompt(deferred.turnId, deferred.payload, deferred.shouldProbeForNoTurnPrompt);
+  }
+
+  private sendTurnPrompt(
+    turnId: string,
+    payload: PiPromptPayload,
+    shouldProbeForNoTurnPrompt: boolean,
+  ): void {
     void (async () => {
       try {
         const ack = await this.runtimeSession.prompt(payload.text, payload.images);
@@ -1746,6 +1795,7 @@ export class PiRpcAgentSession implements AgentSession {
           return;
         }
         this.activeTurnId = null;
+        this.deferredPromptWhileCompacting = null;
         this.clearTurnInputCorrelations();
         this.clearPendingSettlement();
         this.activeTurnStarted = false;
@@ -1768,8 +1818,6 @@ export class PiRpcAgentSession implements AgentSession {
         });
       }
     })();
-
-    return { turnId };
   }
 
   async steerTurn(
@@ -1905,6 +1953,7 @@ export class PiRpcAgentSession implements AgentSession {
         const terminalError = this.interruptedTerminalError;
         this.interruptedTerminalError = null;
         this.activeTurnId = null;
+        this.deferredPromptWhileCompacting = null;
         this.clearTurnInputCorrelations();
         this.clearPendingSettlement();
         this.activeTurnStarted = false;
@@ -1921,6 +1970,7 @@ export class PiRpcAgentSession implements AgentSession {
     }
     if (turnId && this.activeTurnId === turnId) {
       this.activeTurnId = null;
+      this.deferredPromptWhileCompacting = null;
       this.clearTurnInputCorrelations();
       this.clearPendingSettlement();
       this.activeTurnStarted = false;
@@ -2403,6 +2453,9 @@ export class PiRpcAgentSession implements AgentSession {
         this.outOfBandCompactionStarted = false;
         this.outOfBandCompactionCompleted = false;
       }
+      // A compaction that never reported an end still leaves Pi idle, so a
+      // prompt parked behind it must not be stranded here.
+      this.sendDeferredPromptAfterCompaction();
     }
   }
 
@@ -2717,6 +2770,7 @@ export class PiRpcAgentSession implements AgentSession {
     const turnId = this.activeTurnId;
     this.terminalizeOpenCompaction("failed", error);
     this.activeTurnId = null;
+    this.deferredPromptWhileCompacting = null;
     this.clearTurnInputCorrelations();
     this.clearPendingSettlement();
     this.activeTurnStarted = false;
@@ -2863,6 +2917,7 @@ export class PiRpcAgentSession implements AgentSession {
       this.settlementCompactionTurnId = null;
       this.scheduleSettlementProbe();
     }
+    this.sendDeferredPromptAfterCompaction();
   }
 
   /**
@@ -3056,6 +3111,7 @@ export class PiRpcAgentSession implements AgentSession {
     }
     this.terminalizeOpenCompaction("canceled", PI_INTERRUPTED_COMPACTION_ERROR);
     this.activeTurnId = null;
+    this.deferredPromptWhileCompacting = null;
     this.clearTurnInputCorrelations();
     this.clearPendingSettlement();
     this.activeAssistantMessageId = null;

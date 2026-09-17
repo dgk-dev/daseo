@@ -247,15 +247,29 @@ in scrollback.
 Termination is therefore guaranteed at three layers, and none of them trusts the one below it: the
 provider closes its open compaction when a second one starts, when the turn reaches a terminal
 state, and when its process exits; the daemon closes rows still marked `loading` when it seeds a
-timeline from durable storage at registration; the app closes them when a turn ends. A terminal row
-carries `outcome` — absent for success, `failed` or `canceled` otherwise — so an interrupted
-compaction never presents as a completed one. `status` stays `loading | completed` on the wire so
-older apps keep parsing terminal rows.
+timeline from durable storage at registration; the app closes the rows owned by a turn when that
+turn ends. A terminal row carries `outcome` — absent for success, `failed` or `canceled` otherwise —
+so an interrupted compaction never presents as a completed one. `status` stays `loading | completed`
+on the wire so older apps keep parsing terminal rows.
+
+App termination is scoped to the ending turn's id. A manual `/compact` runs out of band with no
+turn, so its row carries no `turnId` and the app never closes it; the provider, the daemon seed, and
+process exit already own it. Closing every open row on any terminal turn is what marked a running
+compaction as interrupted while it was still working, and then left a second row when the real end
+arrived.
 
 The app renders terminal rows only. An open compaction becomes turn-footer status with its own
-elapsed clock. A manual `/compact` is a daemon-handled command with no foreground turn, so that
-status follows turn liveness _or_ a compaction younger than fifteen minutes; anything older is
-abandoned work, not progress.
+elapsed clock, and the footer mounts on that status alone — requiring a live turn is what left a
+manual `/compact` with nothing on screen for its whole duration. A manual `/compact` is a
+daemon-handled command with no foreground turn, so the status follows turn liveness _or_ a
+compaction younger than fifteen minutes; anything older is abandoned work, not progress. The
+completed marker keeps the start time and appends the duration.
+
+A prompt sent while Pi compacts is parked, not rejected. Pi refuses the prompt RPC for the whole
+compaction window, so the daemon holds the payload in one slot, keeps the turn allocated so the row
+stays visible as submitted, and sends it at `compaction_end` — also when the compaction failed or
+was canceled, since Pi is idle again either way. The manager only starts a turn when none is active,
+so one slot is the entire queue.
 
 ## Relevant code
 
