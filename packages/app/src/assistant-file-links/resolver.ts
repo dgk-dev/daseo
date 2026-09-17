@@ -95,6 +95,14 @@ export async function fetchDaemonResolution({
 
   const match = suggestions.entries.find((entry) => entry.kind === "file");
   if (!match || suggestions.error) {
+    // The suffix search skips gitignored and hidden entries, so a real file in
+    // `tmp/` or `.secrets/` never matches. A token that names its directory
+    // already identifies the file: open it directly and let the file pane
+    // report a genuinely missing one. A bare basename has nothing to fall
+    // back to.
+    if (ambiguousQuery.includes("/")) {
+      return target;
+    }
     throw new UnresolvedFileLinkError(token);
   }
 
@@ -115,6 +123,7 @@ export function classifyForResolution(
 
   const classification = classifyAssistantFileLink(token, {
     workspaceRoot: context.workspaceRoot,
+    allowWhitespace: source.sourceType === "inline-code",
   });
   if (!classification) {
     return { kind: "resolved", value: { kind: "ignored" } };

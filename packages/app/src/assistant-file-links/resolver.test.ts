@@ -202,23 +202,96 @@ describe("fetchDaemonResolution", () => {
     });
   });
 
-  it("throws a typed unresolved error when the daemon finds no match", async () => {
+  it("falls back to the direct target when a directory-qualified token has no search match", async () => {
+    // Gitignored or hidden files never come back from the suffix search, but
+    // `tmp/report.md` already says where the file is.
+    const { getDirectorySuggestions } = suggestionsFromMap({});
+    const target = {
+      raw: "tmp/report.md",
+      path: "/Users/test/project/tmp/report.md",
+      lineStart: undefined,
+      lineEnd: undefined,
+    };
+
+    await expect(
+      fetchDaemonResolution({
+        ambiguousQuery: "tmp/report.md",
+        token: "tmp/report.md",
+        target,
+        workspaceRoot: "/Users/test/project",
+        getDirectorySuggestions,
+      }),
+    ).resolves.toEqual(target);
+  });
+
+  it("throws a typed unresolved error when a bare basename has no match", async () => {
     const { getDirectorySuggestions } = suggestionsFromMap({});
 
     await expect(
       fetchDaemonResolution({
-        ambiguousQuery: "src/file.ts",
-        token: "src/file.ts",
+        ambiguousQuery: "file.ts",
+        token: "file.ts",
         target: {
-          raw: "src/file.ts",
-          path: "/Users/test/project/src/file.ts",
+          raw: "file.ts",
+          path: "/Users/test/project/file.ts",
           lineStart: undefined,
           lineEnd: undefined,
         },
         workspaceRoot: "/Users/test/project",
         getDirectorySuggestions,
       }),
-    ).rejects.toEqual(new UnresolvedFileLinkError("src/file.ts"));
+    ).rejects.toEqual(new UnresolvedFileLinkError("file.ts"));
+  });
+
+  it("accepts spaces in inline-code paths but not in prose or commands", () => {
+    expect(
+      classifyForResolution(
+        {
+          href: "docs/최종 보고서.md",
+          text: "docs/최종 보고서.md",
+          sourceType: "inline-code",
+        },
+        CONTEXT,
+      ),
+    ).toMatchObject({
+      kind: "needsLookup",
+      target: { path: "/Users/test/project/docs/최종 보고서.md" },
+    });
+    expect(
+      classifyForResolution(
+        {
+          href: "/Users/test/Documents/견적서 2026.xlsx",
+          text: "/Users/test/Documents/견적서 2026.xlsx",
+          sourceType: "inline-code",
+        },
+        CONTEXT,
+      ),
+    ).toEqual({
+      kind: "resolved",
+      value: {
+        kind: "file",
+        target: {
+          raw: "/Users/test/Documents/견적서 2026.xlsx",
+          path: "/Users/test/Documents/견적서 2026.xlsx",
+          lineStart: undefined,
+          lineEnd: undefined,
+        },
+      },
+    });
+    expect(classifyForResolution({ href: "docs/최종 보고서.md" }, CONTEXT)).toEqual({
+      kind: "resolved",
+      value: { kind: "ignored" },
+    });
+    expect(
+      classifyForResolution(
+        {
+          href: "git add src/a.ts src/b.ts",
+          text: "git add src/a.ts src/b.ts",
+          sourceType: "inline-code",
+        },
+        CONTEXT,
+      ),
+    ).toEqual({ kind: "resolved", value: { kind: "ignored" } });
   });
 
   it("throws a typed unresolved error when the daemon throws", async () => {

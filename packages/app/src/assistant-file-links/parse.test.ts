@@ -201,6 +201,81 @@ describe("classifyAssistantFileLink", () => {
     }
   });
 
+  it("links documents, data, and media by extension", () => {
+    for (const value of [
+      "docs/report.xlsx",
+      "out/견적서.pdf",
+      "exports/data.csv",
+      "shots/home.png",
+    ]) {
+      expect(
+        classifyAssistantFileLink(value, {
+          workspaceRoot: "/Users/test/project",
+        }),
+      ).toMatchObject({
+        kind: "directFile",
+        target: { path: `/Users/test/project/${value}` },
+      });
+    }
+    expect(
+      classifyAssistantFileLink("보고서.hwp", {
+        workspaceRoot: "/Users/test/project",
+      }),
+    ).toMatchObject({ kind: "ambiguousFileCandidate" });
+    // Any short extension counts once a directory is named; bare words do not.
+    expect(
+      classifyAssistantFileLink("build/output.bin", {
+        workspaceRoot: "/Users/test/project",
+      }),
+    ).toMatchObject({ kind: "directFile" });
+    expect(
+      classifyAssistantFileLink("output.bin", {
+        workspaceRoot: "/Users/test/project",
+      }),
+    ).toBeNull();
+    expect(
+      classifyAssistantFileLink("hymdosan.com", {
+        workspaceRoot: "/Users/test/project",
+      }),
+    ).toBeNull();
+  });
+
+  it("accepts spaces only when allowed and the token still reads as one path", () => {
+    const root = { workspaceRoot: "/Users/test/project" };
+    expect(classifyAssistantFileLink("docs/최종 보고서.md", root)).toBeNull();
+    expect(
+      classifyAssistantFileLink("docs/최종 보고서.md", {
+        ...root,
+        allowWhitespace: true,
+      }),
+    ).toMatchObject({
+      target: { path: "/Users/test/project/docs/최종 보고서.md" },
+    });
+    expect(
+      classifyAssistantFileLink("~/Documents/지급 내역 2026.xlsx", {
+        ...root,
+        allowWhitespace: true,
+      }),
+    ).toMatchObject({ target: { path: "~/Documents/지급 내역 2026.xlsx" } });
+    expect(
+      classifyAssistantFileLink("/tmp/회의 녹취록.txt:12", {
+        ...root,
+        allowWhitespace: true,
+      }),
+    ).toMatchObject({
+      target: { path: "/tmp/회의 녹취록.txt", lineStart: 12 },
+    });
+    for (const command of [
+      "git add src/a.ts src/b.ts",
+      "cat docs/a.md | head",
+      "docs/a.md -n 3",
+      "npm run lint -- packages/app/src/x.ts",
+      "src/a.ts && src/b.ts",
+    ]) {
+      expect(classifyAssistantFileLink(command, { ...root, allowWhitespace: true })).toBeNull();
+    }
+  });
+
   it("does not classify shell commands containing path arguments as file candidates", () => {
     expect(
       classifyAssistantFileLink(

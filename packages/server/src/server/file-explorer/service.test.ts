@@ -374,18 +374,78 @@ describe("file explorer service", () => {
     }
   });
 
-  it("rejects ~-prefixed paths that resolve outside the workspace", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "paseo-file-explorer-outside-home-"));
-
+  it("reads files outside the workspace when they live under the home or temp directory", async () => {
+    const root = await createTempDir("paseo-file-explorer-workspace-");
+    const outsideHome = await createHomeTempDir(".paseo-file-explorer-outside-home-");
     try {
-      await expect(
-        readExplorerFile({
-          root,
-          relativePath: "~/some/file.txt",
-        }),
-      ).rejects.toThrow("Access outside of workspace is not allowed");
+      await writeFile(path.join(outsideHome, "plan.md"), "# plan", "utf8");
+      const relativeToHome = path.relative(os.homedir(), path.join(outsideHome, "plan.md"));
+      const tildePath = `~/${relativeToHome.split(path.sep).join("/")}`;
+
+      const byTilde = await readExplorerFile({ root, relativePath: tildePath });
+      expect(byTilde.kind).toBe("text");
+      expect(byTilde.content).toBe("# plan");
+      // Outside paths keep their absolute form so clients can key them.
+      expect(byTilde.path).toBe(path.join(outsideHome, "plan.md").split(path.sep).join("/"));
+
+      const byAbsolute = await getExplorerFileVersion({
+        root,
+        relativePath: path.join(outsideHome, "plan.md"),
+      });
+      expect(byAbsolute.status).toBe("ready");
+
+      const missing = await getExplorerFileVersion({
+        root,
+        relativePath: path.join(outsideHome, "absent.md"),
+      });
+      expect(missing.status).toBe("missing");
     } finally {
       await rm(root, { recursive: true, force: true });
+      await rm(outsideHome, { recursive: true, force: true });
+    }
+  });
+
+  it("still rejects reads outside the home and temp directories", async () => {
+    const root = await createTempDir("paseo-file-explorer-outside-");
+    try {
+      await expect(readExplorerFile({ root, relativePath: "/etc/hosts" })).rejects.toThrow(
+        "Access outside of workspace is not allowed",
+      );
+      await expect(
+        getExplorerFileVersion({ root, relativePath: "/etc/hosts" }),
+      ).resolves.toMatchObject({
+        status: "error",
+        error: "Access outside of workspace is not allowed",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("never writes outside the workspace even where reads are allowed", async () => {
+    const root = await createTempDir("paseo-file-explorer-write-scope-");
+    const outsideHome = await createHomeTempDir(".paseo-file-explorer-write-scope-");
+    try {
+      const target = path.join(outsideHome, "notes.txt");
+      await writeFile(target, "keep", "utf8");
+      const current = await getExplorerFileVersion({ root, relativePath: target });
+      expect(current.status).toBe("ready");
+      if (current.status !== "ready") return;
+      const result = await writeExplorerFile({
+        root,
+        relativePath: target,
+        content: "overwritten",
+        expectedModifiedAt: current.modifiedAt,
+        expectedRevision: current.revision,
+      });
+      expect(result).toEqual({
+        status: "error",
+        error: "Access outside of workspace is not allowed",
+      });
+      expect(await readFile(target, "utf8")).toBe("keep");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(outsideHome, { recursive: true, force: true });
     }
   });
 

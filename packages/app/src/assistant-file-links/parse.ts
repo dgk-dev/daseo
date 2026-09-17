@@ -76,10 +76,70 @@ const ASSISTANT_FILE_EXTENSIONS = new Set([
   "yaml",
   "yml",
   "zsh",
+  // Documents, data, and media an agent produces and links to. Without these a
+  // relative link to a report or a spreadsheet was plain text.
+  "7z",
+  "bmp",
+  "csv",
+  "db",
+  "doc",
+  "docx",
+  "epub",
+  "gif",
+  "gz",
+  "heic",
+  "hwp",
+  "hwpx",
+  "ico",
+  "ipynb",
+  "jpeg",
+  "jpg",
+  "jsonl",
+  "key",
+  "log",
+  "m4a",
+  "mov",
+  "mp3",
+  "mp4",
+  "ndjson",
+  "numbers",
+  "odp",
+  "ods",
+  "odt",
+  "pages",
+  "parquet",
+  "pdf",
+  "png",
+  "ppt",
+  "pptx",
+  "psd",
+  "rtf",
+  "sqlite",
+  "svg",
+  "tar",
+  "tgz",
+  "tsv",
+  "wav",
+  "webm",
+  "webp",
+  "xls",
+  "xlsm",
+  "xlsx",
+  "zip",
 ]);
+// A token that already names a directory (`docs/x.foo`) is a path, not prose,
+// so any short alphanumeric extension qualifies there.
+const GENERIC_FILE_EXTENSION = /^[a-z0-9]{1,8}$/;
+// Inline code marks its own boundaries, so a path there may contain spaces
+// (`docs/최종 보고서.md`). Shell operators, flags, or a leading command word
+// mean the token is a command line, not a path.
+const SHELL_METACHARACTERS = /[|&;<>$*?"'`\n\t]/;
+const EXPLICIT_PATH_PREFIX = /^(?:\/|~\/|\.\.?\/|[A-Za-z]:[\\/])/;
 
 export interface AssistantHrefParseOptions {
   workspaceRoot?: string;
+  /** Accept spaces inside the token when it still reads as one path. */
+  allowWhitespace?: boolean;
 }
 
 export type AssistantFileLinkClassification =
@@ -268,7 +328,7 @@ export function classifyAssistantFileLink(
     };
   }
 
-  if (/\s/.test(trimmed)) {
+  if (/\s/.test(trimmed) && !(options.allowWhitespace && isWhitespacePathToken(trimmed))) {
     return null;
   }
 
@@ -604,13 +664,19 @@ function isPlausibleAssistantLocalPath(pathValue: string): boolean {
 
   if (segments.length > 1) {
     const lastSegment = segments[segments.length - 1];
-    return !isDomainLikePathSegment(firstSegment) && isPlausibleAssistantFileName(lastSegment);
+    return (
+      !isDomainLikePathSegment(firstSegment) &&
+      isPlausibleAssistantFileName(lastSegment, { inDirectory: true })
+    );
   }
 
-  return isPlausibleAssistantFileName(firstSegment);
+  return isPlausibleAssistantFileName(firstSegment, { inDirectory: false });
 }
 
-function isPlausibleAssistantFileName(fileName: string | undefined): boolean {
+function isPlausibleAssistantFileName(
+  fileName: string | undefined,
+  options: { inDirectory: boolean },
+): boolean {
   if (!fileName) {
     return false;
   }
@@ -625,7 +691,21 @@ function isPlausibleAssistantFileName(fileName: string | undefined): boolean {
   }
 
   const extension = fileName.slice(lastDot + 1).toLowerCase();
-  return ASSISTANT_FILE_EXTENSIONS.has(extension);
+  if (ASSISTANT_FILE_EXTENSIONS.has(extension)) {
+    return true;
+  }
+  return options.inDirectory && GENERIC_FILE_EXTENSION.test(extension);
+}
+
+export function isWhitespacePathToken(token: string): boolean {
+  if (SHELL_METACHARACTERS.test(token) || /(?:^|\s)-/.test(token)) {
+    return false;
+  }
+  if (EXPLICIT_PATH_PREFIX.test(token)) {
+    return true;
+  }
+  const firstWord = token.split(/\s+/)[0] ?? "";
+  return firstWord.includes("/") && isPlausibleAssistantLocalPath(token);
 }
 
 function isDomainLikePathSegment(segment: string): boolean {

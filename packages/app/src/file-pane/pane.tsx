@@ -462,7 +462,10 @@ export function FilePane({
   const canTogglePreviewMode = isRenderable && !location.lineStart;
   const lineCount =
     preview?.kind === "text" ? (preview.content ?? "").split("\n").length : undefined;
-  const errorMessage = getFileErrorMessage(liveFile.error, t("panels.file.failedToLoad"));
+  const errorMessage = getFileErrorMessage(liveFile.error, {
+    fallback: t("panels.file.failedToLoad"),
+    notFound: t("panels.file.notFound", { path: location.path }),
+  });
 
   return (
     <FilePanePresentation
@@ -494,10 +497,24 @@ function isRenderablePreview(preview: ExplorerFile | null, path: string): boolea
   return preview?.kind === "text" && filePreviewRenderKind(path) !== null;
 }
 
-function getFileErrorMessage(error: unknown, fallback: string): string | null {
+// The daemon reports a missing file with Node's raw error ("ENOENT: no such
+// file or directory, open '…'"). Readers clicked a link; tell them the file
+// is not there instead of showing an errno.
+const MISSING_FILE_ERROR = /\bENOENT\b|\bENOTDIR\b|no such file/i;
+
+function getFileErrorMessage(
+  error: unknown,
+  labels: { fallback: string; notFound: string },
+): string | null {
   if (!error) return null;
-  if (typeof error === "string") return error;
-  return error instanceof Error ? error.message : fallback;
+  let message = "";
+  if (typeof error === "string") {
+    message = error;
+  } else if (error instanceof Error) {
+    message = error.message;
+  }
+  if (MISSING_FILE_ERROR.test(message)) return labels.notFound;
+  return message || labels.fallback;
 }
 
 function isEditableTextFile(input: {

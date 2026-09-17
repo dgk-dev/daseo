@@ -2,6 +2,7 @@ import { constants, promises as fs, type BigIntStats } from "fs";
 import type { FileHandle } from "fs/promises";
 import path from "path";
 import { randomUUID } from "crypto";
+import { homedir, tmpdir } from "os";
 import { expandUserPath, resolvePathFromBase } from "../path-utils.js";
 import { runGitCommand } from "../../utils/run-git-command.js";
 
@@ -100,6 +101,33 @@ const READ_FILE_OPEN_FLAGS =
   process.platform === "win32" ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW;
 const ACCESS_OUTSIDE_WORKSPACE_MESSAGE = "Access outside of workspace is not allowed";
 
+/**
+ * Reads may leave the workspace root as long as they stay inside the user's
+ * own home directory or the OS temp directory. Agents write plans, reports,
+ * and scratch files there (`~/.pi/agent/plans`, `/tmp/…`) and link to them
+ * from the transcript; refusing those links made every such link dead. Writes,
+ * renames, and deletes stay confined to the workspace root.
+ */
+export type ScopedPathAccess = "read" | "write";
+
+function readableRoots(): string[] {
+  return [homedir(), tmpdir()].map((root) => expandUserPath(root));
+}
+
+function isWithinRoot(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+async function realpathIfPresent(target: string): Promise<string | null> {
+  try {
+    return await fs.realpath(target);
+  } catch (error) {
+    if (isMissingEntryError(error)) return null;
+    throw error;
+  }
+}
+
 function fileRevision(stats: BigIntStats): string {
   return `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeNs}`;
 }
@@ -126,6 +154,8 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
 interface ScopedPathParams {
   root: string;
   relativePath?: string;
+  /** Defaults to `write`, the strict workspace-confined mode. */
+  access?: ScopedPathAccess;
 }
 
 interface ScopedPath {
@@ -144,7 +174,7 @@ export async function listDirectoryEntries({
   root,
   relativePath = ".",
 }: ListDirectoryParams): Promise<FileExplorerDirectory> {
-  const directoryPath = await resolveScopedPath({ root, relativePath });
+  const directoryPath = await resolveScopedPath({ root, relativePath, access: "read" });
   const stats = await fs.stat(directoryPath.resolvedPath);
 
   if (!stats.isDirectory()) {
@@ -237,7 +267,7 @@ export async function readExplorerFileBytes({
   root,
   relativePath,
 }: ReadFileParams): Promise<FileExplorerFileBytes> {
-  const filePath = await resolveScopedPath({ root, relativePath });
+  const filePath = await resolveScopedPath({ root, relativePath, access: "read" });
   const handle = await openFileForRead(filePath.resolvedPath);
 
   try {
@@ -292,7 +322,7 @@ export async function streamExplorerFile(
   { root, relativePath }: ReadFileParams,
   consume: (file: FileExplorerFileStream) => Promise<void>,
 ): Promise<void> {
-  const filePath = await resolveScopedPath({ root, relativePath });
+  const filePath = await resolveScopedPath({ root, relativePath, access: "read" });
   const handle = await openFileForRead(filePath.resolvedPath);
 
   try {
@@ -397,7 +427,7 @@ export async function getExplorerFileVersion({
 }: ReadFileParams): Promise<ExplorerFileVersion> {
   const cwd = expandUserPath(root);
   try {
-    const filePath = await resolveScopedPath({ root, relativePath });
+    const filePath = await resolveScopedPath({ root, relativePath, access: "read" });
     const stats = await fs.stat(filePath.resolvedPath, { bigint: true });
     if (!stats.isFile()) {
       return { status: "error", cwd, path: relativePath, error: "Requested path is not a file" };
@@ -427,7 +457,7 @@ export async function resolveExplorerFilePath({
   root,
   relativePath,
 }: ReadFileParams): Promise<string> {
-  return (await resolveScopedPath({ root, relativePath })).resolvedPath;
+  return (await resolveScopedPath({ root, relativePath, access: "read" })).resolvedPath;
 }
 
 export async function writeExplorerFile({
@@ -538,7 +568,7 @@ export async function getDownloadableFileInfo({ root, relativePath }: ReadFilePa
   mimeType: string;
   size: number;
 }> {
-  const filePath = await resolveScopedPath({ root, relativePath });
+  const filePath = await resolveScopedPath({ root, relativePath, access: "read" });
   const handle = await openFileForRead(filePath.resolvedPath);
 
   try {
@@ -785,30 +815,34 @@ function isEntryExistsError(error: unknown): boolean {
 async function resolveScopedPath({
   root,
   relativePath = ".",
+  access = "write",
 }: ScopedPathParams): Promise<ScopedPath> {
   const normalizedRoot = expandUserPath(root);
   const requestedPath = resolvePathFromBase(normalizedRoot, relativePath);
-  const relative = path.relative(normalizedRoot, requestedPath);
+  const allowedRoots = access === "read" ? [normalizedRoot, ...readableRoots()] : [normalizedRoot];
 
-  if (relative !== "" && (relative.startsWith("..") || path.isAbsolute(relative))) {
+  if (!allowedRoots.some((allowed) => isWithinRoot(allowed, requestedPath))) {
     throw new Error(ACCESS_OUTSIDE_WORKSPACE_MESSAGE);
   }
 
-  const realRoot = await fs.realpath(normalizedRoot);
-
-  try {
-    const realPath = await fs.realpath(requestedPath);
-    const realRelative = path.relative(realRoot, realPath);
-    if (realRelative !== "" && (realRelative.startsWith("..") || path.isAbsolute(realRelative))) {
-      throw new Error(ACCESS_OUTSIDE_WORKSPACE_MESSAGE);
-    }
-    return { requestedPath, resolvedPath: realPath };
-  } catch (error) {
-    if (isMissingEntryError(error)) {
-      return { requestedPath, resolvedPath: requestedPath };
-    }
-    throw error;
+  // Symlinks must not escape either: compare real paths against the real
+  // allowed roots. A root that does not exist yet simply cannot contain the
+  // target.
+  const realRoots = (
+    await Promise.all(allowedRoots.map((allowed) => realpathIfPresent(allowed)))
+  ).filter((value): value is string => value !== null);
+  if (realRoots.length === 0) {
+    throw new Error(ACCESS_OUTSIDE_WORKSPACE_MESSAGE);
   }
+
+  const realPath = await realpathIfPresent(requestedPath);
+  if (realPath === null) {
+    return { requestedPath, resolvedPath: requestedPath };
+  }
+  if (!realRoots.some((allowed) => isWithinRoot(allowed, realPath))) {
+    throw new Error(ACCESS_OUTSIDE_WORKSPACE_MESSAGE);
+  }
+  return { requestedPath, resolvedPath: realPath };
 }
 
 async function openFileForRead(filePath: string): Promise<FileHandle> {
@@ -824,6 +858,7 @@ async function buildEntryPayload({
   const entryPath = await resolveScopedPath({
     root,
     relativePath: normalizeRelativePath({ root, targetPath }),
+    access: "read",
   });
   const stats = await fs.stat(entryPath.resolvedPath);
   return {
@@ -848,7 +883,13 @@ function normalizeRelativePath({ root, targetPath }: { root: string; targetPath:
   const normalizedRoot = expandUserPath(root);
   const normalizedTarget = expandUserPath(targetPath);
   const relative = path.relative(normalizedRoot, normalizedTarget);
-  return relative === "" ? "." : relative.split(path.sep).join("/");
+  if (relative === "") return ".";
+  // A readable path outside the workspace keeps its absolute form: a `../..`
+  // chain is meaningless to clients that key files by the path they asked for.
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    return normalizedTarget.split(path.sep).join("/");
+  }
+  return relative.split(path.sep).join("/");
 }
 
 function textMimeTypeForExtension(ext: string): string {

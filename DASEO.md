@@ -281,6 +281,20 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
   cancellation and process exit clear the slot through their existing terminal paths. Key files:
   `packages/app/src/agent-stream/view.tsx`, `packages/app/src/types/stream.ts`, and
   `packages/server/src/server/agent/providers/pi/agent.ts`.
+- Transcript file links open the file the agent named. Reads through the file explorer service may
+  leave the workspace root as long as they stay under the daemon user's home directory or the OS temp
+  directory (`~/.pi/agent/plans/…`, `~/brain/…`, `/tmp/…`); a symlink or path into anything else
+  is still refused, and every write, rename, create, and delete stays confined to the workspace
+  root. Outside paths are echoed back in absolute form. On the app side, inline-code tokens may
+  contain spaces when they still read as one path (`docs/최종 보고서.md`, never a command line),
+  document/data/media extensions link like source files and any short extension counts once a
+  directory is named, and a directory-qualified relative path that the gitignore-aware suffix
+  search cannot find (`tmp/report.md`, `.secrets/x.env`) opens directly instead of toasting "no
+  file found". A genuinely missing file shows "파일을 찾을 수 없습니다: <path>" in the file pane rather
+  than a raw ENOENT. Relay/mobile clients share this read scope: a phone with the E2E key can read
+  the same home files the agent already can. Key files:
+  `packages/server/src/server/file-explorer/service.ts`,
+  `packages/app/src/assistant-file-links/{parse,resolver}.ts`, `packages/app/src/file-pane/pane.tsx`.
 - One prompt is one row even when a provider forgets it. A respawned Pi process re-delivers the
   running prompt as a fresh user message with only its own entry id; the daemon absorbs that echo
   into the unacknowledged submitted row it duplicates instead of appending a second row after the

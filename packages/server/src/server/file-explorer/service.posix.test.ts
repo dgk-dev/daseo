@@ -35,14 +35,16 @@ describe.skipIf(isPlatform("win32"))("service POSIX-only", () => {
     }
   });
 
-  it("rejects symlinked files that resolve outside the workspace", async () => {
+  // Reads may leave the workspace for the home and temp directories, so the
+  // escape these tests guard against is a symlink into a system path that no
+  // readable root covers.
+  const SYSTEM_FILE = "/etc/hosts";
+
+  it("rejects symlinked files that resolve outside every readable root", async () => {
     const root = await createTempDir("paseo-file-explorer-");
-    const outsideRoot = await createTempDir("paseo-file-explorer-outside-");
 
     try {
-      const externalFile = path.join(outsideRoot, "secret.txt");
-      await writeFile(externalFile, "top secret\n", "utf-8");
-      await symlink(externalFile, path.join(root, "secret-link.txt"));
+      await symlink(SYSTEM_FILE, path.join(root, "secret-link.txt"));
 
       await expect(
         readExplorerFile({
@@ -52,19 +54,32 @@ describe.skipIf(isPlatform("win32"))("service POSIX-only", () => {
       ).rejects.toThrow("Access outside of workspace is not allowed");
     } finally {
       await rm(root, { recursive: true, force: true });
-      await rm(outsideRoot, { recursive: true, force: true });
     }
   });
 
-  it("skips listed symlink entries that resolve outside the workspace", async () => {
+  it("reads symlinked files that resolve into the temp directory", async () => {
     const root = await createTempDir("paseo-file-explorer-");
     const outsideRoot = await createTempDir("paseo-file-explorer-outside-");
 
     try {
+      const externalFile = path.join(outsideRoot, "shared.txt");
+      await writeFile(externalFile, "shared\n", "utf-8");
+      await symlink(externalFile, path.join(root, "shared-link.txt"));
+
+      const file = await readExplorerFile({ root, relativePath: "shared-link.txt" });
+      expect(file.content).toBe("shared\n");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("skips listed symlink entries that resolve outside every readable root", async () => {
+    const root = await createTempDir("paseo-file-explorer-");
+
+    try {
       await writeFile(path.join(root, "visible.txt"), "visible\n", "utf-8");
-      const externalFile = path.join(outsideRoot, "secret.txt");
-      await writeFile(externalFile, "top secret\n", "utf-8");
-      await symlink(externalFile, path.join(root, "secret-link.txt"));
+      await symlink(SYSTEM_FILE, path.join(root, "secret-link.txt"));
 
       const result = await listDirectoryEntries({ root });
 
@@ -73,7 +88,6 @@ describe.skipIf(isPlatform("win32"))("service POSIX-only", () => {
       expect(names).not.toContain("secret-link.txt");
     } finally {
       await rm(root, { recursive: true, force: true });
-      await rm(outsideRoot, { recursive: true, force: true });
     }
   });
 
