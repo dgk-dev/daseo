@@ -111,7 +111,9 @@ const ACCESS_OUTSIDE_WORKSPACE_MESSAGE = "Access outside of workspace is not all
 export type ScopedPathAccess = "read" | "write";
 
 function readableRoots(): string[] {
-  return [homedir(), tmpdir()].map((root) => expandUserPath(root));
+  // macOS resolves `os.tmpdir()` to `/var/folders/…` while agents write to
+  // `/tmp`; both are temp space, so both are readable.
+  return [homedir(), tmpdir(), "/tmp"].map((root) => expandUserPath(root));
 }
 
 function isWithinRoot(root: string, candidate: string): boolean {
@@ -820,29 +822,26 @@ async function resolveScopedPath({
   const normalizedRoot = expandUserPath(root);
   const requestedPath = resolvePathFromBase(normalizedRoot, relativePath);
   const allowedRoots = access === "read" ? [normalizedRoot, ...readableRoots()] : [normalizedRoot];
-
-  if (!allowedRoots.some((allowed) => isWithinRoot(allowed, requestedPath))) {
-    throw new Error(ACCESS_OUTSIDE_WORKSPACE_MESSAGE);
-  }
-
-  // Symlinks must not escape either: compare real paths against the real
-  // allowed roots. A root that does not exist yet simply cannot contain the
-  // target.
+  // Symlinks must not escape: an existing target is judged by its real
+  // location against the real roots (`/tmp` is `/private/tmp` on macOS, so a
+  // lexical comparison alone would refuse it). A missing target has no real
+  // location yet and is judged lexically, so a file created there later still
+  // lands inside an allowed root.
   const realRoots = (
     await Promise.all(allowedRoots.map((allowed) => realpathIfPresent(allowed)))
   ).filter((value): value is string => value !== null);
-  if (realRoots.length === 0) {
-    throw new Error(ACCESS_OUTSIDE_WORKSPACE_MESSAGE);
-  }
-
   const realPath = await realpathIfPresent(requestedPath);
-  if (realPath === null) {
-    return { requestedPath, resolvedPath: requestedPath };
+  if (realPath !== null) {
+    if (!realRoots.some((allowed) => isWithinRoot(allowed, realPath))) {
+      throw new Error(ACCESS_OUTSIDE_WORKSPACE_MESSAGE);
+    }
+    return { requestedPath, resolvedPath: realPath };
   }
-  if (!realRoots.some((allowed) => isWithinRoot(allowed, realPath))) {
+  const lexicalRoots = [...allowedRoots, ...realRoots];
+  if (!lexicalRoots.some((allowed) => isWithinRoot(allowed, requestedPath))) {
     throw new Error(ACCESS_OUTSIDE_WORKSPACE_MESSAGE);
   }
-  return { requestedPath, resolvedPath: realPath };
+  return { requestedPath, resolvedPath: requestedPath };
 }
 
 async function openFileForRead(filePath: string): Promise<FileHandle> {

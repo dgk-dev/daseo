@@ -6,7 +6,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import pino from "pino";
@@ -485,6 +485,94 @@ describe("WorkspaceFilesSession", () => {
     expect(typeof message.payload.token).toBe("string");
     expect(message.payload.fileName).toBe("report.txt");
     expect(message.payload.size).toBe(11);
+  });
+
+  test("reads a transcript-linked file outside the workspace over the explorer RPC", async () => {
+    // Agents link to plans and reports they wrote under ~ or /tmp. The explorer
+    // RPC used by every file tab must open them even though the workspace root
+    // is elsewhere, and must echo an absolute path the client can key.
+    const cwd = makeDir("workspace-files-root-");
+    const outsideTmp = makeDir("workspace-files-outside-tmp-");
+    writeFileSync(join(outsideTmp, "report.md"), "# report");
+    const outsideHome = realpathSync(mkdtempSync(join(homedir(), ".workspace-files-outside-")));
+    tempDirs.push(outsideHome);
+    writeFileSync(join(outsideHome, "plan.md"), "# plan");
+    const { subsystem, emitted } = makeSubsystem();
+
+    await subsystem.handleFileExplorerRequest({
+      type: "file_explorer_request",
+      cwd,
+      path: join(outsideTmp, "report.md"),
+      mode: "file",
+      requestId: "req-outside-tmp",
+    });
+    const tildePath = `~/${join(outsideHome, "plan.md").slice(homedir().length + 1)}`;
+    await subsystem.handleFileExplorerRequest({
+      type: "file_explorer_request",
+      cwd,
+      path: tildePath,
+      mode: "file",
+      requestId: "req-outside-home",
+    });
+    await subsystem.handleFileExplorerRequest({
+      type: "file_explorer_request",
+      cwd,
+      path: "/etc/hosts",
+      mode: "file",
+      requestId: "req-system",
+    });
+    await subsystem.handleFileDownloadTokenRequest({
+      type: "file_download_token_request",
+      cwd,
+      path: join(outsideTmp, "report.md"),
+      requestId: "req-outside-token",
+    });
+
+    const responses = emitted.map((message) =>
+      message.type === "file_explorer_response" || message.type === "file_download_token_response"
+        ? {
+            requestId: message.payload.requestId,
+            error: message.payload.error,
+            path: message.payload.path,
+            content:
+              message.type === "file_explorer_response" ? message.payload.file?.content : undefined,
+            token:
+              message.type === "file_download_token_response"
+                ? typeof message.payload.token
+                : undefined,
+          }
+        : { requestId: null, error: `unexpected ${message.type}` },
+    );
+    expect(responses).toEqual([
+      {
+        requestId: "req-outside-tmp",
+        error: null,
+        path: join(outsideTmp, "report.md"),
+        content: "# report",
+        token: undefined,
+      },
+      {
+        requestId: "req-outside-home",
+        error: null,
+        path: join(outsideHome, "plan.md"),
+        content: "# plan",
+        token: undefined,
+      },
+      {
+        requestId: "req-system",
+        error: "Access outside of workspace is not allowed",
+        path: "/etc/hosts",
+        content: undefined,
+        token: undefined,
+      },
+      {
+        requestId: "req-outside-token",
+        error: null,
+        path: join(outsideTmp, "report.md"),
+        content: undefined,
+        token: "string",
+      },
+    ]);
   });
 
   test("rejects an empty download-token cwd with an error envelope", async () => {

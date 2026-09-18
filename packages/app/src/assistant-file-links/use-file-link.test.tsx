@@ -213,6 +213,69 @@ describe("useFileLink", () => {
     expect(getDirectorySuggestions).toHaveBeenCalledTimes(2);
   });
 
+  it("opens the paths agents actually write: spaces, home-relative, documents, and gitignored dirs", async () => {
+    const searches: string[] = [];
+    const getDirectorySuggestions = vi.fn(async (input: { query: string }) => {
+      searches.push(input.query);
+      // Only the spreadsheet is indexed; the other relative paths live in
+      // gitignored or hidden folders the suffix search never returns.
+      return resolvedSuggestions(
+        input.query === "docs/report.xlsx" ? [{ path: "docs/report.xlsx", kind: "file" }] : [],
+      );
+    });
+    const openedFiles: OpenedFile[] = [];
+    const toast = createToast();
+    const wrapper = createWrapper({ client: { getDirectorySuggestions }, openedFiles, toast });
+    const inlineCode = (text: string) => ({ href: text, text, sourceType: "inline-code" as const });
+
+    const cases = [
+      inlineCode("docs/최종 보고서.md"),
+      inlineCode("~/.pi/agent/plans/-Users-ddgk/2026-09-17-plan.md"),
+      inlineCode("docs/report.xlsx"),
+      inlineCode(".secrets/neon.env"),
+      inlineCode("/tmp/회의 녹취록.txt:12"),
+    ];
+    for (const source of cases) {
+      const { result } = renderHook(() => useFileLink(source), { wrapper });
+      act(() => {
+        result.current.onPress();
+      });
+    }
+    await waitFor(() => {
+      expect(openedFiles).toHaveLength(cases.length);
+    });
+
+    // Direct targets open synchronously and searched ones after the daemon
+    // answers, so compare as a set.
+    expect(openedFiles.map((entry) => entry.target.path).sort()).toEqual(
+      [
+        "/Users/test/project/docs/최종 보고서.md",
+        "~/.pi/agent/plans/-Users-ddgk/2026-09-17-plan.md",
+        "/Users/test/project/docs/report.xlsx",
+        "/Users/test/project/.secrets/neon.env",
+        "/tmp/회의 녹취록.txt",
+      ].sort(),
+    );
+    expect(
+      openedFiles.find((entry) => entry.target.path === "/tmp/회의 녹취록.txt")?.target.lineStart,
+    ).toBe(12);
+    // Home-relative and absolute tokens never hit the daemon search; relative
+    // ones do, and a miss falls back to the direct path instead of a toast.
+    expect(searches).toEqual(["docs/최종 보고서.md", "docs/report.xlsx", ".secrets/neon.env"]);
+    expect(toast.show).not.toHaveBeenCalled();
+
+    // A bare word with an unknown extension and a command line are still not links.
+    for (const text of ["output.bin", "git add src/a.ts src/b.ts"]) {
+      const { result } = renderHook(() => useFileLink(inlineCode(text)), { wrapper });
+      expect(result.current.target).toBeNull();
+      act(() => {
+        result.current.onPress();
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(openedFiles).toHaveLength(cases.length);
+  });
+
   it("dedupes two links pointing at the same source", async () => {
     const deferred = createDeferred<DirectorySuggestionResult>();
     const getDirectorySuggestions = vi.fn(() => deferred.promise);
