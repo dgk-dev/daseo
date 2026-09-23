@@ -59,8 +59,8 @@
     },
     {
       "root": "src/messages.ts#WSOutboundMessageSchema",
-      "digest": "sha256:91abbf5ea21b710161567ef065b3a7cc2e5e5173e3cfcfa6271c14b2c15b241e",
-      "rationale": "Retains the additive optional turnOutcome, feature flags, device-pairing, push-catch-up, and command-receipt responses, and adds optional imageCount and attachments to canonical user timeline rows. Existing response fields and variants remain unchanged; older clients ignore optional object fields and never receive new RPC responses unless they send the corresponding new request. The compaction timeline item additionally gains optional outcome and error fields; its status enum stays loading|completed, so an older app parses every terminal compaction exactly as before and simply ignores the refinement."
+      "digest": "sha256:c4e4a908a2f7a4c19ad1225da5867bfd03e3b2ce425c446851ab4f7d2a1473d7",
+      "rationale": "Retains the additive optional turnOutcome, feature flags, device-pairing, push-catch-up, and command-receipt responses, and adds optional imageCount and attachments to canonical user timeline rows. Existing response fields and variants remain unchanged; older clients ignore optional object fields and never receive new RPC responses unless they send the corresponding new request. The compaction timeline item additionally gains optional outcome and error fields; its status enum stays loading|completed, so an older app parses every terminal compaction exactly as before and simply ignores the refinement. Canonical user timeline rows additionally gain one optional origin field (\"system\") marking Paseo system prompts; all existing fields and variants remain unchanged, and an older app ignores the optional field and renders the row as a plain user message."
     },
     {
       "root": "src/connection-offer.ts#ConnectionOfferSchema",
