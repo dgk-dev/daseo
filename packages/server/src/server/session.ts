@@ -109,6 +109,7 @@ import {
 } from "./agent/timeline-append.js";
 import {
   projectTimelineRows,
+  isTimelineTurnStart,
   selectProjectedTimelinePage,
   type TimelineProjectionEntry,
   type TimelineProjectionMode,
@@ -6626,6 +6627,7 @@ export class Session {
 
   private shouldUseFullTimelineForProjectedPage(input: {
     timeline: AgentTimelineFetchResult;
+    direction: AgentTimelineFetchDirection;
     pageLimit: number;
   }): boolean {
     const { timeline } = input;
@@ -6634,6 +6636,18 @@ export class Session {
     if (timeline.rows.some((row) => row.item.type === "tool_call")) return true;
 
     const firstRow = timeline.rows[0];
+    // Backward pages that open mid-turn extend to the turn's user message,
+    // which lies before the control page's rows.
+    if (
+      input.direction !== "after" &&
+      input.pageLimit !== 0 &&
+      timeline.hasOlder &&
+      firstRow &&
+      !isTimelineTurnStart(firstRow.item)
+    ) {
+      return true;
+    }
+
     if (
       timeline.hasOlder &&
       (firstRow?.item.type === "assistant_message" || firstRow?.item.type === "reasoning")
@@ -6675,8 +6689,10 @@ export class Session {
     pageLimit: number;
     fullTimeline?: AgentTimelineFetchResult;
   }): AgentTimelineProjectionSelection {
+    const direction = input.controlTimeline.reset ? "tail" : input.direction;
     const selectedTimeline = this.shouldUseFullTimelineForProjectedPage({
       timeline: input.controlTimeline,
+      direction,
       pageLimit: input.pageLimit,
     })
       ? (input.fullTimeline ??
@@ -6685,7 +6701,7 @@ export class Session {
     const page = selectProjectedTimelinePage({
       rows: selectedTimeline.rows,
       bounds: selectedTimeline.window,
-      direction: input.controlTimeline.reset ? "tail" : input.direction,
+      direction,
       ...(input.cursor ? { cursorSeq: input.cursor.seq } : {}),
       limit: input.pageLimit,
     });

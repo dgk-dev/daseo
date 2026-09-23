@@ -24,6 +24,7 @@ import { StructuredAgentFallbackError } from "./agent/agent-response-loop.js";
 import type { StoredAgentRecord } from "./agent/agent-storage.js";
 import type { AgentManagerEvent } from "./agent/agent-manager.js";
 import { AgentCommandReceiptStore } from "./agent/agent-command-receipt-store.js";
+import { InMemoryAgentTimelineStore } from "./agent/agent-timeline-store.js";
 import type { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
 import { createPersistedProjectRecord } from "./workspace-registry.js";
 import { deriveProjectKey } from "./project-key.js";
@@ -5806,4 +5807,85 @@ describe("agent config setters", () => {
       },
     });
   });
+});
+
+test("projected tail page for a long turn begins at the turn's user message", async () => {
+  const messages: SessionOutboundMessage[] = [];
+  const now = new Date("2026-09-23T00:00:00.000Z");
+  const snapshot = {
+    id: "agent-long-turn",
+    provider: "pi",
+    cwd: "/tmp/long-turn",
+    config: {},
+    createdAt: now,
+    updatedAt: now,
+    lastUserMessageAt: null,
+    lifecycle: "idle",
+    activeTurnId: null,
+    capabilities: {
+      supportsStreaming: true,
+      supportsSessionPersistence: false,
+      supportsDynamicModes: false,
+      supportsMcpServers: false,
+      supportsReasoningStream: false,
+      supportsToolInvocations: false,
+    },
+    currentModeId: null,
+    availableModes: [],
+    features: [],
+    pendingPermissions: new Map(),
+    persistence: null,
+    labels: {},
+    attention: { requiresAttention: false },
+  };
+  const timelineStore = new InMemoryAgentTimelineStore();
+  timelineStore.initialize(snapshot.id, {
+    items: [
+      { type: "user_message", text: "earlier prompt" },
+      { type: "assistant_message", text: "earlier answer", messageId: "msg-earlier" },
+      { type: "user_message", text: "long prompt" },
+      // No tool calls, and the 40-row control page opens at the steering
+      // prompt (seq 24), so the control rows alone cannot reach seq 3.
+      ...Array.from({ length: 60 }, (_, index) =>
+        index === 20
+          ? { type: "user_message" as const, text: "steer", steering: true }
+          : {
+              type: "assistant_message" as const,
+              text: `step ${index}`,
+              messageId: `msg-${index}`,
+            },
+      ),
+    ],
+  });
+  const session = createSessionForTest({
+    messages,
+    agentManager: {
+      getAgent: vi.fn(() => snapshot),
+      waitForAgentClose: vi.fn().mockResolvedValue(undefined),
+      fetchTimeline: vi.fn((agentId: string, options) => timelineStore.fetch(agentId, options)),
+    },
+  });
+
+  await session.handleMessage({
+    type: "fetch_agent_timeline_request",
+    requestId: "long-turn-tail",
+    agentId: snapshot.id,
+    direction: "tail",
+    limit: 40,
+  });
+
+  const response = messages.find(
+    (
+      message,
+    ): message is Extract<SessionOutboundMessage, { type: "fetch_agent_timeline_response" }> =>
+      message.type === "fetch_agent_timeline_response",
+  );
+  expect(response?.payload.error).toBeNull();
+  expect(response?.payload.entries[0]?.item).toEqual({
+    type: "user_message",
+    text: "long prompt",
+  });
+  expect(response?.payload.entries).toHaveLength(61);
+  expect(response?.payload.startCursor?.seq).toBe(3);
+  expect(response?.payload.hasOlder).toBe(true);
 });

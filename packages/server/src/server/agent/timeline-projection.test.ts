@@ -863,3 +863,130 @@ describe("selectProjectedTimelinePage", () => {
     expect(page.endSeq).toBe(501);
   });
 });
+
+describe("selectProjectedTimelinePage turn-boundary alignment", () => {
+  function userRow(seq: number, options?: { steering?: boolean }): AgentTimelineRow {
+    return {
+      seq,
+      timestamp: new Date(1000 + seq).toISOString(),
+      item: {
+        type: "user_message",
+        text: `prompt ${seq}`,
+        ...(options?.steering ? { steering: true } : {}),
+      },
+    };
+  }
+
+  // Distinct message ids keep each row its own projected entry.
+  function assistantRow(seq: number): AgentTimelineRow {
+    return {
+      seq,
+      timestamp: new Date(1000 + seq).toISOString(),
+      item: { type: "assistant_message", text: `step ${seq}`, messageId: `msg-${seq}` },
+    };
+  }
+
+  function assistantRows(fromSeq: number, count: number): AgentTimelineRow[] {
+    return Array.from({ length: count }, (_, index) => assistantRow(fromSeq + index));
+  }
+
+  test("tail page that lands mid-turn extends back to the turn's user message", () => {
+    const rows = [...assistantRows(1, 5), userRow(6), ...assistantRows(7, 60)];
+
+    const page = selectProjectedTimelinePage({ rows, direction: "tail", limit: 40 });
+
+    expect(page.entries[0]?.item).toEqual({ type: "user_message", text: "prompt 6" });
+    expect(page.entries).toHaveLength(61);
+    expect(page.startSeq).toBe(6);
+    expect(page.endSeq).toBe(66);
+    expect(page.hasOlder).toBe(true);
+  });
+
+  test("tail page that already begins at a user message is unchanged", () => {
+    const rows = [...assistantRows(1, 20), userRow(21), ...assistantRows(22, 39)];
+
+    const page = selectProjectedTimelinePage({ rows, direction: "tail", limit: 40 });
+
+    expect(page.entries).toHaveLength(40);
+    expect(page.entries[0]?.seqStart).toBe(21);
+    expect(page.startSeq).toBe(21);
+    expect(page.hasOlder).toBe(true);
+  });
+
+  test("a steering user message is not a turn start", () => {
+    const rows = [
+      ...assistantRows(1, 3),
+      userRow(4),
+      ...assistantRows(5, 20),
+      userRow(25, { steering: true }),
+      ...assistantRows(26, 39),
+    ];
+
+    const page = selectProjectedTimelinePage({ rows, direction: "tail", limit: 40 });
+
+    expect(page.entries[0]?.item).toEqual({ type: "user_message", text: "prompt 4" });
+    expect(page.startSeq).toBe(4);
+    expect(page.hasOlder).toBe(true);
+  });
+
+  test("a turn longer than the extension cap returns the capped page", () => {
+    const rows = [userRow(1), ...assistantRows(2, 500)];
+
+    const page = selectProjectedTimelinePage({ rows, direction: "tail", limit: 40 });
+
+    expect(page.entries).toHaveLength(440);
+    expect(page.entries[0]?.item.type).toBe("assistant_message");
+    expect(page.startSeq).toBe(62);
+    expect(page.endSeq).toBe(501);
+    expect(page.hasOlder).toBe(true);
+  });
+
+  test("before page that lands mid-turn extends back to the turn's user message", () => {
+    const rows = [
+      ...assistantRows(1, 5),
+      userRow(6),
+      ...assistantRows(7, 60),
+      userRow(67),
+      ...assistantRows(68, 10),
+    ];
+
+    const page = selectProjectedTimelinePage({
+      rows,
+      direction: "before",
+      cursorSeq: 67,
+      limit: 40,
+    });
+
+    expect(page.entries[0]?.item).toEqual({ type: "user_message", text: "prompt 6" });
+    expect(page.entries).toHaveLength(61);
+    expect(page.startSeq).toBe(6);
+    expect(page.endSeq).toBe(66);
+    expect(page.hasOlder).toBe(true);
+
+    const oldest = selectProjectedTimelinePage({
+      rows,
+      direction: "before",
+      cursorSeq: page.startSeq ?? 0,
+      limit: 40,
+    });
+    expect(oldest.startSeq).toBe(1);
+    expect(oldest.endSeq).toBe(5);
+    expect(oldest.hasOlder).toBe(false);
+  });
+
+  test("after pages are not extended", () => {
+    const rows = [userRow(1), ...assistantRows(2, 60)];
+
+    const page = selectProjectedTimelinePage({
+      rows,
+      direction: "after",
+      cursorSeq: 20,
+      limit: 10,
+    });
+
+    expect(page.entries).toHaveLength(10);
+    expect(page.entries[0]?.seqStart).toBe(21);
+    expect(page.startSeq).toBe(21);
+    expect(page.endSeq).toBe(30);
+  });
+});

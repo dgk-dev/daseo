@@ -441,6 +441,37 @@ function selectProjectedEntriesAfter(input: {
   };
 }
 
+// Bounds how far a backward page may grow to reach its turn's user message.
+// A pathological single turn with thousands of tool calls would otherwise
+// return its whole history in one page; past the cap the client keeps its
+// "no user boundary, no auto-fold" fallback for the leading slice.
+const TURN_BOUNDARY_EXTENSION_LIMIT = 400;
+
+/** A non-steering user message opens a turn; steering joins the running one. */
+export function isTimelineTurnStart(item: AgentTimelineItem): boolean {
+  return item.type === "user_message" && item.steering !== true;
+}
+
+/**
+ * The client folds completed work per turn and cannot fold a page's leading
+ * slice without its user message, so a page that opens mid-turn moves its
+ * start back to the nearest earlier turn start, at most
+ * TURN_BOUNDARY_EXTENSION_LIMIT extra entries.
+ */
+function alignPageStartToTurnStart(
+  entries: readonly TimelineProjectionEntry[],
+  startIndex: number,
+): number {
+  const first = entries[startIndex];
+  if (startIndex <= 0 || !first || isTimelineTurnStart(first.item)) return startIndex;
+  const floor = Math.max(0, startIndex - TURN_BOUNDARY_EXTENSION_LIMIT);
+  for (let index = startIndex - 1; index >= floor; index -= 1) {
+    const entry = entries[index];
+    if (entry && isTimelineTurnStart(entry.item)) return index;
+  }
+  return floor;
+}
+
 function selectProjectedEntriesBefore(input: {
   entries: readonly TimelineProjectionEntry[];
   endSeq: number;
@@ -450,15 +481,16 @@ function selectProjectedEntriesBefore(input: {
   // entry's seqEnd without moving its display anchor, so seqStart keeps the full
   // projected item on exactly one backward page.
   const eligible = input.entries.filter((entry) => entry.seqStart <= input.endSeq);
-  const selected =
+  const startIndex =
     input.limit === 0 || input.limit >= eligible.length
-      ? eligible
-      : eligible.slice(eligible.length - input.limit);
+      ? 0
+      : alignPageStartToTurnStart(eligible, eligible.length - input.limit);
+  const selected = eligible.slice(startIndex);
 
   return {
     entries: selected,
     startSeq: selected[0]?.seqStart ?? null,
-    hasOlder: selected.length < eligible.length,
+    hasOlder: startIndex > 0,
   };
 }
 
@@ -513,11 +545,26 @@ export function selectProjectedTimelinePage(input: {
   }
 
   if (input.direction === "tail") {
-    const selected = selectTimelineWindowByProjectedLimit({
+    let selected = selectTimelineWindowByProjectedLimit({
       rows: input.rows,
       direction: "tail",
       limit,
     });
+    const firstSelected = selected.projectedEntries[0];
+    if (limit > 0 && firstSelected) {
+      // Projected entries are ordered by, and unique on, seqStart.
+      const startIndex = projectedAll.findIndex(
+        (entry) => entry.seqStart === firstSelected.seqStart,
+      );
+      const alignedIndex = alignPageStartToTurnStart(projectedAll, startIndex);
+      if (alignedIndex < startIndex) {
+        selected = selectTimelineWindowByProjectedLimit({
+          rows: input.rows,
+          direction: "tail",
+          limit: projectedAll.length - alignedIndex,
+        });
+      }
+    }
     return {
       entries: selected.projectedEntries,
       startSeq: selected.minSeq,

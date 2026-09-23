@@ -307,6 +307,13 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
   and the block clears as soon as the start cursor moves or a retry succeeds. Key files:
   `packages/app/src/hooks/use-load-older-agent-history.ts` and
   `packages/app/src/agent-stream/older-history-error-row.tsx`.
+- Opening a session folds a long last turn at once. The client folds only turns whose user message
+  is on screen, so projected `tail` and `before` pages that would open mid-turn extend back to the
+  nearest non-steering user message, at most 400 extra entries; past that cap the page stays
+  capped and its leading slice stays open. `after` pages and canonical projection are unchanged.
+  The daemon projects from the full timeline whenever the control page cannot reach that
+  boundary. Key files: `packages/server/src/server/agent/timeline-projection.ts` and
+  `packages/server/src/server/session.ts`.
 - Advisor, committee and handoff skills are manual-only in the bundled source. Startup skill
   synchronization must retain `disable-model-invocation: true`; editing installed mirrors is not
   a durable customization.
