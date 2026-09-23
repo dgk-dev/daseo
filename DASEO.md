@@ -352,6 +352,9 @@ Adopted since the last merge (upstream PR → Daseo commit subject):
   stabilization, Escape-first overlay dismissal (cherry-picks; Daseo-local
   `components/ui/icon-button-chrome.ts` provides the small toolbar chrome).
 - #4107 fullscreen Mermaid viewer on web (cherry-pick).
+- #4048 keep daemon alive when JSONL RPC stdin hits EPIPE (cherry-pick).
+- #4742 keep incomplete Markdown formatted while streaming (hand-port; Daseo message.tsx keeps
+  its collapsed-work structure).
 
 Reviewed and deliberately not adopted: #4353 (reload ordering change targets Codex's exclusive
 session writer; Daseo reloads only on user refresh and voice mode), #4190 / 140b0bb71 / #3907
@@ -360,6 +363,25 @@ architecture), #4044 / #4051 / #4090 / #4275 (overlap delta 18's native composer
 and need device QA), #3411 and #4277 (depend on the plugin timeline/tool platform), #4166
 (32k-character answer cap conflicts with delta 5), #3826 Explorer pane host, #4214 tab
 tooltips, #3945 / #3825 / #4025 GitHub polling changes (no observed rate-limit pressure).
+
+Reviewed for 0.5.31 and deliberately not adopted:
+
+- #5040 (Daseo resumes only opened chats already — daemon log shows 2 of 481 persisted agents
+  resumed at start).
+- #3849 (Daseo settles autonomous Pi turns its own way, 0.5.28–0.5.30).
+- #4413 (roster pins supported thinking levels; Daseo derives options from thinkingLevelMap).
+- #4444 (Daseo never disabled reconnect while backgrounded).
+- #4838 / #4863 / #5079 / #5189 / #5013 / #4765 (assume upstream timeline, replica-cache, and
+  subscription architecture; no observed Daseo symptom).
+- #4676 (adds a native C++ Expo module — new platform).
+- #5007 (Electron main RSS 276 MB on a 24 GB host with 54 % free; 38-file entrypoint split not
+  worth the port).
+- #4442 / #4844 / #4839 / #4895 / #4926 / #4737 (creation, layout, catalog, and older-host paths
+  Daseo replaced in deltas 7 and 9; no observed symptom).
+- #4646 (overlaps delta 1's hidden-pane unsubscribe).
+- #4824 / #4902 / #4946 / #4845 / #4958 / #4927 (composer and voice paths overlap delta 18/native
+  composer).
+- #4596 / #4470 / #4575 (213-/31-/195-file architecture changes).
 
 ## Product version policy
 

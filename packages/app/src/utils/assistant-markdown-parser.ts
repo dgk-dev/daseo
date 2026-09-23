@@ -1,6 +1,7 @@
 import MarkdownIt from "markdown-it";
+import { enableStreamingMarkdown } from "@/utils/streaming-markdown";
 
-export function createAssistantMarkdownParser(): MarkdownIt {
+export function createAssistantMarkdownParser({ streaming = false } = {}): MarkdownIt {
   const parser = new MarkdownIt({
     html: false,
     linkify: true,
@@ -10,6 +11,10 @@ export function createAssistantMarkdownParser(): MarkdownIt {
 
   parser.validateLink = (url: string) =>
     url.trim().toLowerCase().startsWith("file://") || defaultValidateLink(url);
+
+  if (streaming) {
+    enableStreamingMarkdown(parser);
+  }
 
   return parser;
 }

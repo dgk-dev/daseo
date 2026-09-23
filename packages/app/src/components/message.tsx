@@ -1549,6 +1549,10 @@ export const AssistantMessage = memo(function AssistantMessage({
   phase,
 }: AssistantMessageProps) {
   const markdownParser = useMemo(createAssistantMarkdownParser, []);
+  const streamingMarkdownParser = useMemo(
+    () => createAssistantMarkdownParser({ streaming: true }),
+    [],
+  );
 
   const fileLinkActions = useAssistantFileLinkActions();
   const handleMarkdownLinkPress = useStableEvent((url: string) => {
@@ -2015,7 +2019,11 @@ export const AssistantMessage = memo(function AssistantMessage({
           <MemoizedMarkdownBlock
             text={block}
             rules={markdownRules}
-            parser={markdownParser}
+            parser={
+              phase === "streaming" && index === keyedBlocks.length - 1
+                ? streamingMarkdownParser
+                : markdownParser
+            }
             onLinkPress={handleMarkdownLinkPress}
           />
         </AssistantMessageBlockContainer>
