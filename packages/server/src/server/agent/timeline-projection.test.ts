@@ -929,14 +929,14 @@ describe("selectProjectedTimelinePage turn-boundary alignment", () => {
     expect(page.hasOlder).toBe(true);
   });
 
-  test("a turn longer than the extension cap returns the capped page", () => {
+  test("a turn longer than the extension cap keeps the page's normal size", () => {
     const rows = [userRow(1), ...assistantRows(2, 500)];
 
     const page = selectProjectedTimelinePage({ rows, direction: "tail", limit: 40 });
 
-    expect(page.entries).toHaveLength(440);
+    expect(page.entries).toHaveLength(40);
     expect(page.entries[0]?.item.type).toBe("assistant_message");
-    expect(page.startSeq).toBe(62);
+    expect(page.startSeq).toBe(462);
     expect(page.endSeq).toBe(501);
     expect(page.hasOlder).toBe(true);
   });

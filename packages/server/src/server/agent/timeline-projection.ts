@@ -443,8 +443,9 @@ function selectProjectedEntriesAfter(input: {
 
 // Bounds how far a backward page may grow to reach its turn's user message.
 // A pathological single turn with thousands of tool calls would otherwise
-// return its whole history in one page; past the cap the client keeps its
-// "no user boundary, no auto-fold" fallback for the leading slice.
+// return its whole history in one page; past the cap the page keeps its normal
+// size, since a larger page without the boundary folds nothing more, and the
+// client keeps its "no user boundary, no auto-fold" fallback for the leading slice.
 const TURN_BOUNDARY_EXTENSION_LIMIT = 400;
 
 /** A non-steering user message opens a turn; steering joins the running one. */
@@ -456,7 +457,8 @@ export function isTimelineTurnStart(item: AgentTimelineItem): boolean {
  * The client folds completed work per turn and cannot fold a page's leading
  * slice without its user message, so a page that opens mid-turn moves its
  * start back to the nearest earlier turn start, at most
- * TURN_BOUNDARY_EXTENSION_LIMIT extra entries.
+ * TURN_BOUNDARY_EXTENSION_LIMIT extra entries. Without a turn start in that
+ * range the start is left where it was.
  */
 function alignPageStartToTurnStart(
   entries: readonly TimelineProjectionEntry[],
@@ -469,7 +471,7 @@ function alignPageStartToTurnStart(
     const entry = entries[index];
     if (entry && isTimelineTurnStart(entry.item)) return index;
   }
-  return floor;
+  return startIndex;
 }
 
 function selectProjectedEntriesBefore(input: {
