@@ -95,6 +95,8 @@ export interface UserMessageItem {
   timelineCursor?: TimelinePosition;
   /** Input accepted into the provider's already-active turn. */
   steering?: boolean;
+  /** A Paseo system prompt that triggered the turn, shown as a boundary row instead of a bubble. */
+  origin?: "system";
   /** Canonical image count used when image bytes are unavailable after history hydration. */
   imageCount?: number;
   text: string;
@@ -109,6 +111,7 @@ export interface UserMessageInput {
   messageId?: string;
   timelineCursor?: TimelinePosition;
   steering?: boolean;
+  origin?: "system";
   imageCount?: number;
   text: string;
   timestamp: Date;
@@ -128,6 +131,7 @@ export function createUserMessage(input: UserMessageInput): UserMessageItem {
     ...(input.messageId ? { messageId: input.messageId } : {}),
     ...(input.timelineCursor ? { timelineCursor: input.timelineCursor } : {}),
     ...(input.steering ? { steering: true } : {}),
+    ...(input.origin === "system" ? { origin: "system" as const } : {}),
     ...((input.imageCount ?? input.images?.length ?? 0) > 0
       ? { imageCount: input.imageCount ?? input.images?.length }
       : {}),
@@ -244,6 +248,7 @@ function mergeMatchedUserMessage(
     messageId: incoming.messageId ?? existing.messageId,
     timelineCursor: incoming.timelineCursor ?? existing.timelineCursor,
     steering: incoming.steering ?? existing.steering,
+    origin: incoming.origin ?? existing.origin,
     imageCount: incoming.imageCount ?? existing.imageCount ?? existing.images?.length,
     images: presentation.images ?? existing.images ?? incoming.images,
     attachments: presentation.attachments ?? existing.attachments ?? incoming.attachments,
@@ -257,6 +262,7 @@ function userMessagesSharePresentation(left: UserMessageItem, right: UserMessage
     left.messageId === right.messageId &&
     left.timelineCursor === right.timelineCursor &&
     left.steering === right.steering &&
+    left.origin === right.origin &&
     left.imageCount === right.imageCount &&
     left.text === right.text &&
     left.timestamp === right.timestamp &&
@@ -1104,6 +1110,7 @@ function appendUserMessage(
   timelineCursor?: TimelinePosition,
   imageCount?: number,
   attachments?: AgentAttachment[],
+  origin?: "system",
 ): StreamItem[] {
   const { chunk, hasContent } = normalizeChunk(text);
   if (!hasUserMessagePresentation({ hasText: hasContent, imageCount, attachments })) {
@@ -1117,6 +1124,7 @@ function appendUserMessage(
     messageId,
     timelineCursor,
     steering,
+    origin,
     imageCount,
     text: chunk,
     timestamp,
@@ -1796,6 +1804,7 @@ function reduceTimelineEvent(
           timelineCursor,
           item.imageCount,
           item.attachments,
+          item.origin,
         ),
       );
     case "assistant_message":
@@ -2211,6 +2220,7 @@ function applyCanonicalUserMessageEvent(params: {
     messageId: event.item.messageId,
     clientMessageId: event.item.clientMessageId,
     timelineCursor,
+    origin: event.item.origin,
     imageCount: event.item.imageCount,
     text: normalized.chunk,
     timestamp,

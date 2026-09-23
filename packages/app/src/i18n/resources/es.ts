@@ -359,6 +359,16 @@ export const es: TranslationResources = {
       },
     },
     pending: "Enviando...",
+    systemNotification: {
+      agentFinished: "{{title}} terminó",
+      agentErrored: "{{title}} falló",
+      agentNeedsPermission: "{{title}} necesita permiso",
+      agentClosed: "{{title}} se cerró",
+      scheduleNamed: 'Programación "{{name}}" ejecutada',
+      schedule: "Programación ejecutada",
+      showNotification: "{{label}}, mostrar notificación",
+      hideNotification: "{{label}}, ocultar notificación",
+    },
     compaction: {
       loading: "Compactando...",
       auto: "Contexto compactado automáticamente",

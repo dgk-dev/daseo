@@ -707,6 +707,7 @@ export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknow
     messageId: z.string().optional(),
     clientMessageId: z.string().optional(),
     steering: z.boolean().optional(),
+    origin: z.literal("system").optional(),
     imageCount: z.number().int().nonnegative().optional(),
     attachments: z.array(AgentAttachmentSchema).optional(),
   }),

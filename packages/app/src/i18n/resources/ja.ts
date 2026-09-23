@@ -359,6 +359,16 @@ export const ja: TranslationResources = {
       },
     },
     pending: "送信中...",
+    systemNotification: {
+      agentFinished: "{{title}} が完了",
+      agentErrored: "{{title}} でエラー",
+      agentNeedsPermission: "{{title}} が権限を要求",
+      agentClosed: "{{title}} が閉じられました",
+      scheduleNamed: "スケジュール「{{name}}」を実行",
+      schedule: "スケジュールを実行",
+      showNotification: "{{label}}、通知を表示",
+      hideNotification: "{{label}}、通知を隠す",
+    },
     compaction: {
       loading: "コンテキストを圧縮中...",
       auto: "コンテキストが自動的に圧縮されました",

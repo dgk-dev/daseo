@@ -360,6 +360,16 @@ export const fr: TranslationResources = {
       },
     },
     pending: "Envoi...",
+    systemNotification: {
+      agentFinished: "{{title}} terminé",
+      agentErrored: "{{title}} en erreur",
+      agentNeedsPermission: "{{title}} demande une autorisation",
+      agentClosed: "{{title}} fermé",
+      scheduleNamed: "Planification « {{name}} » déclenchée",
+      schedule: "Planification déclenchée",
+      showNotification: "{{label}}, afficher la notification",
+      hideNotification: "{{label}}, masquer la notification",
+    },
     compaction: {
       loading: "Compactage...",
       auto: "Contexte automatiquement compacté",

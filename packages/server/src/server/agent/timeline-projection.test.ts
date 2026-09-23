@@ -929,6 +929,29 @@ describe("selectProjectedTimelinePage turn-boundary alignment", () => {
     expect(page.hasOlder).toBe(true);
   });
 
+  test("a system-origin prompt starts the turn a page aligns to", () => {
+    const envelope = "<paseo-system>\nAgent a (Implement) finished.\n</paseo-system>";
+    const rows = [
+      userRow(1),
+      ...assistantRows(2, 20),
+      {
+        seq: 22,
+        timestamp: new Date(1022).toISOString(),
+        item: { type: "user_message" as const, text: envelope, origin: "system" as const },
+      },
+      ...assistantRows(23, 39),
+    ];
+
+    const page = selectProjectedTimelinePage({ rows, direction: "tail", limit: 30 });
+
+    expect(page.entries[0]?.item).toEqual({
+      type: "user_message",
+      text: envelope,
+      origin: "system",
+    });
+    expect(page.startSeq).toBe(22);
+  });
+
   test("a turn longer than the extension cap keeps the page's normal size", () => {
     const rows = [userRow(1), ...assistantRows(2, 500)];
 

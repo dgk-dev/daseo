@@ -171,7 +171,24 @@ export class InMemoryAgentTimelineStore {
     const row = this.requireState(agentId).rows.find(
       (candidate) =>
         candidate.item.type === "user_message" &&
+        candidate.item.origin !== "system" &&
         candidate.item.clientMessageId === clientMessageId,
+    );
+    return row ? cloneRow(row) : null;
+  }
+
+  /** Find the system prompt already recorded for this turn with the same text. */
+  findSystemUserMessageInTurn(
+    agentId: string,
+    turnId: string,
+    text: string,
+  ): AgentTimelineRow | null {
+    const row = this.requireState(agentId).rows.find(
+      (candidate) =>
+        candidate.turnId === turnId &&
+        candidate.item.type === "user_message" &&
+        candidate.item.origin === "system" &&
+        candidate.item.text === text,
     );
     return row ? cloneRow(row) : null;
   }
@@ -190,7 +207,7 @@ export class InMemoryAgentTimelineStore {
     const state = this.requireState(agentId);
     for (let index = state.rows.length - 1; index >= 0; index -= 1) {
       const row = state.rows[index];
-      if (!row || row.item.type !== "user_message") continue;
+      if (!row || row.item.type !== "user_message" || row.item.origin === "system") continue;
       if (!row.item.clientMessageId || row.providerMessageId) continue;
       if (row.item.text !== text) continue;
       if (new Date(row.timestamp).getTime() < notBefore.getTime()) return null;

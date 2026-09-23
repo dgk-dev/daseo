@@ -263,6 +263,29 @@ second line'`,
     expect(result).toContain("Message 4");
   });
 
+  it("reads the conversation exactly as before when system-origin prompts are present", () => {
+    const conversation: AgentTimelineItem[] = [
+      { type: "user_message", text: "Plan it" },
+      { type: "assistant_message", text: "Planned" },
+      { type: "assistant_message", text: "Reviewed" },
+    ];
+    const withSystemPrompt: AgentTimelineItem[] = [
+      conversation[0]!,
+      conversation[1]!,
+      {
+        type: "user_message",
+        text: "<paseo-system>\nAgent a (Implement) finished.\n</paseo-system>",
+        origin: "system",
+      },
+      conversation[2]!,
+    ];
+
+    expect(curateAgentActivity(withSystemPrompt)).toBe(curateAgentActivity(conversation));
+    expect(curateAgentActivity(withSystemPrompt, { maxItems: 2 })).toBe(
+      curateAgentActivity(conversation, { maxItems: 2 }),
+    );
+  });
+
   it("returns a default message when timeline is empty", () => {
     expect(curateAgentActivity([])).toBe("No activity to display.");
   });

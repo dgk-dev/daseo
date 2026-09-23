@@ -2,6 +2,7 @@ import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { collapseCompletedWorkStream } from "./collapsed-work";
 import { projectCompactionPresentation } from "./compaction-presentation";
 import { CollapsedWorkRow } from "./collapsed-work-row";
+import { SystemNotificationRow } from "./system-notification-row";
 import { CollapsedWorkProvider, type CollapsedWorkController } from "./collapsed-work-context";
 import React, {
   forwardRef,
@@ -697,6 +698,9 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
 
     const renderUserMessageItem = useCallback(
       (layoutItem: StreamLayoutItem, item: Extract<StreamItem, { kind: "user_message" }>) => {
+        if (item.origin === "system") {
+          return <SystemNotificationRow text={item.text} timestamp={item.timestamp.getTime()} />;
+        }
         return (
           <UserMessage
             serverId={resolvedServerId}

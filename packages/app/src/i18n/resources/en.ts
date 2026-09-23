@@ -354,6 +354,16 @@ export const en = {
       },
     },
     pending: "Sending...",
+    systemNotification: {
+      agentFinished: "{{title}} finished",
+      agentErrored: "{{title}} errored",
+      agentNeedsPermission: "{{title}} needs permission",
+      agentClosed: "{{title}} was closed",
+      scheduleNamed: 'Schedule "{{name}}" fired',
+      schedule: "Schedule fired",
+      showNotification: "{{label}}, show notification",
+      hideNotification: "{{label}}, hide notification",
+    },
     compaction: {
       loading: "Compacting...",
       auto: "Context automatically compacted",

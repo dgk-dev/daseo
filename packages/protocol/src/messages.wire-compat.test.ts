@@ -160,6 +160,27 @@ describe("wire schema compatibility", () => {
     });
   });
 
+  test("system origin is optional and ignored by legacy user-message readers", () => {
+    const legacyUserMessageSchema = z.object({
+      type: z.literal("user_message"),
+      text: z.string(),
+      messageId: z.string().optional(),
+    });
+    const current = AgentTimelineItemPayloadSchema.parse({
+      type: "user_message",
+      text: "<paseo-system>\nAgent a (Plan) finished.\n</paseo-system>",
+      messageId: "provider-message",
+      origin: "system",
+    });
+
+    expect(current).toMatchObject({ origin: "system" });
+    expect(legacyUserMessageSchema.parse(current)).toEqual({
+      type: "user_message",
+      text: "<paseo-system>\nAgent a (Plan) finished.\n</paseo-system>",
+      messageId: "provider-message",
+    });
+  });
+
   test("command receipt resolution messages are additive", () => {
     expect(
       AgentCommandReceiptGetRequestSchema.parse({

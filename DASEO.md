@@ -302,6 +302,17 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
   awaiting delivery are marked in the transcript rather than looking already delivered. Key files:
   `packages/server/src/server/agent/{agent-manager,agent-timeline-store}.ts` and
   `packages/app/src/components/message.tsx`.
+- A turn started by a Paseo system prompt (subagent finish/error/permission/close notification,
+  schedule fire) begins at a visible boundary row. The daemon records the provider's echo of the
+  `<paseo-system>` envelope as a `user_message` with `origin: "system"` on live stream, history
+  rebuild, and import, instead of dropping it, and absorbs a same-turn re-delivery. System prompts
+  have no submitted row, so the echo is the only source. The app renders the row as a divider with
+  what triggered the turn and when, body folded until tapped; it starts a turn for folding and page
+  alignment and never groups with user bubbles. Titles, the prompt outline, submitted-prompt
+  lookups, `get_agent_activity`, fork chat history, and `lastUserMessageAt` skip system rows, and
+  the agent still receives the same prompt text. Sessions recorded before this have no such rows.
+  Key files: `packages/server/src/server/agent/{agent-prompt,agent-manager,activity-curator}.ts`
+  and `packages/app/src/agent-stream/system-notification{,-row}.ts{,x}`.
 - A page of older history that fails to load is remembered by its cursor. Returning to the history
   start does not silently re-request it; the history-start slot offers an explicit Retry instead,
   and the block clears as soon as the start cursor moves or a retry succeeds. Key files:

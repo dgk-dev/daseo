@@ -382,6 +382,8 @@ export type AgentTimelineItem =
       clientMessageId?: string;
       /** This input was accepted into an already-active turn. */
       steering?: boolean;
+      /** A Paseo system prompt (subagent notification, schedule fire, chat mention), not user input. */
+      origin?: "system";
       /** Number of image inputs delivered with this message; image bytes stay outside history. */
       imageCount?: number;
       /** Structured context delivered with this message, retained for transcript presentation. */

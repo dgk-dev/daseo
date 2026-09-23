@@ -29,7 +29,9 @@ export function getAssistantBlockSpacing(params: {
   return "default";
 }
 
-const isUserMessageItem = (item?: StreamItem | null) => item?.kind === "user_message";
+/** A user bubble; system prompt boundary rows are user messages but never group with bubbles. */
+export const isUserMessageBubble = (item?: StreamItem | null) =>
+  item?.kind === "user_message" && item.origin !== "system";
 const isToolSequenceItem = (item?: StreamItem | null) =>
   item?.kind === "tool_call" || item?.kind === "thought" || item?.kind === "todo_list";
 
@@ -41,7 +43,7 @@ export function getGapBetweenStreamItems(
     return 0;
   }
 
-  if (isUserMessageItem(item) && isUserMessageItem(belowItem)) {
+  if (isUserMessageBubble(item) && isUserMessageBubble(belowItem)) {
     return SPACING[1];
   }
   if (isToolSequenceItem(item) && isToolSequenceItem(belowItem)) {

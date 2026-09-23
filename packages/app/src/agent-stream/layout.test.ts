@@ -248,6 +248,37 @@ describe("layoutStream", () => {
     expect(assistantRow.frameOrder).toBe("footer-then-content");
   });
 
+  it("gives a system prompt row its own group apart from adjacent user bubbles", () => {
+    const systemPrompt: StreamItem = {
+      kind: "user_message",
+      id: "s1",
+      text: "<paseo-system>\nAgent a (Implement) finished.\n</paseo-system>",
+      origin: "system",
+      timestamp: timestamp(2),
+    };
+    const layout = layoutFor({
+      platform: "web",
+      tail: [userMessage("u1", 1), systemPrompt, userMessage("u2", 3), userMessage("u3", 4)],
+    });
+
+    expect(findLayoutItem(layout, "u1")).toMatchObject({
+      isFirstInUserGroup: true,
+      isLastInUserGroup: true,
+    });
+    expect(findLayoutItem(layout, "s1")).toMatchObject({
+      isFirstInUserGroup: true,
+      isLastInUserGroup: true,
+    });
+    expect(findLayoutItem(layout, "u2")).toMatchObject({
+      isFirstInUserGroup: true,
+      isLastInUserGroup: false,
+    });
+    expect(findLayoutItem(layout, "u3")).toMatchObject({
+      isFirstInUserGroup: false,
+      isLastInUserGroup: true,
+    });
+  });
+
   it("keeps forward stream content before its completed footer", () => {
     const assistant = assistantMessage("a1", 2);
     const layout = layoutFor({

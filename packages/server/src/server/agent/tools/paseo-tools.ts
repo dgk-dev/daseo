@@ -20,7 +20,7 @@ import {
   toAgentListItemPayload,
   toAgentPayload,
 } from "../agent-projections.js";
-import { curateAgentActivity } from "../activity-curator.js";
+import { curateAgentActivity, withoutSystemPrompts } from "../activity-curator.js";
 import { selectItemsByProjectedLimit } from "../timeline-projection.js";
 import type { AgentStorage } from "../agent-storage.js";
 import { ensureAgentLoaded } from "../agent-loading.js";
@@ -3038,7 +3038,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       const snapshot = agentManager.getAgent(agentId);
 
       const selection = selectItemsByProjectedLimit({
-        items: timeline,
+        items: withoutSystemPrompts(timeline),
         direction: "tail",
         limit: limit ?? 0,
       });

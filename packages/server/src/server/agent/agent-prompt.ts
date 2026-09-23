@@ -4,6 +4,7 @@ import type {
   AgentPermissionRequest,
   AgentPromptInput,
   AgentRunOptions,
+  AgentTimelineItem,
 } from "./agent-sdk-types.js";
 import type { AgentManager, ManagedAgent } from "./agent-manager.js";
 import type { AgentStorage } from "./agent-storage.js";
@@ -146,6 +147,18 @@ const SYSTEM_ENVELOPE_PATTERN = /^<paseo-system>\n[\s\S]*\n<\/paseo-system>$/;
 
 export function isSystemInjectedEnvelope(text: string): boolean {
   return SYSTEM_ENVELOPE_PATTERN.test(text);
+}
+
+/**
+ * Mark a provider-reported prompt that carries the system envelope. The row
+ * stays in the timeline as the boundary where the triggered response begins;
+ * `origin` lets clients render it as a system row instead of a user bubble.
+ */
+export function withSystemPromptOrigin(item: AgentTimelineItem): AgentTimelineItem {
+  if (item.type !== "user_message" || !isSystemInjectedEnvelope(item.text)) {
+    return item;
+  }
+  return item.origin === "system" ? item : { ...item, origin: "system" };
 }
 
 export interface SendPromptToAgentParams {

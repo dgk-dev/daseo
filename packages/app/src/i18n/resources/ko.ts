@@ -357,6 +357,16 @@ export const ko: TranslationResources = {
       },
     },
     pending: "보내는 중...",
+    systemNotification: {
+      agentFinished: "{{title}} 완료",
+      agentErrored: "{{title}} 오류",
+      agentNeedsPermission: "{{title}} 권한 필요",
+      agentClosed: "{{title}} 닫힘",
+      scheduleNamed: '예약 "{{name}}" 실행',
+      schedule: "예약 실행",
+      showNotification: "{{label}}, 알림 펼치기",
+      hideNotification: "{{label}}, 알림 접기",
+    },
     compaction: {
       loading: "압축하는 중...",
       auto: "컨텍스트가 자동으로 압축되었습니다",

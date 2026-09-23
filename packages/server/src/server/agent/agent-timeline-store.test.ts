@@ -203,4 +203,44 @@ describe("InMemoryAgentTimelineStore", () => {
       ),
     ).toBeNull();
   });
+
+  it("keeps system-origin prompts out of submitted-message lookups", () => {
+    const envelope = "<paseo-system>\nAgent a (Plan) finished.\n</paseo-system>";
+    const store = new InMemoryAgentTimelineStore();
+    store.initialize("agent-1", {
+      epoch: "epoch-1",
+      nextSeq: 3,
+      rows: [
+        {
+          seq: 1,
+          timestamp: "2026-09-23T10:00:00.000Z",
+          turnId: "turn-1",
+          item: {
+            type: "user_message",
+            text: envelope,
+            clientMessageId: "system",
+            origin: "system",
+          },
+        },
+        {
+          seq: 2,
+          timestamp: "2026-09-23T10:01:00.000Z",
+          item: { type: "assistant_message", text: "reviewed" },
+        },
+      ],
+    });
+
+    expect(store.getSubmittedUserMessage("agent-1", "system")).toBeNull();
+    expect(
+      store.findUnacknowledgedSubmittedUserMessage(
+        "agent-1",
+        envelope,
+        new Date("2026-09-23T09:00:00.000Z"),
+      ),
+    ).toBeNull();
+    expect(store.findSystemUserMessageInTurn("agent-1", "turn-1", envelope)).toMatchObject({
+      seq: 1,
+    });
+    expect(store.findSystemUserMessageInTurn("agent-1", "turn-2", envelope)).toBeNull();
+  });
 });

@@ -92,7 +92,8 @@ export function useChatOutline({
         message.type === "agent_stream" &&
         message.payload.agentId === agentId &&
         message.payload.event.type === "timeline" &&
-        message.payload.event.item.type === "user_message"
+        message.payload.event.item.type === "user_message" &&
+        message.payload.event.item.origin !== "system"
       ) {
         refresh();
       }

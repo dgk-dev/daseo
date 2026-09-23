@@ -9639,59 +9639,92 @@ test("listImportableSessions skips providers that lack supportsSessionListing ev
   expect(result.map((d) => d.provider)).toEqual(["claude"]);
 });
 
-test("user_message events wrapping a paseo-system envelope are not added to the timeline", async () => {
+test("a paseo-system prompt echo is recorded once as a system-origin boundary row", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-envelope-live-"));
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
+  const envelope = formatSystemNotificationPrompt("Agent child (Implement) finished.");
+  const receivedPrompts: AgentPromptInput[] = [];
 
-  const codex = fakeCodexEmitting({
-    turnItems: [
-      {
-        type: "user_message",
-        text: formatSystemNotificationPrompt("child finished"),
-      },
-      { type: "user_message", text: "plain user message" },
-    ],
-  });
+  class EchoingProviderSession extends TestAgentSession {
+    override async startTurn(prompt: AgentPromptInput): Promise<{ turnId: string }> {
+      receivedPrompts.push(prompt);
+      const turnId = "turn-system-echo";
+      const text = typeof prompt === "string" ? prompt : "";
+      setTimeout(() => {
+        this.pushEvent({ type: "turn_started", provider: this.provider, turnId });
+        this.pushEvent({
+          type: "timeline",
+          provider: this.provider,
+          turnId,
+          item: { type: "user_message", text, messageId: "pi-entry-1" },
+        });
+        // A respawned provider re-delivers the running prompt with a fresh entry id.
+        this.pushEvent({
+          type: "timeline",
+          provider: this.provider,
+          turnId,
+          item: { type: "user_message", text, messageId: "pi-entry-2" },
+        });
+        this.pushEvent({
+          type: "timeline",
+          provider: this.provider,
+          turnId,
+          item: { type: "assistant_message", text: "reviewed" },
+        });
+        this.pushEvent({ type: "turn_completed", provider: this.provider, turnId });
+      }, 0);
+      return { turnId };
+    }
+  }
+
+  class EchoingProviderClient extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      return new EchoingProviderSession(config);
+    }
+  }
 
   const manager = new AgentManager({
-    clients: { codex },
+    clients: { codex: new EchoingProviderClient() },
     registry: storage,
     logger,
     idFactory: () => "00000000-0000-4000-8000-0000000005a1",
   });
 
-  const snapshot = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
-    workspaceId: undefined,
-  });
+  try {
+    const snapshot = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    const lastUserMessageAt = manager.getAgent(snapshot.id)?.lastUserMessageAt ?? null;
 
-  await manager.runAgent(snapshot.id, { text: "do something" });
+    await manager.runAgent(snapshot.id, envelope);
 
-  const timeline = manager.getTimeline(snapshot.id);
-  const userMessages = timeline.filter((item) => item.type === "user_message");
-
-  expect(userMessages).toHaveLength(1);
-  expect(userMessages[0].text).toBe("plain user message");
+    expect(receivedPrompts).toEqual([envelope]);
+    const rows = manager.fetchTimeline(snapshot.id, { direction: "tail", limit: 20 }).rows;
+    expect(rows.map((row) => row.item)).toEqual([
+      { type: "user_message", text: envelope, messageId: "pi-entry-1", origin: "system" },
+      { type: "assistant_message", text: "reviewed", turnOutcome: "completed" },
+    ]);
+    expect(manager.getAgent(snapshot.id)?.lastUserMessageAt ?? null).toEqual(lastUserMessageAt);
+  } finally {
+    await manager.flush().catch(() => undefined);
+    await storage.flush().catch(() => undefined);
+    rmSync(workdir, { recursive: true, force: true });
+  }
 });
 
-test("user_message events wrapping a paseo-system envelope are not restored during history replay", async () => {
+test("a paseo-system prompt restored from provider history keeps its system origin", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-envelope-history-"));
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
+  const envelope = formatSystemNotificationPrompt("schedule fired");
 
   const codex = fakeCodexEmitting({
     historyItems: [
-      {
-        type: "user_message",
-        text: formatSystemNotificationPrompt("schedule fired"),
-        messageId: "msg_history_envelope",
-      },
-      {
-        type: "user_message",
-        text: "real user message",
-        messageId: "msg_history_real",
-      },
+      { type: "user_message", text: "real user message", messageId: "msg_history_real" },
       { type: "assistant_message", text: "reply" },
+      { type: "user_message", text: envelope, messageId: "msg_history_envelope" },
+      { type: "assistant_message", text: "scheduled reply" },
     ],
   });
 
@@ -9707,12 +9740,70 @@ test("user_message events wrapping a paseo-system envelope are not restored duri
   });
 
   await manager.hydrateTimelineFromProvider(snapshot.id);
+  expect(manager.getTimeline(snapshot.id)).toEqual([
+    { type: "user_message", text: "real user message", messageId: "msg_history_real" },
+    { type: "assistant_message", text: "reply" },
+    { type: "user_message", text: envelope, messageId: "msg_history_envelope", origin: "system" },
+    { type: "assistant_message", text: "scheduled reply" },
+  ]);
 
-  const timeline = manager.getTimeline(snapshot.id);
-  const userMessages = timeline.filter((item) => item.type === "user_message");
+  await manager.hydrateTimelineFromProvider(snapshot.id, { force: true });
+  const rebuilt = manager.getTimeline(snapshot.id).filter((item) => item.type === "user_message");
+  expect(rebuilt).toEqual([
+    { type: "user_message", text: "real user message", messageId: "msg_history_real" },
+    { type: "user_message", text: envelope, messageId: "msg_history_envelope", origin: "system" },
+  ]);
+});
 
-  expect(userMessages).toHaveLength(1);
-  expect(userMessages[0].text).toBe("real user message");
+test("an imported paseo-system prompt keeps its system origin and never titles the agent", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-envelope-import-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const session = new TestAgentSession({ provider: "codex", cwd: workdir });
+  const envelope = formatSystemNotificationPrompt("Agent child (Plan) finished.");
+
+  class ImportClient extends TestAgentClient {
+    async importSession(input: ImportProviderSessionInput) {
+      return {
+        session,
+        config: { provider: "codex" as const, cwd: workdir },
+        persistence: {
+          provider: "codex" as const,
+          sessionId: input.providerHandleId,
+          nativeHandle: input.providerHandleId,
+          metadata: { provider: "codex", cwd: workdir },
+        },
+        timeline: [
+          { item: { type: "user_message" as const, text: envelope } },
+          { item: { type: "user_message" as const, text: "Review the plan" } },
+        ],
+      };
+    }
+  }
+
+  const manager = new AgentManager({
+    clients: { codex: new ImportClient() },
+    registry: storage,
+    logger,
+  });
+  try {
+    const imported = await manager.importProviderSession({
+      provider: "codex",
+      providerHandleId: "thread-envelope",
+      cwd: workdir,
+      workspaceId: "ws-imported",
+    });
+
+    expect(manager.getTimeline(imported.id)).toEqual([
+      { type: "user_message", text: envelope, origin: "system" },
+      { type: "user_message", text: "Review the plan" },
+    ]);
+    await manager.flush();
+    expect((await storage.get(imported.id))?.title).toBe("Review the plan");
+  } finally {
+    await manager.flush().catch(() => undefined);
+    await storage.flush().catch(() => undefined);
+    rmSync(workdir, { recursive: true, force: true });
+  }
 });
 
 test("commandMayHaveChangedExternalState matches remote-state commands", () => {

@@ -356,6 +356,16 @@ export const ar: TranslationResources = {
       },
     },
     pending: "جارٍ الإرسال...",
+    systemNotification: {
+      agentFinished: "اكتمل {{title}}",
+      agentErrored: "حدث خطأ في {{title}}",
+      agentNeedsPermission: "يحتاج {{title}} إلى إذن",
+      agentClosed: "أُغلق {{title}}",
+      scheduleNamed: 'تم تشغيل الجدول "{{name}}"',
+      schedule: "تم تشغيل الجدول",
+      showNotification: "{{label}}، إظهار الإشعار",
+      hideNotification: "{{label}}، إخفاء الإشعار",
+    },
     compaction: {
       loading: "الضغط...",
       auto: "يتم ضغط السياق تلقائيًا",

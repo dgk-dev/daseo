@@ -119,6 +119,51 @@ describe("collapseCompletedWork", () => {
     ]);
   });
 
+  test("a system prompt row starts its own independently foldable turn", () => {
+    const systemPrompt: StreamItem = {
+      ...nextBase("user_message", "system-prompt"),
+      kind: "user_message",
+      text: "<paseo-system>\nAgent a (Implement) finished.\n</paseo-system>",
+      origin: "system",
+    };
+    const items = [
+      item("user_message"),
+      item("tool_call"),
+      assistant("a1"),
+      systemPrompt,
+      item("thought"),
+      item("tool_call"),
+      assistant("a2"),
+    ];
+
+    const folded = collapseCompletedWork({
+      items,
+      expandedTurnKeys: NONE,
+      keepLastTurnExpanded: false,
+    });
+    expect(folded.items.map((entry) => entry.id)).toEqual([
+      items[0]!.id,
+      "a1",
+      "system-prompt",
+      "a2",
+    ]);
+    expect(folded.workCountByTurnKey.get("a1")).toBe(1);
+    expect(folded.workCountByTurnKey.get("a2")).toBe(2);
+
+    const firstExpanded = collapseCompletedWork({
+      items,
+      expandedTurnKeys: new Set(["a1"]),
+      keepLastTurnExpanded: false,
+    });
+    expect(firstExpanded.items.map((entry) => entry.id)).toEqual([
+      items[0]!.id,
+      items[1]!.id,
+      "a1",
+      "system-prompt",
+      "a2",
+    ]);
+  });
+
   test("keeps the trailing turn fully visible and unsummarized while active", () => {
     const items = [
       item("user_message"),

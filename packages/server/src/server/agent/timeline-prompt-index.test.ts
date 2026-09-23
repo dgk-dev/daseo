@@ -31,6 +31,29 @@ describe("buildTimelinePromptIndex", () => {
     });
   });
 
+  it("does not index system-origin prompts", () => {
+    const rows: AgentTimelineRow[] = [
+      {
+        seq: 1,
+        timestamp: "2026-01-01T00:00:00.000Z",
+        item: { type: "user_message", text: "Plan it" },
+      },
+      {
+        seq: 2,
+        timestamp: "2026-01-01T00:00:01.000Z",
+        item: {
+          type: "user_message",
+          text: "<paseo-system>\nAgent a (Implement) finished.\n</paseo-system>",
+          origin: "system",
+        },
+      },
+    ];
+
+    expect(buildTimelinePromptIndex("epoch-1", rows).prompts.map((prompt) => prompt.seq)).toEqual([
+      1,
+    ]);
+  });
+
   it("bounds previews without indexing assistant rows", () => {
     const rows: AgentTimelineRow[] = [
       {

@@ -1,6 +1,6 @@
 import type { TurnTiming } from "@/timeline/turn-time";
 import type { StreamItem } from "@/types/stream";
-import { getAssistantBlockSpacing, getGapBetweenStreamItems } from "./spacing";
+import { getAssistantBlockSpacing, getGapBetweenStreamItems, isUserMessageBubble } from "./spacing";
 import type { StreamFrameChildOrder, StreamStrategy } from "./strategy";
 
 export type StreamToolSequence = "single" | "first" | "middle" | "last" | "none";
@@ -75,6 +75,13 @@ function createTurnFooterHost(input: {
     timing: input.timingByAssistantId.get(input.item.id),
     startIndex: input.index,
   };
+}
+
+// A system prompt boundary row is its own group; only adjacent user bubbles group together.
+function isUserGroupEdge(item: StreamItem, neighbor: StreamItem | null | undefined): boolean {
+  if (item.kind !== "user_message") return false;
+  if (item.origin === "system") return true;
+  return !isUserMessageBubble(neighbor);
 }
 
 function findLatestAssistantInTurn(input: {
@@ -271,8 +278,8 @@ function layoutSegment(input: LayoutSegmentInput): StreamLayoutItem[] {
       assistantSpacing,
       completedFooter,
       toolSequence: getToolSequence({ item, aboveItem, belowItem }),
-      isFirstInUserGroup: item.kind === "user_message" && aboveItem?.kind !== "user_message",
-      isLastInUserGroup: item.kind === "user_message" && belowItem?.kind !== "user_message",
+      isFirstInUserGroup: isUserGroupEdge(item, aboveItem),
+      isLastInUserGroup: isUserGroupEdge(item, belowItem),
       isLastInToolSequence: isToolSequenceItem(item) && !isToolSequenceItem(belowItem),
       frameOrder: input.frameOrder,
       phase: input.phase,

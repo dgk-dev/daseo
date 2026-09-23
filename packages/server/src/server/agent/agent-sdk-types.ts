@@ -398,6 +398,8 @@ export type AgentTimelineItem =
       clientMessageId?: string;
       /** This input was accepted into an already-active turn. */
       steering?: boolean;
+      /** A Paseo system prompt (subagent notification, schedule fire, chat mention), not user input. */
+      origin?: "system";
     }
   | {
       type: "assistant_message";

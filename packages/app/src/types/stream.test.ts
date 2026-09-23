@@ -124,6 +124,37 @@ describe("user message identity", () => {
     ]);
   });
 
+  it("keeps the system origin of a system prompt on live and canonical ingestion", () => {
+    const event: AgentStreamEventPayload = {
+      type: "timeline",
+      provider: "pi",
+      item: {
+        type: "user_message",
+        text: "<paseo-system>\nAgent a (Implement) finished.\n</paseo-system>",
+        messageId: "pi-entry-1",
+        origin: "system",
+      },
+    };
+    const timestamp = new Date("2026-09-23T08:00:00.000Z");
+
+    const live = reduceStreamUpdate([], event, timestamp);
+    const canonical = applyStreamEvent({
+      tail: [],
+      head: [],
+      event,
+      timestamp,
+      source: "canonical",
+      timelineCursor: { epoch: "epoch-1", seq: 4 },
+    });
+
+    expect(live).toEqual([
+      expect.objectContaining({ kind: "user_message", messageId: "pi-entry-1", origin: "system" }),
+    ]);
+    expect(canonical.tail).toEqual([
+      expect.objectContaining({ kind: "user_message", messageId: "pi-entry-1", origin: "system" }),
+    ]);
+  });
+
   it("matches a submitted message against a legacy canonical row that has no client identity", () => {
     // Daemons before v0.2.0 do not echo clientMessageId. During agent creation the
     // legacy canonical row can land before the local submission is handed off, so the

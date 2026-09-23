@@ -45,6 +45,7 @@ export interface WebVirtualizedHistoryWindow {
 export function estimateStreamItemHeight(item: StreamItem): number {
   switch (item.kind) {
     case "user_message":
+      if (item.origin === "system") return 40;
       return item.images && item.images.length > 0 ? 220 : 96;
     case "assistant_message":
       return estimateAssistantMessageHeightFromCache(item.text) ?? 220;

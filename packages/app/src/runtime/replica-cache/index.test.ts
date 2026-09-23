@@ -352,6 +352,37 @@ describe("ReplicaCache", () => {
     ]);
   });
 
+  it("restores the system origin of a system prompt boundary row", async () => {
+    const storage = new MemoryStorage();
+    const writer = new ReplicaCache(storage);
+    writer.setHosts([SERVER_ID]);
+    seedSession();
+    const systemPrompt = createUserMessage({
+      messageId: "system-prompt",
+      text: "<paseo-system>\nAgent a (Implement) finished.\n</paseo-system>",
+      origin: "system",
+      timelineCursor: { epoch: "epoch-1", seq: 12 },
+      timestamp: new Date("2026-09-23T08:00:00.000Z"),
+    });
+    useSessionStore
+      .getState()
+      .setAgentStreamTail(
+        SERVER_ID,
+        new Map([["agent-1", [systemPrompt, message("final", "Reviewed", "completed")]]]),
+      );
+    await writer.flush();
+
+    useSessionStore.getState().clearSession(SERVER_ID);
+    const reader = new ReplicaCache(storage);
+    reader.setHosts([SERVER_ID]);
+    await reader.restore();
+
+    expect(useSessionStore.getState().sessions[SERVER_ID]?.agentStreamTail.get("agent-1")).toEqual([
+      systemPrompt,
+      message("final", "Reviewed", "completed"),
+    ]);
+  });
+
   it("restores canonical attachment presentation with authoritative coverage", async () => {
     const storage = new MemoryStorage();
     const writer = new ReplicaCache(storage);

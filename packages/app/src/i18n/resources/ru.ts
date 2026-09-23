@@ -358,6 +358,16 @@ export const ru: TranslationResources = {
       },
     },
     pending: "Отправка...",
+    systemNotification: {
+      agentFinished: "{{title}} завершён",
+      agentErrored: "{{title}}: ошибка",
+      agentNeedsPermission: "{{title}} запрашивает разрешение",
+      agentClosed: "{{title}} закрыт",
+      scheduleNamed: "Расписание «{{name}}» запущено",
+      schedule: "Расписание запущено",
+      showNotification: "{{label}}, показать уведомление",
+      hideNotification: "{{label}}, скрыть уведомление",
+    },
     compaction: {
       loading: "Уплотнение...",
       auto: "Контекст автоматически сжимается",

@@ -68,7 +68,7 @@ import {
 import { limitAgentTimelineItemContent } from "./agent-timeline-content.js";
 import { AgentRunState, type ForegroundTurnWaiter } from "./agent-run-state.js";
 import { invokeRewindCapability, type RewindMode } from "./rewind/rewind.js";
-import { isSystemInjectedEnvelope } from "./agent-prompt.js";
+import { withSystemPromptOrigin } from "./agent-prompt.js";
 import { stripInternalPaseoMcpServer, withRuntimePaseoMcpServer } from "./runtime-mcp-config.js";
 import { resolveCreateAgentTitles } from "./create-agent-title.js";
 import type { PaseoToolCatalogFactory } from "./tools/types.js";
@@ -609,13 +609,10 @@ function buildExplicitTimelineSeedForRegister(
 function buildImportedTimelineRows(entries: readonly ImportedTimelineEntry[]): AgentTimelineRow[] {
   const rows: AgentTimelineRow[] = [];
   for (const entry of entries) {
-    if (entry.item.type === "user_message" && isSystemInjectedEnvelope(entry.item.text)) {
-      continue;
-    }
     rows.push({
       seq: rows.length + 1,
       timestamp: entry.timestamp ?? new Date().toISOString(),
-      item: limitAgentTimelineItemContent(entry.item),
+      item: limitAgentTimelineItemContent(withSystemPromptOrigin(entry.item)),
     });
   }
   return rows;
@@ -639,7 +636,7 @@ function resolveImportedAgentTitle(
 function getFirstUserMessageTextFromRows(rows: readonly AgentTimelineRow[]): string | null {
   for (const row of rows) {
     const item = row.item;
-    if (item.type !== "user_message") {
+    if (item.type !== "user_message" || item.origin === "system") {
       continue;
     }
     const text = item.text.trim();
@@ -3564,10 +3561,7 @@ export class AgentManager {
     const providerSubagentEvents: Extract<AgentStreamEvent, { type: "provider_subagent" }>[] = [];
     for await (const event of agent.session.streamHistory()) {
       if (event.type === "timeline") {
-        if (event.item.type === "user_message" && isSystemInjectedEnvelope(event.item.text)) {
-          continue;
-        }
-        historyEvents.push(event);
+        historyEvents.push({ ...event, item: withSystemPromptOrigin(event.item) });
       } else if (event.type === "provider_subagent") {
         providerSubagentEvents.push(event);
       }
@@ -3620,9 +3614,9 @@ export class AgentManager {
     const providerSubagentEvents: AgentManagerEvent[] = [];
     agent.historyPrimed = true;
     try {
-      for await (const event of agent.session.streamHistory()) {
-        if (event.type === "provider_subagent") {
-          const update = this.providerSubagents.apply(agent.id, event.provider, event.event);
+      for await (const rawEvent of agent.session.streamHistory()) {
+        if (rawEvent.type === "provider_subagent") {
+          const update = this.providerSubagents.apply(agent.id, rawEvent.provider, rawEvent.event);
           const managerEvent: AgentManagerEvent = { type: "provider_subagent", event: update };
           if (deferredBroadcast) {
             providerSubagentEvents.push(managerEvent);
@@ -3631,12 +3625,10 @@ export class AgentManager {
           }
           continue;
         }
-        if (event.type !== "timeline") {
+        if (rawEvent.type !== "timeline") {
           continue;
         }
-        if (event.item.type === "user_message" && isSystemInjectedEnvelope(event.item.text)) {
-          continue;
-        }
+        const event = { ...rawEvent, item: withSystemPromptOrigin(rawEvent.item) };
         const row = this.recordTimeline(
           agent.id,
           event.item,
@@ -3948,9 +3940,15 @@ export class AgentManager {
     flags: StreamEventFlags;
     eventTurnId: string | undefined;
   }): Promise<void> {
-    const { agent, event, options, flags, eventTurnId } = params;
+    const { agent, options, flags, eventTurnId } = params;
+    const event = { ...params.event, item: withSystemPromptOrigin(params.event.item) };
+    const isSystemPrompt = event.item.type === "user_message" && event.item.origin === "system";
 
-    if (event.item.type === "user_message" && isSystemInjectedEnvelope(event.item.text)) {
+    if (
+      event.item.type === "user_message" &&
+      isSystemPrompt &&
+      this.reconcileSystemPromptEcho(agent, event.item, eventTurnId)
+    ) {
       flags.shouldDispatchEvent = false;
       flags.shouldNotifyWaiters = false;
       return;
@@ -3988,6 +3986,12 @@ export class AgentManager {
     }
 
     this.recordAndDispatchTimelineItem(agent.id, event.item, event.provider, eventTurnId);
+    if (isSystemPrompt) {
+      // The row is the visible boundary; the run result and user activity stay as they were.
+      flags.shouldDispatchEvent = false;
+      flags.shouldNotifyWaiters = false;
+      return;
+    }
     if (event.item.type === "user_message") {
       agent.lastUserMessageAt = new Date();
       this.emitState(agent);
@@ -4314,6 +4318,27 @@ export class AgentManager {
         providerMessageId: item.messageId,
       },
       "agent.manager.prompt.echo.reconciled",
+    );
+    return true;
+  }
+
+  /**
+   * Absorb a repeated echo of a system prompt within one turn. System prompts
+   * have no submitted row to reconcile into, so a provider that re-delivers the
+   * running prompt (a respawned Pi process) would otherwise record the boundary
+   * twice. A later notification starts its own turn or arrives as steering.
+   */
+  private reconcileSystemPromptEcho(
+    agent: ActiveManagedAgent,
+    item: Extract<AgentTimelineItem, { type: "user_message" }>,
+    turnId: string | undefined,
+  ): boolean {
+    if (!turnId || !this.timelineStore.has(agent.id)) return false;
+    const existing = this.timelineStore.findSystemUserMessageInTurn(agent.id, turnId, item.text);
+    if (!existing) return false;
+    this.logger.debug(
+      { agentId: agent.id, provider: agent.provider, turnId, providerMessageId: item.messageId },
+      "agent.manager.system_prompt.echo.reconciled",
     );
     return true;
   }

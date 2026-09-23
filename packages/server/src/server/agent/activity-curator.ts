@@ -92,6 +92,15 @@ function inputFromUnknownDetail(
   return detail.type === "unknown" ? detail.input : null;
 }
 
+/** System prompts mark turn boundaries in the timeline; activity reads the conversation without them. */
+function isSystemPrompt(item: AgentTimelineItem): boolean {
+  return item.type === "user_message" && item.origin === "system";
+}
+
+export function withoutSystemPrompts(items: readonly AgentTimelineItem[]): AgentTimelineItem[] {
+  return items.filter((item) => !isSystemPrompt(item));
+}
+
 function projectForCuration(items: readonly AgentTimelineItem[]): AgentTimelineItem[] {
   const rows = items.map((item, index) => ({
     seq: index + 1,
@@ -199,7 +208,7 @@ function curateAgentActivityEntries(
   timeline: AgentTimelineItem[],
   options?: ActivityCuratorOptions,
 ): ActivityEntry[] {
-  const collapsed = projectForCuration(timeline);
+  const collapsed = projectForCuration(withoutSystemPrompts(timeline));
   return curateProjectedActivityEntries(collapsed, options);
 }
 
@@ -233,7 +242,10 @@ function selectForkContextRows(input: {
   const boundaryCursor = input.cursorBoundary?.cursor ?? null;
   const boundaryMessageId = input.boundaryMessageId?.trim() || null;
   if (!boundaryCursor && !boundaryMessageId) {
-    const projected = projectTimelineRows({ rows: input.rows, mode: "projected" });
+    const projected = projectTimelineRows({
+      rows: input.rows.filter((row) => !isSystemPrompt(row.item)),
+      mode: "projected",
+    });
     return {
       items: projected.map((entry) => entry.item),
       boundaryCursor: null,
@@ -259,7 +271,9 @@ function selectForkContextRows(input: {
         : "Selected assistant message is no longer available.",
     );
   }
-  const selectedRows = input.rows.slice(0, boundaryIndex + 1);
+  const selectedRows = input.rows
+    .slice(0, boundaryIndex + 1)
+    .filter((row) => !isSystemPrompt(row.item));
   const projected = projectTimelineRows({ rows: selectedRows, mode: "projected" });
 
   return {

@@ -355,6 +355,16 @@ export const zhCN: TranslationResources = {
       },
     },
     pending: "正在发送...",
+    systemNotification: {
+      agentFinished: "{{title}} 已完成",
+      agentErrored: "{{title}} 出错",
+      agentNeedsPermission: "{{title}} 需要权限",
+      agentClosed: "{{title}} 已关闭",
+      scheduleNamed: "计划“{{name}}”已触发",
+      schedule: "计划已触发",
+      showNotification: "{{label}}，展开通知",
+      hideNotification: "{{label}}，收起通知",
+    },
     compaction: {
       loading: "正在压缩...",
       auto: "上下文已自动压缩",

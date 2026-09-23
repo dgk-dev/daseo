@@ -359,6 +359,16 @@ export const ptBR: TranslationResources = {
       },
     },
     pending: "Enviando...",
+    systemNotification: {
+      agentFinished: "{{title}} concluiu",
+      agentErrored: "{{title}} falhou",
+      agentNeedsPermission: "{{title}} precisa de permissão",
+      agentClosed: "{{title}} foi fechado",
+      scheduleNamed: 'Agendamento "{{name}}" disparado',
+      schedule: "Agendamento disparado",
+      showNotification: "{{label}}, mostrar notificação",
+      hideNotification: "{{label}}, ocultar notificação",
+    },
     compaction: {
       loading: "Compactando...",
       auto: "Contexto compactado automaticamente",
