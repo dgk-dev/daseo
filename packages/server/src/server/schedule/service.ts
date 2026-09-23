@@ -258,8 +258,8 @@ export class ScheduleService {
 
   constructor(options: ScheduleServiceOptions) {
     this.paseoHome = options.paseoHome;
-    this.store = new ScheduleStore(join(options.paseoHome, "schedules"));
     this.logger = options.logger.child({ module: "schedule-service" });
+    this.store = new ScheduleStore(join(options.paseoHome, "schedules"), this.logger);
     this.agentManager = options.agentManager;
     this.agentStorage = options.agentStorage;
     this.createAgent = options.createAgent;
