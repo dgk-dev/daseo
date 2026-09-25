@@ -227,6 +227,10 @@ export class TerminalEmulatorRuntime {
     this.inputModeTracker.reset();
     this.emitInputModeChange();
 
+    const openExternalLink = (event: MouseEvent, uri: string) => {
+      event.preventDefault();
+      void this.callbacks.onOpenExternalUrl?.(uri);
+    };
     const terminal = new Terminal({
       allowProposedApi: true,
       convertEol: false,
@@ -234,6 +238,8 @@ export class TerminalEmulatorRuntime {
       cursorStyle: "bar",
       fontFamily: resolveTerminalFontFamily(input.fontFamily),
       fontSize: resolveTerminalFontSize(input.fontSize),
+      // OSC 8 hyperlinks; without a handler xterm prompts and calls window.open().
+      linkHandler: { activate: openExternalLink },
       lineHeight: 1.0,
       macOptionIsMeta: true,
       minimumContrastRatio: 1,
@@ -250,12 +256,7 @@ export class TerminalEmulatorRuntime {
     let imageAddon: ImageAddon | null = null;
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(unicode11Addon);
-    terminal.loadAddon(
-      new WebLinksAddon((event, uri) => {
-        event.preventDefault();
-        void this.callbacks.onOpenExternalUrl?.(uri);
-      }),
-    );
+    terminal.loadAddon(new WebLinksAddon(openExternalLink));
     const localFileLinkProvider = terminal.registerLinkProvider(
       createTerminalLocalFileLinkProvider(terminal, {
         resolveLink: async (source) => {
