@@ -401,6 +401,45 @@ Reviewed for 0.5.31 and deliberately not adopted:
   composer).
 - #4596 / #4470 / #4575 (213-/31-/195-file architecture changes).
 
+Adopted for 0.5.32 (upstream 0.9.1–0.9.2 plus 2026-09-25 main, reviewed 2026-09-25):
+
+- #5190 cheaper Add Project directory scan, #5383 Pi rewind after an earlier rewind, #5322 reject
+  missing/non-directory paths from agent-created local workspaces, #5388 OSC 8 terminal links,
+  #5341 weekday-last-week dates, #5281 voice thinking tone between reply segments, #5227 keep
+  workspaces on an unmounted disk, #5245 Android Back closes a bottom sheet, #5320 multi-select
+  question answers, #5272 / #5287 multi-step and rebound shortcuts (clean cherry-picks).
+- #5301 invalid schedule file no longer blocks daemon start (cherry-pick; constructor conflict
+  with the retry-policy `paseoHome` field resolved by keeping both).
+- #5170 degraded Git polling backs off 5s → 60s while a repository is unchanged (hand-resolved:
+  only the backoff; the watcher constants and `recovery.establishedAt` that belong to c3e1e084a
+  were dropped in a follow-up commit).
+- #5332 background daemon start names its failure cause (cherry-pick without the CLI lifecycle
+  e2e test Daseo does not carry).
+- #5224 modified Backspace as a custom shortcut (source only; Daseo's desktop e2e spec kept).
+- #5317 chat uploads keep Korean/CJK and parenthesized file names, capped at 255 bytes
+  (hand-resolved alongside Daseo's `upload_<requestId>` directory ids).
+
+Reviewed for 0.5.32 and deliberately not adopted:
+
+- c3e1e084a (bound watcher work for late ignored directories): Daseo's `native-recursive.ts`
+  lacks three intermediate upstream commits, and 4 of the 58 upstream tests fail on the port.
+- 9978988e3 (heap growth after sessions close): `session/owned-subscriptions` does not exist in
+  Daseo (it came with the rejected independent-subscription work).
+- #5306 / #5277 (empty or recycled `paseo.pid`): Daseo's pid-lock already reclaims through
+  heartbeat freshness and treats an unreadable file as no lock.
+- #5315 / #5337 (config.json BOM and error naming): depend on `readPersistedConfig` from the
+  rejected #4575; Daseo writes its own config.json.
+- #5235 (Stop settles an exited Pi runtime): Pi `cli-runtime`/`jsonl-rpc-process` diverged for
+  delta 12 steering; no observed symptom.
+- #5343 (delta 20 already starts on Pi's runtime default), #5372 (delta 16 owns updates),
+  #5168 / #5286 / #5290 (timeline and replica-cache architecture), #5255 (525-line shortcut hook
+  rewrite around a file Daseo lacks), #5205 (test-infra heavy; no trailing-space project names),
+  #5146 / #5129 / #5167 (chat Find depends on the rejected #4765).
+- Claude, Codex, OMP, OpenCode, Cursor, ACP, plugin, Hub, sponsor, CLI-message, and store-build
+  items (#5200 #5285 #5289 #5240 #5206 #5326 #5273 #5239 #5274 #5296 #5338 #3628 #3258 #5243
+  #5248 #5253 #5231 #5298 #5302 #5219 #5297 #5258 #5358 #5310 #5335 #5305 #5347 #5174 #5249
+  #5221 #5238 #5229 #5374 e3c853df5): paths Daseo does not use.
+
 ## Product version policy
 
 - Mac and Android share one Daseo product SemVer. Any shipped platform change advances it.
