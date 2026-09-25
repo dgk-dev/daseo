@@ -85,24 +85,6 @@ const DEGRADED_GIT_POLL_INTERVAL_MS = 5_000;
 // does not. Explicit reads still force a refresh, so this only bounds background discovery of
 // changes made outside Paseo.
 const DEGRADED_GIT_POLL_MAX_INTERVAL_MS = 60_000;
-// A dependency install creates directories for minutes. Collapse the burst into
-// a couple of `git ls-files` runs rather than one per event.
-const WORKING_TREE_IGNORE_REFRESH_QUIET_MS = 300;
-const WORKING_TREE_IGNORE_REFRESH_MAX_DELAY_MS = 2_000;
-// `knownDirectories` is a memoisation of the fast path in
-// `noteWorkingTreeDirectories`, not authoritative state — every entry is
-// rediscoverable from a later watcher event under the same path. Deletion
-// handling (`removeDeletedKnownDirectories`) keeps it close to the live
-// directory count, but this cap is the backstop for what that cannot cover
-// (a missed or coalesced delete event, a backend quirk): clearing the whole
-// set outright on overflow is always safe, since the only cost is one extra
-// `git ls-files` refresh the next time a directory under this root is
-// touched again. Set well below `MAX_TRACKED_ENTRIES` (250_000, the
-// native-recursive.ts cap on combined file+directory entries per watched
-// root) because directories are a minority of any tracked tree, and the
-// observer itself already fails into polling before a single root's
-// combined entry count could approach that cap.
-const WORKING_TREE_KNOWN_DIRECTORIES_MAX = 50_000;
 // Keep whole workspace pipelines below the lower-level Git process pool so daemon control work
 // retains subprocess and event-loop headroom during large workspace reconciliation bursts.
 export const WORKSPACE_GIT_REFRESH_CONCURRENCY = 4;
@@ -1330,7 +1312,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       fallbackPolling: false,
       fallbackPollTimer: null,
       fallbackPollQuietTickCount: 0,
-      recovery: { attemptCount: 0, timer: null, establishedAt: null },
+      recovery: { attemptCount: 0, timer: null },
       listeners: new Set(),
       closed: false,
     };
@@ -1842,7 +1824,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       fallbackPolling: false,
       fallbackPollTimer: null,
       fallbackPollQuietTickCount: 0,
-      recovery: { attemptCount: 0, timer: null, establishedAt: null },
+      recovery: { attemptCount: 0, timer: null },
       intervalId: null,
       fetchInFlight: false,
       bufferedFetchMetadataEvents: [],
