@@ -9,7 +9,6 @@ import {
   updatePidLock,
 } from "../src/server/pid-lock.js";
 import { resolvePaseoHome } from "../src/server/paseo-home.js";
-import { daemonLogPath } from "../src/server/daemon-instance.js";
 import { PRIVATE_FILE_MODE } from "../src/server/private-files.js";
 import { loadPersistedConfig } from "../src/server/persisted-config.js";
 import { runSupervisor } from "./supervisor.js";
@@ -180,6 +179,17 @@ async function main(): Promise<void> {
     onSupervisorExit: releaseLock,
   });
   requestSupervisorShutdown = supervisor.requestShutdown;
+}
+
+// Daseo hand-port of upstream #5332: upstream reads the path from daemon-instance.ts, which
+// Daseo does not carry (#5277 rejected). The launcher tails the same file the supervisor would
+// have opened, so resolve it the same way and fall back to the default when config is unreadable.
+function daemonLogPath(home: string): string {
+  try {
+    return resolveSupervisorLogFile(home, loadPersistedConfig(home)).path;
+  } catch {
+    return path.join(home, "daemon.log");
+  }
 }
 
 // The supervisor opens its log only after config and the PID lock succeed. A background
