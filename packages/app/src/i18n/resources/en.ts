@@ -159,6 +159,7 @@ export const en = {
     clientCommands: {
       archiveAgent: "Archive the current agent",
       freshDraft: "Archive this agent and start a fresh draft",
+      sideQuestion: "Ask a side question without adding it to the conversation",
     },
     github: {
       searching: "Searching...",
@@ -214,6 +215,22 @@ export const en = {
       question: "How would you like to proceed?",
       proposedPlan: "Proposed plan",
     },
+  },
+  sideQuestion: {
+    title: "Side question",
+    hint: "Answers come from the conversation so far. Nothing is read or run, and the agent keeps working.",
+    empty: "Ask about this conversation without adding to it.",
+    placeholder: "Ask another side question",
+    ask: "Ask",
+    answering: "Answering…",
+    failed: "Couldn't answer the side question.",
+    copy: "Copy",
+    copied: "Copied",
+    clear: "Clear",
+    earlier: "Earlier",
+    continueInFork: "Continue in a fork",
+    forkPrompt:
+      "About my side question on the conversation above.\n\nQ: {{question}}\n\nA: {{answer}}\n\n",
   },
   agentPanel: {
     states: {

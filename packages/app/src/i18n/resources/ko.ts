@@ -162,6 +162,7 @@ export const ko: TranslationResources = {
     clientCommands: {
       archiveAgent: "현재 에이전트 보관",
       freshDraft: "이 에이전트를 보관하고 새 초안을 시작합니다",
+      sideQuestion: "대화에 남기지 않고 곁질문하기",
     },
     github: {
       searching: "검색 중...",
@@ -217,6 +218,21 @@ export const ko: TranslationResources = {
       question: "어떻게 진행할까요?",
       proposedPlan: "제안된 계획",
     },
+  },
+  sideQuestion: {
+    title: "곁질문",
+    hint: "지금까지의 대화로만 답합니다. 파일을 읽거나 명령을 실행하지 않으며, 에이전트는 하던 일을 계속합니다.",
+    empty: "대화에 남기지 않고 이 대화에 대해 물어보세요.",
+    placeholder: "곁질문 이어서 묻기",
+    ask: "묻기",
+    answering: "답하는 중…",
+    failed: "곁질문에 답하지 못했습니다.",
+    copy: "복사",
+    copied: "복사됨",
+    clear: "비우기",
+    earlier: "이전 곁질문",
+    continueInFork: "포크해서 이어가기",
+    forkPrompt: "위 대화에 대해 한 곁질문과 답입니다.\n\n질문: {{question}}\n\n답: {{answer}}\n\n",
   },
   agentPanel: {
     states: {

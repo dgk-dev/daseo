@@ -648,6 +648,14 @@ export interface AgentPermissionResult {
   followUpPrompt?: AgentPromptInput;
 }
 
+/** Local fork: the answer to a `/btw` side question. */
+export interface AgentSideQuestionAnswer {
+  text: string;
+  /** A note produced instead of a model answer (for example, the model tried to use tools). */
+  synthetic: boolean;
+  model: string | null;
+}
+
 export interface AgentSession {
   readonly provider: AgentProvider;
   readonly id: string | null;
@@ -686,6 +694,13 @@ export interface AgentSession {
   revertConversation?(input: { messageId: string }): Promise<void>;
   revertFiles?(input: { messageId: string }): Promise<void>;
   revertBoth?(input: { messageId: string }): Promise<void>;
+  /**
+   * Local fork: answer a `/btw` side question from the current conversation without
+   * adding it to the conversation or interrupting an active turn. Providers that
+   * cannot leave both methods undefined.
+   */
+  askSideQuestion?(question: string): Promise<AgentSideQuestionAnswer>;
+  clearSideQuestions?(): Promise<void>;
   /**
    * Out-of-band prompt handler. When non-null, the manager runs the returned
    * handler instead of allocating a turn. The handler emits stream events

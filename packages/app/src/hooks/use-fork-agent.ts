@@ -10,7 +10,8 @@ import type { ToastApi } from "@/components/toast-host";
 import type { AgentScreenAgent } from "@/hooks/use-agent-screen-state-machine";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { useHostFeature } from "@/runtime/host-features";
-import { generateDraftId } from "@/stores/draft-keys";
+import { buildDraftStoreKey, generateDraftId } from "@/stores/draft-keys";
+import { useDraftStore } from "@/stores/draft-store";
 import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
 import { useSessionStore } from "@/stores/session-store";
 import {
@@ -57,6 +58,8 @@ export interface ForkAgentRequest {
   workspaceId?: string;
   target: AssistantForkTarget;
   boundary?: ForkAgentBoundary;
+  /** Composer text for the fork's draft (a `/btw` answer carried into the fork). */
+  initialText?: string;
 }
 
 export interface UseForkAgentInput {
@@ -132,7 +135,7 @@ export function useForkAgent(
   const client = useSessionStore((state) => state.sessions[serverId]?.client ?? null);
   const supportsAgentForkContext = useHostFeature(serverId, "agentForkContext") && !readOnly;
 
-  return useStableEvent(async ({ agentId, agent, workspaceId, target, boundary }) => {
+  return useStableEvent(async ({ agentId, agent, workspaceId, target, boundary, initialText }) => {
     try {
       if (!supportsAgentForkContext) {
         toast?.error(t("message.actions.forkUnavailable"));
@@ -156,6 +159,13 @@ export function useForkAgent(
           scopeKey: buildDraftWorkspaceAttachmentScopeKey(draftId),
           attachments: [attachment],
         });
+        if (initialText) {
+          // Draft composers key their text by draft id alone (see buildDraftStoreKey).
+          useDraftStore.getState().saveDraftInput({
+            draftKey: buildDraftStoreKey({ serverId, agentId: draftId, draftId }),
+            draft: { text: initialText, attachments: [] },
+          });
+        }
         return draftId;
       };
 

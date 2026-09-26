@@ -1,14 +1,17 @@
 import type { Agent } from "@/stores/session-store";
 import type { WorkspaceDraftTabSetup } from "@/workspace-tabs/model";
 
-export type ClientSlashCommandKind = "archive-agent" | "replace-agent-with-draft";
+export type ClientSlashCommandKind = "archive-agent" | "replace-agent-with-draft" | "side-question";
 export type ClientSlashCommandExecution = "immediate" | "insert";
 
 export interface ClientSlashCommand {
   name: string;
   aliases: readonly string[];
   description: string;
-  descriptionKey: "composer.clientCommands.archiveAgent" | "composer.clientCommands.freshDraft";
+  descriptionKey:
+    | "composer.clientCommands.archiveAgent"
+    | "composer.clientCommands.freshDraft"
+    | "composer.clientCommands.sideQuestion";
   argumentHint: string;
   kind: ClientSlashCommandKind;
   execution: ClientSlashCommandExecution;
@@ -32,6 +35,17 @@ export const CLIENT_SLASH_COMMANDS: readonly ClientSlashCommand[] = [
     argumentHint: "",
     kind: "replace-agent-with-draft",
     execution: "immediate",
+  },
+  {
+    // Local fork: `/btw <question>`. The composer intercepts it before sending
+    // (see parseSideQuestionInput); picking it from autocomplete only inserts it.
+    name: "btw",
+    aliases: [],
+    description: "Ask a side question without adding it to the conversation",
+    descriptionKey: "composer.clientCommands.sideQuestion",
+    argumentHint: "<question>",
+    kind: "side-question",
+    execution: "insert",
   },
 ];
 

@@ -103,6 +103,10 @@ import type { WorkspaceFileOpenRequest } from "@/workspace/file-open";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 import { deriveSidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { buildDraftAgentSetup, type ClientSlashCommand } from "@/client-slash-commands";
+import { useForkAgent } from "@/hooks/use-fork-agent";
+import { useHostFeature } from "@/runtime/host-features";
+import { SideQuestionSheet } from "@/side-question/side-question-sheet";
+import { sideQuestionThreadKey, useSideQuestionStore } from "@/side-question/store";
 
 interface ChatAgentStateShape {
   serverId: string | null;
@@ -1362,6 +1366,15 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
           <ToastViewport toast={toast} onDismiss={dismiss} placement="panel" />
         </FileDropZone>
 
+        {agentId ? (
+          <AgentSideQuestion
+            serverId={serverId}
+            agentId={agentId}
+            agent={effectiveAgent}
+            toast={toastApi}
+          />
+        ) : null}
+
         {isArchivingCurrentAgent ? (
           <View style={styles.archivingOverlay} testID="agent-archiving-overlay">
             <ThemedLoadingSpinner size="large" uniProps={foregroundColorMapping} />
@@ -1373,6 +1386,40 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
     </RewindComposerRestoreProvider>
   );
 });
+
+/** Local fork: the `/btw` sheet, plus carrying an answer into a fork of this agent. */
+function AgentSideQuestion({
+  serverId,
+  agentId,
+  agent,
+  toast,
+}: {
+  serverId: string;
+  agentId: string;
+  agent: AgentScreenAgent;
+  toast: ReturnType<typeof useToastHost>["api"];
+}) {
+  const { workspaceId } = usePaneContext();
+  const forkAgent = useForkAgent({ serverId, toast });
+  const handleContinueInFork = useCallback(
+    (text: string) =>
+      forkAgent({
+        agentId,
+        agent,
+        workspaceId,
+        target: workspaceId ? "tab" : "workspace",
+        initialText: text,
+      }),
+    [agent, agentId, forkAgent, workspaceId],
+  );
+  return (
+    <SideQuestionSheet
+      serverId={serverId}
+      agentId={agentId}
+      onContinueInFork={handleContinueInFork}
+    />
+  );
+}
 
 const AgentStreamSection = memo(function AgentStreamSection({
   streamViewRef,
@@ -1641,6 +1688,22 @@ function ActiveAgentComposer({
     ],
   );
 
+  const supportsSideQuestion = useHostFeature(serverId, "sideQuestion");
+  const askSideQuestion = useSideQuestionStore((state) => state.ask);
+  const openSideQuestion = useSideQuestionStore((state) => state.open);
+  const handleSideQuestion = useCallback(
+    (question: string) => {
+      const key = sideQuestionThreadKey(serverId, agentId);
+      const sideClient = useSessionStore.getState().sessions[serverId]?.client ?? null;
+      if (!question || !sideClient) {
+        openSideQuestion(key);
+        return;
+      }
+      void askSideQuestion({ key, agentId, question, client: sideClient });
+    },
+    [agentId, askSideQuestion, openSideQuestion, serverId],
+  );
+
   const { style: composerKeyboardStyle } = useKeyboardShiftStyle({
     mode: "translate",
   });
@@ -1691,6 +1754,7 @@ function ActiveAgentComposer({
         onComposerHeightChange={onComposerHeightChange}
         onMessageSent={onMessageSent}
         onClientSlashCommand={handleClientSlashCommand}
+        onSideQuestion={supportsSideQuestion ? handleSideQuestion : undefined}
         isCompactLayout={isCompactComposerLayout}
       />
     </ReanimatedAnimated.View>

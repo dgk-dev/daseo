@@ -162,6 +162,7 @@ export const ru: TranslationResources = {
     clientCommands: {
       archiveAgent: "Архивировать текущего агента",
       freshDraft: "Архивируйте этот агент и начните новый черновик",
+      sideQuestion: "Задать побочный вопрос, не добавляя его в разговор",
     },
     github: {
       searching: "Идет поиск...",
@@ -217,6 +218,22 @@ export const ru: TranslationResources = {
       question: "Как бы вы хотели продолжить?",
       proposedPlan: "Предлагаемый план",
     },
+  },
+  sideQuestion: {
+    title: "Побочный вопрос",
+    hint: "Ответ строится только на текущем разговоре. Ничего не читается и не запускается, агент продолжает работу.",
+    empty: "Спросите об этом разговоре, не добавляя вопрос в него.",
+    placeholder: "Задать ещё побочный вопрос",
+    ask: "Спросить",
+    answering: "Отвечаю…",
+    failed: "Не удалось ответить на побочный вопрос.",
+    copy: "Копировать",
+    copied: "Скопировано",
+    clear: "Очистить",
+    earlier: "Ранее",
+    continueInFork: "Продолжить в ответвлении",
+    forkPrompt:
+      "О моём побочном вопросе по разговору выше.\n\nВ: {{question}}\n\nО: {{answer}}\n\n",
   },
   agentPanel: {
     states: {

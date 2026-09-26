@@ -1643,6 +1643,17 @@ export const AgentForkContextRequestMessageSchema = z.object({
   requestId: z.string(),
 });
 
+// Local fork: `/btw` side questions. The answer comes from the agent's current
+// conversation and never enters its timeline.
+export const AgentSideQuestionRequestMessageSchema = z.object({
+  type: z.literal("agent.side_question.request"),
+  agentId: z.string(),
+  requestId: z.string(),
+  question: z.string().optional(),
+  // Clears the agent's side thread instead of asking.
+  clear: z.boolean().optional(),
+});
+
 export const SetAgentModeRequestMessageSchema = z.object({
   type: z.literal("set_agent_mode_request"),
   agentId: z.string(),
@@ -2934,6 +2945,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ProviderSubagentTimelineRequestMessageSchema,
   SetAgentTimelineSubscriptionRequestMessageSchema,
   AgentForkContextRequestMessageSchema,
+  AgentSideQuestionRequestMessageSchema,
   SetAgentModeRequestMessageSchema,
   SetAgentModelRequestMessageSchema,
   SetAgentThinkingRequestMessageSchema,
@@ -3210,6 +3222,8 @@ export const ServerInfoStatusPayloadSchema = z
         providersSnapshotCwd: z.boolean().optional(),
         // Local fork: live desktop browser streaming to mobile watchers.
         browserRemoteStream: z.boolean().optional(),
+        // Local fork: `/btw` side questions (agent.side_question.request).
+        sideQuestion: z.boolean().optional(),
         // COMPAT(directorySync): added in v0.3.x, remove gate after 2027-02-12.
         directorySync: z.boolean().optional(),
         // COMPAT(checkoutForgeSetAutoMerge): added in v0.1.106, remove old
@@ -4251,6 +4265,24 @@ export const AgentForkContextResponseMessageSchema = z.object({
     itemCount: z.number().int().nonnegative(),
     boundaryMessageId: z.string().nullable(),
     boundaryCursor: AgentTimelineCursorSchema.nullable().optional(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const AgentSideQuestionResponseMessageSchema = z.object({
+  type: z.literal("agent.side_question.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    answer: z
+      .object({
+        text: z.string(),
+        // A note produced instead of a model answer (for example, the model tried to use tools).
+        synthetic: z.boolean(),
+        model: z.string().nullable(),
+      })
+      .nullable(),
+    cleared: z.boolean().optional(),
     error: z.string().nullable(),
   }),
 });
@@ -6156,6 +6188,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   SetAgentTimelineSubscriptionResponseMessageSchema,
   AgentAttentionRequiredMessageSchema,
   AgentForkContextResponseMessageSchema,
+  AgentSideQuestionResponseMessageSchema,
   CancelAgentResponseMessageSchema,
   ClearAgentAttentionResponseMessageSchema,
   WorkspaceCreateResponseSchema,
@@ -6375,6 +6408,9 @@ export type AgentTimelineListPromptsResponseMessage = z.infer<
   typeof AgentTimelineListPromptsResponseMessageSchema
 >;
 export type AgentForkContextResponseMessage = z.infer<typeof AgentForkContextResponseMessageSchema>;
+export type AgentSideQuestionResponseMessage = z.infer<
+  typeof AgentSideQuestionResponseMessageSchema
+>;
 export type CancelAgentResponseMessage = z.infer<typeof CancelAgentResponseMessageSchema>;
 export type SendAgentMessageResponseMessage = z.infer<typeof SendAgentMessageResponseMessageSchema>;
 export type AgentCommandReceiptGetResponseMessage = z.infer<
@@ -6496,6 +6532,7 @@ export type FetchWorkspacesRequestMessage = z.infer<typeof FetchWorkspacesReques
 export type ProjectListRequestMessage = z.infer<typeof ProjectListRequestMessageSchema>;
 export type FetchAgentRequestMessage = z.infer<typeof FetchAgentRequestMessageSchema>;
 export type AgentForkContextRequestMessage = z.infer<typeof AgentForkContextRequestMessageSchema>;
+export type AgentSideQuestionRequestMessage = z.infer<typeof AgentSideQuestionRequestMessageSchema>;
 export type SendAgentMessageRequest = z.infer<typeof SendAgentMessageRequestSchema>;
 export type AgentCommandReceiptGetRequest = z.infer<typeof AgentCommandReceiptGetRequestSchema>;
 export type AgentCommandReceiptResolveRequest = z.infer<

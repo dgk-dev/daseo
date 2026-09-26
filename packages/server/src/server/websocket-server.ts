@@ -1590,6 +1590,7 @@ export class VoiceAssistantWebSocketServer {
         providersSnapshotCwd: true,
         // Local fork: live desktop browser streaming to mobile watchers.
         browserRemoteStream: this.browserStreamHub !== null,
+        sideQuestion: true,
         // COMPAT(checkoutForgeSetAutoMerge): added in v0.1.106, remove old
         // checkoutGithubSetAutoMerge fallback after 2026-12-28.
         checkoutForgeSetAutoMerge: true,

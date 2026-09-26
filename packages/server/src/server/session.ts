@@ -9,6 +9,7 @@ import {
   type AgentSnapshotPayload,
   type AgentAttachment,
   type FirstAgentContext,
+  type AgentSideQuestionResponseMessage,
   type SessionInboundMessage,
   type SessionOutboundMessage,
   type GitSetupOptions,
@@ -2170,6 +2171,8 @@ export class Session {
       }
       case "agent.fork_context.request":
         return this.handleAgentForkContextRequest(msg);
+      case "agent.side_question.request":
+        return this.handleAgentSideQuestionRequest(msg);
       default:
         return undefined;
     }
@@ -7052,6 +7055,53 @@ export class Session {
           error: error instanceof Error ? error.message : String(error),
         },
       });
+    }
+  }
+
+  private async handleAgentSideQuestionRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.side_question.request" }>,
+  ): Promise<void> {
+    const respond = (
+      payload: Partial<
+        Pick<AgentSideQuestionResponseMessage["payload"], "answer" | "cleared" | "error">
+      >,
+    ) =>
+      this.emit({
+        type: "agent.side_question.response",
+        payload: {
+          requestId: msg.requestId,
+          agentId: msg.agentId,
+          answer: null,
+          error: null,
+          ...payload,
+        },
+      });
+    try {
+      await ensureAgentLoaded(msg.agentId, {
+        agentManager: this.agentManager,
+        agentStorage: this.agentStorage,
+        logger: this.sessionLogger,
+      });
+      const session = this.agentManager.getAgent(msg.agentId)?.session;
+      if (!session?.askSideQuestion) {
+        throw new Error("This agent does not support side questions.");
+      }
+      if (msg.clear) {
+        await session.clearSideQuestions?.();
+        respond({ cleared: true });
+        return;
+      }
+      const question = msg.question?.trim();
+      if (!question) {
+        throw new Error("Ask a question after /btw.");
+      }
+      respond({ answer: await session.askSideQuestion(question) });
+    } catch (error) {
+      this.sessionLogger.warn(
+        { err: error, agentId: msg.agentId },
+        "Failed to handle agent.side_question.request",
+      );
+      respond({ error: error instanceof Error ? error.message : String(error) });
     }
   }
 

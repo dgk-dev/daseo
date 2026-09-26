@@ -162,6 +162,7 @@ export const ja: TranslationResources = {
     clientCommands: {
       archiveAgent: "現在のエージェントをアーカイブ",
       freshDraft: "このエージェントをアーカイブして新しい下書きを開始",
+      sideQuestion: "会話に残さずにサイド質問する",
     },
     github: {
       searching: "検索中...",
@@ -217,6 +218,21 @@ export const ja: TranslationResources = {
       question: "どのように続けますか？",
       proposedPlan: "提案されたプラン",
     },
+  },
+  sideQuestion: {
+    title: "サイド質問",
+    hint: "これまでの会話だけから答えます。ファイルの読み取りやコマンド実行は行わず、エージェントは作業を続けます。",
+    empty: "会話に残さずに、この会話について質問できます。",
+    placeholder: "続けてサイド質問する",
+    ask: "質問",
+    answering: "回答中…",
+    failed: "サイド質問に回答できませんでした。",
+    copy: "コピー",
+    copied: "コピーしました",
+    clear: "クリア",
+    earlier: "以前の質問",
+    continueInFork: "フォークして続ける",
+    forkPrompt: "上の会話についてのサイド質問です。\n\n質問: {{question}}\n\n回答: {{answer}}\n\n",
   },
   agentPanel: {
     states: {

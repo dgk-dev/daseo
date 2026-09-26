@@ -132,6 +132,7 @@ import { readClipboardImage } from "./clipboard-image";
 import { normalizeNativePastedImages, type NativePastedFile } from "./native-pasted-image";
 import { PluginResourceAttachmentPill, usePluginAttachmentPicker } from "@/plugins";
 import { resolveClientSlashCommand, type ClientSlashCommand } from "@/client-slash-commands";
+import { parseSideQuestionInput } from "@/side-question/parse";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import {
   claimComposerOwnerLease,
@@ -902,6 +903,11 @@ interface ComposerProps {
   isPaneFocused: boolean;
   onSubmitMessage?: (payload: MessagePayload) => Promise<void>;
   onClientSlashCommand?: (command: ClientSlashCommand) => Promise<void>;
+  /**
+   * Local fork: receives `/btw` side questions instead of sending them to the agent.
+   * Unset when the host cannot answer side questions, so `/btw` is sent as typed.
+   */
+  onSideQuestion?: (question: string) => void;
   /** When true, the submit button is enabled even without text or images (e.g. external attachment selected). */
   hasExternalContent?: boolean;
   /** When true, the composer can submit even with no text or attachments. */
@@ -1120,6 +1126,7 @@ export function Composer({
   isPaneFocused,
   onSubmitMessage,
   onClientSlashCommand,
+  onSideQuestion,
   hasExternalContent = false,
   allowEmptySubmit = false,
   submitButtonAccessibilityLabel,
@@ -1325,6 +1332,22 @@ export function Composer({
       setSelectedAttachments,
       replaceUserInput,
     ],
+  );
+
+  // `/btw` never reaches the agent: the side question is answered beside it.
+  const runSideQuestion = useCallback(
+    (text: string, hasAttachments: boolean): boolean => {
+      if (!onSideQuestion || hasAttachments || !isComposerOwner()) return false;
+      const parsed = parseSideQuestionInput(text);
+      if (!parsed) return false;
+      clearDraft("sent");
+      replaceUserInput("");
+      resetSuppression();
+      setSendError(null);
+      onSideQuestion(parsed.question);
+      return true;
+    },
+    [clearDraft, isComposerOwner, onSideQuestion, replaceUserInput, resetSuppression],
   );
 
   const autocomplete = useAgentAutocomplete({
@@ -1586,6 +1609,9 @@ export function Composer({
     (payload: MessagePayload) => {
       if (!isComposerOwner()) return;
       const outgoingAttachments = buildOutgoingAttachments(attachments);
+      if (runSideQuestion(payload.text, outgoingAttachments.length > 0)) {
+        return;
+      }
       const clientSlashCommand = resolveClientSlashCommand({
         text: payload.text,
         hasAttachments: outgoingAttachments.length > 0,
@@ -1605,6 +1631,7 @@ export function Composer({
       buildOutgoingAttachments,
       isComposerOwner,
       runClientSlashCommand,
+      runSideQuestion,
       sendMessageWithContent,
     ],
   );
@@ -1951,6 +1978,9 @@ export function Composer({
     (payload: MessagePayload) => {
       if (!isComposerOwner()) return;
       const outgoingAttachments = buildOutgoingAttachments(attachments);
+      if (runSideQuestion(payload.text, outgoingAttachments.length > 0)) {
+        return;
+      }
       const clientSlashCommand = resolveClientSlashCommand({
         text: payload.text,
         hasAttachments: outgoingAttachments.length > 0,
@@ -1960,7 +1990,14 @@ export function Composer({
       }
       void queueMessage(payload.text, outgoingAttachments);
     },
-    [attachments, buildOutgoingAttachments, isComposerOwner, queueMessage, runClientSlashCommand],
+    [
+      attachments,
+      buildOutgoingAttachments,
+      isComposerOwner,
+      queueMessage,
+      runClientSlashCommand,
+      runSideQuestion,
+    ],
   );
 
   const hasSendableContent = userInput.trim().length > 0 || selectedAttachments.length > 0;

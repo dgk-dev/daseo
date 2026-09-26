@@ -253,6 +253,21 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     boundary. Key files: `packages/app/src/{create-agent-preferences,hooks}/`,
     `packages/app/src/composer/agent-controls/`, and
     `packages/server/src/server/agent/{agent-manager,providers/pi/agent}.ts`.
+23. **`/btw` side questions** — `/btw <question>` in the Composer never reaches the agent: it opens
+    an adaptive sheet (bottom sheet on phones, card on desktop) whose answer comes from the agent's
+    current conversation, never enters its timeline, and does not interrupt a running turn. The
+    thread lives in client memory per agent; Clear also clears the host's replay copy, and
+    "Continue in a fork" forks the agent into a tab with the exchange pre-filled. The daemon RPC
+    `agent.side_question.request/response` (gated by `serverInfo.features.sideQuestion`) reaches Pi
+    through the internal `paseo_side_question` extension command, which answers in the background
+    because Pi acknowledges a command only when its handler returns. The model call belongs to
+    pi-local's side-question extension (`ddgk.pi.side-question-host.v1`): Claude models go to
+    pi-claude-bridge's native Claude Code side question (cache-safe, no tools), every other model
+    replays the last provider transcript under the same prompt-cache key. Only Pi agents answer;
+    other providers report that they do not support side questions. Key files:
+    `packages/app/src/side-question/`, `packages/app/src/composer/index.tsx`,
+    `packages/app/src/panels/agent-panel.tsx`, `packages/server/src/server/session.ts`, and
+    `packages/server/src/server/agent/providers/pi/agent.ts`.
 
 ## Local reliability contracts
 

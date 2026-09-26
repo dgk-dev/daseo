@@ -162,6 +162,7 @@ export const ar: TranslationResources = {
     clientCommands: {
       archiveAgent: "أرشفة الوكيل الحالي",
       freshDraft: "أرشفة هذا الوكيل وابدأ مسودة جديدة",
+      sideQuestion: "اطرح سؤالًا جانبيًا دون إضافته إلى المحادثة",
     },
     github: {
       searching: "جارٍ البحث...",
@@ -217,6 +218,21 @@ export const ar: TranslationResources = {
       question: "كيف تريد المتابعة؟",
       proposedPlan: "الخطة المقترحة",
     },
+  },
+  sideQuestion: {
+    title: "سؤال جانبي",
+    hint: "تأتي الإجابات من المحادثة حتى الآن فقط. لا تتم قراءة أي ملف أو تشغيل أي أمر، ويواصل الوكيل عمله.",
+    empty: "اسأل عن هذه المحادثة دون إضافة السؤال إليها.",
+    placeholder: "اطرح سؤالًا جانبيًا آخر",
+    ask: "اسأل",
+    answering: "جارٍ الرد…",
+    failed: "تعذّر الرد على السؤال الجانبي.",
+    copy: "نسخ",
+    copied: "تم النسخ",
+    clear: "مسح",
+    earlier: "السابقة",
+    continueInFork: "المتابعة في تفرّع",
+    forkPrompt: "بخصوص سؤالي الجانبي عن المحادثة أعلاه.\n\nس: {{question}}\n\nج: {{answer}}\n\n",
   },
   agentPanel: {
     states: {

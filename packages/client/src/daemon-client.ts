@@ -30,6 +30,7 @@ import type {
   FileWriteResult,
   FetchAgentTimelineResponseMessage,
   AgentForkContextResponseMessage,
+  AgentSideQuestionResponseMessage,
   GitSetupOptions,
   CheckoutStatusResponse,
   CheckoutCommit,
@@ -573,6 +574,7 @@ type ScheduleUpdatePayload = Extract<
 >["payload"];
 export type FetchAgentTimelinePayload = FetchAgentTimelineResponseMessage["payload"];
 export type AgentForkContextPayload = AgentForkContextResponseMessage["payload"];
+export type AgentSideQuestionPayload = AgentSideQuestionResponseMessage["payload"];
 
 export type FetchAgentTimelineDirection = FetchAgentTimelinePayload["direction"];
 export type FetchAgentTimelineProjection = FetchAgentTimelinePayload["projection"];
@@ -2971,6 +2973,46 @@ export class DaemonClient {
       options: { skipQueue: true },
       select: (msg) => {
         if (msg.type !== "agent.fork_context.response") {
+          return null;
+        }
+        if (msg.payload.requestId !== resolvedRequestId) {
+          return null;
+        }
+        return msg.payload;
+      },
+    });
+
+    if (payload.error) {
+      throw new Error(payload.error);
+    }
+
+    return payload;
+  }
+
+  /**
+   * Local fork: ask a `/btw` side question about the agent's conversation, or clear
+   * its side thread. The answer never enters the agent's timeline.
+   */
+  async askAgentSideQuestion(
+    agentId: string,
+    input: { question: string } | { clear: true },
+  ): Promise<AgentSideQuestionPayload> {
+    const resolvedRequestId = this.createRequestId();
+    const message = SessionInboundMessageSchema.parse({
+      type: "agent.side_question.request",
+      agentId,
+      requestId: resolvedRequestId,
+      ...("clear" in input ? { clear: true } : { question: input.question }),
+    });
+
+    const payload = await this.sendRequest({
+      requestId: resolvedRequestId,
+      message,
+      // Matches the daemon's Pi side-question limit plus transport slack.
+      timeout: 5 * 60_000 + 15_000,
+      options: { skipQueue: true },
+      select: (msg) => {
+        if (msg.type !== "agent.side_question.response") {
           return null;
         }
         if (msg.payload.requestId !== resolvedRequestId) {

@@ -162,6 +162,7 @@ export const ptBR: TranslationResources = {
     clientCommands: {
       archiveAgent: "Arquivar o agente atual",
       freshDraft: "Arquivar este agente e iniciar um novo rascunho",
+      sideQuestion: "Fazer uma pergunta paralela sem adicioná-la à conversa",
     },
     github: {
       searching: "Buscando...",
@@ -217,6 +218,22 @@ export const ptBR: TranslationResources = {
       question: "Como você quer prosseguir?",
       proposedPlan: "Plano proposto",
     },
+  },
+  sideQuestion: {
+    title: "Pergunta paralela",
+    hint: "As respostas vêm da conversa até agora. Nada é lido ou executado, e o agente continua trabalhando.",
+    empty: "Pergunte sobre esta conversa sem adicioná-la a ela.",
+    placeholder: "Fazer outra pergunta paralela",
+    ask: "Perguntar",
+    answering: "Respondendo…",
+    failed: "Não foi possível responder à pergunta paralela.",
+    copy: "Copiar",
+    copied: "Copiado",
+    clear: "Limpar",
+    earlier: "Anteriores",
+    continueInFork: "Continuar em um fork",
+    forkPrompt:
+      "Sobre minha pergunta paralela a respeito da conversa acima.\n\nP: {{question}}\n\nR: {{answer}}\n\n",
   },
   agentPanel: {
     states: {

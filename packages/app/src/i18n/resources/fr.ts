@@ -164,6 +164,7 @@ export const fr: TranslationResources = {
     clientCommands: {
       archiveAgent: "Archiver l'agent actuel",
       freshDraft: "Archivez cet agent et démarrez un nouveau brouillon",
+      sideQuestion: "Poser une question annexe sans l’ajouter à la conversation",
     },
     github: {
       searching: "Recherche...",
@@ -219,6 +220,22 @@ export const fr: TranslationResources = {
       question: "Comment souhaitez-vous procéder?",
       proposedPlan: "Plan proposé",
     },
+  },
+  sideQuestion: {
+    title: "Question annexe",
+    hint: "Les réponses viennent de la conversation jusqu’ici. Rien n’est lu ni exécuté, et l’agent continue de travailler.",
+    empty: "Posez une question sur cette conversation sans l’y ajouter.",
+    placeholder: "Poser une autre question annexe",
+    ask: "Demander",
+    answering: "Réponse en cours…",
+    failed: "Impossible de répondre à la question annexe.",
+    copy: "Copier",
+    copied: "Copié",
+    clear: "Effacer",
+    earlier: "Précédentes",
+    continueInFork: "Continuer dans une bifurcation",
+    forkPrompt:
+      "À propos de ma question annexe sur la conversation ci-dessus.\n\nQ : {{question}}\n\nR : {{answer}}\n\n",
   },
   agentPanel: {
     states: {

@@ -161,6 +161,7 @@ export const zhCN: TranslationResources = {
     clientCommands: {
       archiveAgent: "归档当前 Agent",
       freshDraft: "归档此 Agent 并开始新的草稿",
+      sideQuestion: "提出不计入对话的旁支问题",
     },
     github: {
       searching: "正在搜索...",
@@ -216,6 +217,21 @@ export const zhCN: TranslationResources = {
       question: "你想如何继续？",
       proposedPlan: "建议计划",
     },
+  },
+  sideQuestion: {
+    title: "旁支提问",
+    hint: "仅根据目前的对话回答。不会读取文件或运行命令，代理会继续工作。",
+    empty: "询问这段对话，但不加入对话记录。",
+    placeholder: "继续旁支提问",
+    ask: "提问",
+    answering: "正在回答…",
+    failed: "无法回答旁支提问。",
+    copy: "复制",
+    copied: "已复制",
+    clear: "清空",
+    earlier: "之前的提问",
+    continueInFork: "分叉后继续",
+    forkPrompt: "关于上面对话的旁支提问。\n\n问：{{question}}\n\n答：{{answer}}\n\n",
   },
   agentPanel: {
     states: {

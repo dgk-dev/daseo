@@ -162,6 +162,7 @@ export const es: TranslationResources = {
     clientCommands: {
       archiveAgent: "Archivar el agente actual",
       freshDraft: "Archive este agente y comience un nuevo borrador",
+      sideQuestion: "Hacer una pregunta aparte sin añadirla a la conversación",
     },
     github: {
       searching: "Búsqueda...",
@@ -217,6 +218,22 @@ export const es: TranslationResources = {
       question: "¿Cómo le gustaría proceder?",
       proposedPlan: "Plan propuesto",
     },
+  },
+  sideQuestion: {
+    title: "Pregunta aparte",
+    hint: "Las respuestas salen de la conversación hasta ahora. No se lee ni se ejecuta nada, y el agente sigue trabajando.",
+    empty: "Pregunta sobre esta conversación sin añadirlo a ella.",
+    placeholder: "Haz otra pregunta aparte",
+    ask: "Preguntar",
+    answering: "Respondiendo…",
+    failed: "No se pudo responder la pregunta aparte.",
+    copy: "Copiar",
+    copied: "Copiado",
+    clear: "Borrar",
+    earlier: "Anteriores",
+    continueInFork: "Continuar en una bifurcación",
+    forkPrompt:
+      "Sobre mi pregunta aparte acerca de la conversación anterior.\n\nP: {{question}}\n\nR: {{answer}}\n\n",
   },
   agentPanel: {
     states: {

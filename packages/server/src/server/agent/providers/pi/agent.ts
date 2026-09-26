@@ -27,6 +27,7 @@ import {
   type AgentRuntimeInfo,
   type AgentSession,
   type AgentSessionConfig,
+  type AgentSideQuestionAnswer,
   type AgentSlashCommand,
   type AgentSlashCommandKind,
   type AgentStreamEvent,
@@ -100,6 +101,11 @@ const PI_BINARY_COMMAND = process.env.PI_COMMAND ?? process.env.PI_ACP_PI_COMMAN
 const PASEO_PI_TREE_EXTENSION_COMMAND = "paseo_tree";
 const PASEO_PI_CAPTURE_EXTENSION_COMMAND = "paseo_capture_entries";
 const PASEO_PI_FEATURE_EXTENSION_COMMAND = "paseo_features";
+const PASEO_PI_SIDE_QUESTION_EXTENSION_COMMAND = "paseo_side_question";
+// Registered by pi-local's side-question extension, which owns the `/btw` model call.
+const PI_SIDE_QUESTION_HOST_SYMBOL_KEY = "ddgk.pi.side-question-host.v1";
+// A side question on a large conversation with a high-effort model can take minutes.
+const PI_SIDE_QUESTION_TIMEOUT_MS = 5 * 60_000;
 const PI_AGENT_FEATURE_HOST_SYMBOL_KEY = "paseo.pi.agent-feature-host.v1";
 const PASEO_PI_ENTRY_CAPTURE_MARKER = "PASEO_ENTRY_CAPTURE";
 const PASEO_PI_SUBMITTED_USER_ENTRY_MARKER = "PASEO_SUBMITTED_USER_ENTRY";
@@ -165,10 +171,22 @@ const PiAgentFeaturesResultSchema = z
   })
   .strict();
 
+const PiSideQuestionResultSchema = z.object({
+  answer: z
+    .object({
+      text: z.string(),
+      synthetic: z.boolean(),
+      model: z.string().nullable().optional(),
+    })
+    .optional(),
+  cleared: z.boolean().optional(),
+});
+
 const PI_INTERNAL_EXTENSION_COMMANDS = new Set([
   PASEO_PI_TREE_EXTENSION_COMMAND,
   PASEO_PI_CAPTURE_EXTENSION_COMMAND,
   PASEO_PI_FEATURE_EXTENSION_COMMAND,
+  PASEO_PI_SIDE_QUESTION_EXTENSION_COMMAND,
 ]);
 
 const PI_HANDLED_BUILTIN_SLASH_COMMANDS: AgentSlashCommand[] = [
@@ -1009,6 +1027,36 @@ function createPiPaseoExtensionFile(systemPrompt?: string): PiTempFile {
 	        emitCommandResult(ctx, payload.requestId, { ok: false, error: message });
 	        throw error;
 	      }
+	    },
+	  });
+
+	  pi.registerCommand("${PASEO_PI_SIDE_QUESTION_EXTENSION_COMMAND}", {
+	    description: "Internal Paseo side-question bridge",
+	    handler: async (args, ctx) => {
+	      const payload = decodePayload(args.trim());
+	      const host = globalThis[Symbol.for("${PI_SIDE_QUESTION_HOST_SYMBOL_KEY}")];
+	      if (!host || host.version !== 1) {
+	        emitCommandResult(ctx, payload.requestId, {
+	          ok: false,
+	          error: "This Pi has no side-question extension. Update pi-local and restart the agent.",
+	        });
+	        return;
+	      }
+	      if (payload.action === "clear") {
+	        host.clear();
+	        emitCommandResult(ctx, payload.requestId, { ok: true, result: { cleared: true } });
+	        return;
+	      }
+	      // Pi acknowledges a command only after its handler returns, so the answer
+	      // is produced in the background and reported through the result marker.
+	      void host.ask(ctx, { question: String(payload.question ?? "") }).then(
+	        (answer) => emitCommandResult(ctx, payload.requestId, { ok: true, result: { answer } }),
+	        (error) =>
+	          emitCommandResult(ctx, payload.requestId, {
+	            ok: false,
+	            error: error instanceof Error ? error.message : String(error),
+	          }),
+	      );
 	    },
 	  });
 
@@ -2130,6 +2178,42 @@ export class PiRpcAgentSession implements AgentSession {
     };
   }
 
+  async askSideQuestion(question: string): Promise<AgentSideQuestionAnswer> {
+    const result = PiSideQuestionResultSchema.parse(
+      await this.runSideQuestionCommand({ action: "ask", question }),
+    );
+    if (!result.answer) {
+      throw new Error("Pi returned no side-question answer");
+    }
+    return {
+      text: result.answer.text,
+      synthetic: result.answer.synthetic,
+      model: result.answer.model ?? null,
+    };
+  }
+
+  async clearSideQuestions(): Promise<void> {
+    await this.runSideQuestionCommand({ action: "clear" });
+  }
+
+  private async runSideQuestionCommand(
+    input: { action: "ask"; question: string } | { action: "clear" },
+  ): Promise<unknown> {
+    const requestId = randomUUID();
+    const resultPromise = this.waitForExtensionResult(requestId, PI_SIDE_QUESTION_TIMEOUT_MS);
+    const payload = Buffer.from(JSON.stringify({ requestId, ...input })).toString("base64url");
+    try {
+      // Pi runs extension commands immediately, even while a turn is streaming.
+      await this.runtimeSession.prompt(`/${PASEO_PI_SIDE_QUESTION_EXTENSION_COMMAND} ${payload}`);
+      return await resultPromise;
+    } catch (error) {
+      const sideQuestionError = error instanceof Error ? error : new Error(String(error));
+      this.rejectExtensionResult(requestId, sideQuestionError);
+      await resultPromise.catch(() => undefined);
+      throw sideQuestionError;
+    }
+  }
+
   private async requestFeatures(update?: {
     featureId: string;
     value: unknown;
@@ -2533,12 +2617,15 @@ export class PiRpcAgentSession implements AgentSession {
     await resultPromise;
   }
 
-  private waitForExtensionResult(requestId: string): Promise<unknown> {
+  private waitForExtensionResult(
+    requestId: string,
+    timeoutMs: number = this.extensionTimeoutMs,
+  ): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingExtensionResults.delete(requestId);
         reject(new Error(`Pi extension result timed out for request ${requestId}`));
-      }, this.extensionTimeoutMs);
+      }, timeoutMs);
       this.pendingExtensionResults.set(requestId, { resolve, reject, timer });
     });
   }
