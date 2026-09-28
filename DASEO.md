@@ -301,6 +301,14 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     shown only when short; contenteditable `fill("")` clears through trusted input; upload also
     finds the single file input inside a label whose control is a button; `savePath` expands `~/`
     and refuses a relative path without a cwd.
+25. **Quiet runtime metrics log** — the 30-second `ws_runtime_metrics` window logs at `debug` unless
+    it shows trouble: any rejected or unroutable message, 3 or more socket disconnects, a request or
+    event-loop stall at the `ws_slow_request` threshold (500 ms), or the final flush at shutdown.
+    Upstream logs every window at `info`, which was 93% of daemon log bytes and left about five days
+    of history in 10 MB × 5 rotation; in the 2026-09-26~29 logs 1.8% of windows would stay at
+    `info`. The in-memory snapshot behind the diagnostics RPC still updates every window. Key file:
+    `packages/server/src/server/websocket-server.ts` (`isRuntimeMetricsWindowAnomalous`). Takes
+    effect with the next release and daemon restart.
 
 ## Local reliability contracts
 

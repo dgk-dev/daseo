@@ -499,6 +499,39 @@ const WS_CLOSE_INCOMPATIBLE_PROTOCOL = 4003;
 const WS_CLOSE_SERVER_SHUTDOWN = 1001;
 const WS_PROTOCOL_VERSION = 1;
 const WS_RUNTIME_METRICS_FLUSH_MS = 30_000;
+const WS_RUNTIME_METRICS_DISCONNECT_STORM = 3;
+
+/**
+ * A metrics window worth keeping in the rotating daemon log. Normal windows log at debug: at info they
+ * were over 90% of the file bytes and pushed incident evidence out of rotation within days.
+ */
+function isRuntimeMetricsWindowAnomalous(
+  metrics: Pick<
+    WebSocketRuntimeMetricsLogPayload,
+    "final" | "counters" | "latency" | "eventLoopDelay"
+  >,
+): boolean {
+  const counters = metrics.counters;
+  const rejected =
+    counters.validationFailed +
+    counters.binaryBeforeHelloRejected +
+    counters.pendingMessageRejectedBeforeHello +
+    counters.missingConnectionForMessage +
+    counters.unexpectedHelloOnActiveConnection +
+    counters.originRejected +
+    counters.hostRejected;
+  const disconnects =
+    counters.pendingDisconnected +
+    counters.sessionDisconnectedWaitingReconnect +
+    counters.sessionSocketDisconnectedAttached;
+  return (
+    metrics.final ||
+    rejected > 0 ||
+    disconnects >= WS_RUNTIME_METRICS_DISCONNECT_STORM ||
+    metrics.latency.some((entry) => entry.maxMs >= SLOW_REQUEST_THRESHOLD_MS) ||
+    (metrics.eventLoopDelay?.maxMs ?? 0) >= SLOW_REQUEST_THRESHOLD_MS
+  );
+}
 
 function browserStreamWatcherKey(clientId: string, viewerId: string | undefined): string {
   return viewerId ? `${clientId}:${viewerId}` : clientId;
@@ -2726,7 +2759,11 @@ export class VoiceAssistantWebSocketServer {
       collectedAt: new Date().toISOString(),
       ...loggedMetrics,
     };
-    this.logger.info(loggedMetrics, "ws_runtime_metrics");
+    if (isRuntimeMetricsWindowAnomalous(loggedMetrics)) {
+      this.logger.info(loggedMetrics, "ws_runtime_metrics");
+    } else {
+      this.logger.debug(loggedMetrics, "ws_runtime_metrics");
+    }
   }
 
   private getClientActivityState(session: Session): ClientPresenceState {
