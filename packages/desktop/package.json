@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/desktop",
-  "version": "0.5.35",
+  "version": "0.5.36",
   "private": true,
   "description": "Paseo desktop app (Electron wrapper)",
   "homepage": "https://paseo.sh",
