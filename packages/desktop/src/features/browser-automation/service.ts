@@ -53,6 +53,8 @@ export interface TabContents {
     task: () => Promise<T>,
   ): Promise<{ result: T; dialogs: BrowserAutomationDialogEvent[] }>;
   sendDebugCommand?(command: string, params?: Record<string, unknown>): Promise<unknown>;
+  /** Calls `listener` when the main frame commits a cross-document navigation; returns an unsubscribe. */
+  onMainFrameNavigated?(listener: (url: string) => void): () => void;
 }
 
 export interface TabImage {
@@ -895,6 +897,25 @@ async function executeFill(
     return target;
   }
   return withDialogCapture(target.contents, async () => {
+    // Rich-text editors (Lexical, ProseMirror, Slate) keep their own model and
+    // update it from real input events; rewriting textContent showed the text
+    // while the editor still held the old value. Replace the contents with
+    // trusted input instead, as browser_type does.
+    if (value && (await isContentEditableRef(target, ref, snapshotEngine))) {
+      const typed = await typeIntoTarget({
+        requestId,
+        target,
+        ref,
+        text: value,
+        registry,
+        snapshotEngine,
+        replaceContents: true,
+      });
+      if ("failure" in typed) {
+        return typed.failure;
+      }
+      return { requestId, ok: true, result: { command: "fill", browserId: target.browserId, ref } };
+    }
     const result = await snapshotEngine.fill({
       browserId: target.browserId,
       page: target.contents,
@@ -906,6 +927,22 @@ async function executeFill(
     }
     return { requestId, ok: true, result: { command: "fill", browserId: target.browserId, ref } };
   });
+}
+
+async function isContentEditableRef(
+  target: ResolvedTabTarget,
+  ref: string,
+  snapshotEngine: BrowserSnapshotEngine,
+): Promise<boolean> {
+  const expression = snapshotEngine.runtimeElementExpression({ browserId: target.browserId, ref });
+  if (typeof expression !== "string") {
+    return false;
+  }
+  const result = await target.contents.executeJavaScript(String.raw`(() => {
+    const element = ${expression};
+    return Boolean(element && element.isContentEditable && !('value' in element));
+  })()`);
+  return result === true;
 }
 
 async function executeSelect(
@@ -1120,16 +1157,32 @@ async function executeEvaluate(
       elementExpression = expression;
     }
 
-    let rawResult: unknown;
+    let settled: EvaluateSettlement;
     try {
-      rawResult = await target.contents.executeJavaScript(
-        buildEvaluateScript(functionSource, elementExpression),
+      settled = await settleEvaluate(
+        target.contents,
+        target.contents.executeJavaScript(buildEvaluateScript(functionSource, elementExpression)),
       );
     } catch (error) {
       return fail(requestId, "browser_unknown_error", evaluateErrorMessage(error));
     }
+    if (settled.kind === "navigated") {
+      return fail(
+        requestId,
+        "browser_unknown_error",
+        `The page navigated to ${settled.url} before the function returned, so its return value is lost. The navigation itself happened; take a new snapshot.`,
+      );
+    }
+    if (settled.kind === "timeout") {
+      return fail(
+        requestId,
+        "browser_timeout",
+        `The page function did not return within ${EVALUATE_RESULT_TIMEOUT_MS / 1000}s and may still be running in the page. Return sooner and poll, or use browser_wait for waits.`,
+        true,
+      );
+    }
 
-    const result = readEvaluateScriptResult(rawResult);
+    const result = readEvaluateScriptResult(settled.value);
     if (result.status === "stale_ref") {
       return staleRefFailure(requestId, ref ?? "unknown");
     }
@@ -1285,8 +1338,10 @@ async function executeWait(
         };
       }
       if (condition.text) {
-        const pageText = await target.contents.executeJavaScript("document.body.innerText || ''");
-        if (typeof pageText === "string" && pageText.includes(condition.text)) {
+        const found = await target.contents.executeJavaScript(
+          pageTextIncludesScript(condition.text),
+        );
+        if (found === true) {
           return {
             requestId,
             ok: true,
@@ -1317,6 +1372,30 @@ async function executeWait(
   });
 }
 
+// body.innerText stops at shadow roots, so text rendered inside a web
+// component never matched. The shadow walk only runs when the cheap light-DOM
+// check misses, keeping ordinary pages as fast as before.
+function pageTextIncludesScript(text: string): string {
+  return String.raw`(() => {
+    const needle = ${JSON.stringify(text)};
+    if (((document.body && document.body.innerText) || '').includes(needle)) return true;
+    const skipped = new Set(['STYLE', 'SCRIPT', 'TEMPLATE']);
+    const roots = [document];
+    while (roots.length > 0) {
+      const root = roots.pop();
+      for (const element of root.querySelectorAll('*')) {
+        const shadow = element.shadowRoot;
+        if (!shadow) continue;
+        for (const child of shadow.children) {
+          if (!skipped.has(child.tagName) && (child.innerText || '').includes(needle)) return true;
+        }
+        roots.push(shadow);
+      }
+    }
+    return false;
+  })()`;
+}
+
 async function executeType(
   requestId: string,
   workspaceId: string | undefined,
@@ -1331,39 +1410,10 @@ async function executeType(
     return target;
   }
   return withDialogCapture(target.contents, async () => {
-    let actionable: ActionabilityResult | null = null;
-    if (ref) {
-      const elementExpression = snapshotEngine.runtimeElementExpression({
-        browserId: target.browserId,
-        ref,
-      });
-      if (typeof elementExpression !== "string") {
-        return staleRefFailure(requestId, ref);
-      }
-      actionable = await waitForActionableTarget({
-        page: target.contents,
-        elementExpression,
-        editable: true,
-      });
-      if (!actionable.ok) {
-        return actionabilityFailure(requestId, ref, actionable);
-      }
-      const focused = await focusAutomationTarget(target.contents, elementExpression);
-      if (focused === "stale_ref") {
-        return staleRefFailure(requestId, ref);
-      }
-      if (registry.isBrowserInputFocused(target.browserId)) {
-        if (!target.contents.sendDebugCommand) {
-          return fail(
-            requestId,
-            "browser_unsupported",
-            "browser_type requires trusted browser input",
-          );
-        }
-        await dispatchTrustedClick(cdpSender(target.contents), actionable.target.point);
-      }
+    const typed = await typeIntoTarget({ requestId, target, ref, text, registry, snapshotEngine });
+    if ("failure" in typed) {
+      return typed.failure;
     }
-    await target.contents.insertText(text);
     return {
       requestId,
       ok: true,
@@ -1371,10 +1421,74 @@ async function executeType(
         command: "type",
         browserId: target.browserId,
         ...(ref ? { ref } : {}),
-        ...(actionable?.ok ? { x: actionable.target.point.x, y: actionable.target.point.y } : {}),
+        ...(typed.point ? { x: typed.point.x, y: typed.point.y } : {}),
       },
     };
   });
+}
+
+async function typeIntoTarget(input: {
+  requestId: string;
+  target: ResolvedTabTarget;
+  ref: string | undefined;
+  text: string;
+  registry: BrowserRegistry;
+  snapshotEngine: BrowserSnapshotEngine;
+  replaceContents?: boolean;
+}): Promise<{ failure: FailurePayload } | { point?: { x: number; y: number } }> {
+  const { requestId, target, ref, text, registry, snapshotEngine } = input;
+  let actionable: ActionabilityResult | null = null;
+  let elementExpression: string | null = null;
+  if (ref) {
+    const expression = snapshotEngine.runtimeElementExpression({
+      browserId: target.browserId,
+      ref,
+    });
+    if (typeof expression !== "string") {
+      return { failure: staleRefFailure(requestId, ref) };
+    }
+    elementExpression = expression;
+    actionable = await waitForActionableTarget({
+      page: target.contents,
+      elementExpression,
+      editable: true,
+    });
+    if (!actionable.ok) {
+      return { failure: actionabilityFailure(requestId, ref, actionable) };
+    }
+    const focused = await focusAutomationTarget(target.contents, elementExpression);
+    if (focused === "stale_ref") {
+      return { failure: staleRefFailure(requestId, ref) };
+    }
+    if (registry.isBrowserInputFocused(target.browserId)) {
+      if (!target.contents.sendDebugCommand) {
+        return {
+          failure: fail(
+            requestId,
+            "browser_unsupported",
+            "browser_type requires trusted browser input",
+          ),
+        };
+      }
+      await dispatchTrustedClick(cdpSender(target.contents), actionable.target.point);
+    }
+  }
+  if (input.replaceContents && elementExpression) {
+    // Select after focusing and any trusted click, both of which move the caret.
+    await target.contents.executeJavaScript(String.raw`(() => {
+      const element = ${elementExpression};
+      if (!element) return false;
+      const doc = element.ownerDocument;
+      const range = doc.createRange();
+      range.selectNodeContents(element);
+      const selection = doc.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    })()`);
+  }
+  await target.contents.insertText(text);
+  return actionable?.ok ? { point: actionable.target.point } : {};
 }
 
 async function executeKeypress(
@@ -1458,7 +1572,11 @@ async function executeNavigate(
       );
     }
     snapshotEngine.clearBrowser(browserId);
-    await target.contents.loadURL(url);
+    try {
+      await target.contents.loadURL(url);
+    } catch (error) {
+      return navigationFailure(requestId, url, target.contents, error);
+    }
     return {
       requestId,
       ok: true,
@@ -1649,7 +1767,7 @@ async function executeUpload(
       return staleRefFailure(requestId, input.ref);
     }
     const evaluated = (await target.contents.sendDebugCommand("Runtime.evaluate", {
-      expression,
+      expression: fileInputTargetExpression(expression),
       objectGroup: "paseo-browser-automation",
       returnByValue: false,
     })) as CdpRuntimeEvaluateResult;
@@ -1677,10 +1795,22 @@ async function executeUpload(
       );
     }
 
-    await target.contents.sendDebugCommand("DOM.setFileInputFiles", {
-      backendNodeId,
-      files: filePaths,
-    });
+    try {
+      await target.contents.sendDebugCommand("DOM.setFileInputFiles", {
+        backendNodeId,
+        files: filePaths,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes("not a file input")) {
+        throw error;
+      }
+      return fail(
+        requestId,
+        "browser_unsupported",
+        `Browser element ${input.ref} is not a file input and neither labels nor contains exactly one. Pass the ref of the upload control's file input, or of the button or dropzone that wraps it.`,
+      );
+    }
     return {
       requestId,
       ok: true,
@@ -1783,6 +1913,50 @@ function capEvaluateResultJson(resultJson: string): { resultJson: string; trunca
   };
 }
 
+// File inputs are usually hidden, so snapshots offer the visible upload button,
+// label, or dropzone instead. Follow only unambiguous links to the real input:
+// the label's control, or the single file input inside the element.
+function fileInputTargetExpression(elementExpression: string): string {
+  return String.raw`(() => {
+    const element = ${elementExpression};
+    if (!element) return element;
+    const isFileInput = (node) =>
+      Boolean(node && node.tagName === 'INPUT' && String(node.type).toLowerCase() === 'file');
+    if (isFileInput(element)) return element;
+    if (isFileInput(element.control)) return element.control;
+    const label = element.closest ? element.closest('label') : null;
+    if (label && isFileInput(label.control)) return label.control;
+    const inside = element.querySelectorAll ? element.querySelectorAll('input[type="file"]') : [];
+    return inside.length === 1 ? inside[0] : element;
+  })()`;
+}
+
+// loadURL rejects with Chromium's net error; unhandled, it reached the agent
+// wrapped in Electron's IPC error text with no hint of where the tab ended up.
+function navigationFailure(
+  requestId: string,
+  url: string,
+  contents: TabContents,
+  error: unknown,
+): FailurePayload {
+  const message = error instanceof Error ? error.message : String(error);
+  const netError = /\b(ERR_[A-Z_]+) \((-?\d+)\)/.exec(message)?.[1];
+  const current = contents.isDestroyed() ? "" : contents.getURL();
+  const where = current ? ` The tab is now at ${current}.` : "";
+  if (netError === "ERR_ABORTED") {
+    return fail(
+      requestId,
+      "browser_unknown_error",
+      `Navigation to ${url} was superseded by a redirect, another navigation, or a download (ERR_ABORTED).${where} Take a new snapshot to see the result.`,
+    );
+  }
+  return fail(
+    requestId,
+    "browser_unknown_error",
+    `Navigation to ${url} failed: ${netError ?? capEvaluateErrorMessage(message)}.${where}`,
+  );
+}
+
 function evaluateErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return capEvaluateErrorMessage(message);
@@ -1792,6 +1966,51 @@ function capEvaluateErrorMessage(message: string): string {
   return message.length <= MAX_EVALUATE_ERROR_MESSAGE_LENGTH
     ? message
     : message.slice(0, MAX_EVALUATE_ERROR_MESSAGE_LENGTH);
+}
+
+// Just under the daemon broker's 15s default, so the agent learns the page
+// function is slow rather than seeing a generic "browser did not respond".
+const EVALUATE_RESULT_TIMEOUT_MS = 14_000;
+// A result sent just before the old document unloaded can still arrive after
+// the navigation commits; the sync `location.href = x; return 1` case relies on it.
+const EVALUATE_NAVIGATION_GRACE_MS = 250;
+
+type EvaluateSettlement =
+  | { kind: "value"; value: unknown }
+  | { kind: "navigated"; url: string }
+  | { kind: "timeout" };
+
+// executeJavaScript never settles when the page navigates away from an async
+// function (its execution context is destroyed), which used to hold the call
+// until the broker gave up after 15s with no hint that the navigation worked.
+async function settleEvaluate(
+  contents: TabContents,
+  execution: Promise<unknown>,
+): Promise<EvaluateSettlement> {
+  const cleanups: Array<() => void> = [];
+  const timedOut = new Promise<EvaluateSettlement>((resolve) => {
+    const timer = setTimeout(() => resolve({ kind: "timeout" }), EVALUATE_RESULT_TIMEOUT_MS);
+    cleanups.push(() => clearTimeout(timer));
+  });
+  const navigated = new Promise<EvaluateSettlement>((resolve) => {
+    const unsubscribe = contents.onMainFrameNavigated?.((url) => {
+      const grace = setTimeout(
+        () => resolve({ kind: "navigated", url }),
+        EVALUATE_NAVIGATION_GRACE_MS,
+      );
+      cleanups.push(() => clearTimeout(grace));
+    });
+    if (unsubscribe) cleanups.push(unsubscribe);
+  });
+  try {
+    return await Promise.race([
+      execution.then((value): EvaluateSettlement => ({ kind: "value", value })),
+      timedOut,
+      navigated,
+    ]);
+  } finally {
+    for (const cleanup of cleanups) cleanup();
+  }
 }
 
 function buildEvaluateScript(

@@ -121,6 +121,8 @@ interface BrowserAutomationWebContents extends ConsoleMessageEmitter {
   capturePage(rect?: Rectangle, options?: { stayHidden?: boolean }): Promise<FullPageCaptureImage>;
   invalidate(): void;
   sendInputEvent(event: IsolatedKeyboardInputEvent): void;
+  addListener?(event: "did-navigate", listener: (event: unknown, url: string) => void): unknown;
+  removeListener?(event: "did-navigate", listener: (event: unknown, url: string) => void): unknown;
 }
 
 export function preparePersistentBrowserDialogMonitoring(
@@ -205,6 +207,13 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
       contents.sendInputEvent(event);
     },
     getConsoleMessages: () => consoleMessagesByContentsId.get(contentsId) ?? [],
+    onMainFrameNavigated: (listener) => {
+      // Electron's did-navigate fires only for main-frame cross-document commits,
+      // exactly the navigations that destroy a pending evaluate's context.
+      const handler = (_event: unknown, url: string) => listener(url);
+      contents.addListener?.("did-navigate", handler);
+      return () => contents.removeListener?.("did-navigate", handler);
+    },
     captureDialogs: async (task) => {
       markPaseoBrowserAutomationActivity(contentsId);
       try {

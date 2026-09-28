@@ -128,7 +128,8 @@ class FakeTab implements TabContents {
   public async executeJavaScript(code: string): Promise<unknown> {
     this.scripts.push(code);
     if (code.includes("document.body.innerText")) {
-      return this.bodyText;
+      const needle = /const needle = ("(?:[^"\\]|\\.)*");/.exec(code)?.[1];
+      return needle ? this.bodyText.includes(JSON.parse(needle) as string) : this.bodyText;
     }
     if (code.includes("__PASEO_ARIA_SNAPSHOT__")) {
       return JSON.stringify(snapshotResult(this.snapshotNodes));
@@ -156,7 +157,17 @@ class FakeTab implements TabContents {
     if (code.includes("element.focus({ preventScroll: true })")) {
       return { editable: this.keypressTargetEditable };
     }
+    if (code.includes("element.isContentEditable && !('value' in element)")) {
+      return this.refIsContentEditable;
+    }
+    if (code.includes("range.selectNodeContents(element)")) {
+      this.actions.push("select-contents");
+      return true;
+    }
     if (code.includes("__PASEO_BROWSER_EVALUATE__")) {
+      if (this.evaluateHangs) {
+        return new Promise(() => undefined);
+      }
       if (this.evaluateScriptThrows) {
         throw new Error(this.evaluateScriptErrorMessage);
       }
@@ -165,8 +176,24 @@ class FakeTab implements TabContents {
     return this.actionScriptResult;
   }
 
+  public navigationListener: ((url: string) => void) | null = null;
+  public evaluateHangs = false;
+  public refIsContentEditable = false;
+
+  public onMainFrameNavigated(listener: (url: string) => void): () => void {
+    this.navigationListener = listener;
+    return () => {
+      this.navigationListener = null;
+    };
+  }
+
+  public loadUrlError: Error | null = null;
+
   public async loadURL(url: string): Promise<void> {
     this.loadedUrls.push(url);
+    if (this.loadUrlError) {
+      throw this.loadUrlError;
+    }
   }
 
   public goBack(): void {
@@ -1099,6 +1126,27 @@ describe("executeAutomationCommand", () => {
     expect(browser.tab.debugCommands).toEqual([]);
   });
 
+  test("fill replaces rich-text editor contents with trusted input", async () => {
+    const browser = new BrowserAutomationHarness();
+    browser.tab.snapshotNodes = formElements();
+    browser.tab.refIsContentEditable = true;
+
+    requireSnapshotRefs(await browser.snapshot());
+    const action = await browser.execute({
+      command: "fill",
+      args: { browserId: BROWSER_A, ref: "@e1", value: "Hello editor" },
+    });
+
+    expect(action).toEqual({
+      requestId: "req-fill",
+      ok: true,
+      result: { command: "fill", browserId: BROWSER_A, ref: "@e1" },
+    });
+    expect(browser.tab.actions).toContain("select-contents");
+    expect(browser.tab.insertedTexts).toEqual(["Hello editor"]);
+    expect(containsScript(browser.tab, "const nextValue")).toBe(false);
+  });
+
   test("fill with an empty string clears a ref through the regular fill path", async () => {
     const browser = new BrowserAutomationHarness();
     browser.tab.snapshotNodes = formElements();
@@ -1664,6 +1712,78 @@ describe("executeAutomationCommand", () => {
         ],
       },
     });
+  });
+
+  test("navigate explains an aborted load and reports where the tab ended up", async () => {
+    const browser = new BrowserAutomationHarness();
+    browser.tab.loadUrlError = new Error(
+      "ERR_ABORTED (-3) loading 'https://example.com/login?token=abc'",
+    );
+
+    const result = await browser.execute({
+      command: "navigate",
+      args: { browserId: BROWSER_A, url: "https://example.com/login?token=abc" },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "browser_unknown_error",
+        message: expect.stringContaining("superseded by a redirect"),
+      },
+    });
+  });
+
+  test("evaluate reports a navigation that destroyed the page function", async () => {
+    vi.useFakeTimers();
+    try {
+      const browser = new BrowserAutomationHarness();
+      browser.tab.evaluateHangs = true;
+
+      const pending = browser.execute({
+        command: "evaluate",
+        args: { browserId: BROWSER_A, function: "async () => { location.reload(); await 0; }" },
+      });
+      await vi.advanceTimersByTimeAsync(10);
+      browser.tab.navigationListener?.("http://localhost:3000/next");
+      await vi.advanceTimersByTimeAsync(300);
+
+      await expect(pending).resolves.toMatchObject({
+        ok: false,
+        error: {
+          code: "browser_unknown_error",
+          message: expect.stringContaining("navigated to http://localhost:3000/next"),
+        },
+      });
+      expect(browser.tab.navigationListener).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("evaluate reports a slow page function before the broker gives up", async () => {
+    vi.useFakeTimers();
+    try {
+      const browser = new BrowserAutomationHarness();
+      browser.tab.evaluateHangs = true;
+
+      const pending = browser.execute({
+        command: "evaluate",
+        args: { browserId: BROWSER_A, function: "() => new Promise(() => {})" },
+      });
+      await vi.advanceTimersByTimeAsync(14_000);
+
+      await expect(pending).resolves.toMatchObject({
+        ok: false,
+        error: {
+          code: "browser_timeout",
+          message: expect.stringContaining("did not return within 14s"),
+          retryable: true,
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("evaluate returns primitive JSON from the page context", async () => {

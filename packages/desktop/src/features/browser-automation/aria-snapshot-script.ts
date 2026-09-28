@@ -167,9 +167,19 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
       current.ariaLabel === fingerprint.ariaLabel;
   }
 
+  // Ref numbers stay attached to their element for the life of the document
+  // (Playwright MCP and agent-browser do the same). Renumbering from @e1 on
+  // every snapshot let a ref read from an older snapshot land on a different
+  // element that happened to share the old number and fingerprint, such as the
+  // next row's "Delete" button. The resolver itself is rebuilt each snapshot.
   function ensureRuntime() {
+    const previous = window.__PASEO_BROWSER_AUTOMATION__;
+    const numbering = previous && previous.numbering && previous.numbering.refByElement instanceof WeakMap
+      ? previous.numbering
+      : { refByElement: new WeakMap(), nextRef: 1 };
     const runtime = {
       refs: new Map(),
+      numbering,
       resolve(ref, fingerprint) {
         const element = this.refs.get(ref);
         if (!element || !element.isConnected || !fingerprintMatches(element, fingerprint)) {
@@ -297,7 +307,12 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
     const snapshotNode = role ? elementNode(domNode, role, name) : { kind: 'group', children: [] };
     snapshotNode.children = children;
     if (role && isActionable(domNode, role) && refCount < MAX_REFS) {
-      const ref = '@e' + (refCount + 1);
+      let ref = runtime.numbering.refByElement.get(domNode);
+      if (!ref) {
+        ref = '@e' + runtime.numbering.nextRef;
+        runtime.numbering.nextRef += 1;
+        runtime.numbering.refByElement.set(domNode, ref);
+      }
       const fingerprint = fingerprintFor(domNode, role, name);
       refCount += 1;
       runtime.refs.set(ref, domNode);

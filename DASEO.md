@@ -286,7 +286,15 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     10 minutes. Key files: the `packages/desktop/src/features/browser-automation/` modules
     `actionability`, `aria-snapshot-script`, `snapshot-engine`, `ipc`, and `service`;
     `packages/server/src/server/browser-tools/tools.ts` and `broker.ts`; and
-    `packages/server/src/server/agent/providers/pi/agent.ts`.
+    `packages/server/src/server/agent/providers/pi/agent.ts`. Second pass (0.5.35): snapshot refs
+    stay attached to their element for the document's life instead of renumbering from `@e1`, so a
+    ref from an older snapshot can no longer hit a same-fingerprint neighbour; `browser_evaluate`
+    returns at once when a main-frame navigation destroys the page function (it used to hang 15s
+    into a generic timeout) and names a slow function at 14s; `fill` on contenteditable editors
+    selects the contents and replaces them with trusted input; `browser_wait` text also matches
+    inside open shadow roots; `browser_upload` follows a label's control or the single file input
+    inside a button or dropzone; aborted navigations report where the tab ended up; and
+    `browser_screenshot` takes an optional `savePath`.
 
 ## Local reliability contracts
 

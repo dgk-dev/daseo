@@ -1,3 +1,6 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import type { BrowserToolsBroker, BrowserToolsExecuteInput } from "./broker.js";
@@ -1095,6 +1098,42 @@ describe("registerBrowserTools", () => {
     const parsed = harness.validate("browser_logs", { browserId: BROWSER_ID, maxEntries: 500 });
 
     expect(parsed).toMatchObject({ success: true, data: { maxEntries: 200 } });
+  });
+
+  test("screenshot writes the PNG to savePath relative to the agent cwd", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "paseo-shot-"));
+    try {
+      const harness = new BrowserToolHarness({
+        id: "agent-1",
+        cwd: dir,
+        workspaceId: "wks_workspace_a",
+      });
+      harness.broker.setResponse({
+        requestId: "req-shot",
+        ok: true,
+        result: {
+          command: "screenshot",
+          browserId: BROWSER_ID,
+          mimeType: "image/png",
+          dataBase64: Buffer.from("png-bytes").toString("base64"),
+          width: 10,
+          height: 10,
+        },
+      });
+
+      const response = await harness.execute("browser_screenshot", {
+        browserId: BROWSER_ID,
+        savePath: "shots/home.png",
+      });
+
+      const saved = join(dir, "shots/home.png");
+      expect(await readFile(saved, "utf8")).toBe("png-bytes");
+      expect(response.content[0]?.text).toContain(`Saved screenshot to ${saved}.`);
+      expect(response.content[1]).toMatchObject({ type: "image" });
+      expect(response.structuredContent).toMatchObject({ savedPath: saved });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   test("tab tools keep empty context when there is no caller agent", async () => {

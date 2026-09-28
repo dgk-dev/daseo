@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, resolve as resolveFsPath } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
 import { BrowserAutomationBrowserIdSchema } from "@getpaseo/protocol/browser-automation/rpc-schemas";
@@ -425,13 +427,14 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Capture browser screenshot",
       description:
-        "Capture a PNG screenshot of a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs. Set fullPage to true to capture the full page.",
+        "Capture a PNG screenshot of a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs. Set fullPage to true to capture the full page. Set savePath to also write the PNG to a file (relative paths resolve against the agent's cwd).",
       inputSchema: {
         browserId: BrowserAutomationBrowserIdSchema,
         fullPage: z.boolean().default(false),
+        savePath: z.string().trim().min(1).optional(),
       },
     },
-    async ({ browserId, fullPage }) => {
+    async ({ browserId, fullPage, savePath }) => {
       const context = resolveBrowserToolContext(options);
       const payload = await options.broker.execute({
         agentId: context.agentId,
@@ -446,7 +449,22 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
           },
         },
       });
-      return browserToolResult({ payload, context: { ...context, browserId } });
+      const result = browserToolResult({ payload, context: { ...context, browserId } });
+      if (!savePath || !payload.ok || payload.result.command !== "screenshot") {
+        return result;
+      }
+      // Agents that needed the PNG on disk (reports, before/after comparisons)
+      // used to dig it out of the MCP client's spill files with a second call.
+      const note = await saveScreenshot(savePath, context.cwd, payload.result.dataBase64);
+      const [first, ...rest] = result.content;
+      return {
+        ...result,
+        content: [{ ...first, type: "text", text: `${first?.text ?? ""}\n${note.text}` }, ...rest],
+        structuredContent: {
+          ...(result.structuredContent as Record<string, unknown>),
+          ...(note.path ? { savedPath: note.path } : {}),
+        },
+      };
     },
   );
 
@@ -750,6 +768,22 @@ function resolveBrowserToolContext(options: RegisterBrowserToolsOptions): {
     ...(callerAgent?.cwd ? { cwd: callerAgent.cwd } : {}),
     ...(callerAgent?.workspaceId ? { workspaceId: callerAgent.workspaceId } : {}),
   };
+}
+
+async function saveScreenshot(
+  savePath: string,
+  cwd: string | undefined,
+  dataBase64: string,
+): Promise<{ text: string; path?: string }> {
+  const target = resolveFsPath(cwd ?? process.cwd(), savePath);
+  try {
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, Buffer.from(dataBase64, "base64"));
+    return { text: `Saved screenshot to ${target}.`, path: target };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { text: `Could not save the screenshot to ${target}: ${reason}` };
+  }
 }
 
 async function pause(ms: number, signal: AbortSignal | undefined): Promise<number> {
