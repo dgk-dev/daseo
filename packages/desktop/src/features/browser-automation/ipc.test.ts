@@ -264,6 +264,16 @@ describe("browser automation IPC adapter", () => {
     expect(contents.invalidations).toEqual(["invalidate"]);
   });
 
+  test("names numeric console severities", () => {
+    const contents = new FakeWebContents(22);
+    const tab = adaptWebContents(contents);
+
+    contents.emitConsoleMessage({ level: 3, message: "boom", line: 1, sourceId: "" });
+    contents.emitConsoleMessage({ level: 2, message: "careful", line: 2, sourceId: "" });
+
+    expect(tab.getConsoleMessages?.().map((entry) => entry.level)).toEqual(["error", "warning"]);
+  });
+
   test("collects console messages until the guest is destroyed", () => {
     const contents = new FakeWebContents(21);
     const tab = adaptWebContents(contents);

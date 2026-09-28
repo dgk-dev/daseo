@@ -419,7 +419,7 @@ export class BrowserToolsBroker {
           browserToolsFailure({
             requestId: request.requestId,
             code: "browser_timeout",
-            message: `Browser automation timed out after ${timeoutMs}ms.`,
+            message: `The browser did not respond within ${timeoutMs}ms. Try again or check the browser host.`,
             retryable: true,
           }),
         );

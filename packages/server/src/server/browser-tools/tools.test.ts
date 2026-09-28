@@ -13,7 +13,8 @@ const BROWSER_ID = "11111111-1111-4111-8111-111111111111";
 const POPUP_BROWSER_ID = "22222222-2222-4222-8222-222222222222";
 const BROWSER_ID_MESSAGE =
   "browserId must be a real id returned by browser_new_tab or browser_list_tabs";
-const WAIT_CONDITION_MESSAGE = "browser_wait requires exactly one of text or url";
+const WAIT_CONDITION_MESSAGE =
+  "browser_wait requires text or url (not both), or timeoutMs alone to pause";
 const HTTP_URL_MESSAGE = "URL must use http/https only";
 const WORKSPACE_CONTEXT_MESSAGE =
   "This browser tool needs a workspace. Start the agent from a Paseo workspace before calling browser_new_tab or browser_list_tabs.";
@@ -482,14 +483,14 @@ const brokerErrorCases = [
       ok: false,
       error: {
         code: "browser_timeout",
-        message: "Browser automation timed out after 15000ms.",
+        message: "The browser did not respond within 15000ms. Try again or check the browser host.",
         retryable: true,
       },
     },
     content: [
       {
         type: "text",
-        text: "The browser did not respond before the timeout. Try again or check the browser host.",
+        text: "The browser did not respond within 15000ms. Try again or check the browser host.",
       },
     ],
     context: {
@@ -931,7 +932,7 @@ describe("registerBrowserTools", () => {
     expect(response.content).toEqual([
       {
         type: "text",
-        text: 'The browser did not respond before the timeout. Try again or check the browser host.\nHandled browser dialog: dismissed beforeunload "Leave site?".',
+        text: 'Timed out waiting for browser URL: /next\nHandled browser dialog: dismissed beforeunload "Leave site?".',
       },
     ]);
     expect(response.structuredContent).toEqual({
@@ -1011,6 +1012,89 @@ describe("registerBrowserTools", () => {
       },
     ]);
     expect(response.content).toEqual([{ type: "text", text: "Browser wait matched text." }]);
+  });
+
+  test("wait with only timeoutMs pauses without calling the browser host", async () => {
+    const harness = new BrowserToolHarness();
+
+    const response = await harness.execute("browser_wait", {
+      browserId: BROWSER_ID,
+      timeoutMs: 20,
+    });
+
+    expect(harness.broker.calls).toEqual([]);
+    expect(response.content[0]?.text).toMatch(/^Browser wait paused \d+ms\.$/);
+    expect(response.structuredContent).toMatchObject({
+      ok: true,
+      result: { command: "wait", browserId: BROWSER_ID },
+    });
+  });
+
+  test("wait clamps timeoutMs to 30 seconds instead of rejecting", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-wait",
+      ok: true,
+      result: { command: "wait", browserId: BROWSER_ID, matched: "text" },
+    });
+
+    await harness.execute("browser_wait", {
+      browserId: BROWSER_ID,
+      text: "Ready",
+      timeoutMs: 90_000,
+    });
+
+    expect(harness.broker.calls[0]).toMatchObject({
+      timeoutMs: 31_000,
+      command: { args: { timeoutMs: 30_000 } },
+    });
+  });
+
+  test("host timeout reasons reach the agent instead of a generic host failure", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-click",
+      ok: false,
+      error: {
+        code: "browser_timeout",
+        message: "Browser element @e3 is covered by <div#overlay.cookie-banner>.",
+        retryable: true,
+      },
+    });
+
+    const response = await harness.execute("browser_click", { browserId: BROWSER_ID, ref: "@e3" });
+
+    expect(response.content).toEqual([
+      { type: "text", text: "Browser element @e3 is covered by <div#overlay.cookie-banner>." },
+    ]);
+  });
+
+  test("scroll defaults a missing axis to zero", () => {
+    const harness = new BrowserToolHarness();
+
+    const parsed = harness.validate("browser_scroll", { browserId: BROWSER_ID, deltaY: 400 });
+
+    expect(parsed).toMatchObject({ success: true, data: { deltaX: 0, deltaY: 400 } });
+  });
+
+  test("upload accepts a single file path string", () => {
+    const harness = new BrowserToolHarness();
+
+    const parsed = harness.validate("browser_upload", {
+      browserId: BROWSER_ID,
+      ref: "@e1",
+      filePaths: "/repo/a.png",
+    });
+
+    expect(parsed).toMatchObject({ success: true, data: { filePaths: ["/repo/a.png"] } });
+  });
+
+  test("logs clamps maxEntries to 200 instead of rejecting", () => {
+    const harness = new BrowserToolHarness();
+
+    const parsed = harness.validate("browser_logs", { browserId: BROWSER_ID, maxEntries: 500 });
+
+    expect(parsed).toMatchObject({ success: true, data: { maxEntries: 200 } });
   });
 
   test("tab tools keep empty context when there is no caller agent", async () => {

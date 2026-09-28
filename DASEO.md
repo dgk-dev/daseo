@@ -268,6 +268,25 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     `packages/app/src/side-question/`, `packages/app/src/composer/index.tsx`,
     `packages/app/src/panels/agent-panel.tsx`, `packages/server/src/server/session.ts`, and
     `packages/server/src/server/agent/providers/pi/agent.ts`.
+24. **Agent browser-tool accuracy** — from a 2026-09-28 audit of 32,064 browser calls over 60 days
+    against Playwright MCP, Chrome DevTools MCP, and agent-browser. `fill`/`select` write through
+    the prototype's native `value` setter so React-controlled fields update framework state (a
+    direct assignment reported success while React kept the old value). The actionability hit
+    test accepts the element's shadow host, ancestors, and associated label (custom checkboxes and
+    web components no longer time out as "covered"), refuses clamped points outside the element,
+    and names the covering element (`covered by <div#overlay "Cookie banner">`). Host
+    `browser_timeout` reasons reach the agent instead of a generic "browser did not respond". The
+    ARIA snapshot walks open shadow roots and slots, merges adjacent text runs, and drops a lone
+    text child that repeats its node's name. Console levels are named (`error`, not `3`), network
+    entries carry `responseStatus`. `browser_wait` pauses on a lone `timeoutMs` and clamps it to
+    30s, `browser_scroll` defaults a missing axis to 0, `browser_upload` accepts one path string,
+    `browser_logs` clamps `maxEntries`. The Pi MCP config marks the `paseo` server as
+    `lifecycle: "eager"` because its per-agent URL never matches pi-mcp-adapter's metadata cache,
+    so the lazy default showed "configured but not connected" in 213 sessions and idled out after
+    10 minutes. Key files: the `packages/desktop/src/features/browser-automation/` modules
+    `actionability`, `aria-snapshot-script`, `snapshot-engine`, `ipc`, and `service`;
+    `packages/server/src/server/browser-tools/tools.ts` and `broker.ts`; and
+    `packages/server/src/server/agent/providers/pi/agent.ts`.
 
 ## Local reliability contracts
 

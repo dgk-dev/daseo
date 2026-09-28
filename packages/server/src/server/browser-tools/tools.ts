@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
 import { BrowserAutomationBrowserIdSchema } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import type { BrowserToolsBroker } from "./broker.js";
@@ -52,16 +53,38 @@ const BrowserHttpUrlInputSchema = z
 const BrowserRefInputSchema = z.string().regex(/^@e\d+$/);
 const BrowserClickButtonInputSchema = z.enum(["left", "right", "middle"]);
 const BrowserClickModifierInputSchema = z.enum(["Alt", "Control", "Meta", "Shift"]);
+const MAX_BROWSER_WAIT_MS = 30_000;
+// Agents routinely ask for longer waits or pass only a duration; clamping and
+// treating a lone timeoutMs as a pause costs nothing, while rejecting them
+// cost a model turn each (49 duration-only and 12 over-limit calls in 60 days).
+const BrowserWaitTimeoutInputSchema = z
+  .number()
+  .int()
+  .positive()
+  .transform((value) => Math.min(value, MAX_BROWSER_WAIT_MS));
 const BrowserWaitInputSchema = z
   .object({
     text: z.string().min(1).optional(),
     url: z.string().min(1).optional(),
-    timeoutMs: z.number().int().positive().max(30_000).optional(),
+    timeoutMs: BrowserWaitTimeoutInputSchema.optional(),
     browserId: BrowserAutomationBrowserIdSchema,
   })
-  .refine((input) => Number(Boolean(input.text)) + Number(Boolean(input.url)) === 1, {
-    message: "browser_wait requires exactly one of text or url",
-  });
+  .refine(
+    (input) =>
+      input.text && input.url ? false : Boolean(input.text || input.url || input.timeoutMs),
+    {
+      message: "browser_wait requires text or url (not both), or timeoutMs alone to pause",
+    },
+  );
+const BrowserScrollDeltaInputSchema = z.number().default(0);
+const BrowserUploadFilePathsInputSchema = z
+  .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
+  .transform((value) => (typeof value === "string" ? [value] : value));
+const BrowserLogsMaxEntriesInputSchema = z
+  .number()
+  .int()
+  .positive()
+  .transform((value) => Math.min(value, 200));
 
 export function registerBrowserTools(options: RegisterBrowserToolsOptions): void {
   options.registerTool(
@@ -221,11 +244,22 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Wait for browser condition",
       description:
-        "Wait until a Paseo browser tab contains text or reaches a URL fragment. Use browserId from browser_new_tab or browser_list_tabs; waits up to 5s by default on the browser host.",
+        "Wait until a Paseo browser tab contains text or reaches a URL fragment, or pass only timeoutMs to pause. Use browserId from browser_new_tab or browser_list_tabs; conditions wait up to 5s by default and timeoutMs is capped at 30000.",
       inputSchema: BrowserWaitInputSchema,
     },
-    async ({ text, url, timeoutMs, browserId }) => {
+    async ({ text, url, timeoutMs, browserId }, executionContext) => {
       const context = resolveBrowserToolContext(options);
+      if (!text && !url) {
+        const waitedMs = await pause(timeoutMs ?? 0, executionContext?.signal);
+        return {
+          content: [{ type: "text", text: `Browser wait paused ${waitedMs}ms.` }],
+          structuredContent: {
+            ok: true,
+            result: { command: "wait", browserId, waitedMs },
+            context: { ...context, browserId },
+          },
+        };
+      }
       const payload = await options.broker.execute({
         agentId: context.agentId,
         cwd: context.cwd,
@@ -424,7 +458,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
         "Set workspace files on a file input in a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes.",
       inputSchema: {
         ref: BrowserRefInputSchema,
-        filePaths: z.array(z.string().min(1)).min(1),
+        filePaths: BrowserUploadFilePathsInputSchema,
         browserId: BrowserAutomationBrowserIdSchema,
       },
     },
@@ -555,7 +589,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
       description:
         "Read recent console messages and browser performance network entries for a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; maxEntries defaults to 50.",
       inputSchema: {
-        maxEntries: z.number().int().positive().max(200).optional(),
+        maxEntries: BrowserLogsMaxEntriesInputSchema.optional(),
         browserId: BrowserAutomationBrowserIdSchema,
       },
     },
@@ -619,8 +653,8 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
       inputSchema: {
         browserId: BrowserAutomationBrowserIdSchema,
         ref: BrowserRefInputSchema.optional(),
-        deltaX: z.number(),
-        deltaY: z.number(),
+        deltaX: BrowserScrollDeltaInputSchema,
+        deltaY: BrowserScrollDeltaInputSchema,
       },
     },
     async ({ browserId, ref, deltaX, deltaY }) => {
@@ -716,6 +750,13 @@ function resolveBrowserToolContext(options: RegisterBrowserToolsOptions): {
     ...(callerAgent?.cwd ? { cwd: callerAgent.cwd } : {}),
     ...(callerAgent?.workspaceId ? { workspaceId: callerAgent.workspaceId } : {}),
   };
+}
+
+async function pause(ms: number, signal: AbortSignal | undefined): Promise<number> {
+  const startedAt = Date.now();
+  // An aborted pause just ends early; the elapsed time is still reported.
+  await sleep(ms, undefined, { signal }).catch(() => undefined);
+  return Date.now() - startedAt;
 }
 
 function normalizeHttpUrlInput(value: string): string | null {
@@ -1046,7 +1087,12 @@ function summarizeBrowserError(
     case "browser_no_host":
       return error.message;
     case "browser_timeout":
-      return "The browser did not respond before the timeout. Try again or check the browser host.";
+      // The host reports why it gave up (text never appeared, element covered,
+      // tab still registering); the broker's own timeout says the host is silent.
+      return (
+        error.message ||
+        "The browser did not respond before the timeout. Try again or check the browser host."
+      );
     case "screenshot_no_frame":
       return error.message;
     case "browser_unsupported":

@@ -243,8 +243,14 @@ function observeConsoleMessages(contents: BrowserAutomationWebContents, contents
     return;
   }
   observedContentsIds.add(contentsId);
-  contents.on("console-message", (_event, level, message, line, sourceId) => {
-    const entry = normalizeConsoleMessage({ level, message, line, sourceId });
+  contents.on("console-message", (event, level, message, line, sourceId) => {
+    const eventLevel = (event as { level?: unknown } | null)?.level;
+    const entry = normalizeConsoleMessage({
+      level: typeof eventLevel === "string" ? eventLevel : level,
+      message,
+      line,
+      sourceId,
+    });
     const messages = consoleMessagesByContentsId.get(contentsId) ?? [];
     messages.push(entry);
     consoleMessagesByContentsId.set(contentsId, messages.slice(-MAX_CONSOLE_MESSAGES_PER_TAB));
@@ -477,6 +483,20 @@ function parsePromptShimDialogs(value: unknown): BrowserAutomationDialogEvent[] 
   });
 }
 
+// Electron's deprecated positional argument is Chromium's numeric severity;
+// the event object carries the name agents recognize ("error", not "3").
+const CONSOLE_LEVEL_NAMES = ["debug", "info", "warning", "error"] as const;
+
+function consoleLevelName(level: unknown): string {
+  if (typeof level === "string") {
+    return level;
+  }
+  if (typeof level === "number" && CONSOLE_LEVEL_NAMES[level]) {
+    return CONSOLE_LEVEL_NAMES[level];
+  }
+  return String(level ?? "log");
+}
+
 function normalizeConsoleMessage(input: {
   level: unknown;
   message: unknown;
@@ -484,7 +504,7 @@ function normalizeConsoleMessage(input: {
   sourceId: unknown;
 }): BrowserAutomationConsoleLogEntry {
   return {
-    level: typeof input.level === "string" ? input.level : String(input.level ?? "log"),
+    level: consoleLevelName(input.level),
     message: typeof input.message === "string" ? input.message : String(input.message ?? ""),
     ...(typeof input.sourceId === "string" && input.sourceId.length > 0
       ? { source: input.sourceId }

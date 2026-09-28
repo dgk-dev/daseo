@@ -1180,11 +1180,37 @@ describe("executeAutomationCommand", () => {
       ok: false,
       error: {
         code: "browser_timeout",
-        message: "Timed out waiting for browser element @e2 to become actionable.",
+        message:
+          "Timed out waiting for browser element @e2 to become actionable (last check: disabled).",
         retryable: true,
       },
     });
     expect(browser.tab.debugCommands).toEqual([]);
+  });
+
+  test("click names the element covering the ref and how to recover", async () => {
+    const browser = new BrowserAutomationHarness();
+    browser.tab.snapshotNodes = formElements();
+    browser.tab.actionabilityResult = {
+      ok: false,
+      reason: "timeout",
+      detail: 'covered by <div#overlay.cookie-banner "Cookie banner">',
+    };
+
+    requireSnapshotRefs(await browser.snapshot());
+    const click = await browser.execute({
+      command: "click",
+      args: { browserId: BROWSER_A, ref: "@e2" },
+    });
+
+    expect(click).toMatchObject({
+      ok: false,
+      error: {
+        code: "browser_timeout",
+        message:
+          'Timed out waiting for browser element @e2 to become actionable (last check: covered by <div#overlay.cookie-banner "Cookie banner">). Dismiss or interact with the covering element first, then take a new snapshot.',
+      },
+    });
   });
 
   test("command failures include dialogs handled before the failure", async () => {
@@ -1212,7 +1238,8 @@ describe("executeAutomationCommand", () => {
       ok: false,
       error: {
         code: "browser_timeout",
-        message: "Timed out waiting for browser element @e2 to become actionable.",
+        message:
+          "Timed out waiting for browser element @e2 to become actionable (last check: disabled).",
         retryable: true,
       },
       dialogs: [

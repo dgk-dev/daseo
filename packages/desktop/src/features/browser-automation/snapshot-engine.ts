@@ -288,8 +288,38 @@ function renderNode(node: SnapshotNode, depth: number): string[] {
   }
   const suffix = attrs.length > 0 ? ` [${attrs.join(" ")}]` : "";
   const ownLine = `${indent}- ${node.role ?? "generic"}${node.name ? ` ${JSON.stringify(node.name)}` : ""}${suffix}`;
-  const childLines = (node.children ?? []).flatMap((child) => renderNode(child, depth + 1));
+  const childLines = renderedChildNodes(node).flatMap((child) => renderNode(child, depth + 1));
   return [ownLine, ...childLines];
+}
+
+// Groups render transparently, so their text lands beside the parent's other
+// text. Adjacent runs merge into one line, and a lone run that only repeats the
+// node's accessible name is dropped (Playwright's ariaSnapshot does the same):
+// `link "Learn more"` no longer carries a second `text: "Learn more"` line.
+function renderedChildNodes(node: SnapshotNode): SnapshotNode[] {
+  const merged: SnapshotNode[] = [];
+  for (const child of flattenGroups(node.children ?? [])) {
+    const previous = merged.at(-1);
+    if (child.kind === "text" && previous?.kind === "text") {
+      merged[merged.length - 1] = {
+        ...previous,
+        text: `${previous.text ?? ""} ${child.text ?? ""}`.trim(),
+      };
+      continue;
+    }
+    merged.push(child);
+  }
+  const only = merged.length === 1 ? merged[0] : undefined;
+  if (only?.kind === "text" && node.name && only.text === node.name) {
+    return [];
+  }
+  return merged;
+}
+
+function flattenGroups(children: SnapshotNode[]): SnapshotNode[] {
+  return children.flatMap((child) =>
+    child.kind === "group" ? flattenGroups(child.children ?? []) : [child],
+  );
 }
 
 function capRenderedSnapshot(
@@ -307,6 +337,20 @@ function capRenderedSnapshot(
   return { snapshot: `${capped}\n${TRUNCATION_MARKER}`, truncated: true };
 }
 
+// React and similar libraries shadow `value` on the element instance to track
+// the last value they rendered. Assigning through that shadow updates the
+// tracker too, so the following input event looks like a no-op and the
+// framework state stays stale while the field shows the new text. Writing
+// through the prototype's native setter leaves the tracker behind, which is
+// what a real keystroke does.
+const NATIVE_VALUE_SETTER_SNIPPET = String.raw`let valueOwner = Object.getPrototypeOf(element);
+      while (valueOwner && !Object.getOwnPropertyDescriptor(valueOwner, 'value')) {
+        valueOwner = Object.getPrototypeOf(valueOwner);
+      }
+      const nativeValueSetter = valueOwner && Object.getOwnPropertyDescriptor(valueOwner, 'value').set;
+      if (nativeValueSetter) nativeValueSetter.call(element, nextValue);
+      else element.value = nextValue;`;
+
 function buildFillScript(metadata: BrowserRefMetadata, value: string): string {
   return String.raw`(() => {
     const resolved = ${buildResolveExpression(metadata)};
@@ -316,7 +360,7 @@ function buildFillScript(metadata: BrowserRefMetadata, value: string): string {
     element.focus();
     const nextValue = ${JSON.stringify(value)};
     if ('value' in element) {
-      element.value = nextValue;
+      ${NATIVE_VALUE_SETTER_SNIPPET}
       element.dispatchEvent(new Event('input', { bubbles: true }));
       element.dispatchEvent(new Event('change', { bubbles: true }));
       return { ok: true };
@@ -336,7 +380,7 @@ function buildSelectScript(metadata: BrowserRefMetadata, value: string): string 
     element.focus?.();
     const nextValue = ${JSON.stringify(value)};
     if ('value' in element) {
-      element.value = nextValue;
+      ${NATIVE_VALUE_SETTER_SNIPPET}
       element.dispatchEvent(new Event('input', { bubbles: true }));
       element.dispatchEvent(new Event('change', { bubbles: true }));
       return { ok: true };

@@ -56,6 +56,7 @@ import {
 } from "../../provider-launch-config.js";
 import { renderPromptAttachmentAsText } from "../../prompt-attachments.js";
 import { composeSystemPromptParts } from "../../system-prompt.js";
+import { PASEO_MCP_SERVER_NAME } from "../../runtime-mcp-config.js";
 import {
   buildBinaryDiagnosticRows,
   buildCommandResolutionDiagnosticRows,
@@ -380,6 +381,7 @@ interface PiMcpServerConfig {
   headers?: Record<string, string>;
   auth?: false;
   oauth?: false;
+  lifecycle?: "eager";
 }
 
 interface PiMcpConfigFile {
@@ -817,7 +819,15 @@ function createPiMcpConfigFile(
   }
   const mcpServers: Record<string, unknown> = { ...configuredServers };
   for (const [name, serverConfig] of Object.entries(servers)) {
-    mcpServers[name] = toPiMcpConfig(serverConfig);
+    const piConfig = toPiMcpConfig(serverConfig);
+    // The Paseo control plane is a local daemon and its URL carries the caller
+    // agent id, so pi-mcp-adapter's metadata cache never matches a new agent:
+    // a lazy connection lists the server as "configured but not connected" (a
+    // wasted turn in most browser sessions) and the 10-minute idle disconnect
+    // flips the gateway tool description mid-session. Connecting at startup
+    // costs one local round trip and keeps the tool list stable.
+    mcpServers[name] =
+      name === PASEO_MCP_SERVER_NAME ? { ...piConfig, lifecycle: "eager" } : piConfig;
   }
 
   const dir = mkdtempSync(join(tmpdir(), "paseo-pi-mcp-"));

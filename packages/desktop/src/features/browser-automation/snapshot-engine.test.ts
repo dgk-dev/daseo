@@ -70,6 +70,54 @@ class SnapshotFixture implements SnapshotPage {
 }
 
 describe("BrowserSnapshotEngine", () => {
+  it("drops text that repeats a node name and merges adjacent text runs", async () => {
+    const page = new SnapshotFixture();
+    page.snapshotNodes = [
+      {
+        kind: "role",
+        role: "button",
+        name: "Save changes",
+        tagName: "button",
+        attributes: [],
+        ref: "@e1",
+        fingerprint: {
+          role: "button",
+          name: "Save changes",
+          tagName: "button",
+          type: "",
+          ariaLabel: "",
+        },
+        children: [
+          { kind: "group", children: [{ kind: "text", text: "Save" }] },
+          { kind: "text", text: "changes" },
+        ],
+      },
+      {
+        kind: "role",
+        role: "listitem",
+        name: "",
+        tagName: "li",
+        attributes: [],
+        children: [
+          { kind: "text", text: "Price:" },
+          { kind: "group", children: [{ kind: "text", text: "$5" }] },
+        ],
+      },
+    ];
+    const engine = new BrowserSnapshotEngine();
+
+    const result = await engine.snapshot({ browserId: "browser-1", page });
+
+    expect(result.snapshot).toBe(
+      [
+        '- document "Fixture"',
+        '  - button "Save changes" [ref=@e1]',
+        "  - listitem",
+        '    - text: "Price: $5"',
+      ].join("\n"),
+    );
+  });
+
   it("renders a hierarchical ARIA YAML snapshot with static text and actionable refs", async () => {
     const page = new SnapshotFixture();
     const engine = new BrowserSnapshotEngine();

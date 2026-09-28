@@ -1242,10 +1242,14 @@ function actionabilityFailure(
   if (result.reason === "stale_ref") {
     return staleRefFailure(requestId, ref);
   }
+  const reason = result.detail ? ` (last check: ${result.detail})` : "";
+  const hint = result.detail?.startsWith("covered by")
+    ? " Dismiss or interact with the covering element first, then take a new snapshot."
+    : "";
   return fail(
     requestId,
     "browser_timeout",
-    `Timed out waiting for browser element ${ref} to become actionable.`,
+    `Timed out waiting for browser element ${ref} to become actionable${reason}.${hint}`,
     true,
   );
 }
@@ -1868,6 +1872,9 @@ const NETWORK_PERFORMANCE_SCRIPT = String.raw`(() => {
       url: entry.name,
       method: entry.initiatorType === 'navigation' ? 'GET' : undefined,
       type: entry.initiatorType,
+      // 0 means no response was received (DNS/connection failure, blocked, or
+      // an opaque cross-origin response); a real code shows 4xx/5xx failures.
+      status: typeof entry.responseStatus === 'number' ? entry.responseStatus : undefined,
       startTime: entry.startTime,
       duration: entry.duration,
       transferSize: typeof entry.transferSize === 'number' ? entry.transferSize : undefined,

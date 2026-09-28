@@ -81,13 +81,20 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
     return explicitRole(element) || implicitRole(element);
   }
 
+  // Label and aria-labelledby targets live in the element's own tree, which
+  // is a shadow root for web components.
+  function treeRootOf(element) {
+    const root = element.getRootNode ? element.getRootNode() : document;
+    return root && typeof root.querySelector === 'function' ? root : document;
+  }
+
   function labelText(element) {
     if (!(element instanceof HTMLElement)) return '';
     if (element.id) {
       const escapedId = window.CSS && typeof window.CSS.escape === 'function'
         ? window.CSS.escape(element.id)
         : String(element.id).replace(/"/g, '\\"');
-      const label = document.querySelector('label[for="' + escapedId + '"]');
+      const label = treeRootOf(element).querySelector('label[for="' + escapedId + '"]');
       if (label) return normalizeText(label.textContent);
     }
     const closestLabel = element.closest('label');
@@ -98,7 +105,8 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
     const tag = element.tagName.toLowerCase();
     const labelledBy = element.getAttribute('aria-labelledby');
     if (labelledBy) {
-      const text = labelledBy.split(/\s+/).map((id) => document.getElementById(id)?.textContent || '').join(' ');
+      const root = treeRootOf(element);
+      const text = labelledBy.split(/\s+/).map((id) => (root.getElementById ? root.getElementById(id) : document.getElementById(id))?.textContent || '').join(' ');
       const normalized = normalizeText(text);
       if (normalized) return normalized;
     }
@@ -239,6 +247,24 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
     return capped;
   }
 
+  // Rendered children, following Playwright's ariaSnapshot traversal: a slot
+  // renders its assigned light-DOM nodes, and a shadow host renders its
+  // unslotted light children followed by its open shadow tree.
+  function renderedChildren(element) {
+    if (element.nodeName === 'SLOT' && typeof element.assignedNodes === 'function') {
+      const assigned = element.assignedNodes();
+      if (assigned.length) return assigned;
+    }
+    const children = [];
+    for (const child of Array.from(element.childNodes)) {
+      if (!child.assignedSlot) children.push(child);
+    }
+    if (element.shadowRoot) {
+      for (const child of Array.from(element.shadowRoot.childNodes)) children.push(child);
+    }
+    return children;
+  }
+
   function visitNode(domNode, depth) {
     if (!countNode(depth)) return null;
     if (domNode.nodeType === Node.TEXT_NODE) {
@@ -254,7 +280,7 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
     const role = roleFor(domNode);
     const name = role ? nameFor(domNode, role) : '';
     const children = [];
-    for (const child of Array.from(domNode.childNodes)) {
+    for (const child of renderedChildren(domNode)) {
       const childSnapshot = visitNode(child, depth + 1);
       if (childSnapshot) children.push(childSnapshot);
       if (truncated) break;
@@ -291,7 +317,7 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
     attributes: [],
     children: []
   };
-  for (const child of Array.from(document.body ? document.body.childNodes : document.documentElement.childNodes)) {
+  for (const child of renderedChildren(document.body || document.documentElement)) {
     const childSnapshot = visitNode(child, 1);
     if (childSnapshot) root.children.push(childSnapshot);
     if (truncated) break;
