@@ -70,6 +70,35 @@ class SnapshotFixture implements SnapshotPage {
 }
 
 describe("BrowserSnapshotEngine", () => {
+  it("keeps text from separate block elements on separate lines", async () => {
+    const page = new SnapshotFixture();
+    page.snapshotNodes = [
+      { kind: "group", block: true, children: [{ kind: "text", text: "Alpha item" }] },
+      { kind: "group", block: true, children: [{ kind: "text", text: "Beta item" }] },
+      {
+        kind: "group",
+        block: true,
+        children: [
+          { kind: "text", text: "Hello" },
+          { kind: "group", children: [{ kind: "text", text: "bold" }] },
+          { kind: "text", text: "world" },
+        ],
+      },
+    ];
+    const engine = new BrowserSnapshotEngine();
+
+    const result = await engine.snapshot({ browserId: "browser-1", page });
+
+    expect(result.snapshot).toBe(
+      [
+        '- document "Fixture"',
+        '  - text: "Alpha item"',
+        '  - text: "Beta item"',
+        '  - text: "Hello bold world"',
+      ].join("\n"),
+    );
+  });
+
   it("drops text that repeats a node name and merges adjacent text runs", async () => {
     const page = new SnapshotFixture();
     page.snapshotNodes = [

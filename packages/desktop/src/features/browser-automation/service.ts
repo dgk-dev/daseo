@@ -842,14 +842,16 @@ async function executeClick(
     if (typeof elementExpression !== "string") {
       return staleRefFailure(requestId, ref);
     }
+    const trustedInput = registry.isBrowserInputFocused(target.browserId);
     const actionable = await waitForActionableTarget({
       page: target.contents,
       elementExpression,
+      pointerDelivered: trustedInput,
     });
     if (!actionable.ok) {
       return actionabilityFailure(requestId, ref, actionable);
     }
-    if (registry.isBrowserInputFocused(target.browserId)) {
+    if (trustedInput) {
       if (!target.contents.sendDebugCommand) {
         return fail(
           requestId,
@@ -901,7 +903,7 @@ async function executeFill(
     // update it from real input events; rewriting textContent showed the text
     // while the editor still held the old value. Replace the contents with
     // trusted input instead, as browser_type does.
-    if (value && (await isContentEditableRef(target, ref, snapshotEngine))) {
+    if (await isContentEditableRef(target, ref, snapshotEngine)) {
       const typed = await typeIntoTarget({
         requestId,
         target,
@@ -1002,6 +1004,7 @@ async function executeHover(
     const actionable = await waitForActionableTarget({
       page: target.contents,
       elementExpression,
+      pointerDelivered: true,
     });
     if (!actionable.ok) {
       return actionabilityFailure(requestId, ref, actionable);
@@ -1046,9 +1049,11 @@ async function executeDrag(
     if (typeof sourceExpression !== "string" || typeof targetExpression !== "string") {
       return staleRefFailure(requestId, `${sourceRef}/${targetRef}`);
     }
+    const trustedInput = registry.isBrowserInputFocused(target.browserId);
     const source = await waitForActionableTarget({
       page: target.contents,
       elementExpression: sourceExpression,
+      pointerDelivered: trustedInput,
     });
     if (!source.ok) {
       return actionabilityFailure(requestId, sourceRef, source);
@@ -1056,11 +1061,12 @@ async function executeDrag(
     const dropTarget = await waitForActionableTarget({
       page: target.contents,
       elementExpression: targetExpression,
+      pointerDelivered: trustedInput,
     });
     if (!dropTarget.ok) {
       return actionabilityFailure(requestId, targetRef, dropTarget);
     }
-    if (registry.isBrowserInputFocused(target.browserId)) {
+    if (trustedInput) {
       if (!target.contents.sendDebugCommand) {
         return fail(
           requestId,
@@ -1452,6 +1458,7 @@ async function typeIntoTarget(input: {
       page: target.contents,
       elementExpression,
       editable: true,
+      pointerDelivered: registry.isBrowserInputFocused(target.browserId),
     });
     if (!actionable.ok) {
       return { failure: actionabilityFailure(requestId, ref, actionable) };
@@ -1915,7 +1922,8 @@ function capEvaluateResultJson(resultJson: string): { resultJson: string; trunca
 
 // File inputs are usually hidden, so snapshots offer the visible upload button,
 // label, or dropzone instead. Follow only unambiguous links to the real input:
-// the label's control, or the single file input inside the element.
+// the single file input inside the element, its label's control, or the single
+// file input inside that label.
 function fileInputTargetExpression(elementExpression: string): string {
   return String.raw`(() => {
     const element = ${elementExpression};
@@ -1924,10 +1932,14 @@ function fileInputTargetExpression(elementExpression: string): string {
       Boolean(node && node.tagName === 'INPUT' && String(node.type).toLowerCase() === 'file');
     if (isFileInput(element)) return element;
     if (isFileInput(element.control)) return element.control;
+    const inside = element.querySelectorAll ? element.querySelectorAll('input[type="file"]') : [];
+    if (inside.length === 1) return inside[0];
+    // A label's control is its first labelable descendant, which is often the
+    // visible "Choose file" button rather than the hidden input beside it.
     const label = element.closest ? element.closest('label') : null;
     if (label && isFileInput(label.control)) return label.control;
-    const inside = element.querySelectorAll ? element.querySelectorAll('input[type="file"]') : [];
-    return inside.length === 1 ? inside[0] : element;
+    const inLabel = label ? label.querySelectorAll('input[type="file"]') : [];
+    return inLabel.length === 1 ? inLabel[0] : element;
   })()`;
 }
 

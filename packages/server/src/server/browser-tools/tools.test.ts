@@ -1136,6 +1136,41 @@ describe("registerBrowserTools", () => {
     }
   });
 
+  test("screenshot savePath expands ~/ and refuses a relative path without a cwd", async () => {
+    const home = await mkdtemp(join(tmpdir(), "paseo-home-"));
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const payload = {
+        requestId: "req-shot",
+        ok: true,
+        result: {
+          command: "screenshot",
+          browserId: BROWSER_ID,
+          mimeType: "image/png",
+          dataBase64: Buffer.from("png").toString("base64"),
+          width: 1,
+          height: 1,
+        },
+      } satisfies BrowserToolsResponsePayload;
+      const withCwd = new BrowserToolHarness();
+      withCwd.broker.setResponse(payload);
+      await withCwd.execute("browser_screenshot", { browserId: BROWSER_ID, savePath: "~/a.png" });
+      expect(await readFile(join(home, "a.png"), "utf8")).toBe("png");
+
+      const noCwd = new BrowserToolHarness(null, "agent-1");
+      noCwd.broker.setResponse(payload);
+      const response = await noCwd.execute("browser_screenshot", {
+        browserId: BROWSER_ID,
+        savePath: "b.png",
+      });
+      expect(response.content[0]?.text).toContain("is relative and this agent has no cwd");
+    } finally {
+      process.env.HOME = previousHome;
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   test("tab tools keep empty context when there is no caller agent", async () => {
     const harness = new BrowserToolHarness(null, null);
     harness.broker.setResponse(snapshotPayload());

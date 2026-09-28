@@ -30,6 +30,8 @@ interface SnapshotNode {
   ref?: string;
   fingerprint?: BrowserRefFingerprint;
   children?: SnapshotNode[];
+  /** Groups only: the element lays out as a block, so its text never joins a neighbour's line. */
+  block?: boolean;
 }
 
 interface BrowserRefFingerprint {
@@ -211,6 +213,7 @@ function parseSnapshotNode(value: unknown): SnapshotNode | null {
       ? { fingerprint: parseFingerprint(record.fingerprint) ?? undefined }
       : {}),
     attributes: readStringArray(record.attributes),
+    ...(record.block === true ? { block: true } : {}),
     children: Array.isArray(record.children)
       ? record.children.flatMap((child): SnapshotNode[] => {
           const parsed = parseSnapshotNode(child);
@@ -293,14 +296,21 @@ function renderNode(node: SnapshotNode, depth: number): string[] {
 }
 
 // Groups render transparently, so their text lands beside the parent's other
-// text. Adjacent runs merge into one line, and a lone run that only repeats the
-// node's accessible name is dropped (Playwright's ariaSnapshot does the same):
-// `link "Learn more"` no longer carries a second `text: "Learn more"` line.
+// text. Runs joined only by inline markup ("Hello <b>bold</b> world") merge into
+// one line, while block boundaries (list rows, paragraphs) keep their own lines.
+// A lone run that only repeats the node's accessible name is dropped, as in
+// Playwright's ariaSnapshot: `link "Learn more"` no longer carries a second
+// `text: "Learn more"` line.
 function renderedChildNodes(node: SnapshotNode): SnapshotNode[] {
   const merged: SnapshotNode[] = [];
+  let joinable = false;
   for (const child of flattenGroups(node.children ?? [])) {
+    if (child === BLOCK_BOUNDARY) {
+      joinable = false;
+      continue;
+    }
     const previous = merged.at(-1);
-    if (child.kind === "text" && previous?.kind === "text") {
+    if (child.kind === "text" && joinable && previous?.kind === "text") {
       merged[merged.length - 1] = {
         ...previous,
         text: `${previous.text ?? ""} ${child.text ?? ""}`.trim(),
@@ -308,6 +318,7 @@ function renderedChildNodes(node: SnapshotNode): SnapshotNode[] {
       continue;
     }
     merged.push(child);
+    joinable = child.kind === "text";
   }
   const only = merged.length === 1 ? merged[0] : undefined;
   if (only?.kind === "text" && node.name && only.text === node.name) {
@@ -316,10 +327,16 @@ function renderedChildNodes(node: SnapshotNode): SnapshotNode[] {
   return merged;
 }
 
-function flattenGroups(children: SnapshotNode[]): SnapshotNode[] {
-  return children.flatMap((child) =>
-    child.kind === "group" ? flattenGroups(child.children ?? []) : [child],
-  );
+const BLOCK_BOUNDARY = null;
+
+function flattenGroups(children: SnapshotNode[]): Array<SnapshotNode | typeof BLOCK_BOUNDARY> {
+  return children.flatMap((child) => {
+    if (child.kind !== "group") {
+      return [child];
+    }
+    const inner = flattenGroups(child.children ?? []);
+    return child.block ? [BLOCK_BOUNDARY, ...inner, BLOCK_BOUNDARY] : inner;
+  });
 }
 
 function capRenderedSnapshot(

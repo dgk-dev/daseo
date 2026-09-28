@@ -1147,6 +1147,21 @@ describe("executeAutomationCommand", () => {
     expect(containsScript(browser.tab, "const nextValue")).toBe(false);
   });
 
+  test("fill clears a rich-text editor with trusted input too", async () => {
+    const browser = new BrowserAutomationHarness();
+    browser.tab.snapshotNodes = formElements();
+    browser.tab.refIsContentEditable = true;
+
+    requireSnapshotRefs(await browser.snapshot());
+    await browser.execute({
+      command: "fill",
+      args: { browserId: BROWSER_A, ref: "@e1", value: "" },
+    });
+
+    expect(browser.tab.actions).toContain("select-contents");
+    expect(browser.tab.insertedTexts).toEqual([""]);
+  });
+
   test("fill with an empty string clears a ref through the regular fill path", async () => {
     const browser = new BrowserAutomationHarness();
     browser.tab.snapshotNodes = formElements();

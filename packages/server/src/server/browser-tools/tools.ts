@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, resolve as resolveFsPath } from "node:path";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, resolve as resolveFsPath } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
 import { BrowserAutomationBrowserIdSchema } from "@getpaseo/protocol/browser-automation/rpc-schemas";
@@ -427,7 +428,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Capture browser screenshot",
       description:
-        "Capture a PNG screenshot of a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs. Set fullPage to true to capture the full page. Set savePath to also write the PNG to a file (relative paths resolve against the agent's cwd).",
+        "Capture a PNG screenshot of a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs. Set fullPage to true to capture the full page. Set savePath to also write the PNG to a file (relative paths resolve against the agent's cwd; ~/ is the home directory).",
       inputSchema: {
         browserId: BrowserAutomationBrowserIdSchema,
         fullPage: z.boolean().default(false),
@@ -775,7 +776,14 @@ async function saveScreenshot(
   cwd: string | undefined,
   dataBase64: string,
 ): Promise<{ text: string; path?: string }> {
-  const target = resolveFsPath(cwd ?? process.cwd(), savePath);
+  const expanded =
+    savePath === "~" || savePath.startsWith("~/") ? homedir() + savePath.slice(1) : savePath;
+  if (!isAbsolute(expanded) && !cwd) {
+    return {
+      text: `Could not save the screenshot: ${savePath} is relative and this agent has no cwd.`,
+    };
+  }
+  const target = resolveFsPath(cwd ?? "/", expanded);
   try {
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, Buffer.from(dataBase64, "base64"));

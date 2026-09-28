@@ -294,7 +294,13 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     selects the contents and replaces them with trusted input; `browser_wait` text also matches
     inside open shadow roots; `browser_upload` follows a label's control or the single file input
     inside a button or dropzone; aborted navigations report where the tab ended up; and
-    `browser_screenshot` takes an optional `savePath`.
+    `browser_screenshot` takes an optional `savePath`. Audit pass (0.5.36): adjacent text merges
+    only across inline markup, never across block elements (list rows stayed one line in 0.5.35);
+    an ancestor at the click point blocks only input delivered at the point (user-focused trusted
+    clicks, hover, drag), because focus-isolated events go to the element itself; blocker text is
+    shown only when short; contenteditable `fill("")` clears through trusted input; upload also
+    finds the single file input inside a label whose control is a button; `savePath` expands `~/`
+    and refuses a relative path without a cwd.
 
 ## Local reliability contracts
 

@@ -304,7 +304,9 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
       return children.length > 0 ? { kind: 'group', children } : null;
     }
     if (!role && children.length === 0) return null;
-    const snapshotNode = role ? elementNode(domNode, role, name) : { kind: 'group', children: [] };
+    const snapshotNode = role
+      ? elementNode(domNode, role, name)
+      : { kind: 'group', block: !/^inline/.test(window.getComputedStyle(domNode).display), children: [] };
     snapshotNode.children = children;
     if (role && isActionable(domNode, role) && refCount < MAX_REFS) {
       let ref = runtime.numbering.refByElement.get(domNode);

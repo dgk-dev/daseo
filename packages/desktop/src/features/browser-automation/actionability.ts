@@ -25,12 +25,19 @@ export async function waitForActionableTarget(input: {
   page: SnapshotPage;
   elementExpression: string;
   editable?: boolean;
+  /**
+   * The input will be dispatched at the point and land on whatever is hit
+   * there (trusted CDP input), not on the element itself (focus-isolated
+   * events). Only then does an ancestor hit mean the element is unreachable.
+   */
+  pointerDelivered?: boolean;
   timeoutMs?: number;
 }): Promise<ActionabilityResult> {
   const result = await input.page.executeJavaScript(
     buildActionabilityScript({
       elementExpression: input.elementExpression,
       editable: input.editable === true,
+      pointerDelivered: input.pointerDelivered === true,
       timeoutMs: input.timeoutMs ?? DEFAULT_ACTIONABILITY_TIMEOUT_MS,
     }),
   );
@@ -94,11 +101,13 @@ function isFiniteNumber(value: unknown): value is number {
 function buildActionabilityScript(input: {
   elementExpression: string;
   editable: boolean;
+  pointerDelivered: boolean;
   timeoutMs: number;
 }): string {
   return String.raw`(async () => {
     const deadline = performance.now() + ${JSON.stringify(input.timeoutMs)};
     const requiresEditable = ${JSON.stringify(input.editable)};
+    const pointerDelivered = ${JSON.stringify(input.pointerDelivered)};
 
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     // Electron can suspend requestAnimationFrame while a guest is parked after
@@ -147,10 +156,9 @@ function buildActionabilityScript(input: {
       );
     };
     // Adapted from vercel-labs/agent-browser's click blocker check (Apache-2.0).
-    // A hit that is the element's shadow host or ancestor still delivers the
-    // click to the element's composed path, and a label hit activates its
-    // control, so neither is a blocker. Anything else is described so the agent
-    // can dismiss it (usually a dialog, cookie banner, or sticky header).
+    // A hit on the element's own subtree, or on a label that activates it, is
+    // not a blocker. Anything else is described so the agent can dismiss it
+    // (usually a dialog, cookie banner, or sticky header).
     const composedParent = (node) =>
       node.parentNode || node.host || (node.getRootNode && node.getRootNode().host) || null;
     const describeBlocker = (hit) => {
@@ -164,7 +172,8 @@ function buildActionabilityScript(input: {
           desc += ' inside ' + anchored.tagName.toLowerCase() + '#' + anchored.id;
       }
       const text = String(hit.innerText || hit.textContent || '').replace(/\s+/g, ' ').trim();
-      if (text) desc += ' "' + (text.length > 40 ? text.slice(0, 40) + '…' : text) + '"';
+      // Short text names a banner or button; a container's text is just noise.
+      if (text && text.length <= 80) desc += ' "' + text + '"';
       return desc;
     };
     const blockerAt = (element, point, rect) => {
@@ -182,7 +191,20 @@ function buildActionabilityScript(input: {
       }
       if (!hit) return 'not hit-testable at its click point';
       for (let node = hit; node; node = composedParent(node)) if (node === element) return null;
-      for (let node = element; node; node = composedParent(node)) if (node === hit) return null;
+      // An ancestor at the point is harmless when events are sent to the
+      // element itself, or when the element lets pointer events through. For
+      // input dispatched at the point it means the element is clipped out of
+      // its container, and the click would land on the container while
+      // reporting success.
+      let hitIsAncestor = false;
+      for (let node = composedParent(element); node; node = composedParent(node)) {
+        if (node === hit) { hitIsAncestor = true; break; }
+      }
+      if (hitIsAncestor) {
+        return !pointerDelivered || getComputedStyle(element).pointerEvents === 'none'
+          ? null
+          : 'clipped or hidden inside <' + describeBlocker(hit) + '>';
+      }
       const hitLabel = hit.closest ? hit.closest('label') : null;
       if (hitLabel && (hitLabel.control === element || hitLabel.contains(element))) return null;
       const elementLabel = element.closest ? element.closest('label') : null;
