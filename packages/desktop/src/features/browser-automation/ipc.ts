@@ -28,6 +28,7 @@ import {
 } from "./full-page-capture.js";
 import { BrowserSnapshotEngine } from "./snapshot-engine.js";
 import { observeTabLoading, tabLoadingInfo } from "./load-tracker.js";
+import { TabNetworkCapture } from "./network-capture.js";
 import {
   listRegisteredPaseoBrowserIds,
   listRegisteredPaseoBrowserIdsForWorkspace,
@@ -41,6 +42,7 @@ const MAX_CONSOLE_MESSAGES_PER_TAB = 200;
 const consoleMessagesByContentsId = new Map<number, BrowserAutomationConsoleLogEntry[]>();
 const cdpQueuesByContentsId = new Map<number, CdpSessionQueue>();
 const dialogMonitorsByContentsId = new Map<number, DialogMonitor>();
+const networkCapturesByContentsId = new Map<number, TabNetworkCapture>();
 const observedContentsIds = new Set<number>();
 
 interface IpcHandlerRegistry {
@@ -252,7 +254,37 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
     startScreencast: (options, onFrame) =>
       cdpQueue.run(() => startScreencast(contents, options, onFrame)),
     stopScreencast: () => cdpQueue.run(() => stopScreencast(contents)),
+    getNetworkCapture: () => {
+      markPaseoBrowserAutomationActivity(contentsId);
+      return getNetworkCapture(contents, contentsId, cdpQueue);
+    },
   };
+}
+
+function getNetworkCapture(
+  contents: BrowserAutomationWebContents,
+  contentsId: number,
+  cdpQueue: CdpSessionQueue,
+): TabNetworkCapture {
+  const existing = networkCapturesByContentsId.get(contentsId);
+  if (existing) {
+    return existing;
+  }
+  const capture = new TabNetworkCapture({
+    sendCommand: (command, params) =>
+      cdpQueue.run(async () => {
+        if (!contents.debugger.isAttached()) {
+          contents.debugger.attach("1.3");
+        }
+        return contents.debugger.sendCommand(command, params ?? {});
+      }),
+  });
+  contents.debugger.on?.("message", (_event, method, params) =>
+    capture.handleDebuggerMessage(method, params),
+  );
+  contents.debugger.on?.("detach", () => capture.handleDebuggerDetached());
+  networkCapturesByContentsId.set(contentsId, capture);
+  return capture;
 }
 
 function getCdpQueue(contentsId: number): CdpSessionQueue {
@@ -287,6 +319,7 @@ function observeConsoleMessages(contents: BrowserAutomationWebContents, contents
     consoleMessagesByContentsId.delete(contentsId);
     cdpQueuesByContentsId.delete(contentsId);
     dialogMonitorsByContentsId.delete(contentsId);
+    networkCapturesByContentsId.delete(contentsId);
     clearPaseoBrowserAutomationActivity(contentsId);
   });
 }

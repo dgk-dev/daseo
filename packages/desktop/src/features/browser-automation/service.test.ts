@@ -63,7 +63,11 @@ class FakeTab implements TabContents {
   public rejectEditableActionability = false;
   public actionabilityResult: unknown = {
     ok: true,
-    target: { point: { x: 40, y: 30 }, rect: { x: 20, y: 10, width: 40, height: 40 } },
+    target: {
+      point: { x: 40, y: 30 },
+      framePoint: { x: 40, y: 30 },
+      rect: { x: 20, y: 10, width: 40, height: 40 },
+    },
   };
   public networkEntries: unknown[] = [];
   public consoleMessages: BrowserAutomationConsoleLogEntry[] = [];
@@ -1085,7 +1089,11 @@ describe("executeAutomationCommand", () => {
     browser.tab.snapshotNodes = formElements();
     browser.tab.actionabilityResult = {
       ok: true,
-      target: { point: { x: 100, y: 50 }, rect: { x: 80, y: 30, width: 40, height: 40 } },
+      target: {
+        point: { x: 100, y: 50 },
+        framePoint: { x: 100, y: 50 },
+        rect: { x: 80, y: 30, width: 40, height: 40 },
+      },
     };
 
     requireSnapshotRefs(await browser.snapshot());
@@ -1137,7 +1145,11 @@ describe("executeAutomationCommand", () => {
     browser.tab.snapshotNodes = formElements();
     browser.tab.actionabilityResult = {
       ok: true,
-      target: { point: { x: 100, y: 50 }, rect: { x: 80, y: 30, width: 40, height: 40 } },
+      target: {
+        point: { x: 100, y: 50 },
+        framePoint: { x: 100, y: 50 },
+        rect: { x: 80, y: 30, width: 40, height: 40 },
+      },
     };
 
     requireSnapshotRefs(await browser.snapshot());
@@ -2482,5 +2494,168 @@ describe("executeAutomationCommand", () => {
       },
       { command: "DOM.describeNode", params: { objectId: "object-1" } },
     ]);
+  });
+});
+
+describe("refs inside same-origin iframes", () => {
+  // The actionability script reports the element's center in the tab
+  // viewport (point) and inside its own frame (framePoint).
+  const inFrame = {
+    ok: true,
+    target: {
+      point: { x: 340, y: 230 },
+      framePoint: { x: 40, y: 30 },
+      rect: { x: 20, y: 10, width: 40, height: 40 },
+    },
+  };
+
+  test("background click dispatches at the frame point and reports the tab point", async () => {
+    const browser = new BrowserAutomationHarness();
+    browser.registry.setActiveBrowser(WORKSPACE_A, BROWSER_B);
+    browser.tab.snapshotNodes = formElements();
+    browser.tab.actionabilityResult = inFrame;
+
+    requireSnapshotRefs(await browser.snapshot());
+    const click = await browser.execute({
+      command: "click",
+      args: { browserId: BROWSER_A, ref: "@e4" },
+    });
+
+    expect(click).toEqual({
+      requestId: "req-click",
+      ok: true,
+      result: { command: "click", browserId: BROWSER_A, ref: "@e4", x: 340, y: 230 },
+    });
+    const clickScript = browser.tab.scripts.find((script) =>
+      script.includes("__PASEO_FOCUS_ISOLATED_CLICK__"),
+    );
+    expect(clickScript).toContain('"clientX":40,"clientY":30');
+    expect(browser.tab.debugCommands).toEqual([]);
+  });
+
+  test("trusted click lands on the tab-viewport point", async () => {
+    const browser = new BrowserAutomationHarness();
+    browser.tab.snapshotNodes = formElements();
+    browser.tab.actionabilityResult = inFrame;
+
+    requireSnapshotRefs(await browser.snapshot());
+    await browser.execute({ command: "click", args: { browserId: BROWSER_A, ref: "@e4" } });
+
+    expect(
+      browser.tab.debugCommands.find((entry) => entry.params?.type === "mousePressed"),
+    ).toMatchObject({ params: { x: 340, y: 230 } });
+  });
+});
+
+describe("network capture", () => {
+  class FakeCapture {
+    public capturing = false;
+    public readonly calls: unknown[] = [];
+
+    public async start(): Promise<void> {
+      this.calls.push("start");
+      this.capturing = true;
+    }
+
+    public async stop(): Promise<void> {
+      this.calls.push("stop");
+      this.capturing = false;
+    }
+
+    public async list(options: unknown) {
+      this.calls.push(options);
+      return {
+        entries: [
+          {
+            seq: 3,
+            method: "POST",
+            url: "https://a.test/api/cart",
+            resourceType: "fetch",
+            status: 200,
+            startedAt: 1,
+            requestHeaders: {},
+          },
+        ],
+        cursor: 3,
+        hasMore: false,
+        pendingCount: 0,
+        droppedCount: 0,
+      };
+    }
+  }
+
+  function harnessWithCapture() {
+    const browser = new BrowserAutomationHarness();
+    const capture = new FakeCapture();
+    Object.assign(browser.tab, { getNetworkCapture: () => capture });
+    return { browser, capture };
+  }
+
+  const network = (args: Record<string, unknown>) =>
+    ({
+      command: "network",
+      args: {
+        browserId: BROWSER_A,
+        maxEntries: 50,
+        includeBodies: false,
+        includeRequestBodies: false,
+        ...args,
+      },
+    }) as BrowserAutomationCommand;
+
+  test("list before start says how to start instead of returning nothing", async () => {
+    const { browser, capture } = harnessWithCapture();
+
+    const result = await browser.execute(network({ action: "list" }));
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "browser_unsupported", message: expect.stringContaining('action "start"') },
+    });
+    expect(capture.calls).toEqual([]);
+  });
+
+  test("start, list with filters, and stop reach the tab's capture", async () => {
+    const { browser, capture } = harnessWithCapture();
+
+    expect(await browser.execute(network({ action: "start" }))).toEqual({
+      requestId: "req-network",
+      ok: true,
+      result: { command: "network", browserId: BROWSER_A, action: "start", capturing: true },
+    });
+    const listed = await browser.execute(
+      network({
+        action: "list",
+        urlIncludes: "/api/",
+        method: "post",
+        since: 2,
+        includeBodies: true,
+      }),
+    );
+    expect(listed).toMatchObject({
+      ok: true,
+      result: { action: "list", capturing: true, cursor: 3, entries: [{ seq: 3 }] },
+    });
+    expect(capture.calls[1]).toEqual({
+      urlIncludes: "/api/",
+      method: "post",
+      since: 2,
+      maxEntries: 50,
+      includeBodies: true,
+      includeRequestBodies: false,
+    });
+    expect(await browser.execute(network({ action: "stop" }))).toMatchObject({
+      ok: true,
+      result: { action: "stop", capturing: false },
+    });
+  });
+
+  test("a tab without CDP reports capture as unavailable", async () => {
+    const browser = new BrowserAutomationHarness();
+
+    expect(await browser.execute(network({ action: "start" }))).toMatchObject({
+      ok: false,
+      error: { code: "browser_unsupported" },
+    });
   });
 });

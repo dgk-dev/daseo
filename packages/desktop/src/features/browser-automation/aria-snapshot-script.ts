@@ -28,9 +28,44 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
     return String(value || '').replace(/[\u200b\u00ad]/g, '').replace(/[\r\n\s\t]+/g, ' ').trim();
   }
 
+  // Same-origin iframe content is walked from this document, so its nodes come
+  // from another realm: instanceof checks against this window's Element fail
+  // for them, and styles and layout belong to the frame's own window.
+  function isElement(node) {
+    return Boolean(node) && node.nodeType === 1;
+  }
+
+  function isHtmlElement(node) {
+    return isElement(node) && node.namespaceURI === 'http://www.w3.org/1999/xhtml';
+  }
+
+  function styleOf(element) {
+    const view = element.ownerDocument && element.ownerDocument.defaultView;
+    return (view || window).getComputedStyle(element);
+  }
+
+  // The frame's document when this script may reach into it: contentDocument is
+  // null for cross-origin and sandboxed frames, exactly the frames the page's own
+  // script cannot touch either. A document that is still parsing is skipped.
+  function frameDocument(element) {
+    let doc = null;
+    try {
+      doc = element.contentDocument;
+    } catch {
+      return null;
+    }
+    if (!doc || !doc.defaultView || doc.readyState === 'loading') return null;
+    return doc;
+  }
+
+  function isFrameElement(element) {
+    const tag = element.tagName.toLowerCase();
+    return tag === 'iframe' || tag === 'frame';
+  }
+
   function visibilityFor(element) {
-    if (!(element instanceof Element)) return false;
-    const style = window.getComputedStyle(element);
+    if (!isElement(element)) return false;
+    const style = styleOf(element);
     if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
     const rect = element.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0 ? 'box' : 'boxless';
@@ -49,7 +84,7 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
     if (tag === 'button') return 'button';
     if (tag === 'select') return 'combobox';
     if (tag === 'textarea') return 'textbox';
-    if (element instanceof HTMLElement && element.isContentEditable) return 'textbox';
+    if (element.isContentEditable === true) return 'textbox';
     if (tag === 'summary') return 'button';
     if (tag === 'main') return 'main';
     if (tag === 'nav') return 'navigation';
@@ -62,7 +97,7 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
     if (tag === 'tr') return 'row';
     if (tag === 'th') return 'columnheader';
     if (tag === 'td') return 'cell';
-    if (tag === 'iframe') return 'iframe';
+    if (tag === 'iframe' || tag === 'frame') return 'iframe';
     if (tag === 'input') {
       const type = (element.getAttribute('type') || 'text').toLowerCase();
       if (type === 'checkbox') return 'checkbox';
@@ -84,12 +119,12 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
   // Label and aria-labelledby targets live in the element's own tree, which
   // is a shadow root for web components.
   function treeRootOf(element) {
-    const root = element.getRootNode ? element.getRootNode() : document;
-    return root && typeof root.querySelector === 'function' ? root : document;
+    const root = element.getRootNode ? element.getRootNode() : element.ownerDocument;
+    return root && typeof root.querySelector === 'function' ? root : element.ownerDocument;
   }
 
   function labelText(element) {
-    if (!(element instanceof HTMLElement)) return '';
+    if (!isHtmlElement(element)) return '';
     if (element.id) {
       const escapedId = window.CSS && typeof window.CSS.escape === 'function'
         ? window.CSS.escape(element.id)
@@ -106,7 +141,7 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
     const labelledBy = element.getAttribute('aria-labelledby');
     if (labelledBy) {
       const root = treeRootOf(element);
-      const text = labelledBy.split(/\s+/).map((id) => (root.getElementById ? root.getElementById(id) : document.getElementById(id))?.textContent || '').join(' ');
+      const text = labelledBy.split(/\s+/).map((id) => (root.getElementById ? root.getElementById(id) : element.ownerDocument.getElementById(id))?.textContent || '').join(' ');
       const normalized = normalizeText(text);
       if (normalized) return normalized;
     }
@@ -133,7 +168,7 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
   }
 
   function inheritedDisabled(element) {
-    if (!(element instanceof Element)) return false;
+    if (!isElement(element)) return false;
     if (element.hasAttribute('disabled') || element.getAttribute('aria-disabled') === 'true') return true;
     if (element.closest('fieldset[disabled]')) return true;
     return element.closest('[aria-disabled="true"]') !== null;
@@ -172,6 +207,8 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
   // every snapshot let a ref read from an older snapshot land on a different
   // element that happened to share the old number and fingerprint, such as the
   // next row's "Delete" button. The resolver itself is rebuilt each snapshot.
+  // Elements inside same-origin iframes share this registry; a frame that
+  // navigated or was removed leaves its old document without a window.
   function ensureRuntime() {
     const previous = window.__PASEO_BROWSER_AUTOMATION__;
     const numbering = previous && previous.numbering && previous.numbering.refByElement instanceof WeakMap
@@ -182,7 +219,7 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
       numbering,
       resolve(ref, fingerprint) {
         const element = this.refs.get(ref);
-        if (!element || !element.isConnected || !fingerprintMatches(element, fingerprint)) {
+        if (!element || !element.isConnected || !element.ownerDocument.defaultView || !fingerprintMatches(element, fingerprint)) {
           return { ok: false, reason: 'stale_ref' };
         }
         return { ok: true, element };
@@ -217,13 +254,26 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
   }
 
   // The element keyboard input goes to: document.activeElement, followed into
-  // open shadow roots, whose host is what the document reports as active.
+  // open shadow roots and same-origin iframes, whose host element is what the
+  // outer document reports as active.
   function deepActiveElement() {
     let active = document.activeElement;
-    while (active && active.shadowRoot && active.shadowRoot.activeElement) {
-      active = active.shadowRoot.activeElement;
+    while (active) {
+      if (active.shadowRoot && active.shadowRoot.activeElement) {
+        active = active.shadowRoot.activeElement;
+        continue;
+      }
+      const inner = isFrameElement(active) ? frameDocument(active) : null;
+      const innerActive = inner && inner.activeElement;
+      if (innerActive && innerActive !== inner.body && innerActive !== inner.documentElement) {
+        active = innerActive;
+        continue;
+      }
+      break;
     }
-    return active === document.body || active === document.documentElement ? null : active;
+    if (!active) return null;
+    const owner = active.ownerDocument;
+    return active === owner.body || active === owner.documentElement ? null : active;
   }
 
   // leadingSpace/trailingSpace record whitespace the page had at the edges of the
@@ -280,7 +330,14 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
   // Rendered children, following Playwright's ariaSnapshot traversal: a slot
   // renders its assigned light-DOM nodes, and a shadow host renders its
   // unslotted light children followed by its open shadow tree.
+  // A same-origin iframe renders its document's body in place of its own
+  // (fallback) children; a cross-origin one renders nothing.
   function renderedChildren(element) {
+    if (isFrameElement(element)) {
+      const doc = frameDocument(element);
+      const body = doc && (doc.body || doc.documentElement);
+      return body ? renderedChildren(body) : [];
+    }
     if (element.nodeName === 'SLOT' && typeof element.assignedNodes === 'function') {
       const assigned = element.assignedNodes();
       if (assigned.length) return assigned;
@@ -297,14 +354,14 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
 
   function visitNode(domNode, depth) {
     if (!countNode(depth)) return null;
-    if (domNode.nodeType === Node.TEXT_NODE) {
+    if (domNode.nodeType === 3) {
       const raw = String(domNode.textContent || '').replace(/[\u200b\u00ad]/g, '');
       const text = cappedText(normalizeText(raw));
       // A whitespace-only run renders nothing but still separates its neighbours.
       if (!text) return /\s/.test(raw) ? textNode('', true, true) : null;
       return textNode(text, /^\s/.test(raw), /\s$/.test(raw));
     }
-    if (!(domNode instanceof Element)) return null;
+    if (!isElement(domNode)) return null;
     const visibility = visibilityFor(domNode);
     if (!visibility) return null;
     if (domNode.getAttribute('aria-hidden') === 'true') return null;
@@ -318,7 +375,8 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
       if (truncated) break;
     }
 
-    if (domNode.tagName.toLowerCase() === 'iframe') {
+    const isFrame = isFrameElement(domNode);
+    if (isFrame) {
       iframeCount += 1;
     }
 
@@ -328,7 +386,17 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
     if (!role && children.length === 0) return null;
     const snapshotNode = role
       ? elementNode(domNode, role, name)
-      : { kind: 'group', block: !/^inline/.test(window.getComputedStyle(domNode).display), children: [] };
+      : { kind: 'group', block: !/^inline/.test(styleOf(domNode).display), children: [] };
+    // Say why a frame has no children and where its content comes from; the
+    // agent can open a cross-origin frame's URL in its own tab.
+    if (isFrame && role && !frameDocument(domNode)) {
+      let reachable = false;
+      try {
+        reachable = Boolean(domNode.contentDocument);
+      } catch {}
+      snapshotNode.attributes.push(reachable ? 'loading=true' : 'cross-origin=true');
+      if (domNode.src) snapshotNode.attributes.push('src=' + String(domNode.src).slice(0, 200));
+    }
     snapshotNode.children = children;
     if (role && isActionable(domNode, role) && refCount < MAX_REFS) {
       let ref = runtime.numbering.refByElement.get(domNode);

@@ -334,6 +334,45 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
       (example.com) rendered as `T h i s d o m a i n` before. Key files:
       `aria-snapshot-script.ts` and `snapshot-engine.ts`, tested by running the real capture
       script in jsdom (`aria-snapshot-script.test.ts`).
+27. **Same-origin iframes in snapshots and actions** — in 60 days agents reached into
+    `iframe.contentDocument` 347 times through `evaluate`/`mcpScript` (Cafe24 cart drawer and
+    purchase frames), because the snapshot only counted iframes. The snapshot script now walks a
+    same-origin frame's document in place of the `<iframe>` element's children, under the same
+    global 1500-node / 500-ref caps, and its refs live in the top window's one registry, so every
+    ref tool (click, fill, type, select, hover, drag, upload, keypress, evaluate) works unchanged;
+    `browser_wait` text also searches those frames. A frame the page cannot reach renders as one
+    node with `cross-origin=true src=…`; one still parsing shows `loading=true`. The match between
+    a frame and its element is exact because the walk goes through `contentDocument`: it is null
+    exactly when page script is refused (cross-origin or sandboxed), and no name/src/frameToken
+    guess is involved (Electron's per-frame `executeJavaScript` was the alternative). Frame nodes
+    come from another JS realm, so the scripts use `nodeType` checks and the element's own window
+    for styles and events instead of `instanceof`. Actionability returns `point` in the tab
+    viewport (for trusted CDP input) and `framePoint` in the element's frame (for focus-isolated
+    events), adds each frame's border, padding, and scale on the way out, hit-tests the frame
+    element at every level, and treats a frame that is still sliding in as moving. A ref whose
+    frame navigated or was removed is stale. Key files: the
+    `packages/desktop/src/features/browser-automation/` modules `aria-snapshot-script`,
+    `actionability`, `focus-isolated-input`, `snapshot-engine`, and `service`; real-Electron
+    coverage in the capture harness `frames-network` group.
+28. **`browser_network` request capture** — agents hooked `fetch`/`XMLHttpRequest` by hand 330
+    times in 60 days to see a site's own API calls. The tool captures one tab's requests through
+    the CDP Network domain: `start` enables it (clearing earlier entries), `list` returns completed
+    requests oldest first with a `seq` cursor for `since` plus `urlIncludes`/`method`/
+    `resourceType` filters, `stop` disables the domain. Idle tabs pay nothing. Bodies are fetched
+    only when asked (`includeBodies`, `includeRequestBodies`): 64 KB per body, 256 KB of response
+    bodies per list, binary and evicted bodies named instead of sent. Entries get their `seq` when
+    they complete, so a cursor never skips a request that was pending during the previous list;
+    the tab keeps the latest 500. Request headers drop the ones the browser sets itself;
+    `Cookie`, `Set-Cookie`, `Authorization`, and `Proxy-Authorization` values and password or
+    one-time-code fields in JSON, form, and multipart bodies read `<redacted>`, so a login filled
+    by the credential broker is not exposed through its POST. URL tokens and response bodies stay
+    as they are because page script, and so `browser_evaluate`, can read them anyway. The capture
+    rides the debugger session screencast, dialogs, and trusted input already share, never
+    detaches it, and stops if the debugger detaches. Old apps do not advertise the `network`
+    command, so the broker reports it unsupported there. Key files:
+    `packages/desktop/src/features/browser-automation/network-capture.ts`, `ipc.ts`, `service.ts`;
+    `packages/server/src/server/browser-tools/tools.ts`;
+    `packages/protocol/src/browser-automation/rpc-schemas.ts` and `paseo-tool-call-detail.ts`.
 
 ## Local reliability contracts
 

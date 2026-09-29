@@ -879,4 +879,65 @@ describe("browser automation execute RPC schemas", () => {
       ],
     });
   });
+
+  test("network commands default to 50 entries without bodies and reject unknown actions", () => {
+    const parsed = BrowserAutomationExecuteRequestSchema.parse({
+      type: "browser.automation.execute.request",
+      requestId: "req-network",
+      command: { command: "network", args: { browserId: BROWSER_ID, action: "list" } },
+    });
+    expect(parsed.command).toEqual({
+      command: "network",
+      args: {
+        browserId: BROWSER_ID,
+        action: "list",
+        maxEntries: 50,
+        includeBodies: false,
+        includeRequestBodies: false,
+      },
+    });
+    expect(
+      BrowserAutomationExecuteRequestSchema.safeParse({
+        type: "browser.automation.execute.request",
+        requestId: "req-network",
+        command: { command: "network", args: { browserId: BROWSER_ID, action: "clear" } },
+      }).success,
+    ).toBe(false);
+  });
+
+  test("network list responses carry captured requests and the cursor", () => {
+    const parsed = BrowserAutomationExecuteResponseSchema.parse({
+      type: "browser.automation.execute.response",
+      payload: {
+        requestId: "req-network",
+        ok: true,
+        result: {
+          command: "network",
+          browserId: BROWSER_ID,
+          action: "list",
+          capturing: true,
+          entries: [
+            {
+              seq: 1,
+              method: "POST",
+              url: "https://shop.test/api/cart",
+              resourceType: "fetch",
+              status: 200,
+              startedAt: 1,
+              requestHeaders: { authorization: "<redacted>" },
+              responseBody: "{}",
+            },
+          ],
+          cursor: 1,
+          hasMore: false,
+          pendingCount: 0,
+          droppedCount: 0,
+        },
+      },
+    });
+    expect(parsed.payload).toMatchObject({
+      ok: true,
+      result: { cursor: 1, entries: [{ seq: 1 }] },
+    });
+  });
 });

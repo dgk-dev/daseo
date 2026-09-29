@@ -13,7 +13,7 @@ The `browser_*` tools are injected into agents alongside the other [Paseo MCP to
 Shared concepts:
 
 - **`browserId`** identifies a tab. It comes from `browser_new_tab` or `browser_list_tabs` and is required by every tab-scoped tool.
-- **`ref`** identifies an element, e.g. `@e3`. Refs come from the latest `browser_snapshot` of the same tab and expire when the page changes — stale refs return an error instead of acting on the wrong element.
+- **`ref`** identifies an element, e.g. `@e3`. Refs come from the latest `browser_snapshot` of the same tab and expire when the page changes — stale refs return an error instead of acting on the wrong element. Elements inside same-origin iframes get refs like any other; a cross-origin iframe shows only its `src`.
 - Every result reports **dialogs** the page opened during the command (alerts accepted; confirm/prompt/beforeunload dismissed).
 
 Arguments marked `?` are optional.
@@ -29,12 +29,13 @@ Arguments marked `?` are optional.
 
 ## Reading the page
 
-| Tool                 | Arguments                              | Purpose                                                                               |
-| -------------------- | -------------------------------------- | ------------------------------------------------------------------------------------- |
-| `browser_snapshot`   | `browserId`                            | Return the page as an accessibility tree with element refs.                           |
-| `browser_screenshot` | `browserId, fullPage?`                 | Capture a PNG of the viewport, or the full page with `fullPage`.                      |
-| `browser_logs`       | `browserId, maxEntries?`               | Read recent console messages and network timing entries.                              |
-| `browser_wait`       | `browserId, text? \| url?, timeoutMs?` | Wait until the page contains text or reaches a URL fragment (exactly one of the two). |
+| Tool                 | Arguments                                                                                                             | Purpose                                                                                                                                                            |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `browser_snapshot`   | `browserId`                                                                                                           | Return the page as an accessibility tree with element refs.                                                                                                        |
+| `browser_screenshot` | `browserId, fullPage?`                                                                                                | Capture a PNG of the viewport, or the full page with `fullPage`.                                                                                                   |
+| `browser_logs`       | `browserId, maxEntries?`                                                                                              | Read recent console messages and network timing entries.                                                                                                           |
+| `browser_network`    | `browserId, action, urlIncludes?, method?, resourceType?, since?, maxEntries?, includeBodies?, includeRequestBodies?` | Start, list, or stop a per-tab capture of the page's requests with their payloads and responses. Cookie and Authorization values and password fields are redacted. |
+| `browser_wait`       | `browserId, text? \| url?, timeoutMs?`                                                                                | Wait until the page contains text or reaches a URL fragment (exactly one of the two).                                                                              |
 
 ## Interacting
 

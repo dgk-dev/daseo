@@ -15,6 +15,7 @@ import type { ScreencastFramePayload, ScreencastOptions } from "./screencast.js"
 import { planStreamInputCdpSteps } from "./stream-input.js";
 import { FullPageCaptureUnsupportedError } from "./full-page-capture.js";
 import type { TabLoadingInfo } from "./load-tracker.js";
+import type { NetworkCaptureControl } from "./network-capture.js";
 import { BrowserSnapshotEngine } from "./snapshot-engine.js";
 import {
   dispatchTrustedClick,
@@ -58,6 +59,8 @@ export interface TabContents {
   sendDebugCommand?(command: string, params?: Record<string, unknown>): Promise<unknown>;
   /** Calls `listener` when the main frame commits a cross-document navigation; returns an unsubscribe. */
   onMainFrameNavigated?(listener: (url: string) => void): () => void;
+  /** The tab's opt-in request capture; one per tab, idle until started. */
+  getNetworkCapture?(): NetworkCaptureControl;
 }
 
 export interface TabImage {
@@ -572,7 +575,61 @@ const commandHandlers: Record<BrowserAutomationCommand["command"], CommandHandle
     const streamCommand = command as Extract<BrowserAutomationCommand, { command: "stream_input" }>;
     return executeStreamInput(requestId, workspaceId, streamCommand.args, registry);
   },
+  network: ({ command, requestId, workspaceId, registry }) => {
+    const networkCommand = command as Extract<BrowserAutomationCommand, { command: "network" }>;
+    return executeNetwork(requestId, workspaceId, networkCommand.args, registry);
+  },
 };
+
+async function executeNetwork(
+  requestId: string,
+  workspaceId: string | undefined,
+  args: Extract<BrowserAutomationCommand, { command: "network" }>["args"],
+  registry: BrowserRegistry,
+): Promise<AutomationCommandPayload> {
+  const target = resolveTabTarget({ requestId, workspaceId, browserId: args.browserId, registry });
+  if ("ok" in target) {
+    return target;
+  }
+  const capture = target.contents.getNetworkCapture?.();
+  if (!capture) {
+    return fail(requestId, "browser_unsupported", "Network capture is not available for this tab.");
+  }
+  const result = { command: "network" as const, browserId: target.browserId, action: args.action };
+  try {
+    if (args.action === "start") {
+      await capture.start();
+      return { requestId, ok: true, result: { ...result, capturing: true } };
+    }
+    if (args.action === "stop") {
+      await capture.stop();
+      return { requestId, ok: true, result: { ...result, capturing: false } };
+    }
+    if (!capture.capturing) {
+      return fail(
+        requestId,
+        "browser_unsupported",
+        `Network capture is not running on tab ${target.browserId}. Call browser_network with action "start", trigger the requests, then list them.`,
+      );
+    }
+    const listing = await capture.list({
+      ...(args.urlIncludes ? { urlIncludes: args.urlIncludes } : {}),
+      ...(args.method ? { method: args.method } : {}),
+      ...(args.resourceType ? { resourceType: args.resourceType } : {}),
+      ...(args.since !== undefined ? { since: args.since } : {}),
+      maxEntries: args.maxEntries,
+      includeBodies: args.includeBodies,
+      includeRequestBodies: args.includeRequestBodies,
+    });
+    return { requestId, ok: true, result: { ...result, capturing: true, ...listing } };
+  } catch (error) {
+    return fail(
+      requestId,
+      "browser_unknown_error",
+      `Network capture ${args.action} failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
 
 async function executeStreamStart(
   requestId: string,
@@ -872,7 +929,7 @@ async function executeClick(
       const clicked = await dispatchFocusIsolatedClick(
         target.contents,
         elementExpression,
-        actionable.target.point,
+        actionable.target.framePoint,
         options,
       );
       if (!clicked) {
@@ -1092,8 +1149,8 @@ async function executeDrag(
         target.contents,
         sourceExpression,
         targetExpression,
-        source.target.point,
-        dropTarget.target.point,
+        source.target.framePoint,
+        dropTarget.target.framePoint,
       );
       if (!dragged) {
         return staleRefFailure(requestId, `${sourceRef}/${targetRef}`);
@@ -1386,18 +1443,35 @@ async function executeWait(
   });
 }
 
-// body.innerText stops at shadow roots, so text rendered inside a web
-// component never matched. The shadow walk only runs when the cheap light-DOM
-// check misses, keeping ordinary pages as fast as before.
+// body.innerText stops at shadow roots and iframes, so text rendered inside a
+// web component or a same-origin frame never matched. The walk only runs when
+// the cheap light-DOM check misses, keeping ordinary pages as fast as before.
+// Cross-origin frames stay out of reach (contentDocument is null), as they do
+// for the snapshot.
 function pageTextIncludesScript(text: string): string {
   return String.raw`(() => {
     const needle = ${JSON.stringify(text)};
     if (((document.body && document.body.innerText) || '').includes(needle)) return true;
     const skipped = new Set(['STYLE', 'SCRIPT', 'TEMPLATE']);
+    const frameDocument = (element) => {
+      try {
+        const doc = element.contentDocument;
+        return doc && doc.defaultView ? doc : null;
+      } catch {
+        return null;
+      }
+    };
     const roots = [document];
     while (roots.length > 0) {
       const root = roots.pop();
       for (const element of root.querySelectorAll('*')) {
+        if (element.tagName === 'IFRAME' || element.tagName === 'FRAME') {
+          const doc = frameDocument(element);
+          if (!doc) continue;
+          if (((doc.body && doc.body.innerText) || '').includes(needle)) return true;
+          roots.push(doc);
+          continue;
+        }
         const shadow = element.shadowRoot;
         if (!shadow) continue;
         for (const child of shadow.children) {

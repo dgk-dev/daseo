@@ -50,6 +50,14 @@ renderer-side `did-attach` identity maps to the correct main-process guest, that
 tabs share cookies and local storage through one persistent session, and that the data is
 still present after the first Electron process exits and the second starts.
 
+The frames-network group (`PASEO_CAPTURE_HARNESS_GROUP=frames-network`) serves a page with a
+same-origin and a cross-origin iframe from two local ports. It runs the compiled automation
+service against the guest and checks that the snapshot nests the same-origin frame's content
+with refs while the cross-origin frame stays one node; that background and trusted clicks,
+fill, type, upload, wait, and evaluate reach the inner elements (the trusted click must land at
+the frame's border and padding offset); and that `browser_network` captures a same-origin
+`fetch` with its bodies, credentials redacted.
+
 The automation group uses a real guest webview to verify the page-side ref contract:
 ARIA-like snapshot text includes headings, static text, and controls; refs survive
 `pushState` when the element still matches; same-URL rerenders stale old refs; and a

@@ -5,6 +5,10 @@ interface FocusIsolatedInputPage {
   executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>;
 }
 
+// Events are dispatched to the element itself, so `point` is in the element's
+// own document coordinates (an iframe's viewport for a ref inside a frame), and
+// they are built from the element's realm so a frame's page code sees its own
+// event classes.
 export async function dispatchFocusIsolatedClick(
   page: FocusIsolatedInputPage,
   elementExpression: string,
@@ -57,17 +61,18 @@ function buildFocusIsolatedClickScript(
   return String.raw`(() => {
     const __PASEO_FOCUS_ISOLATED_CLICK__ = true;
     const element = ${elementExpression};
-    if (!(element instanceof Element)) return { ok: false };
+    if (!element || element.nodeType !== 1) return { ok: false };
+    const view = element.ownerDocument.defaultView || window;
     element.scrollIntoView({ block: 'center', inline: 'center' });
     element.focus?.({ preventScroll: true });
     const init = ${JSON.stringify(eventInit)};
     const dispatchPointer = (type, detail) => {
-      if (typeof PointerEvent === 'function') {
-        element.dispatchEvent(new PointerEvent(type, { ...init, detail, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+      if (typeof view.PointerEvent === 'function') {
+        element.dispatchEvent(new view.PointerEvent(type, { ...init, detail, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
       }
     };
     const dispatchMouse = (type, detail) => {
-      element.dispatchEvent(new MouseEvent(type, { ...init, detail }));
+      element.dispatchEvent(new view.MouseEvent(type, { ...init, detail }));
     };
     for (let detail = 1; detail <= ${clickCount}; detail += 1) {
       dispatchPointer('pointerdown', detail);
@@ -97,10 +102,12 @@ function buildFocusIsolatedDragScript(
     const __PASEO_FOCUS_ISOLATED_DRAG__ = true;
     const source = ${sourceExpression};
     const target = ${targetExpression};
-    if (!(source instanceof Element) || !(target instanceof Element)) return { ok: false };
+    if (!source || source.nodeType !== 1 || !target || target.nodeType !== 1) return { ok: false };
+    const viewOf = (element) => element.ownerDocument.defaultView || window;
     target.scrollIntoView({ block: 'center', inline: 'center' });
     source.focus?.({ preventScroll: true });
-    const dataTransfer = typeof DataTransfer === 'function' ? new DataTransfer() : undefined;
+    const sourceView = viewOf(source);
+    const dataTransfer = typeof sourceView.DataTransfer === 'function' ? new sourceView.DataTransfer() : undefined;
     const sourceInit = {
       bubbles: true,
       cancelable: true,
@@ -116,16 +123,18 @@ function buildFocusIsolatedDragScript(
       clientY: ${targetPoint.y},
     };
     const dispatchPointer = (element, type, init) => {
-      if (typeof PointerEvent === 'function') {
-        element.dispatchEvent(new PointerEvent(type, { ...init, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+      const view = viewOf(element);
+      if (typeof view.PointerEvent === 'function') {
+        element.dispatchEvent(new view.PointerEvent(type, { ...init, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
       }
     };
     const dispatchMouse = (element, type, init) => {
-      element.dispatchEvent(new MouseEvent(type, init));
+      element.dispatchEvent(new (viewOf(element).MouseEvent)(type, init));
     };
     const dispatchDrag = (element, type, init) => {
-      if (typeof DragEvent === 'function') {
-        element.dispatchEvent(new DragEvent(type, { ...init, dataTransfer }));
+      const view = viewOf(element);
+      if (typeof view.DragEvent === 'function') {
+        element.dispatchEvent(new view.DragEvent(type, { ...init, dataTransfer }));
       }
     };
     dispatchPointer(source, 'pointerdown', sourceInit);

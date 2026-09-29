@@ -396,22 +396,27 @@ const NATIVE_VALUE_SETTER_SNIPPET = String.raw`let valueOwner = Object.getProtot
       if (nativeValueSetter) nativeValueSetter.call(element, nextValue);
       else element.value = nextValue;`;
 
+// A ref inside a same-origin iframe resolves to an element of the frame's
+// realm; its events come from that realm too, as the page's own would.
+const ELEMENT_VIEW_SNIPPET = "const view = element.ownerDocument.defaultView || window;";
+
 function buildFillScript(metadata: BrowserRefMetadata, value: string): string {
   return String.raw`(() => {
     const resolved = ${buildResolveExpression(metadata)};
     if (!resolved.ok) return resolved;
     const element = resolved.element;
+    ${ELEMENT_VIEW_SNIPPET}
     element.scrollIntoView({ block: 'center', inline: 'center' });
     element.focus();
     const nextValue = ${JSON.stringify(value)};
     if ('value' in element) {
       ${NATIVE_VALUE_SETTER_SNIPPET}
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-      element.dispatchEvent(new Event('change', { bubbles: true }));
+      element.dispatchEvent(new view.Event('input', { bubbles: true }));
+      element.dispatchEvent(new view.Event('change', { bubbles: true }));
       return { ok: true };
     }
     element.textContent = nextValue;
-    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: nextValue }));
+    element.dispatchEvent(new view.InputEvent('input', { bubbles: true, inputType: 'insertText', data: nextValue }));
     return { ok: true };
   })()`;
 }
@@ -421,13 +426,14 @@ function buildSelectScript(metadata: BrowserRefMetadata, value: string): string 
     const resolved = ${buildResolveExpression(metadata)};
     if (!resolved.ok) return resolved;
     const element = resolved.element;
+    ${ELEMENT_VIEW_SNIPPET}
     element.scrollIntoView?.({ block: 'center', inline: 'center' });
     element.focus?.();
     const nextValue = ${JSON.stringify(value)};
     if ('value' in element) {
       ${NATIVE_VALUE_SETTER_SNIPPET}
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-      element.dispatchEvent(new Event('change', { bubbles: true }));
+      element.dispatchEvent(new view.Event('input', { bubbles: true }));
+      element.dispatchEvent(new view.Event('change', { bubbles: true }));
       return { ok: true };
     }
     return false;

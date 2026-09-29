@@ -46,6 +46,7 @@ export const BROWSER_AUTOMATION_COMMAND_NAMES = [
   "stream_start",
   "stream_stop",
   "stream_input",
+  "network",
 ] as const;
 
 export const BrowserAutomationCommandNameSchema = z.enum(BROWSER_AUTOMATION_COMMAND_NAMES);
@@ -300,6 +301,31 @@ export const BrowserAutomationStreamInputCommandSchema = z.object({
   }),
 });
 
+export const BrowserAutomationNetworkActionSchema = z.enum(["start", "stop", "list"]);
+// CDP resource types grouped for agents: xhr and fetch are the site's own API
+// calls, document is a page or frame load, other is everything else.
+export const BrowserAutomationNetworkResourceTypeSchema = z.enum([
+  "xhr",
+  "fetch",
+  "document",
+  "other",
+]);
+
+export const BrowserAutomationNetworkCommandSchema = z.object({
+  command: z.literal("network"),
+  args: BrowserAutomationTabTargetSchema.extend({
+    action: BrowserAutomationNetworkActionSchema,
+    urlIncludes: z.string().min(1).optional(),
+    method: z.string().min(1).optional(),
+    resourceType: BrowserAutomationNetworkResourceTypeSchema.optional(),
+    /** Return only requests completed after this cursor (the `cursor` of an earlier list). */
+    since: z.number().int().nonnegative().optional(),
+    maxEntries: z.number().int().positive().max(200).default(50),
+    includeBodies: z.boolean().default(false),
+    includeRequestBodies: z.boolean().default(false),
+  }),
+});
+
 export const BrowserAutomationCommandSchema = z.discriminatedUnion("command", [
   BrowserAutomationListTabsCommandSchema,
   BrowserAutomationNewTabCommandSchema,
@@ -326,6 +352,7 @@ export const BrowserAutomationCommandSchema = z.discriminatedUnion("command", [
   BrowserAutomationStreamStartCommandSchema,
   BrowserAutomationStreamStopCommandSchema,
   BrowserAutomationStreamInputCommandSchema,
+  BrowserAutomationNetworkCommandSchema,
 ]);
 
 export const BrowserAutomationTabInfoSchema = z.object({
@@ -549,6 +576,43 @@ export const BrowserAutomationStreamInputResultSchema = z.object({
   browserId: BrowserAutomationBrowserIdSchema,
 });
 
+export const BrowserAutomationCapturedRequestSchema = z.object({
+  /** Completion order within the tab's capture; `since` pages by it. */
+  seq: z.number().int().positive(),
+  method: z.string(),
+  url: z.string(),
+  resourceType: z.string(),
+  status: z.number().int().optional(),
+  mimeType: z.string().optional(),
+  /** Chromium's error text when the request failed or was canceled. */
+  failed: z.string().optional(),
+  /** Epoch milliseconds when the request was sent. */
+  startedAt: z.number(),
+  durationMs: z.number().nonnegative().optional(),
+  /** Page-set request headers; browser-managed ones are left out and credentials read `<redacted>`. */
+  requestHeaders: z.record(z.string(), z.string()),
+  requestBody: z.string().optional(),
+  requestBodyTruncated: z.boolean().optional(),
+  responseBody: z.string().optional(),
+  responseBodyTruncated: z.boolean().optional(),
+  /** Why a requested response body is missing: binary, evicted, redirect, failed, budget. */
+  responseBodyUnavailable: z.string().optional(),
+});
+
+export const BrowserAutomationNetworkResultSchema = z.object({
+  command: z.literal("network"),
+  browserId: BrowserAutomationBrowserIdSchema,
+  action: BrowserAutomationNetworkActionSchema,
+  capturing: z.boolean(),
+  entries: z.array(BrowserAutomationCapturedRequestSchema).optional(),
+  /** The last returned `seq`, to pass as `since` next time. */
+  cursor: z.number().int().nonnegative().optional(),
+  hasMore: z.boolean().optional(),
+  pendingCount: z.number().int().nonnegative().optional(),
+  /** Completed requests dropped because the tab buffer was full. */
+  droppedCount: z.number().int().nonnegative().optional(),
+});
+
 export const BrowserAutomationResultSchema = z.discriminatedUnion("command", [
   BrowserAutomationListTabsResultSchema,
   BrowserAutomationNewTabResultSchema,
@@ -575,6 +639,7 @@ export const BrowserAutomationResultSchema = z.discriminatedUnion("command", [
   BrowserAutomationStreamStartResultSchema,
   BrowserAutomationStreamStopResultSchema,
   BrowserAutomationStreamInputResultSchema,
+  BrowserAutomationNetworkResultSchema,
 ]);
 
 export const BrowserAutomationErrorSchema = z.object({
@@ -637,3 +702,10 @@ export type BrowserAutomationExecuteResponse = z.infer<
   typeof BrowserAutomationExecuteResponseSchema
 >;
 export type BrowserAutomationStreamInput = z.infer<typeof BrowserAutomationStreamInputSchema>;
+export type BrowserAutomationNetworkCommandArgs = z.infer<
+  typeof BrowserAutomationNetworkCommandSchema
+>["args"];
+export type BrowserAutomationCapturedRequest = z.infer<
+  typeof BrowserAutomationCapturedRequestSchema
+>;
+export type BrowserAutomationNetworkResult = z.infer<typeof BrowserAutomationNetworkResultSchema>;

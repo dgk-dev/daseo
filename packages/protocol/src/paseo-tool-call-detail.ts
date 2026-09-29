@@ -83,6 +83,13 @@ const BROWSER_FIELDS = [
   "width",
   "height",
   "function",
+  "action",
+  "urlIncludes",
+  "method",
+  "resourceType",
+  "since",
+  "includeBodies",
+  "includeRequestBodies",
 ] as const;
 
 const TOOL_SPECS: Readonly<Record<string, ToolDetailSpec>> = {
@@ -169,6 +176,7 @@ const TOOL_SPECS: Readonly<Record<string, ToolDetailSpec>> = {
   browser_scroll: { inputOrder: BROWSER_FIELDS },
   browser_resize: { inputOrder: BROWSER_FIELDS },
   browser_close_tab: { inputOrder: BROWSER_FIELDS },
+  browser_network: { inputOrder: BROWSER_FIELDS },
 };
 
 const FIELD_LABELS: Readonly<Record<string, string>> = {
@@ -189,6 +197,8 @@ const FIELD_LABELS: Readonly<Record<string, string>> = {
   fullPage: "Full page",
   initialPrompt: "Prompt",
   id: "ID",
+  includeBodies: "Include response bodies",
+  includeRequestBodies: "Include request bodies",
   lastMessage: "Last message",
   maxEntries: "Maximum entries",
   maxRuns: "Maximum runs",
@@ -206,8 +216,10 @@ const FIELD_LABELS: Readonly<Record<string, string>> = {
   sourceRef: "Source",
   targetRef: "Target",
   terminalId: "Terminal",
+  since: "Since cursor",
   thinkingOptionId: "Thinking",
   timeoutMs: "Timeout (ms)",
+  urlIncludes: "URL contains",
   updateCount: "Updates",
   workspaceId: "Workspace",
   worktreeSlug: "Worktree",

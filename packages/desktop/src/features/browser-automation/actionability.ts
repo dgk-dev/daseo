@@ -6,7 +6,15 @@ export interface ActionablePoint {
 }
 
 export interface ActionableTarget {
+  /** Center of the element in the tab's viewport, where trusted CDP input lands. */
   point: ActionablePoint;
+  /**
+   * The same point in the element's own document: equal to `point` on the top
+   * document, relative to the iframe's viewport for a ref inside a frame.
+   * Focus-isolated events are dispatched to the element with these coordinates.
+   */
+  framePoint: ActionablePoint;
+  /** The element's rect in its own document. */
   rect: {
     x: number;
     y: number;
@@ -70,7 +78,7 @@ function isActionableTarget(value: unknown): value is ActionableTarget {
     return false;
   }
   const record = value as Record<string, unknown>;
-  return isPoint(record.point) && isRect(record.rect);
+  return isPoint(record.point) && isPoint(record.framePoint) && isRect(record.rect);
 }
 
 function isPoint(value: unknown): value is ActionablePoint {
@@ -126,10 +134,18 @@ function buildActionabilityScript(input: {
       width: rect.width,
       height: rect.height,
     });
-    const centerPoint = (rect) => ({
-      x: Math.min(Math.max(rect.left + rect.width / 2, 0), Math.max(window.innerWidth - 1, 0)),
-      y: Math.min(Math.max(rect.top + rect.height / 2, 0), Math.max(window.innerHeight - 1, 0)),
-    });
+    // A ref inside a same-origin iframe belongs to the frame's document: its
+    // layout, styles, and hit tests are in that frame's viewport.
+    const viewOf = (element) => element.ownerDocument.defaultView || window;
+    const centerPoint = (element, rect) => {
+      const view = viewOf(element);
+      return {
+        x: Math.min(Math.max(rect.left + rect.width / 2, 0), Math.max(view.innerWidth - 1, 0)),
+        y: Math.min(Math.max(rect.top + rect.height / 2, 0), Math.max(view.innerHeight - 1, 0)),
+      };
+    };
+    const outside = (point, rect) =>
+      point.x < rect.left || point.x > rect.right || point.y < rect.top || point.y > rect.bottom;
     const isDisabled = (element) => {
       if (element.closest?.('[aria-disabled="true"]')) return true;
       if ('disabled' in element && element.disabled) return true;
@@ -146,7 +162,7 @@ function buildActionabilityScript(input: {
       return !element.readOnly && !isDisabled(element);
     };
     const isVisible = (element, rect) => {
-      const style = getComputedStyle(element);
+      const style = viewOf(element).getComputedStyle(element);
       return (
         rect.width > 0 &&
         rect.height > 0 &&
@@ -176,12 +192,8 @@ function buildActionabilityScript(input: {
       if (text && text.length <= 80) desc += ' "' + text + '"';
       return desc;
     };
-    const blockerAt = (element, point, rect) => {
-      // centerPoint clamps to the viewport; a clamped point outside the element
-      // would otherwise pass the ancestor rule and click the page background.
-      if (point.x < rect.left || point.x > rect.right || point.y < rect.top || point.y > rect.bottom)
-        return 'outside the visible area';
-      let hit = document.elementFromPoint(point.x, point.y);
+    const blockerAt = (element, point) => {
+      let hit = element.ownerDocument.elementFromPoint(point.x, point.y);
       // Document hit tests retarget to the outermost shadow host; descend so a
       // blocker inside the same component is still reported.
       while (hit && hit.shadowRoot) {
@@ -201,7 +213,7 @@ function buildActionabilityScript(input: {
         if (node === hit) { hitIsAncestor = true; break; }
       }
       if (hitIsAncestor) {
-        return !pointerDelivered || getComputedStyle(element).pointerEvents === 'none'
+        return !pointerDelivered || viewOf(element).getComputedStyle(element).pointerEvents === 'none'
           ? null
           : 'clipped or hidden inside <' + describeBlocker(hit) + '>';
       }
@@ -211,12 +223,60 @@ function buildActionabilityScript(input: {
       if (elementLabel && elementLabel.contains(hit)) return null;
       return 'covered by <' + describeBlocker(hit) + '>';
     };
+    // The iframe elements between the element's document and this one,
+    // innermost first; null once a frame on the way has been removed or
+    // navigated, which leaves the element's document without a window.
+    const frameChain = (element) => {
+      const chain = [];
+      let view = element.ownerDocument.defaultView;
+      while (view && view !== window) {
+        const frame = view.frameElement;
+        if (!frame) return null;
+        chain.push(frame);
+        view = frame.ownerDocument.defaultView;
+      }
+      return view === window ? chain : null;
+    };
+    const frameRects = (chain) => chain.map((frame) => frame.getBoundingClientRect());
+    // A frame's viewport starts at its content box. The scale covers CSS
+    // transforms that resize the frame: offsetWidth ignores them, the
+    // bounding rect does not.
+    const toParentPoint = (frame, point) => {
+      const rect = frame.getBoundingClientRect();
+      const style = viewOf(frame).getComputedStyle(frame);
+      const scaleX = frame.offsetWidth ? rect.width / frame.offsetWidth : 1;
+      const scaleY = frame.offsetHeight ? rect.height / frame.offsetHeight : 1;
+      return {
+        x: rect.left + (frame.clientLeft + (parseFloat(style.paddingLeft) || 0) + point.x) * scaleX,
+        y: rect.top + (frame.clientTop + (parseFloat(style.paddingTop) || 0) + point.y) * scaleY,
+      };
+    };
+    // Carries a frame-local point out to this document's viewport, where
+    // trusted CDP input is delivered, checking at every level that the frame
+    // is on screen and not covered there, by the same rules as the element.
+    const carryToTop = (chain, framePoint) => {
+      let point = framePoint;
+      for (const frame of chain) {
+        point = toParentPoint(frame, point);
+        const view = viewOf(frame);
+        if (
+          outside(point, frame.getBoundingClientRect()) ||
+          point.x < 0 || point.y < 0 || point.x > view.innerWidth - 1 || point.y > view.innerHeight - 1
+        ) {
+          return { blocker: 'outside the visible area' };
+        }
+        const blocker = blockerAt(frame, point);
+        if (blocker) return { blocker: blocker + ' (over its iframe)' };
+      }
+      return { point };
+    };
     const resolveElement = () => (${input.elementExpression});
 
     let detail = 'not actionable';
     while (performance.now() <= deadline) {
       const element = resolveElement();
-      if (!element || !element.isConnected) {
+      const chain = element && element.isConnected ? frameChain(element) : null;
+      if (!chain) {
         return { ok: false, reason: 'stale_ref', detail: 'ref no longer resolves' };
       }
 
@@ -240,22 +300,37 @@ function buildActionabilityScript(input: {
       element.scrollIntoView?.({ block: 'center', inline: 'center' });
       await waitForLayout();
       const firstRect = element.getBoundingClientRect();
+      const firstFrames = frameRects(chain);
       await waitForLayout();
       const secondRect = element.getBoundingClientRect();
-      if (!sameRect(firstRect, secondRect)) {
+      const secondFrames = frameRects(chain);
+      // A frame sliding in (a cart drawer) moves the element on screen while
+      // its rect inside the frame stays put.
+      if (
+        !sameRect(firstRect, secondRect) ||
+        firstFrames.some((rect, index) => !sameRect(rect, secondFrames[index]))
+      ) {
         detail = 'moving';
         continue;
       }
 
-      const point = centerPoint(secondRect);
-      const blocker = blockerAt(element, point, secondRect);
-      if (blocker) {
-        detail = blocker;
+      const framePoint = centerPoint(element, secondRect);
+      // centerPoint clamps to the viewport; a clamped point outside the element
+      // would otherwise pass the ancestor rule and click the page background.
+      const blocker = outside(framePoint, secondRect)
+        ? 'outside the visible area'
+        : blockerAt(element, framePoint);
+      const carried = blocker ? { blocker } : carryToTop(chain, framePoint);
+      if (carried.blocker) {
+        detail = carried.blocker;
         await sleep(25);
         continue;
       }
 
-      return { ok: true, target: { point, rect: rectPayload(secondRect) } };
+      return {
+        ok: true,
+        target: { point: carried.point, framePoint, rect: rectPayload(secondRect) },
+      };
     }
 
     return { ok: false, reason: 'timeout', detail };

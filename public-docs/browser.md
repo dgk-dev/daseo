@@ -60,7 +60,7 @@ The primary tool is `browser_snapshot`, which returns the page as an accessibili
 
 Interactive elements carry refs like `@e3`. The agent passes a ref to `browser_click`, `browser_fill`, and the other action tools. Refs come from the latest snapshot of that tab and expire when the page changes — a stale ref returns an error instead of acting on the wrong element.
 
-For anything the tree can't capture, agents fall back to `browser_screenshot`, and `browser_logs` exposes console messages and network timing.
+Same-origin iframes appear inside the tree with their own refs. For anything the tree can't capture, agents fall back to `browser_screenshot`; `browser_logs` exposes console messages and network timing, and `browser_network` captures the page's requests with their payloads so an agent can call the site's API directly.
 
 ## Architecture
 

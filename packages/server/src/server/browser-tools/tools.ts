@@ -3,7 +3,13 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve as resolveFsPath } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
-import { BrowserAutomationBrowserIdSchema } from "@getpaseo/protocol/browser-automation/rpc-schemas";
+import {
+  BrowserAutomationBrowserIdSchema,
+  BrowserAutomationNetworkActionSchema,
+  BrowserAutomationNetworkResourceTypeSchema,
+  type BrowserAutomationCapturedRequest,
+  type BrowserAutomationNetworkResult,
+} from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import type { BrowserToolsBroker } from "./broker.js";
 import type { BrowserToolsResponsePayload } from "./errors.js";
 import type {
@@ -151,7 +157,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Snapshot browser page",
       description:
-        "Return a model-readable snapshot of a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes.",
+        "Return a model-readable snapshot of a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes. Same-origin iframe content appears under its iframe node, and its refs work with every tool; a cross-origin iframe shows only its src.",
       inputSchema: {
         browserId: BrowserAutomationBrowserIdSchema,
       },
@@ -606,7 +612,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Read browser logs",
       description:
-        "Read recent console messages and browser performance network entries for a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; maxEntries defaults to 50.",
+        "Read recent console messages and browser performance network entries for a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; maxEntries defaults to 50. For request methods, payloads, and response bodies use browser_network.",
       inputSchema: {
         maxEntries: BrowserLogsMaxEntriesInputSchema.optional(),
         browserId: BrowserAutomationBrowserIdSchema,
@@ -624,6 +630,60 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
           args: {
             browserId,
             maxEntries: maxEntries ?? 50,
+          },
+        },
+      });
+      return browserToolResult({ payload, context: { ...context, browserId } });
+    },
+  );
+
+  options.registerTool(
+    "browser_network",
+    {
+      title: "Capture browser network",
+      description:
+        "Capture a Paseo browser tab's requests and responses. Use this to learn the site's own API calls (method, URL, payload) so you can call them directly instead of scraping. Call with action start, trigger the page action, then action list; stop when done. Capture is per tab and off until started; start clears earlier entries. list returns completed requests oldest first with a cursor: pass it as since to read only newer ones. Filter with urlIncludes, method, and resourceType (xhr, fetch, document, other); includeBodies adds response bodies and includeRequestBodies adds request payloads, each capped at 64 KB. Cookie and Authorization values and password or one-time-code form fields read <redacted>. Use browserId from browser_new_tab or browser_list_tabs.",
+      inputSchema: {
+        browserId: BrowserAutomationBrowserIdSchema,
+        action: BrowserAutomationNetworkActionSchema,
+        urlIncludes: z.string().min(1).optional(),
+        method: z.string().min(1).optional(),
+        resourceType: BrowserAutomationNetworkResourceTypeSchema.optional(),
+        since: z.number().int().nonnegative().optional(),
+        maxEntries: BrowserLogsMaxEntriesInputSchema.optional(),
+        includeBodies: z.boolean().optional(),
+        includeRequestBodies: z.boolean().optional(),
+      },
+    },
+    async ({
+      browserId,
+      action,
+      urlIncludes,
+      method,
+      resourceType,
+      since,
+      maxEntries,
+      includeBodies,
+      includeRequestBodies,
+    }) => {
+      const context = resolveBrowserToolContext(options);
+      const payload = await options.broker.execute({
+        agentId: context.agentId,
+        cwd: context.cwd,
+        ...(context.workspaceId ? { workspaceId: context.workspaceId } : {}),
+
+        command: {
+          command: "network",
+          args: {
+            browserId,
+            action,
+            ...(urlIncludes ? { urlIncludes } : {}),
+            ...(method ? { method } : {}),
+            ...(resourceType ? { resourceType } : {}),
+            ...(since !== undefined ? { since } : {}),
+            maxEntries: maxEntries ?? 50,
+            includeBodies: includeBodies ?? false,
+            includeRequestBodies: includeRequestBodies ?? false,
           },
         },
       });
@@ -1070,6 +1130,10 @@ function summarizeBrowserDiagnosticsSuccess(
     ].join("\n");
   }
 
+  if (result.command === "network") {
+    return summarizeBrowserNetwork(result);
+  }
+
   if (result.command !== "logs") {
     return null;
   }
@@ -1077,6 +1141,61 @@ function summarizeBrowserDiagnosticsSuccess(
   const consoleCount = result.console.length;
   const networkCount = result.network.length;
   return `Read ${consoleCount} console log${consoleCount === 1 ? "" : "s"} and ${networkCount} network entr${networkCount === 1 ? "y" : "ies"}.`;
+}
+
+function summarizeBrowserNetwork(result: BrowserAutomationNetworkResult): string {
+  if (result.action === "start") {
+    return `Network capture started on tab ${result.browserId}. Trigger the page action, then call browser_network with action list.`;
+  }
+  if (result.action === "stop") {
+    return `Network capture stopped on tab ${result.browserId}; its entries were discarded.`;
+  }
+  const entries = result.entries ?? [];
+  const lines = [
+    `Captured ${entries.length} request${entries.length === 1 ? "" : "s"} (cursor=${result.cursor ?? 0}).`,
+  ];
+  if (result.hasMore) {
+    lines.push(`More match: call again with since=${result.cursor ?? 0}.`);
+  }
+  if (result.pendingCount) {
+    lines.push(`${result.pendingCount} still in flight.`);
+  }
+  if (result.droppedCount) {
+    lines.push(`${result.droppedCount} older requests were dropped from the tab buffer.`);
+  }
+  for (const entry of entries) {
+    lines.push(...formatCapturedRequest(entry));
+  }
+  return lines.join("\n");
+}
+
+function formatCapturedRequest(entry: BrowserAutomationCapturedRequest): string[] {
+  const outcome = entry.failed ? `failed(${entry.failed})` : String(entry.status ?? "-");
+  const details = [
+    entry.resourceType,
+    entry.mimeType,
+    entry.durationMs !== undefined ? `${entry.durationMs}ms` : undefined,
+  ].filter(Boolean);
+  const lines = [`#${entry.seq} ${entry.method} ${outcome} ${entry.url} (${details.join(", ")})`];
+  const headers = Object.entries(entry.requestHeaders);
+  if (headers.length > 0) {
+    lines.push(
+      `  request headers: ${headers.map(([name, value]) => `${name}: ${value}`).join("; ")}`,
+    );
+  }
+  if (entry.requestBody !== undefined) {
+    lines.push(
+      `  request body${entry.requestBodyTruncated ? " (truncated)" : ""}: ${entry.requestBody}`,
+    );
+  }
+  if (entry.responseBody !== undefined) {
+    lines.push(
+      `  response body${entry.responseBodyTruncated ? " (truncated)" : ""}: ${entry.responseBody}`,
+    );
+  } else if (entry.responseBodyUnavailable) {
+    lines.push(`  response body unavailable: ${entry.responseBodyUnavailable}`);
+  }
+  return lines;
 }
 
 function summarizeBrowserRefActionSuccess(

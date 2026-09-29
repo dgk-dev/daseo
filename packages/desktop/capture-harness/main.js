@@ -2877,14 +2877,375 @@ async function runBrowserProfileGroup() {
   }
 }
 
+// Two origins: the page and its cart frame share one, the payment frame is on
+// the other, so the page cannot reach into it.
+async function startFramesNetworkServers() {
+  const listen = async (handler) => {
+    const server = http.createServer(handler);
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    return { server, origin: `http://127.0.0.1:${server.address().port}` };
+  };
+  const html = (response, body) => {
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(body);
+  };
+  const cross = await listen((_request, response) =>
+    html(response, "<!doctype html><title>Payment</title><button>Pay now</button>"),
+  );
+  const page = await listen((request, response) => {
+    if (request.url === "/api/cart" && request.method === "POST") {
+      let body = "";
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        const sku = JSON.parse(body).sku;
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ ok: true, items: [{ sku, qty: 1 }] }));
+      });
+      return;
+    }
+    if (request.url === "/inner") {
+      html(
+        response,
+        `<!doctype html><title>Inner</title>
+        <style>body { margin: 0; } #checkout { margin: 50px 0 0 90px; width: 160px; height: 40px; }</style>
+        <p>Inside the cart frame</p>
+        <input id="coupon" aria-label="Coupon">
+        <input id="attachment" type="file" aria-label="Attachment">
+        <button id="checkout">Checkout</button>
+        <script>
+          window.__frameLog = [];
+          document.getElementById('checkout').addEventListener('click', (event) => {
+            window.__frameLog.push({ event: 'click', trusted: event.isTrusted, x: event.clientX, y: event.clientY });
+          });
+          document.getElementById('coupon').addEventListener('input', (event) => {
+            window.__frameLog.push({ event: 'input', value: event.target.value });
+          });
+        </script>`,
+      );
+      return;
+    }
+    html(
+      response,
+      `<!doctype html><title>Frames Fixture</title>
+      <style>
+        body { margin: 0; }
+        iframe { display: block; margin: 30px 0 0 110px; border: 4px solid #888; padding: 6px; }
+        #cart { width: 520px; height: 240px; }
+        #payment { width: 300px; height: 80px; }
+      </style>
+      <h1>Frames fixture</h1>
+      <iframe id="cart" title="Cart" src="/inner"></iframe>
+      <iframe id="payment" title="Payment" src="${cross.origin}/pay"></iframe>`,
+    );
+  });
+  return { page, cross };
+}
+
+async function runFramesNetworkGroup() {
+  const servers = await startFramesNetworkServers();
+  const handle = createInactiveHarnessWindow({
+    width: 1000,
+    height: 700,
+    backgroundColor: "#202020",
+    webPreferences: { webviewTag: true, contextIsolation: true, nodeIntegration: false },
+  });
+  const { win } = handle;
+  installHarnessWebviewGuards(win);
+  const tracker = trackAttachedGuests(win, { disableGuestBackgroundThrottlingAtAttach: true });
+  try {
+    await withTimeout(
+      win.loadFile(path.join(ROOT, "index.html"), {
+        query: { webviewCount: "0", permanentParkingState: "p1-overflow-1x1" },
+      }),
+      "frames harness window loadFile",
+    );
+    await waitForInactiveReveal(handle, "frames harness window");
+    const { guest } = await appendPermanentWebview({
+      win,
+      tracker,
+      state: { id: "p1-overflow-1x1" },
+      sourceUrl: `${servers.page.origin}/`,
+    });
+    await waitForGuestLoad(guest);
+    const harness = createFramesAutomation(guest);
+    const refs = await verifyFrameSnapshot(harness, servers);
+    await verifyFrameClicks(harness, refs);
+    await verifyFrameInputs(harness, refs);
+    await verifyNetworkCapture(harness);
+    return ["iframe-snapshot", "iframe-click", "iframe-actions", "network-capture"].map(
+      (check) => ({ group: "frames-network", check, pass: true }),
+    );
+  } finally {
+    if (!win.isDestroyed()) win.close();
+    await closeServer(servers.page.server);
+    await closeServer(servers.cross.server);
+  }
+}
+
+// Runs the compiled automation service against the guest, the way the desktop
+// IPC handler does; `inputFocused` switches between background and trusted input.
+function createFramesAutomation(guest) {
+  const { executeAutomationCommand } = require(PRODUCTION_BROWSER_AUTOMATION_SERVICE_PATH);
+  const { adaptWebContents } = require(PRODUCTION_BROWSER_AUTOMATION_IPC_PATH);
+  const { BrowserSnapshotEngine } = require(PRODUCTION_BROWSER_SNAPSHOT_ENGINE_PATH);
+  const browserId = "33333333-3333-4333-8333-333333333333";
+  const workspaceId = "frames-harness-workspace";
+  const tab = adaptWebContents(guest);
+  const state = { inputFocused: false };
+  const registry = {
+    listRegisteredBrowserIds: () => [browserId],
+    listRegisteredBrowserIdsForWorkspace: () => [browserId],
+    getTabContents: (candidate) => (candidate === browserId ? tab : null),
+    getBrowserWorkspaceId: (candidate) => (candidate === browserId ? workspaceId : null),
+    getWorkspaceActiveBrowserId: () => (state.inputFocused ? browserId : null),
+    isBrowserInputFocused: () => state.inputFocused,
+    getBrowserTargetMetadata: () => ({ kind: "tab" }),
+  };
+  const snapshotEngine = new BrowserSnapshotEngine();
+  let requestCounter = 0;
+  const execute = (command) =>
+    executeAutomationCommand(
+      {
+        type: "browser.automation.execute.request",
+        requestId: `frames-${(requestCounter += 1)}`,
+        workspaceId,
+        cwd: OUT_DIR,
+        command,
+      },
+      registry,
+      { snapshotEngine },
+    );
+  return {
+    guest,
+    browserId,
+    state,
+    execute,
+    async run(label, command) {
+      const response = await execute(command);
+      if (!response.ok) fail(`${label} failed: ${JSON.stringify(response)}`);
+      return response.result;
+    },
+    frameEval: (expression) =>
+      guest.executeJavaScript(
+        `(() => { const w = document.getElementById('cart').contentWindow; return (${expression}); })()`,
+        true,
+      ),
+  };
+}
+
+async function verifyFrameSnapshot(harness, servers) {
+  const { browserId } = harness;
+  const { snapshot } = await harness.run("frames snapshot", {
+    command: "snapshot",
+    args: { browserId },
+  });
+  const refOf = (line) => {
+    const escaped = line.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const ref = new RegExp(`${escaped} \\[ref=(@e\\d+)\\]`).exec(snapshot)?.[1];
+    if (!ref) fail(`frames snapshot has no ref for ${line}:\n${snapshot}`);
+    return ref;
+  };
+  const cartBlock = /- iframe "Cart"\n((?: {4}- .*\n?)+)/.exec(snapshot)?.[1] ?? "";
+  const paymentLine = new RegExp(
+    `^ {2}- iframe "Payment" \\[cross-origin=true src=${servers.cross.origin.replace(/[.]/g, "\\.")}/pay\\]$`,
+    "m",
+  );
+  if (
+    !cartBlock.includes('- text: "Inside the cart frame"') ||
+    !/- textbox "Coupon" \[ref=@e\d+\]/.test(cartBlock) ||
+    !/- button "Checkout" \[ref=@e\d+\]/.test(cartBlock) ||
+    !paymentLine.test(snapshot) ||
+    snapshot.includes("Pay now")
+  ) {
+    fail(`frames snapshot shape wrong:\n${snapshot}`);
+  }
+  pass("snapshot lists same-origin iframe content with refs; cross-origin frame stays one node");
+  return {
+    checkout: refOf('button "Checkout"'),
+    coupon: refOf('textbox "Coupon"'),
+    attachment: refOf('textbox "Attachment"'),
+  };
+}
+
+async function verifyFrameClicks(harness, refs) {
+  const { browserId, guest } = harness;
+  const click = { command: "click", args: { browserId, ref: refs.checkout } };
+  await harness.run("background click", click);
+  const isolatedClick = await harness.frameEval("w.__frameLog.at(-1)");
+  if (isolatedClick?.event !== "click" || isolatedClick.trusted !== false) {
+    fail(`background click did not reach the inner handler: ${JSON.stringify(isolatedClick)}`);
+  }
+  pass("background click on an iframe ref runs the inner handler");
+
+  // Trusted input is delivered at tab-viewport coordinates: the frame's
+  // margin, border, and padding must be added to the inner point.
+  harness.state.inputFocused = true;
+  const trusted = await harness.run("trusted click", click);
+  harness.state.inputFocused = false;
+  const expected = await guest.executeJavaScript(
+    `(() => {
+      const frame = document.getElementById('cart');
+      const outer = frame.getBoundingClientRect();
+      const inner = frame.contentDocument.getElementById('checkout').getBoundingClientRect();
+      return {
+        x: outer.left + frame.clientLeft + 6 + inner.left + inner.width / 2,
+        y: outer.top + frame.clientTop + 6 + inner.top + inner.height / 2,
+      };
+    })()`,
+    true,
+  );
+  const trustedClick = await harness.frameEval("w.__frameLog.at(-1)");
+  const offBy = Math.max(Math.abs(trusted.x - expected.x), Math.abs(trusted.y - expected.y));
+  if (trustedClick?.event !== "click" || trustedClick.trusted !== true || offBy > 1) {
+    fail(
+      `trusted iframe click missed: result=${JSON.stringify(trusted)} expected=${JSON.stringify(expected)} log=${JSON.stringify(trustedClick)}`,
+    );
+  }
+  pass("trusted click on an iframe ref lands on the inner element at tab coordinates");
+}
+
+async function verifyFrameInputs(harness, refs) {
+  const { browserId } = harness;
+  await harness.run("fill", {
+    command: "fill",
+    args: { browserId, ref: refs.coupon, value: "SAVE10" },
+  });
+  await harness.run("type", { command: "type", args: { browserId, ref: refs.coupon, text: "+" } });
+  const couponValue = await harness.frameEval("w.document.getElementById('coupon').value");
+  if (couponValue !== "SAVE10+") {
+    fail(`fill/type inside the iframe produced ${JSON.stringify(couponValue)}`);
+  }
+  pass("fill and type on an iframe ref write into the inner input");
+
+  await fsp.writeFile(path.join(OUT_DIR, "frames-upload.txt"), "upload fixture\n");
+  await harness.run("upload", {
+    command: "upload",
+    args: { browserId, ref: refs.attachment, filePaths: ["frames-upload.txt"] },
+  });
+  const uploaded = await harness.frameEval(
+    "w.document.getElementById('attachment').files[0]?.name",
+  );
+  const waited = await harness.run("wait", {
+    command: "wait",
+    args: { browserId, text: "Inside the cart frame" },
+  });
+  const evaluated = await harness.run("evaluate", {
+    command: "evaluate",
+    args: { browserId, ref: refs.coupon, function: "(element) => element.ownerDocument.title" },
+  });
+  if (
+    uploaded !== "frames-upload.txt" ||
+    waited.matched !== "text" ||
+    evaluated.resultJson !== '"Inner"'
+  ) {
+    fail(`upload/wait/evaluate in iframe: ${JSON.stringify({ uploaded, waited, evaluated })}`);
+  }
+  pass("upload, wait text, and evaluate with an iframe ref reach the frame");
+}
+
+async function listCapturedCart(harness) {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    const listed = await harness.run("network list", {
+      command: "network",
+      args: {
+        ...networkArgs(harness.browserId, "list"),
+        urlIncludes: "/api/cart",
+        includeBodies: true,
+        includeRequestBodies: true,
+      },
+    });
+    if (listed.entries[0]) return listed.entries[0];
+    await delay(50);
+  }
+  return null;
+}
+
+function capturedCartProblems(entry) {
+  if (!entry) return ["no entry"];
+  const requestBody = JSON.parse(entry.requestBody ?? "null");
+  const responseBody = JSON.parse(entry.responseBody ?? "null");
+  const expectations = [
+    [entry.method, "POST"],
+    [entry.status, 200],
+    [entry.resourceType, "fetch"],
+    [entry.mimeType, "application/json"],
+    [entry.requestHeaders.authorization, "<redacted>"],
+    [requestBody?.sku, "A1"],
+    [requestBody?.password, "<redacted>"],
+    [responseBody?.items?.[0]?.sku, "A1"],
+  ];
+  return expectations
+    .filter(([actual, wanted]) => actual !== wanted)
+    .map(([actual, wanted]) => `${JSON.stringify(actual)} != ${JSON.stringify(wanted)}`);
+}
+
+async function verifyNetworkCapture(harness) {
+  const { browserId, guest } = harness;
+  const notStarted = await harness.execute({
+    command: "network",
+    args: networkArgs(browserId, "list"),
+  });
+  if (notStarted.ok || !notStarted.error.message.includes('action "start"')) {
+    fail(`network list before start: ${JSON.stringify(notStarted)}`);
+  }
+  await harness.run("network start", { command: "network", args: networkArgs(browserId, "start") });
+  const fetched = await guest.executeJavaScript(
+    `fetch('/api/cart', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer s3cret' },
+      body: JSON.stringify({ sku: 'A1', password: 'hunter2' }),
+    }).then((response) => response.json())`,
+    true,
+  );
+  const entry = await listCapturedCart(harness);
+  const problems = capturedCartProblems(entry);
+  if (fetched?.ok !== true || problems.length > 0) {
+    fail(`captured request wrong (${problems.join("; ")}): ${JSON.stringify(entry)}`);
+  }
+  await harness.run("network stop", { command: "network", args: networkArgs(browserId, "stop") });
+  const afterStop = await harness.execute({
+    command: "network",
+    args: networkArgs(browserId, "list"),
+  });
+  if (afterStop.ok) {
+    fail("network list still answered after stop");
+  }
+  pass("network capture records a same-origin fetch with redacted credentials and its bodies");
+}
+
+function networkArgs(browserId, action) {
+  return { browserId, action, maxEntries: 50, includeBodies: false, includeRequestBodies: false };
+}
+
 async function main() {
   ensureDirSync(OUT_DIR);
   if (
-    !["all", "existing", "permanent-parking", "automation", "browser-profile"].includes(
-      HARNESS_GROUP,
-    )
+    ![
+      "all",
+      "existing",
+      "permanent-parking",
+      "automation",
+      "browser-profile",
+      "frames-network",
+    ].includes(HARNESS_GROUP)
   ) {
     fail(`unknown harness group ${HARNESS_GROUP}`);
+  }
+
+  if (HARNESS_GROUP === "frames-network") {
+    const framesNetworkResults = await runFramesNetworkGroup();
+    await fsp.writeFile(
+      path.join(OUT_DIR, "results.json"),
+      `${JSON.stringify({ generatedAt: new Date().toISOString(), framesNetworkResults }, null, 2)}\n`,
+    );
+    pass(`capture harness frames-network complete output=${OUT_DIR}`);
+    return;
   }
 
   if (HARNESS_GROUP === "browser-profile") {
