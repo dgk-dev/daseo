@@ -656,11 +656,24 @@ export interface AgentSideQuestionAnswer {
   model: string | null;
 }
 
+/**
+ * Local fork: waits the agent registered that will wake it later (pi-local `wait_for`).
+ * Server-internal; never sent to clients.
+ */
+export interface AgentBackgroundWaits {
+  /** Waits that will still wake the agent. */
+  pending: number;
+  /** Epoch ms when a wait was last registered, or when the count first rose above zero. */
+  raisedAt: number | null;
+}
+
 export interface AgentSession {
   readonly provider: AgentProvider;
   readonly id: string | null;
   readonly capabilities: AgentCapabilityFlags;
   readonly features?: AgentFeature[];
+  /** Local fork: while `pending > 0` the manager holds "finished" attention and notify-on-finish. */
+  readonly backgroundWaits?: AgentBackgroundWaits;
   run(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<AgentRunResult>;
   startTurn(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<{ turnId: string }>;
   /**

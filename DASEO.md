@@ -373,6 +373,25 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     `packages/desktop/src/features/browser-automation/network-capture.ts`, `ipc.ts`, `service.ts`;
     `packages/server/src/server/browser-tools/tools.ts`;
     `packages/protocol/src/browser-automation/rpc-schemas.ts` and `paseo-tool-call-detail.ts`.
+29. **Background waits hold "finished"** — since 2026-09-30 pi-local's `wait_for` lets an agent
+    register a wait (a command's exit or output lines, or a file), end its turn, and be woken later
+    by an extension user message in the `<paseo-system>` envelope (the extension turn of delta 17).
+    An agent that ends its turn to wait is not finished, so a delegated implementer no longer tells
+    its parent "finished" while its build is still running. The Pi provider reads the count of
+    waits that will still wake the agent from `wait_for`/`wait_status`/`wait_cancel` results
+    (`details: { wait: true, pending }`) and from the wake envelope's first lines
+    (`wait_for: <kind> <wait_id> <status> pending=<N>`, minimum over the lines), and a Pi process
+    exit resets it to 0. The manager copies it to the server-internal
+    `ManagedAgent.pendingBackgroundWaits` (not on the wire). While it is above 0, a running→idle
+    transition sets no "finished" attention (so no push) and notify-on-finish stays quiet; the
+    idle after the last wake turn, or the next state emission once the count is 0, delivers both.
+    Errors and permission requests are unaffected, and `lifecycle` is never faked. The hold
+    expires 3,660 s after the last registration (`wait_for`'s 3,600 s maximum plus a minute) with
+    a `background_wait_hold_expired` warning. Key files:
+    `packages/server/src/server/agent/providers/pi/agent.ts` (`readPiWaitToolSignal`,
+    `readPiWaitEnvelopePending`), `agent-manager.ts` (`syncBackgroundWaits`,
+    `checkAndSetAttention`), `agent-prompt.ts`, and the optional `AgentSession.backgroundWaits` in
+    `agent-sdk-types.ts`. Takes effect with the next release and daemon restart.
 
 ## Local reliability contracts
 

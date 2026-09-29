@@ -50,7 +50,7 @@ interface FinishNotificationScenario {
   resolveChildPermission(requestId?: string): void;
   resolveChildPermissionFromState(requestId?: string): void;
   resolveChildPermissionWhileIdle(requestId?: string): void;
-  finishChild(): void;
+  finishChild(pendingBackgroundWaits?: number): void;
   finishChildAndReadParentPrompt(): Promise<string>;
   closeChildAndReadParentPrompt(): Promise<string>;
   parentPrompts(): string[];
@@ -192,13 +192,14 @@ function createFinishNotificationScenario(
         },
       });
     },
-    finishChild() {
+    finishChild(pendingBackgroundWaits = 0) {
       childAgent.lifecycle = "running";
       subscriber?.({
         type: "agent_state",
         agent: childAgent,
       });
 
+      childAgent.pendingBackgroundWaits = pendingBackgroundWaits;
       childAgent.lifecycle = "idle";
       subscriber?.({
         type: "agent_state",
@@ -359,6 +360,22 @@ test("finish notifications truncate oversized child responses", async () => {
     `[truncated ${omitted.length} chars; use get_agent_activity for the full response]`,
   );
   expect(parentPrompt).not.toContain("TAIL-MARKER");
+});
+
+test("a child idle with pending background waits does not notify until its wake turn ends", async () => {
+  const scenario = createFinishNotificationScenario({
+    childLastAssistantMessage: "Build passed.",
+  });
+
+  scenario.startWatchingChild();
+  scenario.finishChild(1);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(scenario.parentPrompts()).toEqual([]);
+
+  const parentPrompt = await scenario.finishChildAndReadParentPrompt();
+  expect(parentPrompt).toContain("Agent child-agent (Child Agent) finished.");
+  expect(parentPrompt).toContain("Build passed.");
+  expect(scenario.parentPrompts()).toHaveLength(1);
 });
 
 test("closing a watched child notifies the caller", async () => {

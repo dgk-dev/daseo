@@ -9,6 +9,7 @@ import { createTestLogger } from "../../test-utils/test-logger.js";
 import {
   AgentManager,
   AgentManagerShuttingDownError,
+  BACKGROUND_WAIT_HOLD_MAX_MS,
   commandMayHaveChangedExternalState,
   type AgentManagerEvent,
   type ManagedAgent,
@@ -21,6 +22,7 @@ import { formatSystemNotificationPrompt, startAgentRun } from "./agent-prompt.js
 import { ensureAgentLoaded, ensureUnarchivedAgentLoaded } from "./agent-loading.js";
 import type { StoredAgentRecord } from "./agent-storage.js";
 import type {
+  AgentBackgroundWaits,
   AgentClient,
   AgentCreateSessionOptions,
   AgentFeature,
@@ -3823,6 +3825,90 @@ test("archiveAgent does not cascade to a detached former child", async () => {
 
   expect((await storage.get(parent.id))?.archivedAt).toEqual(expect.any(String));
   expect((await storage.get(child.id))?.archivedAt).toBeFalsy();
+});
+
+class BackgroundWaitTestSession extends TestAgentSession {
+  backgroundWaits: AgentBackgroundWaits = { pending: 0, raisedAt: null };
+}
+
+class BackgroundWaitTestClient extends TestAgentClient {
+  session: BackgroundWaitTestSession | null = null;
+
+  override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+    this.session = new BackgroundWaitTestSession(config);
+    return this.session;
+  }
+}
+
+async function createBackgroundWaitScenario(idSuffix: string) {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-background-waits-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const client = new BackgroundWaitTestClient();
+  const attentionReasons: string[] = [];
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+    idFactory: () => `00000000-0000-4000-8000-0000000009${idSuffix}`,
+    onAgentAttention: ({ reason }) => {
+      attentionReasons.push(reason);
+    },
+  });
+  const snapshot = await manager.createAgent(
+    { provider: "codex", cwd: workdir, title: "Background wait test" },
+    undefined,
+    { workspaceId: undefined },
+  );
+  return { manager, storage, client, attentionReasons, agentId: snapshot.id };
+}
+
+test("an agent that ends its turn with pending background waits is not finished until the wake turn ends", async () => {
+  const { manager, client, attentionReasons, agentId } = await createBackgroundWaitScenario("01");
+  client.session!.backgroundWaits = { pending: 1, raisedAt: Date.now() };
+
+  await manager.runAgent(agentId, "start the build and wait");
+  await manager.flush();
+  expect(manager.getAgent(agentId)?.lifecycle).toBe("idle");
+  expect(manager.getAgent(agentId)?.pendingBackgroundWaits).toBe(1);
+  expect(manager.getAgent(agentId)?.attention.requiresAttention).toBe(false);
+  expect(attentionReasons).toEqual([]);
+
+  // The wake turn reports pending=0; its idle is the real finish.
+  client.session!.backgroundWaits = { pending: 0, raisedAt: null };
+  await manager.runAgent(agentId, "wake");
+  await manager.flush();
+  expect(manager.getAgent(agentId)?.attention).toMatchObject({
+    requiresAttention: true,
+    attentionReason: "finished",
+  });
+  expect(attentionReasons).toEqual(["finished"]);
+});
+
+test("a background-wait hold older than the maximum expires and the idle counts as finished", async () => {
+  const { manager, client, attentionReasons, agentId } = await createBackgroundWaitScenario("02");
+  client.session!.backgroundWaits = {
+    pending: 1,
+    raisedAt: Date.now() - BACKGROUND_WAIT_HOLD_MAX_MS - 1_000,
+  };
+
+  await manager.runAgent(agentId, "wait on a job that never reported back");
+  await manager.flush();
+  expect(manager.getAgent(agentId)?.pendingBackgroundWaits).toBe(0);
+  expect(attentionReasons).toEqual(["finished"]);
+});
+
+test("a deferred finish is released on the next idle state once the waits are gone", async () => {
+  const { manager, client, attentionReasons, agentId } = await createBackgroundWaitScenario("03");
+  client.session!.backgroundWaits = { pending: 2, raisedAt: Date.now() };
+  await manager.runAgent(agentId, "wait");
+  await manager.flush();
+  expect(attentionReasons).toEqual([]);
+
+  // A Pi restart clears the count while the agent stays idle; the next state emission finishes it.
+  client.session!.backgroundWaits = { pending: 0, raisedAt: null };
+  manager.notifyAgentState(agentId);
+  await manager.flush();
+  expect(attentionReasons).toEqual(["finished"]);
 });
 
 test("runAgent persists finished attention and idle status without an external snapshot subscriber", async () => {

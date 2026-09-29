@@ -82,6 +82,9 @@ const RELOAD_SESSION_CLOSE_TIMEOUT_MS = 3_000;
 const INTERRUPT_SESSION_TIMEOUT_MS = 2_000;
 const STEERING_TURN_START_TIMEOUT_MS = 15_000;
 const INTERRUPTED_COMPACTION_ERROR = "Compaction was interrupted";
+// Local fork: a background-wait hold outlives wait_for's longest timeout (3,600 s) by a minute,
+// then expires so a lost wake cannot hold "finished" forever.
+export const BACKGROUND_WAIT_HOLD_MAX_MS = 3_660_000;
 // How long a submitted prompt stays eligible to absorb a provider echo that lost
 // its client correlation. Long enough to cover a provider restart mid-turn,
 // short enough that repeating the same text later is still its own message.
@@ -378,6 +381,12 @@ interface ManagedAgentBase {
   lastUsage?: AgentUsage;
   lastError?: string;
   attention: AttentionState;
+  /**
+   * Local fork, server-internal: waits the agent registered that will wake it later, as reported
+   * by its session and zeroed once the hold expires. While above zero, a running→idle transition
+   * is not "finished". Never sent to clients.
+   */
+  pendingBackgroundWaits?: number;
   foregroundTurnWaiters: Set<ForegroundTurnWaiter>;
   finalizedForegroundTurnIds: Set<string>;
   unsubscribeSession: (() => void) | null;
@@ -683,6 +692,8 @@ export class AgentManager {
   private readonly registry?: AgentStorage;
   private readonly durableTimelineStore?: AgentTimelineStore;
   private readonly previousStatuses = new Map<string, AgentLifecycleStatus>();
+  /** Agents whose "finished" attention is held until their background waits have woken them. */
+  private readonly deferredFinishes = new Set<string>();
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly agentRegistrationTasks = new Set<Promise<void>>();
   private readonly inFlightAgentCloses = new Map<string, Promise<void>>();
@@ -3271,6 +3282,7 @@ export class AgentManager {
     this.agentStreamCoalescer.flushAndDiscard(agent.id);
     this.agents.delete(agent.id);
     this.previousStatuses.delete(agent.id);
+    this.deferredFinishes.delete(agent.id);
     if (agent.unsubscribeSession) {
       agent.unsubscribeSession();
       agent.unsubscribeSession = null;
@@ -4434,6 +4446,7 @@ export class AgentManager {
   }
 
   private emitState(agent: ManagedAgent, options?: { persist?: boolean }): void {
+    this.syncBackgroundWaits(agent);
     // Keep attention as an edge-triggered unread signal, not a level signal.
     this.checkAndSetAttention(agent);
     if (options?.persist !== false) {
@@ -4475,6 +4488,29 @@ export class AgentManager {
     );
   }
 
+  /**
+   * Local fork: copy the session's background-wait count onto the agent, where attention and
+   * notify-on-finish read it. A hold older than BACKGROUND_WAIT_HOLD_MAX_MS counts as zero.
+   */
+  private syncBackgroundWaits(agent: ManagedAgent): void {
+    const reported = agent.session?.backgroundWaits;
+    let pending = reported?.pending ?? 0;
+    if (
+      pending > 0 &&
+      reported?.raisedAt != null &&
+      Date.now() - reported.raisedAt >= BACKGROUND_WAIT_HOLD_MAX_MS
+    ) {
+      if ((agent.pendingBackgroundWaits ?? 0) > 0) {
+        this.logger.warn(
+          { agentId: agent.id, pending, raisedAt: new Date(reported.raisedAt).toISOString() },
+          "agent.manager.background_wait_hold_expired",
+        );
+      }
+      pending = 0;
+    }
+    agent.pendingBackgroundWaits = pending;
+  }
+
   private checkAndSetAttention(agent: ManagedAgent): void {
     const previousStatus = this.previousStatuses.get(agent.id);
     const currentStatus = agent.lifecycle;
@@ -4487,13 +4523,26 @@ export class AgentManager {
       return;
     }
 
+    if (currentStatus !== "idle" && currentStatus !== "running") {
+      this.deferredFinishes.delete(agent.id);
+    }
+
     // Skip if already requires attention
     if (agent.attention.requiresAttention) {
+      this.deferredFinishes.delete(agent.id);
       return;
     }
 
-    // Check if agent transitioned from running to idle (finished)
-    if (previousStatus === "running" && currentStatus === "idle") {
+    // Check if agent transitioned from running to idle (finished). An agent that ended its turn
+    // to wait on background waits is not finished yet: hold until it is idle with none pending.
+    const finishedNow = previousStatus === "running" && currentStatus === "idle";
+    const deferredFinish = currentStatus === "idle" && this.deferredFinishes.has(agent.id);
+    if (finishedNow || deferredFinish) {
+      if ((agent.pendingBackgroundWaits ?? 0) > 0) {
+        this.deferredFinishes.add(agent.id);
+        return;
+      }
+      this.deferredFinishes.delete(agent.id);
       agent.attention = {
         requiresAttention: true,
         attentionReason: "finished",

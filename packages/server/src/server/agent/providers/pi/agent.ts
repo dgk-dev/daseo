@@ -8,6 +8,7 @@ import stripAnsi from "strip-ansi";
 import { z } from "zod";
 
 import {
+  type AgentBackgroundWaits,
   type AgentCapabilityFlags,
   type AgentClient,
   type AgentFeature,
@@ -1254,6 +1255,45 @@ function optionalBoolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
 }
 
+// Local fork: pi-local's `wait_for` tools report how many registered waits will
+// still wake the agent, in tool results (`details: { wait: true, pending }`) and
+// in the first lines of each wake envelope
+// (`wait_for: <kind> <wait_id> <fired|exited|timed_out> pending=<N>`).
+const PI_WAIT_TOOL_NAMES = new Set(["wait_for", "wait_status", "wait_cancel"]);
+const PI_WAIT_ENVELOPE_PATTERN = /^<paseo-system>\n([\s\S]*)\n<\/paseo-system>$/;
+const PI_WAIT_ENVELOPE_LINE_PATTERN = /^wait_for: \S+ \S+ \S+ pending=(\d+)$/;
+
+export function readPiWaitToolSignal(
+  toolName: string,
+  result: unknown,
+  isError: boolean | undefined,
+): { pending: number; registered: boolean } | null {
+  if (isError || !PI_WAIT_TOOL_NAMES.has(toolName)) return null;
+  if (!result || typeof result !== "object") return null;
+  const details = (result as { details?: unknown }).details;
+  if (!details || typeof details !== "object") return null;
+  const { wait, pending, wait_id: waitId } = details as Record<string, unknown>;
+  if (wait !== true || typeof pending !== "number" || !Number.isInteger(pending) || pending < 0) {
+    return null;
+  }
+  // Only a result that created a wait carries `wait_id`; status, cancel, and rearm do not.
+  return { pending, registered: toolName === "wait_for" && typeof waitId === "string" };
+}
+
+/** The pending count a wake envelope reports (minimum over its wait lines), or null. */
+export function readPiWaitEnvelopePending(text: string): number | null {
+  const body = PI_WAIT_ENVELOPE_PATTERN.exec(text)?.[1];
+  if (body === undefined) return null;
+  let pending: number | null = null;
+  for (const line of body.split("\n")) {
+    const match = PI_WAIT_ENVELOPE_LINE_PATTERN.exec(line);
+    if (!match) break;
+    const value = Number(match[1]);
+    pending = pending === null ? value : Math.min(pending, value);
+  }
+  return pending;
+}
+
 function readActiveAskUserDialog(toolName: string, args: unknown): ActiveAskUserDialog | null {
   if (toolName !== "ask_user" || !isRecord(args)) {
     return null;
@@ -1676,6 +1716,7 @@ export class PiRpcAgentSession implements AgentSession {
   private outOfBandCompactionCompleted = false;
   private commandCache: AgentSlashCommand[] | null = null;
   private featureState: AgentFeature[] = [];
+  private backgroundWaitState: AgentBackgroundWaits = { pending: 0, raisedAt: null };
   private state: PiSessionState;
   private readonly currentModeId: string | null;
   private closed = false;
@@ -1717,6 +1758,21 @@ export class PiRpcAgentSession implements AgentSession {
 
   get features(): AgentFeature[] {
     return this.featureState;
+  }
+
+  get backgroundWaits(): AgentBackgroundWaits {
+    return this.backgroundWaitState;
+  }
+
+  private recordBackgroundWaits(pending: number, registered: boolean): void {
+    if (pending === 0) {
+      this.backgroundWaitState = { pending: 0, raisedAt: null };
+      return;
+    }
+    // A new registration (or a first raise) restarts the manager's hold clock.
+    const previous = this.backgroundWaitState;
+    const raise = registered || previous.pending === 0 || previous.raisedAt === null;
+    this.backgroundWaitState = { pending, raisedAt: raise ? Date.now() : previous.raisedAt };
   }
 
   async initializeFeatures(): Promise<void> {
@@ -2686,6 +2742,8 @@ export class PiRpcAgentSession implements AgentSession {
     if (!entry) {
       return true;
     }
+    const wakePending = readPiWaitEnvelopePending(entry.text);
+    if (wakePending !== null) this.recordBackgroundWaits(wakePending, false);
     let clientMessageId: string | null;
     let steering = false;
     if (this.awaitingInitialUserMessage) {
@@ -2872,6 +2930,8 @@ export class PiRpcAgentSession implements AgentSession {
 
   private handleProcessExit(error: string): void {
     this.rejectAllExtensionResults(new Error(error));
+    // wait_for waits die with the Pi process, so nothing will wake the agent.
+    this.backgroundWaitState = { pending: 0, raisedAt: null };
     if (!this.activeTurnId) {
       return;
     }
@@ -2977,6 +3037,9 @@ export class PiRpcAgentSession implements AgentSession {
       this.activeAskUserDialog = null;
       this.pendingCombinedAskUserResponse = null;
     }
+
+    const waitSignal = readPiWaitToolSignal(event.toolName, event.result, event.isError);
+    if (waitSignal) this.recordBackgroundWaits(waitSignal.pending, waitSignal.registered);
 
     const result = parseToolResult(event.result);
     const error = event.isError ? event.result : null;

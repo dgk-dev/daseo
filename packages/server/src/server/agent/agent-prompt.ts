@@ -426,6 +426,9 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
           return;
         }
         if (event.agent.lifecycle === "idle" && hasSeenRunning) {
+          // Local fork: a child that ended its turn to wait on background waits is not finished;
+          // the idle after its last wake turn is.
+          if ((event.agent.pendingBackgroundWaits ?? 0) > 0) return;
           notifySafely("finished");
           return;
         }
