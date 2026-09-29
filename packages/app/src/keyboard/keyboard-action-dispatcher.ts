@@ -10,6 +10,7 @@ export type KeyboardActionId =
   | "message-input.voice-toggle"
   | "message-input.voice-mute-toggle"
   | "message-input.mode-cycle"
+  | "message-input.model-toggle"
   | "workspace.tab.new"
   | "workspace.tab.close-current"
   | "workspace.tab.navigate-index"
@@ -45,6 +46,7 @@ export type KeyboardActionDefinition =
   | { id: "message-input.voice-toggle"; scope: KeyboardActionScope }
   | { id: "message-input.voice-mute-toggle"; scope: KeyboardActionScope }
   | { id: "message-input.mode-cycle"; scope: KeyboardActionScope }
+  | { id: "message-input.model-toggle"; scope: KeyboardActionScope }
   | { id: "workspace.tab.new"; scope: KeyboardActionScope }
   | { id: "workspace.tab.close-current"; scope: KeyboardActionScope }
   | { id: "workspace.tab.navigate-index"; scope: KeyboardActionScope; index: number }

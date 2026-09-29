@@ -193,6 +193,7 @@ export const SHORTCUT_HELP_ROW_ORDER: Record<ShortcutSectionId, readonly string[
   "agent-input": [
     "focus-message-input",
     "cycle-agent-mode",
+    "model-toggle",
     "voice-toggle",
     "dictation-toggle",
     "agent-interrupt",
@@ -236,6 +237,7 @@ const SHORTCUT_HELP_LABEL_KEYS: Record<string, string> = {
   "cycle-theme": "settings.shortcuts.help.cycleTheme",
   "focus-message-input": "settings.shortcuts.help.focusMessageInput",
   "cycle-agent-mode": "settings.shortcuts.help.cycleAgentMode",
+  "model-toggle": "settings.shortcuts.help.toggleModel",
   "voice-toggle": "settings.shortcuts.help.toggleVoiceMode",
   "dictation-toggle": "settings.shortcuts.help.startStopDictation",
   "agent-interrupt": "settings.shortcuts.help.interruptAgent",
@@ -1000,6 +1002,34 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
       label: "Cycle agent mode",
     },
   },
+  // --- Toggle between the top two models in the model list ---
+  {
+    id: "message-input-model-toggle-cmd-shift-m-mac",
+    action: "message-input.action",
+    combo: "Cmd+Shift+M",
+    repeat: false,
+    when: { mac: true, commandCenter: false, terminal: false },
+    payload: { type: "message-input", kind: "model-toggle" },
+    help: {
+      id: "model-toggle",
+      section: "agent-input",
+      label: "Toggle model",
+    },
+  },
+  {
+    id: "message-input-model-toggle-ctrl-shift-m-non-mac",
+    action: "message-input.action",
+    combo: "Ctrl+Shift+M",
+    repeat: false,
+    when: { mac: false, commandCenter: false, terminal: false },
+    payload: { type: "message-input", kind: "model-toggle" },
+    help: {
+      id: "model-toggle",
+      section: "agent-input",
+      label: "Toggle model",
+    },
+  },
+
   {
     id: "message-input-voice-toggle-cmd-shift-d-mac",
     action: "message-input.action",

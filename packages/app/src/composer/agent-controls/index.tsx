@@ -35,8 +35,12 @@ import { CombinedModelSelector } from "@/components/combined-model-selector";
 import {
   buildProviderSelectorProviders,
   buildSelectableProviderSelectorProviders,
+  getAllProviderModelRows,
   type ProviderSelectorProvider,
 } from "@/provider-selection/provider-selection";
+import { useComposerKeyboardScope } from "@/composer/keyboard-scope";
+import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
+import type { KeyboardActionDefinition } from "@/keyboard/keyboard-action-dispatcher";
 import { filterSelectableModels } from "@/provider-selection/model-catalog";
 import { useSessionStore } from "@/stores/session-store";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
@@ -697,6 +701,41 @@ function ControlledAgentControls({
     },
     [onSelectModel, onSelectProvider, onSelectProviderAndModel, provider],
   );
+
+  // Cmd/Ctrl+Shift+M toggles between the top two models in the model list
+  // (list order is roster order, so this flips between the two primary models).
+  const { isActiveComposer } = useComposerKeyboardScope();
+  const modelToggleHandlerIdRef = useRef(`model-toggle:${Math.random().toString(36).slice(2)}`);
+  const handleModelToggleAction = useCallback(
+    (action: KeyboardActionDefinition): boolean => {
+      if (action.id !== "message-input.model-toggle") return false;
+      if (modelDisabled || !canSelectModel || !isActiveComposer) return false;
+      const rows = getAllProviderModelRows(effectiveModelSelectorProviders);
+      const [first, second] = rows;
+      if (!first || !second) return false;
+      const firstSelected = first.provider === provider && first.modelId === selectedModelId;
+      const target = firstSelected ? second : first;
+      handleSheetModelSelect(target.provider, target.modelId);
+      return true;
+    },
+    [
+      canSelectModel,
+      effectiveModelSelectorProviders,
+      handleSheetModelSelect,
+      isActiveComposer,
+      modelDisabled,
+      provider,
+      selectedModelId,
+    ],
+  );
+
+  useKeyboardActionHandler({
+    handlerId: modelToggleHandlerIdRef.current,
+    actions: ["message-input.model-toggle"],
+    enabled: isActiveComposer && !modelDisabled && canSelectModel,
+    priority: 200,
+    handle: handleModelToggleAction,
+  });
 
   if (!hasAnyControl) {
     return null;

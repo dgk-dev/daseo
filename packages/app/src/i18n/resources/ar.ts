@@ -2088,6 +2088,7 @@ export const ar: TranslationResources = {
         cycleTheme: "موضوع الدورة",
         focusMessageInput: "التركيز على إدخال الرسالة",
         cycleAgentMode: "تبديل وضع الوكيل",
+        toggleModel: "تبديل النموذج",
         toggleVoiceMode: "تبديل الوضع الصوتي",
         startStopDictation: "بدء إملاء /stop",
         interruptAgent: "عامل المقاطعة",

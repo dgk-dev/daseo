@@ -2128,6 +2128,7 @@ export const ru: TranslationResources = {
         cycleTheme: "Циклическая тема",
         focusMessageInput: "Фокус ввода сообщения",
         cycleAgentMode: "Переключить режим агента",
+        toggleModel: "Переключить модель",
         toggleVoiceMode: "Переключить голосовой режим",
         startStopDictation: "Начать диктовку /stop",
         interruptAgent: "Агент прерываний",
