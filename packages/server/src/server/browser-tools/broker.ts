@@ -44,6 +44,17 @@ export interface BrowserToolsBrokerOptions {
 }
 
 const DEFAULT_BROWSER_TOOLS_TIMEOUT_MS = 15_000;
+// How long before a tab-scoped request times out the broker asks the host
+// whether that tab is still loading. Electron's executeJavaScript waits for a
+// load to stop, so a tab that never finishes loading times out every
+// tab-scoped tool; the agent should hear that instead of "did not respond".
+const LOADING_PROBE_LEAD_MS = 1_000;
+
+type ListTabsResult = Extract<
+  Extract<BrowserToolsResponsePayload, { ok: true }>["result"],
+  { command: "list_tabs" }
+>;
+type BrowserTabInfo = ListTabsResult["tabs"][number];
 
 export class BrowserToolsBroker {
   private readonly defaultTimeoutMs: number;
@@ -401,6 +412,45 @@ export class BrowserToolsBroker {
     }
   }
 
+  /** The tab's list_tabs entry when the host reports it still loading. */
+  private async probeLoadingTab(params: {
+    host: RegisteredBrowserHost;
+    browserId: string;
+    requestId: string;
+    timeoutMs: number;
+  }): Promise<BrowserTabInfo | null> {
+    const request = BrowserAutomationExecuteRequestSchema.safeParse({
+      type: "browser.automation.execute.request",
+      requestId: params.requestId,
+      command: { command: "list_tabs", args: {} },
+    });
+    if (!request.success) {
+      return null;
+    }
+    const payload = await this.sendRequest({
+      host: params.host,
+      request: request.data,
+      rememberAffinity: false,
+      timeoutMs: params.timeoutMs,
+    });
+    if (!payload.ok || payload.result.command !== "list_tabs") {
+      return null;
+    }
+    return (
+      payload.result.tabs.find((tab) => tab.browserId === params.browserId && tab.isLoading) ?? null
+    );
+  }
+
+  /** Drop a pending request nobody waits for anymore; its response is then ignored. */
+  private cancelPending(requestId: string): void {
+    const pending = this.pending.get(requestId);
+    if (!pending) {
+      return;
+    }
+    this.pending.delete(requestId);
+    clearTimeout(pending.timeout);
+  }
+
   private sendRequest(params: {
     host: RegisteredBrowserHost;
     request: BrowserAutomationExecuteRequest;
@@ -409,8 +459,9 @@ export class BrowserToolsBroker {
   }): Promise<BrowserToolsResponsePayload> {
     const { host, request, timeoutMs } = params;
     const client = host.client;
+    let loadingTab: BrowserTabInfo | null = null;
 
-    return new Promise<BrowserToolsResponsePayload>((resolve) => {
+    const settled = new Promise<BrowserToolsResponsePayload>((resolve) => {
       const timeout = setTimeout(() => {
         if (!this.pending.delete(request.requestId)) {
           return;
@@ -419,7 +470,9 @@ export class BrowserToolsBroker {
           browserToolsFailure({
             requestId: request.requestId,
             code: "browser_timeout",
-            message: `The browser did not respond within ${timeoutMs}ms. Try again or check the browser host.`,
+            message: loadingTab
+              ? formatStillLoadingMessage(loadingTab)
+              : `The browser did not respond within ${timeoutMs}ms. Try again or check the browser host.`,
             retryable: true,
           }),
         );
@@ -452,7 +505,36 @@ export class BrowserToolsBroker {
         });
       }
     });
+
+    const browserId = getBrowserIdForCommand(request.command);
+    if (!browserId || !host.supportedCommands.has("list_tabs")) {
+      return settled;
+    }
+    const probeRequestId = `${request.requestId}:loading-probe`;
+    const lead = Math.min(LOADING_PROBE_LEAD_MS, Math.floor(timeoutMs / 3));
+    const probe = async (): Promise<void> => {
+      loadingTab = await this.probeLoadingTab({
+        host,
+        browserId,
+        requestId: probeRequestId,
+        timeoutMs: lead,
+      });
+    };
+    const probeTimer = setTimeout(() => void probe(), timeoutMs - lead);
+    return settled.finally(() => {
+      clearTimeout(probeTimer);
+      this.cancelPending(probeRequestId);
+    });
   }
+}
+
+function formatStillLoadingMessage(tab: BrowserTabInfo): string {
+  const duration =
+    tab.loadingForMs === undefined
+      ? "is still loading"
+      : `has been loading ${Math.round(tab.loadingForMs / 1000)}s`;
+  const url = tab.url ? ` (url: ${tab.url})` : "";
+  return `Tab ${tab.browserId} ${duration}${url}. The page has not finished loading; try browser_reload, a different URL, or wait.`;
 }
 
 function getBrowserIdForCommand(command: BrowserAutomationCommand): string | null {

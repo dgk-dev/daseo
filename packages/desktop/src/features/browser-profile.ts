@@ -51,6 +51,37 @@ export function getPaseoBrowserProfileSession(sessions: ElectronSessions): Brows
   return sessions.fromPartition(PASEO_BROWSER_PROFILE_PARTITION);
 }
 
+interface UserAgentSession {
+  getUserAgent(): string;
+  setUserAgent(userAgent: string): void;
+}
+
+/**
+ * Electron's default user agent carries `<app name>/<version>` and `Electron/<version>`
+ * tokens after the Chrome token. Sites read them as an embedded or automated client, so
+ * the browser profile presents the Chrome string it is built from. The Chrome version
+ * token stays as is, and UA client hints already report only Chromium brands.
+ */
+export function plainChromeUserAgent(userAgent: string, appName: string): string {
+  const escapedAppName = appName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return userAgent
+    .replace(new RegExp(`\\s${escapedAppName}/\\S+`, "g"), "")
+    .replace(/\sElectron\/\S+/g, "");
+}
+
+/**
+ * Applies to the browser profile session only, so browser webviews and popups get the
+ * plain Chrome user agent while Paseo's own renderer keeps Electron's default. Must run
+ * before any browser webview is created: existing WebContents keep the old value.
+ */
+export function applyPaseoBrowserProfileUserAgent(
+  sessions: { fromPartition(partition: string): UserAgentSession },
+  appName: string,
+): void {
+  const profileSession = sessions.fromPartition(PASEO_BROWSER_PROFILE_PARTITION);
+  profileSession.setUserAgent(plainChromeUserAgent(profileSession.getUserAgent(), appName));
+}
+
 export function readLegacyPaseoBrowserIds(input: unknown): string[] {
   if (!Array.isArray(input)) {
     return [];

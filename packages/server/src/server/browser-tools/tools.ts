@@ -917,6 +917,10 @@ function browserToolImageContent(
   };
 }
 
+function formatTabLoading(loadingForMs: number | undefined): string {
+  return loadingForMs === undefined ? "loading" : `loading=${Math.round(loadingForMs / 1000)}s`;
+}
+
 function summarizeBrowserSuccess(
   payload: Extract<BrowserToolsResponsePayload, { ok: true }>,
 ): string {
@@ -962,7 +966,8 @@ function summarizeBrowserSuccess(
         tab.kind === "popup"
           ? ` popup rootBrowserId=${tab.rootBrowserId ?? "unknown"} openerBrowserId=${tab.openerBrowserId ?? "unknown"}`
           : "";
-      return `- browserId=${tab.browserId}${active}${ownership} title=${JSON.stringify(tab.title || "Untitled")} url=${tab.url}`;
+      const loading = tab.isLoading ? ` ${formatTabLoading(tab.loadingForMs)}` : "";
+      return `- browserId=${tab.browserId}${active}${ownership}${loading} title=${JSON.stringify(tab.title || "Untitled")} url=${tab.url}`;
     });
     return withDialogs(
       [

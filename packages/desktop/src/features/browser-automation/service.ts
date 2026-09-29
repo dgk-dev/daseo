@@ -14,6 +14,7 @@ import { dispatchFocusIsolatedClick, dispatchFocusIsolatedDrag } from "./focus-i
 import type { ScreencastFramePayload, ScreencastOptions } from "./screencast.js";
 import { planStreamInputCdpSteps } from "./stream-input.js";
 import { FullPageCaptureUnsupportedError } from "./full-page-capture.js";
+import type { TabLoadingInfo } from "./load-tracker.js";
 import { BrowserSnapshotEngine } from "./snapshot-engine.js";
 import {
   dispatchTrustedClick,
@@ -32,6 +33,8 @@ export interface TabContents {
   canGoBack(): boolean;
   canGoForward(): boolean;
   isLoading(): boolean;
+  /** How long the current load has run, and its URL; null when not loading. */
+  getLoadingInfo?(): TabLoadingInfo | null;
   isDestroyed(): boolean;
   executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>;
   insertText(text: string): Promise<void>;
@@ -270,6 +273,8 @@ function tabInfoFromContents(
     openerBrowserId?: string;
   },
 ) {
+  const isLoading = contents.isLoading();
+  const loading = isLoading ? (contents.getLoadingInfo?.() ?? null) : null;
   return {
     browserId,
     ...(workspaceId ? { workspaceId } : {}),
@@ -280,10 +285,13 @@ function tabInfoFromContents(
           ...(metadata.openerBrowserId ? { openerBrowserId: metadata.openerBrowserId } : {}),
         }
       : {}),
-    url: contents.getURL(),
+    // A tab whose first navigation has not committed has no URL yet; report
+    // the one it is loading.
+    url: contents.getURL() || loading?.url || "",
     title: contents.getTitle(),
     isActive: activeBrowserId === browserId,
-    isLoading: contents.isLoading(),
+    isLoading,
+    ...(loading ? { loadingForMs: loading.loadingForMs } : {}),
     canGoBack: contents.canGoBack(),
     canGoForward: contents.canGoForward(),
   };

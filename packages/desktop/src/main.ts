@@ -82,6 +82,7 @@ import {
   type BrowserPopupViewPort,
 } from "./features/browser-webviews/popup-targets.js";
 import {
+  applyPaseoBrowserProfileUserAgent,
   clearPaseoBrowserProfile,
   getLegacyPaseoBrowserProfileSession,
   PASEO_BROWSER_PROFILE_PARTITION,
@@ -1392,6 +1393,9 @@ async function bootstrap(): Promise<void> {
   }
 
   await app.whenReady();
+  // Before any window exists: browser webviews and popups take the session's user agent
+  // when they are created.
+  applyPaseoBrowserProfileUserAgent(session, app.getName());
 
   const appDistDir = getAppDistDir();
   protocol.handle(APP_SCHEME, (request) => {

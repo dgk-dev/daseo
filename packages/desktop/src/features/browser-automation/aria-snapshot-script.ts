@@ -210,11 +210,30 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
     if (element.getAttribute('aria-expanded')) attrs.push('expanded=' + element.getAttribute('aria-expanded'));
     if (element.getAttribute('aria-pressed')) attrs.push('pressed=' + element.getAttribute('aria-pressed'));
     if (element.getAttribute('aria-selected')) attrs.push('selected=' + element.getAttribute('aria-selected'));
+    // Disabled controls get no ref (isActionable); the attribute says why.
+    if (ACTIONABLE_ROLES.has(role) && inheritedDisabled(element)) attrs.push('disabled=true');
+    if (element === focusedElement) attrs.push('focused=true');
     return attrs;
   }
 
-  function textNode(text) {
-    return { kind: 'text', text };
+  // The element keyboard input goes to: document.activeElement, followed into
+  // open shadow roots, whose host is what the document reports as active.
+  function deepActiveElement() {
+    let active = document.activeElement;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) {
+      active = active.shadowRoot.activeElement;
+    }
+    return active === document.body || active === document.documentElement ? null : active;
+  }
+
+  // leadingSpace/trailingSpace record whitespace the page had at the edges of the
+  // run before normalizeText trimmed it, so the renderer joins inline runs with a
+  // space only where the page has one ("<span>T</span><span>h</span>" is "Th").
+  function textNode(text, leadingSpace, trailingSpace) {
+    const node = { kind: 'text', text };
+    if (leadingSpace) node.leadingSpace = true;
+    if (trailingSpace) node.trailingSpace = true;
+    return node;
   }
 
   function elementNode(element, role, name) {
@@ -235,6 +254,7 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
   let truncated = false;
   let textBudget = MAX_TEXT_LENGTH;
   const runtime = ensureRuntime();
+  const focusedElement = deepActiveElement();
 
   function countNode(depth) {
     if (nodeCount >= MAX_NODES) {
@@ -278,9 +298,11 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
   function visitNode(domNode, depth) {
     if (!countNode(depth)) return null;
     if (domNode.nodeType === Node.TEXT_NODE) {
-      const text = cappedText(normalizeText(domNode.textContent));
-      if (!text) return null;
-      return textNode(text);
+      const raw = String(domNode.textContent || '').replace(/[\u200b\u00ad]/g, '');
+      const text = cappedText(normalizeText(raw));
+      // A whitespace-only run renders nothing but still separates its neighbours.
+      if (!text) return /\s/.test(raw) ? textNode('', true, true) : null;
+      return textNode(text, /^\s/.test(raw), /\s$/.test(raw));
     }
     if (!(domNode instanceof Element)) return null;
     const visibility = visibilityFor(domNode);

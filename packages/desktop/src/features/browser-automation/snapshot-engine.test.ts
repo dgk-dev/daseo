@@ -79,9 +79,9 @@ describe("BrowserSnapshotEngine", () => {
         kind: "group",
         block: true,
         children: [
-          { kind: "text", text: "Hello" },
+          { kind: "text", text: "Hello", trailingSpace: true },
           { kind: "group", children: [{ kind: "text", text: "bold" }] },
-          { kind: "text", text: "world" },
+          { kind: "text", text: "world", leadingSpace: true },
         ],
       },
     ];
@@ -118,7 +118,7 @@ describe("BrowserSnapshotEngine", () => {
         },
         children: [
           { kind: "group", children: [{ kind: "text", text: "Save" }] },
-          { kind: "text", text: "changes" },
+          { kind: "text", text: "changes", leadingSpace: true },
         ],
       },
       {
@@ -128,7 +128,7 @@ describe("BrowserSnapshotEngine", () => {
         tagName: "li",
         attributes: [],
         children: [
-          { kind: "text", text: "Price:" },
+          { kind: "text", text: "Price:", trailingSpace: true },
           { kind: "group", children: [{ kind: "text", text: "$5" }] },
         ],
       },

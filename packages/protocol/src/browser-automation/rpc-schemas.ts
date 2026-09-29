@@ -338,6 +338,8 @@ export const BrowserAutomationTabInfoSchema = z.object({
   title: z.string(),
   isActive: z.boolean().default(false),
   isLoading: z.boolean().default(false),
+  /** How long the tab has been loading, present only while it is. */
+  loadingForMs: z.number().int().nonnegative().optional(),
   canGoBack: z.boolean().optional(),
   canGoForward: z.boolean().optional(),
 });

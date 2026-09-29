@@ -309,6 +309,31 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     `info`. The in-memory snapshot behind the diagnostics RPC still updates every window. Key file:
     `packages/server/src/server/websocket-server.ts` (`isRuntimeMetricsWindowAnomalous`). Takes
     effect with the next release and daemon restart.
+26. **Browser harness details from the Aside comparison** — the trade-off-free parts of a
+    2026-09-29 comparison with Aside's browser agent, each from a live measurement:
+    - The browser profile session (`persist:paseo-browser`, used by browser webviews and popups)
+      sends a plain Chrome user agent: the `Paseo/<version>` and `Electron/<version>` tokens are
+      removed, the Chrome version stays, and Paseo's own renderer keeps Electron's default. It is
+      set right after `app.whenReady()` because existing WebContents keep the old value. Key
+      files: `packages/desktop/src/features/browser-profile.ts` and `packages/desktop/src/main.ts`.
+    - Snapshots mark `focused=true` on the element keyboard input goes to (followed into open
+      shadow roots) and `disabled=true` on disabled controls, which still get no ref, so the agent
+      sees why a button has none. Key file: `aria-snapshot-script.ts`.
+    - A tab-scoped request that is about to time out on a tab that is still loading says so:
+      `Tab <id> has been loading <N>s (url: …). The page has not finished loading; …`. Electron's
+      `executeJavaScript` waits for the load to stop, so one stuck load (a Cafe24 admin tab loading
+      for over 3 minutes) timed out every tab-scoped tool with "did not respond". One second
+      before its timeout the broker asks that tab's host through `list_tabs`, which now carries
+      `loadingForMs` (and the URL being loaded when none has committed), and `browser_list_tabs`
+      shows `loading=<N>s`. Key files: `packages/server/src/server/browser-tools/broker.ts`,
+      `packages/desktop/src/features/browser-automation/load-tracker.ts`, and the optional
+      `loadingForMs` in `packages/protocol/src/browser-automation/rpc-schemas.ts`.
+    - Merged inline text gets a space only where the page has whitespace between the runs. The
+      capture records leading/trailing whitespace per text run before trimming, and a
+      whitespace-only run separates its neighbours; a page that wraps each character in a span
+      (example.com) rendered as `T h i s d o m a i n` before. Key files:
+      `aria-snapshot-script.ts` and `snapshot-engine.ts`, tested by running the real capture
+      script in jsdom (`aria-snapshot-script.test.ts`).
 
 ## Local reliability contracts
 

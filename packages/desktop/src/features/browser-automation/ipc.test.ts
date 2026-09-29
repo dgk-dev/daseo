@@ -126,7 +126,7 @@ class FakeWebContents {
   }> = [];
   public readonly invalidations: string[] = [];
   private consoleMessageListener: ConsoleMessageListener | null = null;
-  private destroyedListener: (() => void) | null = null;
+  private readonly destroyedListeners: Array<() => void> = [];
   public destroyed = false;
 
   public constructor(private readonly webContentsId: number) {}
@@ -203,7 +203,7 @@ class FakeWebContents {
 
   public once(event: "destroyed", listener: () => void): void {
     expect(event).toBe("destroyed");
-    this.destroyedListener = listener;
+    this.destroyedListeners.push(listener);
   }
 
   public emitConsoleMessage(input: {
@@ -221,7 +221,7 @@ class FakeWebContents {
   public destroy(): void {
     this.destroyed = true;
     this.debugger.emitDetach();
-    this.destroyedListener?.();
+    for (const listener of this.destroyedListeners) listener();
   }
 }
 

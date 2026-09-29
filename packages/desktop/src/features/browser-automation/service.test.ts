@@ -610,6 +610,44 @@ describe("executeAutomationCommand", () => {
     });
   });
 
+  test("list tabs reports how long a loading tab has been loading and the URL it is loading", () => {
+    class LoadingTab extends FakeTab {
+      public override isLoading(): boolean {
+        return true;
+      }
+
+      public getLoadingInfo() {
+        return { loadingForMs: 183_000, url: "https://slow.test/admin" };
+      }
+    }
+    const registry = new FakeRegistry();
+    registry.register(BROWSER_A, WORKSPACE_A, new LoadingTab(1, "", ""));
+
+    const result = executeAutomationCommand(
+      automationRequest(
+        { command: "list_tabs", args: {} },
+        { requestId: "req-loading", workspaceId: "" },
+      ),
+      registry,
+    );
+
+    expect(result).toEqual({
+      requestId: "req-loading",
+      ok: true,
+      result: {
+        command: "list_tabs",
+        tabs: [
+          expect.objectContaining({
+            browserId: BROWSER_A,
+            url: "https://slow.test/admin",
+            isLoading: true,
+            loadingForMs: 183_000,
+          }),
+        ],
+      },
+    });
+  });
+
   test("list tabs reports popup ownership and logical activity", () => {
     const registry = new FakeRegistry();
     registry.register(BROWSER_A, WORKSPACE_A, new FakeTab(1, "https://app.test", "App"));

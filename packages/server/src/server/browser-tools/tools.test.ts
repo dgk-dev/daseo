@@ -622,6 +622,37 @@ describe("registerBrowserTools", () => {
     ]);
   });
 
+  test("list tabs says how long a tab has been loading", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-loading",
+      ok: true,
+      result: {
+        command: "list_tabs",
+        tabs: [
+          {
+            browserId: BROWSER_ID,
+            workspaceId: "wks_workspace_a",
+            url: "https://slow.example.com/admin",
+            title: "",
+            isActive: false,
+            isLoading: true,
+            loadingForMs: 183_400,
+          },
+        ],
+      },
+    });
+
+    const response = await harness.execute("browser_list_tabs", {});
+
+    expect(response.content).toEqual([
+      {
+        type: "text",
+        text: `Found 1 Paseo browser target. Use these browserId values for target-scoped browser tools.\n- browserId=${BROWSER_ID} loading=183s title="Untitled" url=https://slow.example.com/admin`,
+      },
+    ]);
+  });
+
   test("new tab sends workspace in the request envelope", async () => {
     const harness = new BrowserToolHarness();
     harness.broker.setResponse(newTabPayload());

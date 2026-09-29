@@ -27,6 +27,7 @@ import {
   type FullPageCaptureImage,
 } from "./full-page-capture.js";
 import { BrowserSnapshotEngine } from "./snapshot-engine.js";
+import { observeTabLoading, tabLoadingInfo } from "./load-tracker.js";
 import {
   listRegisteredPaseoBrowserIds,
   listRegisteredPaseoBrowserIdsForWorkspace,
@@ -122,6 +123,11 @@ interface BrowserAutomationWebContents extends ConsoleMessageEmitter {
   invalidate(): void;
   sendInputEvent(event: IsolatedKeyboardInputEvent): void;
   addListener?(event: "did-navigate", listener: (event: unknown, url: string) => void): unknown;
+  addListener?(event: "did-start-loading" | "did-stop-loading", listener: () => void): unknown;
+  addListener?(
+    event: "did-start-navigation",
+    listener: (details: { url?: string; isMainFrame?: boolean; isSameDocument?: boolean }) => void,
+  ): unknown;
   removeListener?(event: "did-navigate", listener: (event: unknown, url: string) => void): unknown;
 }
 
@@ -144,6 +150,17 @@ export function preparePersistentBrowserDialogMonitoring(
 export function adaptWebContents(contents: BrowserAutomationWebContents): TabContents {
   const contentsId = contents.id;
   observeConsoleMessages(contents, contentsId);
+  observeTabLoading({
+    id: contentsId,
+    isLoading: () => contents.isLoading(),
+    onStartLoading: (listener) => contents.addListener?.("did-start-loading", listener),
+    onStopLoading: (listener) => contents.addListener?.("did-stop-loading", listener),
+    onStartMainFrameNavigation: (listener) =>
+      contents.addListener?.("did-start-navigation", (details) => {
+        if (details.isMainFrame && !details.isSameDocument && details.url) listener(details.url);
+      }),
+    onDestroyed: (listener) => contents.once("destroyed", listener),
+  });
   const cdpQueue = getCdpQueue(contentsId);
   const dialogMonitor = getDialogMonitor(contents, contentsId, cdpQueue);
   return {
@@ -153,6 +170,7 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
     canGoBack: () => contents.canGoBack(),
     canGoForward: () => contents.canGoForward(),
     isLoading: () => contents.isLoading(),
+    getLoadingInfo: () => tabLoadingInfo(contentsId, contents.isLoading()),
     isDestroyed: () => contents.isDestroyed(),
     executeJavaScript: (code: string, userGesture?: boolean) => {
       markPaseoBrowserAutomationActivity(contentsId);

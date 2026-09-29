@@ -807,6 +807,126 @@ describe("BrowserToolsBroker", () => {
     expect(broker.getPendingRequestCount()).toBe(0);
   });
 
+  test("a tab-scoped timeout on a tab that is still loading says so", async () => {
+    vi.useFakeTimers();
+    const broker = createBroker({ timeoutMs: 15_000 });
+    const client = new FakeBrowserHostClient("host-1");
+    broker.registerClient(client);
+
+    const resultPromise = broker.execute({ command: snapshotCommand() });
+    await vi.advanceTimersByTimeAsync(14_000);
+
+    const probe = client.receivedRequests.at(-1);
+    expect(probe).toEqual({
+      type: "browser.automation.execute.request",
+      requestId: "req-1:loading-probe",
+      command: { command: "list_tabs", args: {} },
+    });
+    client.resolveLatestWith(broker, {
+      requestId: "req-1:loading-probe",
+      ok: true,
+      result: {
+        command: "list_tabs",
+        tabs: [
+          {
+            browserId: BROWSER_ID,
+            url: "https://dfcorpo.cafe24.com/disp/admin/shop1/product/productmanage",
+            title: "",
+            isActive: false,
+            isLoading: true,
+            loadingForMs: 183_000,
+          },
+        ],
+      },
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await expect(resultPromise).resolves.toEqual({
+      requestId: "req-1",
+      ok: false,
+      error: {
+        code: "browser_timeout",
+        message: `Tab ${BROWSER_ID} has been loading 183s (url: https://dfcorpo.cafe24.com/disp/admin/shop1/product/productmanage). The page has not finished loading; try browser_reload, a different URL, or wait.`,
+        retryable: true,
+      },
+    });
+    expect(broker.getPendingRequestCount()).toBe(0);
+  });
+
+  test("a tab-scoped timeout keeps the generic message when the tab is not loading", async () => {
+    vi.useFakeTimers();
+    const broker = createBroker({ timeoutMs: 15_000 });
+    const client = new FakeBrowserHostClient("host-1");
+    broker.registerClient(client);
+
+    const resultPromise = broker.execute({ command: snapshotCommand() });
+    await vi.advanceTimersByTimeAsync(14_000);
+    client.resolveLatestWith(broker, {
+      requestId: "req-1:loading-probe",
+      ok: true,
+      result: {
+        command: "list_tabs",
+        tabs: [
+          {
+            browserId: BROWSER_ID,
+            url: "https://example.com",
+            title: "Example",
+            isActive: false,
+            isLoading: false,
+          },
+        ],
+      },
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await expect(resultPromise).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "browser_timeout",
+        message: "The browser did not respond within 15000ms. Try again or check the browser host.",
+      },
+    });
+  });
+
+  test("a request answered before the loading probe is due sends no probe", async () => {
+    vi.useFakeTimers();
+    const broker = createBroker({ timeoutMs: 15_000 });
+    const client = new FakeBrowserHostClient("host-1");
+    broker.registerClient(client);
+
+    const resultPromise = broker.execute({ command: snapshotCommand() });
+    client.resolveLatestWith(broker, {
+      requestId: "req-1",
+      ok: false,
+      error: { code: "browser_stale_ref", message: "stale", retryable: false },
+    });
+    await resultPromise;
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(client.receivedRequests).toHaveLength(1);
+    expect(broker.getPendingRequestCount()).toBe(0);
+  });
+
+  test("an unanswered loading probe is dropped when the request settles", async () => {
+    vi.useFakeTimers();
+    const broker = createBroker({ timeoutMs: 15_000 });
+    const client = new FakeBrowserHostClient("host-1");
+    broker.registerClient(client);
+
+    const resultPromise = broker.execute({ command: snapshotCommand() });
+    await vi.advanceTimersByTimeAsync(14_500);
+    expect(broker.getPendingRequestCount()).toBe(2);
+    const [original] = client.receivedRequests;
+    client.resolveRequestWith(broker, original, {
+      requestId: "req-1",
+      ok: false,
+      error: { code: "browser_stale_ref", message: "stale", retryable: false },
+    });
+    await resultPromise;
+
+    expect(broker.getPendingRequestCount()).toBe(0);
+  });
+
   test("disconnect resolves retryable failure and clears pending request", async () => {
     const broker = createBroker();
     const client = new FakeBrowserHostClient("host-1");

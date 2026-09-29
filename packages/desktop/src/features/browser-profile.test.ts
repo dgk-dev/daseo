@@ -1,11 +1,50 @@
 import { describe, expect, test } from "vitest";
 import {
+  applyPaseoBrowserProfileUserAgent,
   clearPaseoBrowserProfile,
   getLegacyPaseoBrowserProfileSession,
   getPaseoBrowserProfileSessions,
   listPaseoBrowserProfileGuests,
+  PASEO_BROWSER_PROFILE_PARTITION,
+  plainChromeUserAgent,
   readLegacyPaseoBrowserIds,
 } from "./browser-profile.js";
+
+// Measured on Daseo 0.5.36 (2026-09-29).
+const ELECTRON_DEFAULT_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Paseo/0.5.36 Chrome/146.0.7680.216 Electron/41.10.6 Safari/537.36";
+
+describe("browser profile user agent", () => {
+  test("drops the app and Electron tokens and keeps the Chrome version", () => {
+    expect(plainChromeUserAgent(ELECTRON_DEFAULT_USER_AGENT, "Paseo")).toBe(
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.216 Safari/537.36",
+    );
+  });
+
+  test("leaves a plain Chrome user agent unchanged", () => {
+    const chrome =
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.216 Safari/537.36";
+    expect(plainChromeUserAgent(chrome, "Paseo")).toBe(chrome);
+  });
+
+  test("sets the plain user agent on the browser profile session only", () => {
+    const set = new Map<string, string>();
+    applyPaseoBrowserProfileUserAgent(
+      {
+        fromPartition: (partition) => ({
+          getUserAgent: () => ELECTRON_DEFAULT_USER_AGENT,
+          setUserAgent: (userAgent) => set.set(partition, userAgent),
+        }),
+      },
+      "Paseo",
+    );
+    expect([...set.keys()]).toEqual([PASEO_BROWSER_PROFILE_PARTITION]);
+    const applied = set.get(PASEO_BROWSER_PROFILE_PARTITION) ?? "";
+    expect(applied).not.toMatch(/Electron\//);
+    expect(applied).not.toMatch(/Paseo\//);
+    expect(applied).toContain("Chrome/146.0.7680.216");
+  });
+});
 
 class FakeProfileSession {
   public readonly storageClears: unknown[] = [];

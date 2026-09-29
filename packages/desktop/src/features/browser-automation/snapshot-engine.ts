@@ -32,6 +32,10 @@ interface SnapshotNode {
   children?: SnapshotNode[];
   /** Groups only: the element lays out as a block, so its text never joins a neighbour's line. */
   block?: boolean;
+  /** Text only: the page had whitespace before/after this run. An empty text node is a
+   *  whitespace-only run: it renders nothing but separates its neighbours. */
+  leadingSpace?: boolean;
+  trailingSpace?: boolean;
 }
 
 interface BrowserRefFingerprint {
@@ -213,7 +217,7 @@ function parseSnapshotNode(value: unknown): SnapshotNode | null {
       ? { fingerprint: parseFingerprint(record.fingerprint) ?? undefined }
       : {}),
     attributes: readStringArray(record.attributes),
-    ...(record.block === true ? { block: true } : {}),
+    ...readLayoutFlags(record),
     children: Array.isArray(record.children)
       ? record.children.flatMap((child): SnapshotNode[] => {
           const parsed = parseSnapshotNode(child);
@@ -221,6 +225,16 @@ function parseSnapshotNode(value: unknown): SnapshotNode | null {
         })
       : [],
   };
+}
+
+function readLayoutFlags(
+  record: Record<string, unknown>,
+): Pick<SnapshotNode, "block" | "leadingSpace" | "trailingSpace"> {
+  const flags: Pick<SnapshotNode, "block" | "leadingSpace" | "trailingSpace"> = {};
+  for (const key of ["block", "leadingSpace", "trailingSpace"] as const) {
+    if (record[key] === true) flags[key] = true;
+  }
+  return flags;
 }
 
 function parseRefs(value: unknown): BrowserRefMetadata[] {
@@ -298,27 +312,41 @@ function renderNode(node: SnapshotNode, depth: number): string[] {
 // Groups render transparently, so their text lands beside the parent's other
 // text. Runs joined only by inline markup ("Hello <b>bold</b> world") merge into
 // one line, while block boundaries (list rows, paragraphs) keep their own lines.
+// A merge inserts a space only where the page had whitespace between the runs:
+// pages that wrap each character in its own span (example.com) rendered as
+// "T h i s d o m a i n" when every join added one.
 // A lone run that only repeats the node's accessible name is dropped, as in
 // Playwright's ariaSnapshot: `link "Learn more"` no longer carries a second
 // `text: "Learn more"` line.
 function renderedChildNodes(node: SnapshotNode): SnapshotNode[] {
   const merged: SnapshotNode[] = [];
   let joinable = false;
+  let whitespaceBetween = false;
   for (const child of flattenGroups(node.children ?? [])) {
     if (child === BLOCK_BOUNDARY) {
       joinable = false;
+      whitespaceBetween = false;
+      continue;
+    }
+    if (child.kind === "text" && !child.text) {
+      whitespaceBetween = true;
       continue;
     }
     const previous = merged.at(-1);
     if (child.kind === "text" && joinable && previous?.kind === "text") {
+      const separator =
+        whitespaceBetween || previous.trailingSpace || child.leadingSpace ? " " : "";
       merged[merged.length - 1] = {
         ...previous,
-        text: `${previous.text ?? ""} ${child.text ?? ""}`.trim(),
+        text: `${previous.text ?? ""}${separator}${child.text ?? ""}`,
+        trailingSpace: child.trailingSpace === true,
       };
+      whitespaceBetween = false;
       continue;
     }
     merged.push(child);
     joinable = child.kind === "text";
+    whitespaceBetween = false;
   }
   const only = merged.length === 1 ? merged[0] : undefined;
   if (only?.kind === "text" && node.name && only.text === node.name) {
