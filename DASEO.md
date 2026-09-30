@@ -283,7 +283,8 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     `browser_logs` clamps `maxEntries`. The Pi MCP config marks the `paseo` server as
     `lifecycle: "eager"` because its per-agent URL never matches pi-mcp-adapter's metadata cache,
     so the lazy default showed "configured but not connected" in 213 sessions and idled out after
-    10 minutes. Key files: the `packages/desktop/src/features/browser-automation/` modules
+    10 minutes. The merged base is `~/.pi/agent/mcp-adapter.json` since pi-mcp-adapter 3.0 (Pi
+    0.99's built-in MCP, disabled here, owns `mcp.json`), with `mcp.json` as the fallback. Key files: the `packages/desktop/src/features/browser-automation/` modules
     `actionability`, `aria-snapshot-script`, `snapshot-engine`, `ipc`, and `service`;
     `packages/server/src/server/browser-tools/tools.ts` and `broker.ts`; and
     `packages/server/src/server/agent/providers/pi/agent.ts`. Second pass (0.5.35): snapshot refs

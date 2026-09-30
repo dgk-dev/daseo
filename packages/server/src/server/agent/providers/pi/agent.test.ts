@@ -3007,6 +3007,38 @@ describe("PiRpcAgentClient", () => {
     expect(existsSync(configPath!)).toBe(false);
   });
 
+  test("prefers pi-mcp-adapter 3's mcp-adapter.json over mcp.json", async () => {
+    const agentDir = mkdtempSync(path.join(tmpdir(), "paseo-pi-agent-"));
+    onTestFinished(() => rmSync(agentDir, { recursive: true, force: true }));
+    writeFileSync(
+      path.join(agentDir, "mcp.json"),
+      JSON.stringify({ mcpServers: { builtin: { url: "https://example.com/mcp/builtin" } } }),
+    );
+    writeFileSync(
+      path.join(agentDir, "mcp-adapter.json"),
+      JSON.stringify({ mcpServers: { adapter: { url: "https://example.com/mcp/adapter" } } }),
+    );
+    const pi = new FakePi();
+    pi.queueCommands([
+      { name: "mcp", source: "extension", sourceInfo: { source: "npm:pi-mcp-adapter" } },
+    ]);
+    const client = createClient(pi);
+
+    const session = await client.createSession(
+      createConfig({
+        mcpServers: { paseo: { type: "http", url: "http://127.0.0.1:6767/mcp/agents" } },
+      }),
+      { env: { PI_CODING_AGENT_DIR: agentDir } },
+    );
+
+    const configPath = pi.recordedLaunches[1]!.mcpConfigPath;
+    const injected = JSON.parse(readUtf8File(configPath!)) as {
+      mcpServers: Record<string, unknown>;
+    };
+    expect(Object.keys(injected.mcpServers)).toEqual(["adapter", "paseo"]);
+    await session.close();
+  });
+
   test("reports the path of a malformed Pi global MCP config", async () => {
     const agentDir = mkdtempSync(path.join(tmpdir(), "paseo-pi-agent-"));
     onTestFinished(() => rmSync(agentDir, { recursive: true, force: true }));

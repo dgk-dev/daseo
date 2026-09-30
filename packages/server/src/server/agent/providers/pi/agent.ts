@@ -783,7 +783,13 @@ function resolvePiAgentDir(env: Record<string, string> | undefined): string {
 }
 
 function readPiGlobalMcpConfig(env: Record<string, string> | undefined): Record<string, unknown> {
-  const globalConfigPath = join(resolvePiAgentDir(env), "mcp.json");
+  // pi-mcp-adapter 3.0 reads mcp-adapter.json (mcp.json now belongs to Pi's built-in MCP);
+  // mcp.json stays the fallback for pre-3.0 installs.
+  const agentDir = resolvePiAgentDir(env);
+  const adapterConfigPath = join(agentDir, "mcp-adapter.json");
+  const globalConfigPath = existsSync(adapterConfigPath)
+    ? adapterConfigPath
+    : join(agentDir, "mcp.json");
   if (!existsSync(globalConfigPath)) {
     return {};
   }
