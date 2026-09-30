@@ -9,6 +9,7 @@ import type {
 import {
   deriveAgentStateBucket,
   getWorkspaceStateBucketPriority,
+  isAgentWaitingInBackground,
   type WorkspaceStateBucket,
 } from "@getpaseo/protocol/agent-state-bucket";
 import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
@@ -367,17 +368,21 @@ export class WorkspaceDirectory {
         continue;
       }
       const isWorkspaceRoot = workspaceAgent.id === agent.id;
-      if (!isWorkspaceRoot && agent.status !== "running") {
+      const bucketInput = {
+        status: agent.status,
+        pendingPermissionCount: agent.pendingPermissions?.length ?? 0,
+        requiresAttention: agent.requiresAttention,
+        attentionReason: agent.attentionReason ?? null,
+        backgroundWaits: agent.backgroundWaits,
+      };
+      if (
+        !isWorkspaceRoot &&
+        agent.status !== "running" &&
+        !isAgentWaitingInBackground(bucketInput)
+      ) {
         continue;
       }
-      const bucket = isWorkspaceRoot
-        ? deriveAgentStateBucket({
-            status: agent.status,
-            pendingPermissionCount: agent.pendingPermissions?.length ?? 0,
-            requiresAttention: agent.requiresAttention,
-            attentionReason: agent.attentionReason ?? null,
-          })
-        : "running";
+      const bucket = isWorkspaceRoot ? deriveAgentStateBucket(bucketInput) : "running";
 
       const workspaceId = workspaceAgent.workspaceId;
       if (!workspaceId) {
@@ -525,6 +530,7 @@ export class WorkspaceDirectory {
           pendingPermissionCount: agent.pendingPermissions?.length ?? 0,
           requiresAttention: agent.requiresAttention,
           attentionReason: agent.attentionReason ?? null,
+          backgroundWaits: agent.backgroundWaits,
         });
         return derived === winningBucket;
       })

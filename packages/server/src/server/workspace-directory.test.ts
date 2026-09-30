@@ -244,6 +244,7 @@ interface AgentState {
   pendingPermissionCount?: number;
   requiresAttention?: boolean;
   attentionReason?: AgentSnapshotPayload["attentionReason"];
+  backgroundWaits?: AgentSnapshotPayload["backgroundWaits"];
 }
 
 function createAgent(
@@ -289,6 +290,7 @@ function createAgent(
     attentionReason: input.attentionReason ?? null,
     attentionTimestamp: null,
     archivedAt: null,
+    ...(input.backgroundWaits ? { backgroundWaits: input.backgroundWaits } : {}),
   } satisfies AgentSnapshotPayload;
 }
 
@@ -389,6 +391,25 @@ describe("WorkspaceDirectory", () => {
     workspace.hasDelegatedAgent({ id: "child-agent", status: "running" });
 
     await expect(workspace.workspaceStatus()).resolves.toBe("running");
+  });
+
+  test("idle agents with pending background waits contribute running to their workspace", async () => {
+    const root = new WorkspaceStatus();
+    root.hasRootAgent({
+      id: "root-agent",
+      status: "idle",
+      backgroundWaits: { pending: 1, labels: ["web build"] },
+    });
+    await expect(root.workspaceStatus()).resolves.toBe("running");
+
+    const delegated = new WorkspaceStatus();
+    delegated.hasRootAgent({ id: "parent-agent", status: "idle" });
+    delegated.hasDelegatedAgent({
+      id: "child-agent",
+      status: "idle",
+      backgroundWaits: { pending: 2, labels: ["deploy", "tests"] },
+    });
+    await expect(delegated.workspaceStatus()).resolves.toBe("running");
   });
 
   test("provider subagent follows its cross-workspace parent", async () => {

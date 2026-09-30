@@ -331,6 +331,10 @@ function storeFetchedAgentDetail(input: {
   return hydrated;
 }
 
+function countPendingBackgroundWaits(agent: Agent | null): number {
+  return agent?.backgroundWaits?.pending ?? 0;
+}
+
 function useAgentPanelDescriptor(
   target: { kind: "agent"; agentId: string },
   context: { serverId: string },
@@ -347,6 +351,7 @@ function useAgentPanelDescriptor(
         pendingPermissionCount: agent?.pendingPermissions.length ?? 0,
         requiresAttention: agent?.requiresAttention ?? false,
         attentionReason: agent?.attentionReason ?? null,
+        backgroundWaitsPending: countPendingBackgroundWaits(agent),
         isTurnActive: selectAgentTurnPresentation(session, target.agentId).isActive,
       };
     }),
@@ -367,6 +372,7 @@ function useAgentPanelDescriptor(
           pendingPermissionCount: descriptorState.pendingPermissionCount,
           requiresAttention: descriptorState.requiresAttention,
           attentionReason: descriptorState.attentionReason,
+          backgroundWaits: { pending: descriptorState.backgroundWaitsPending },
         })
       : null,
   };

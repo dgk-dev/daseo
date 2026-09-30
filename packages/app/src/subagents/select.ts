@@ -16,6 +16,7 @@ export interface PaseoSubagentRow {
   subtitle: null;
   status: Agent["status"];
   requiresAttention: Agent["requiresAttention"];
+  backgroundWaits?: Agent["backgroundWaits"];
   createdAt: Agent["createdAt"];
 }
 
@@ -59,6 +60,7 @@ function toSubagentRow(agent: Agent): SubagentRow {
     subtitle: null,
     status: agent.status,
     requiresAttention: agent.requiresAttention,
+    ...(agent.backgroundWaits ? { backgroundWaits: agent.backgroundWaits } : {}),
     createdAt: agent.createdAt,
   };
 }

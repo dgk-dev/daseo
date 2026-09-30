@@ -841,6 +841,15 @@ const AgentRuntimeInfoSchema: z.ZodType<AgentRuntimeInfo> = z.object({
   extra: z.record(z.string(), z.unknown()).optional(),
 });
 
+// Daseo: waits registered with pi-local's wait_for that will still wake an idle agent.
+// labels are the pending waits' descriptions, newest first, at most 3.
+export const AgentBackgroundWaitsPayloadSchema = z.object({
+  pending: z.number().int().nonnegative(),
+  labels: z.array(z.string()),
+});
+
+export type AgentBackgroundWaitsPayload = z.infer<typeof AgentBackgroundWaitsPayloadSchema>;
+
 const AgentActiveTurnPayloadSchema = z.object({
   turnId: z.string(),
   startedAt: z.string().nullable(),
@@ -875,6 +884,7 @@ export const AgentSnapshotPayloadSchema = z.object({
   attentionTimestamp: z.string().nullable().optional(),
   archivedAt: z.string().nullable().optional(),
   providerUnavailable: z.boolean().optional(),
+  backgroundWaits: AgentBackgroundWaitsPayloadSchema.optional(),
 });
 
 export type AgentSnapshotPayload = z.infer<typeof AgentSnapshotPayloadSchema>;
@@ -898,6 +908,7 @@ export const AgentListItemPayloadSchema = z.object({
   attentionTimestamp: z.string().nullable().optional(),
   labels: z.record(z.string(), z.string()).default({}),
   providerUnavailable: z.boolean().optional(),
+  backgroundWaits: AgentBackgroundWaitsPayloadSchema.optional(),
 });
 
 export type AgentListItemPayload = z.infer<typeof AgentListItemPayloadSchema>;

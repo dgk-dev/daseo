@@ -3828,7 +3828,7 @@ test("archiveAgent does not cascade to a detached former child", async () => {
 });
 
 class BackgroundWaitTestSession extends TestAgentSession {
-  backgroundWaits: AgentBackgroundWaits = { pending: 0, raisedAt: null };
+  backgroundWaits: AgentBackgroundWaits = { pending: 0, raisedAt: null, labels: [] };
 }
 
 class BackgroundWaitTestClient extends TestAgentClient {
@@ -3864,7 +3864,7 @@ async function createBackgroundWaitScenario(idSuffix: string) {
 
 test("an agent that ends its turn with pending background waits is not finished until the wake turn ends", async () => {
   const { manager, client, attentionReasons, agentId } = await createBackgroundWaitScenario("01");
-  client.session!.backgroundWaits = { pending: 1, raisedAt: Date.now() };
+  client.session!.backgroundWaits = { pending: 1, raisedAt: Date.now(), labels: ["build"] };
 
   await manager.runAgent(agentId, "start the build and wait");
   await manager.flush();
@@ -3874,7 +3874,7 @@ test("an agent that ends its turn with pending background waits is not finished 
   expect(attentionReasons).toEqual([]);
 
   // The wake turn reports pending=0; its idle is the real finish.
-  client.session!.backgroundWaits = { pending: 0, raisedAt: null };
+  client.session!.backgroundWaits = { pending: 0, raisedAt: null, labels: [] };
   await manager.runAgent(agentId, "wake");
   await manager.flush();
   expect(manager.getAgent(agentId)?.attention).toMatchObject({
@@ -3889,6 +3889,7 @@ test("a background-wait hold older than the maximum expires and the idle counts 
   client.session!.backgroundWaits = {
     pending: 1,
     raisedAt: Date.now() - BACKGROUND_WAIT_HOLD_MAX_MS - 1_000,
+    labels: ["stale job"],
   };
 
   await manager.runAgent(agentId, "wait on a job that never reported back");
@@ -3897,15 +3898,59 @@ test("a background-wait hold older than the maximum expires and the idle counts 
   expect(attentionReasons).toEqual(["finished"]);
 });
 
+test("the snapshot carries pending background waits with their labels, and drops them at zero", async () => {
+  const { manager, client, agentId } = await createBackgroundWaitScenario("04");
+  client.session!.backgroundWaits = {
+    pending: 2,
+    raisedAt: Date.now(),
+    labels: ["deploy log", "web build"],
+  };
+  await manager.runAgent(agentId, "build and deploy, then wait");
+  await manager.flush();
+  const waiting = toAgentPayload(manager.getAgent(agentId)!);
+  expect(waiting.status).toBe("idle");
+  expect(waiting.backgroundWaits).toEqual({ pending: 2, labels: ["deploy log", "web build"] });
+
+  // The wake for the build settles one wait.
+  client.session!.backgroundWaits = {
+    pending: 1,
+    raisedAt: Date.now(),
+    labels: ["deploy log"],
+  };
+  await manager.runAgent(agentId, "wake: web build exited");
+  await manager.flush();
+  expect(toAgentPayload(manager.getAgent(agentId)!).backgroundWaits).toEqual({
+    pending: 1,
+    labels: ["deploy log"],
+  });
+
+  client.session!.backgroundWaits = { pending: 0, raisedAt: null, labels: [] };
+  await manager.runAgent(agentId, "wake: deploy log exited");
+  await manager.flush();
+  expect(toAgentPayload(manager.getAgent(agentId)!).backgroundWaits).toBeUndefined();
+});
+
+test("an expired background-wait hold is not shown on the snapshot", async () => {
+  const { manager, client, agentId } = await createBackgroundWaitScenario("05");
+  client.session!.backgroundWaits = {
+    pending: 1,
+    raisedAt: Date.now() - BACKGROUND_WAIT_HOLD_MAX_MS - 1_000,
+    labels: ["stale job"],
+  };
+  await manager.runAgent(agentId, "wait on a job that never reported back");
+  await manager.flush();
+  expect(toAgentPayload(manager.getAgent(agentId)!).backgroundWaits).toBeUndefined();
+});
+
 test("a deferred finish is released on the next idle state once the waits are gone", async () => {
   const { manager, client, attentionReasons, agentId } = await createBackgroundWaitScenario("03");
-  client.session!.backgroundWaits = { pending: 2, raisedAt: Date.now() };
+  client.session!.backgroundWaits = { pending: 2, raisedAt: Date.now(), labels: ["b", "a"] };
   await manager.runAgent(agentId, "wait");
   await manager.flush();
   expect(attentionReasons).toEqual([]);
 
   // A Pi restart clears the count while the agent stays idle; the next state emission finishes it.
-  client.session!.backgroundWaits = { pending: 0, raisedAt: null };
+  client.session!.backgroundWaits = { pending: 0, raisedAt: null, labels: [] };
   manager.notifyAgentState(agentId);
   await manager.flush();
   expect(attentionReasons).toEqual(["finished"]);

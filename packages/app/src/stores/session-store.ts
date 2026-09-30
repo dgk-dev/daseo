@@ -34,6 +34,7 @@ import type {
   AgentPersistenceHandle,
 } from "@getpaseo/protocol/agent-types";
 import type {
+  AgentBackgroundWaitsPayload,
   ServerInfoStatusPayload,
   ProjectPlacementPayload,
   ServerCapabilities,
@@ -102,6 +103,8 @@ export interface Agent {
   parentAgentId: string | null;
   labels: Record<string, string>;
   projectPlacement?: ProjectPlacementPayload | null;
+  /** Daseo: pending pi-local `wait_for` waits; an idle agent with some presents as busy. */
+  backgroundWaits?: AgentBackgroundWaitsPayload;
 }
 
 export interface WorkspaceDescriptor {
@@ -2023,6 +2026,7 @@ export const useSessionStore = create<SessionStore>()(
             attentionTimestamp: agent.attentionTimestamp ?? null,
             createdAt: agent.createdAt,
             labels: agent.labels,
+            ...(agent.backgroundWaits ? { backgroundWaits: agent.backgroundWaits } : {}),
           });
         }
         return entries;

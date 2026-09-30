@@ -285,6 +285,7 @@ export function buildLegacyWorkspaces(
       pendingPermissionCount: entry.agent.pendingPermissions.length,
       requiresAttention: entry.agent.requiresAttention,
       attentionReason: entry.agent.attentionReason,
+      backgroundWaits: entry.agent.backgroundWaits,
     });
     const statusEnteredAt = parseLegacyAgentTimestamp(entry);
     const existing = workspaces.get(workspaceId);

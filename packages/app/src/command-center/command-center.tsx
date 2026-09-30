@@ -10,6 +10,7 @@ import {
   type NativeSyntheticEvent,
   type PressableStateCallbackType,
 } from "react-native";
+import { isAgentWaitingInBackground } from "@getpaseo/protocol/agent-state-bucket";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Check, ChevronRight, Folder, X } from "lucide-react-native";
@@ -97,8 +98,8 @@ function sortAgents(left: AggregatedAgent, right: AggregatedAgent): number {
   const leftAttention = left.requiresAttention ? 1 : 0;
   const rightAttention = right.requiresAttention ? 1 : 0;
   if (leftAttention !== rightAttention) return rightAttention - leftAttention;
-  const leftRunning = left.status === "running" ? 1 : 0;
-  const rightRunning = right.status === "running" ? 1 : 0;
+  const leftRunning = left.status === "running" || isAgentWaitingInBackground(left) ? 1 : 0;
+  const rightRunning = right.status === "running" || isAgentWaitingInBackground(right) ? 1 : 0;
   if (leftRunning !== rightRunning) return rightRunning - leftRunning;
   return right.lastActivityAt.getTime() - left.lastActivityAt.getTime();
 }
@@ -427,6 +428,7 @@ function ResultContent({ result }: { result: CommandCenterResult }) {
             <AgentStatusDot
               status={agent.status}
               requiresAttention={agent.requiresAttention}
+              backgroundWaits={agent.backgroundWaits}
               showInactive
             />
           </View>

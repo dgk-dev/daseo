@@ -1,6 +1,7 @@
 import { useMemo, useCallback, useRef, useSyncExternalStore } from "react";
 import equal from "fast-deep-equal";
 import { useShallow } from "zustand/shallow";
+import { isAgentWaitingInBackground } from "@getpaseo/protocol/agent-state-bucket";
 import { useSessionStore } from "@/stores/session-store";
 import type { AgentDirectoryEntry } from "@/types/agent-directory";
 import type { Agent } from "@/stores/session-store";
@@ -88,6 +89,7 @@ export function useAggregatedAgents(options?: {
           createdAt: agent.createdAt,
           labels: agent.labels,
           projectPlacement: agent.projectPlacement,
+          ...(agent.backgroundWaits ? { backgroundWaits: agent.backgroundWaits } : {}),
         };
         const cacheKey = `${serverId}:${agent.id}`;
         const prev = prevAgentsRef.current.get(cacheKey);
@@ -99,8 +101,8 @@ export function useAggregatedAgents(options?: {
 
     // Sort by: running agents first, then by most recent activity
     allAgents.sort((left, right) => {
-      const leftRunning = left.status === "running";
-      const rightRunning = right.status === "running";
+      const leftRunning = left.status === "running" || isAgentWaitingInBackground(left);
+      const rightRunning = right.status === "running" || isAgentWaitingInBackground(right);
       if (leftRunning && !rightRunning) {
         return -1;
       }

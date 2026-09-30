@@ -146,6 +146,14 @@ export function toAgentPayload(
     payload.lastError = agent.lastError;
   }
 
+  const pendingBackgroundWaits = agent.pendingBackgroundWaits ?? 0;
+  if (pendingBackgroundWaits > 0) {
+    payload.backgroundWaits = {
+      pending: pendingBackgroundWaits,
+      labels: [...(agent.backgroundWaitLabels ?? [])],
+    };
+  }
+
   // Handle attention state
   payload.requiresAttention = agent.attention.requiresAttention;
   if (agent.attention.requiresAttention) {
@@ -268,6 +276,7 @@ export function toAgentListItemPayload(agent: AgentSnapshotPayload): AgentListIt
     attentionTimestamp: agent.attentionTimestamp ?? null,
     labels: agent.labels,
     ...(agent.providerUnavailable ? { providerUnavailable: true } : {}),
+    ...(agent.backgroundWaits ? { backgroundWaits: agent.backgroundWaits } : {}),
   };
 }
 

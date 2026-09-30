@@ -34,8 +34,18 @@ vi.mock("react-native", () => ({
   Text: ({ children, testID }: { children?: React.ReactNode; testID?: string }) => (
     <span data-testid={testID}>{children}</span>
   ),
-  View: ({ children, testID }: { children?: React.ReactNode; testID?: string }) => (
-    <div data-testid={testID}>{children}</div>
+  View: ({
+    children,
+    style,
+    testID,
+  }: {
+    children?: React.ReactNode;
+    style?: { height?: number };
+    testID?: string;
+  }) => (
+    <div data-testid={testID} data-divider-line={style?.height === 1 ? "true" : undefined}>
+      {children}
+    </div>
   ),
 }));
 
@@ -44,7 +54,13 @@ vi.mock("react-native-unistyles", () => ({
     create: (factory: (theme: Record<string, unknown>) => unknown) =>
       factory({
         spacing: { 1: 4, 2: 8 },
-        colors: { foregroundMuted: "#888", border: "#ddd", surface1: "#fafafa" },
+        colors: {
+          foregroundMuted: "#888",
+          border: "#ddd",
+          surface1: "#fafafa",
+          statusDotRunning: "#268ae0",
+          statusWarning: "#7b5d39",
+        },
         fontSize: { code: 12 },
         fontFamily: { ui: "ui", mono: "mono" },
         borderRadius: { base: 4 },
@@ -65,6 +81,8 @@ vi.mock("react-i18next", () => ({
       (
         ({
           "message.systemNotification.agentFinished": "{{title}} finished",
+          "message.systemNotification.waitDone": "↳ Wait done · {{description}} · {{outcome}}",
+          "message.systemNotification.waitOutcomeExited": "exit {{code}}",
           "message.systemNotification.showNotification": "{{label}}, show notification",
           "message.systemNotification.hideNotification": "{{label}}, hide notification",
         }) as Record<string, string>
@@ -133,5 +151,31 @@ describe("SystemNotificationRow", () => {
 
     act(() => toggle?.click());
     expect(container?.querySelector('[data-testid="system-notification-body"]')).toBeNull();
+  });
+
+  it("renders a wait wake as one compact line without divider lines, still expandable", () => {
+    const wake =
+      "<paseo-system>\nwait_for: command w_1a2b3c exited pending=0\nWait event(web build): exited with code 0\nFinal output:\nok\n</paseo-system>";
+    act(() => root?.render(<SystemNotificationRow text={wake} timestamp={TIMESTAMP} />));
+
+    expect(container?.querySelector('[data-testid="system-notification-wait-row"]')).not.toBeNull();
+    expect(container?.querySelector('[data-testid="system-notification-row"]')).toBeNull();
+    expect(container?.querySelectorAll('[data-divider-line="true"]').length).toBe(0);
+    const toggle = container?.querySelector<HTMLButtonElement>(
+      '[data-testid="system-notification-toggle"]',
+    );
+    expect(toggle?.textContent).toBe("↳ Wait done · web build · exit 0at 2026-09-23T08:00:00.000Z");
+    expect(toggle?.textContent).not.toContain("w_1a2b3c");
+
+    act(() => toggle?.click());
+    expect(
+      container?.querySelector('[data-testid="system-notification-body"]')?.textContent,
+    ).toContain("wait_for: command w_1a2b3c exited pending=0");
+  });
+
+  it("keeps the divider for agent notifications", () => {
+    act(() => root?.render(<SystemNotificationRow text={TEXT} timestamp={TIMESTAMP} />));
+
+    expect(container?.querySelectorAll('[data-divider-line="true"]').length).toBe(2);
   });
 });

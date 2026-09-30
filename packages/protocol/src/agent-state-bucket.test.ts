@@ -3,6 +3,7 @@ import {
   deriveAgentStateBucket,
   getAgentStatusPriority,
   getWorkspaceStateBucketPriority,
+  isAgentWaitingInBackground,
 } from "./agent-state-bucket.js";
 
 describe("deriveAgentStateBucket", () => {
@@ -60,6 +61,68 @@ describe("deriveAgentStateBucket", () => {
       }),
     ).toBe("done");
   });
+
+  it("presents an idle agent with pending background waits as running", () => {
+    const input = {
+      status: "idle" as const,
+      pendingPermissionCount: 0,
+      requiresAttention: false,
+      attentionReason: null,
+      backgroundWaits: { pending: 2 },
+    };
+    expect(isAgentWaitingInBackground(input)).toBe(true);
+    expect(deriveAgentStateBucket(input)).toBe("running");
+  });
+
+  it("keeps permission requests ahead of pending background waits", () => {
+    expect(
+      deriveAgentStateBucket({
+        status: "idle",
+        pendingPermissionCount: 1,
+        requiresAttention: false,
+        attentionReason: null,
+        backgroundWaits: { pending: 1 },
+      }),
+    ).toBe("needs_input");
+  });
+
+  it("keeps unread attention and errors ahead of pending background waits", () => {
+    expect(
+      deriveAgentStateBucket({
+        status: "idle",
+        requiresAttention: true,
+        attentionReason: "finished",
+        backgroundWaits: { pending: 1 },
+      }),
+    ).toBe("attention");
+    expect(
+      deriveAgentStateBucket({
+        status: "error",
+        requiresAttention: true,
+        attentionReason: "error",
+        backgroundWaits: { pending: 1 },
+      }),
+    ).toBe("failed");
+  });
+
+  it("treats an idle agent with no pending background waits as before", () => {
+    expect(
+      deriveAgentStateBucket({
+        status: "idle",
+        requiresAttention: false,
+        attentionReason: null,
+        backgroundWaits: { pending: 0 },
+      }),
+    ).toBe("done");
+    expect(
+      deriveAgentStateBucket({
+        status: "idle",
+        requiresAttention: true,
+        attentionReason: "finished",
+        backgroundWaits: { pending: 0 },
+      }),
+    ).toBe("attention");
+  });
 });
 
 describe("getWorkspaceStateBucketPriority", () => {
@@ -78,6 +141,22 @@ describe("getAgentStatusPriority", () => {
     expect(getAgentStatusPriority({ status: "initializing" })).toBeLessThan(
       getAgentStatusPriority({ status: "idle" }),
     );
+  });
+
+  it("sorts an idle agent with pending background waits with running agents", () => {
+    expect(getAgentStatusPriority({ status: "idle", backgroundWaits: { pending: 1 } })).toBe(
+      getAgentStatusPriority({ status: "running" }),
+    );
+    expect(getAgentStatusPriority({ status: "idle", backgroundWaits: { pending: 0 } })).toBe(
+      getAgentStatusPriority({ status: "idle" }),
+    );
+    expect(
+      getAgentStatusPriority({
+        status: "idle",
+        pendingPermissionCount: 1,
+        backgroundWaits: { pending: 1 },
+      }),
+    ).toBe(0);
   });
 
   it("prioritizes pending permissions before errors and running agents", () => {

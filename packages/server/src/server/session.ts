@@ -4720,6 +4720,7 @@ export class Session {
             pendingPermissionCount: agent.pendingPermissions?.length ?? 0,
             requiresAttention: agent.requiresAttention,
             attentionReason: agent.attentionReason ?? null,
+            backgroundWaits: agent.backgroundWaits,
           });
         case "created_at":
           return Date.parse(agent.createdAt);

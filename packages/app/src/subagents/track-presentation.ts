@@ -1,3 +1,4 @@
+import { isAgentWaitingInBackground } from "@getpaseo/protocol/agent-state-bucket";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { deriveSidebarStateBucket } from "@/utils/sidebar-agent-state";
 import type { SubagentRow } from "./select";
@@ -36,6 +37,7 @@ export function buildSubagentRowPresentationData(row: SubagentRow): SubagentRowP
     statusBucket: deriveSidebarStateBucket({
       status,
       requiresAttention: false,
+      backgroundWaits: row.kind === "paseo" ? row.backgroundWaits : null,
     }),
   };
 }
@@ -43,7 +45,7 @@ export function buildSubagentRowPresentationData(row: SubagentRow): SubagentRowP
 export function formatHeaderLabel(rows: readonly SubagentRow[]): string {
   let runningCount = 0;
   for (const row of rows) {
-    if (row.status === "running") {
+    if (row.status === "running" || isSubagentWaitingInBackground(row)) {
       runningCount += 1;
     }
   }
@@ -53,6 +55,13 @@ export function formatHeaderLabel(rows: readonly SubagentRow[]): string {
     parts.push(`${runningCount} running`);
   }
   return parts.join(" · ");
+}
+
+function isSubagentWaitingInBackground(row: SubagentRow): boolean {
+  return (
+    row.kind === "paseo" &&
+    isAgentWaitingInBackground({ status: row.status, backgroundWaits: row.backgroundWaits })
+  );
 }
 
 export function countFinishedSubagents(rows: readonly SubagentRow[]): number {

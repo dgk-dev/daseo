@@ -381,8 +381,8 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     waits that will still wake the agent from `wait_for`/`wait_status`/`wait_cancel` results
     (`details: { wait: true, pending }`) and from the wake envelope's first lines
     (`wait_for: <kind> <wait_id> <status> pending=<N>`, minimum over the lines), and a Pi process
-    exit resets it to 0. The manager copies it to the server-internal
-    `ManagedAgent.pendingBackgroundWaits` (not on the wire). While it is above 0, a running→idle
+    exit resets it to 0. The manager copies it to `ManagedAgent.pendingBackgroundWaits` (on the
+    wire only as delta 30's `backgroundWaits`). While it is above 0, a running→idle
     transition sets no "finished" attention (so no push) and notify-on-finish stays quiet; the
     idle after the last wake turn, or the next state emission once the count is 0, delivers both.
     Errors and permission requests are unaffected, and `lifecycle` is never faked. The hold
@@ -392,6 +392,31 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     `readPiWaitEnvelopePending`), `agent-manager.ts` (`syncBackgroundWaits`,
     `checkAndSetAttention`), `agent-prompt.ts`, and the optional `AgentSession.backgroundWaits` in
     `agent-sdk-types.ts`. Takes effect with the next release and daemon restart.
+30. **Background waits look busy, and their wake rows fold** — an agent that ended its turn to wait
+    (delta 29) stays `idle`, so Daseo showed it idle, like an agent waiting for the user, and every
+    wake arrived as a divider row that never folded. Now the snapshot and agent list item carry
+    an optional `backgroundWaits: { pending, labels }` (labels = descriptions of the pending waits,
+    newest first, at most 3; ledgered as an optional field older apps strip). The Pi provider keeps
+    `wait_id → description` from `wait_for`'s create details (`description`) and drops an entry on
+    `wait_cancel`'s `cancelled` ids, on a wake line that ends the wait (`exited`/`timed_out`, or a
+    file wait's single `fired`; a command wait's `fired` is one matching line and keeps it), and
+    when `pending` reaches 0; it never keeps more labels than `pending`. An expired hold (delta 29)
+    omits the field. `deriveAgentStateBucket`/`getAgentStatusPriority` treat `idle` with
+    `backgroundWaits.pending > 0` and no permission, error, or unread attention as `running`
+    (`isAgentWaitingInBackground`), so sidebar, tabs, workspace status, the subagent track, the
+    command center, and agent sorting show it busy; lifecycle, composer, and queue semantics are
+    unchanged. A wake (`<paseo-system>` whose first line is `wait_for: …`) parses as summary kind
+    `wait` and renders as one compact line,
+    `↳ 대기 완료 · <description> · 종료 N | 조건 일치 | 시간 초과` (info color; warning on
+    timeout), still expandable to the full body. In the
+    completed-turn projection it is neither a turn boundary nor visible: it folds with that turn's
+    tool calls behind the summary row. It stays a real `user_message` in the canonical stream.
+    Agent-finished and schedule rows are unchanged. There is no text status label: the app renders
+    agent state only as dot, ring, and icon. Key files: `packages/protocol/src/agent-state-bucket.ts`,
+    `messages.ts` (`AgentBackgroundWaitsPayloadSchema`), `providers/pi/agent.ts`
+    (`readPiWaitEnvelope`, `recordBackgroundWaits`), `agent-projections.ts`,
+    `packages/app/src/agent-stream/system-notification.ts`, `system-notification-row.tsx`,
+    `collapsed-work.ts`. Takes effect with the next release and daemon restart.
 
 ## Local reliability contracts
 

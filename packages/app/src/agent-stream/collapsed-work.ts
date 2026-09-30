@@ -1,4 +1,5 @@
 import type { StreamItem } from "@/types/stream";
+import { isWaitWakeNotificationText } from "./system-notification";
 
 /**
  * Provider-neutral completed-turn projection. The canonical stream remains
@@ -29,8 +30,21 @@ export interface CollapsedWorkResult {
   turnKeyByTurnEndAssistantId: Map<string, string>;
 }
 
+/**
+ * A background-wait wake (pi-local `wait_for`, Daseo delta 30) is a system
+ * user row that reports back to work already in progress. It is not a new
+ * request, so it neither starts a turn nor stays visible once the turn is done.
+ */
+function isWaitWakeRow(item: StreamItem): boolean {
+  return (
+    item.kind === "user_message" &&
+    item.origin === "system" &&
+    isWaitWakeNotificationText(item.text)
+  );
+}
+
 export function isCollapsibleWorkItem(item: StreamItem): boolean {
-  return WORK_KINDS.has(item.kind);
+  return WORK_KINDS.has(item.kind) || isWaitWakeRow(item);
 }
 
 interface Turn {
@@ -51,7 +65,7 @@ function splitTurns(items: readonly StreamItem[]): Turn[] {
   let current: Turn | null = null;
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index]!;
-    if (item.kind === "user_message") {
+    if (item.kind === "user_message" && !isWaitWakeRow(item)) {
       if (current && item.steering) {
         // Codex and Pi persist steering as another user item inside the same
         // provider turn. Keep it visible without inventing a new turn boundary.
@@ -266,7 +280,7 @@ function getTurnDetails(
     const item = items[index]!;
     const isIntermediateAssistant =
       item.kind === "assistant_message" && !finalGroupIndices.has(index);
-    const isWorkBeforeFinal = WORK_KINDS.has(item.kind) && index < lastFinalAssistantIndex;
+    const isWorkBeforeFinal = isCollapsibleWorkItem(item) && index < lastFinalAssistantIndex;
     if (isIntermediateAssistant || isWorkBeforeFinal) details.push(item);
   }
   return details;

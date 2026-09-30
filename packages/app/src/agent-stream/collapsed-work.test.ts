@@ -164,6 +164,79 @@ describe("collapseCompletedWork", () => {
     ]);
   });
 
+  test("a wait_for wake row folds into the turn it reports back to", () => {
+    const wake: StreamItem = {
+      ...nextBase("user_message", "wait-wake"),
+      kind: "user_message",
+      text: "<paseo-system>\nwait_for: command w_1a2b3c exited pending=0\nWait event(web build): exited with code 0\n</paseo-system>",
+      origin: "system",
+    };
+    const user = item("user_message");
+    const registered = assistant("registered");
+    const waitCall = item("tool_call");
+    const afterWake = item("tool_call");
+    const final = assistant("final");
+    const items = [user, registered, waitCall, wake, afterWake, final];
+
+    const folded = collapseCompletedWork({
+      items,
+      expandedTurnKeys: NONE,
+      keepLastTurnExpanded: false,
+    });
+    expect(folded.items).toEqual([user, final]);
+    expect(folded.workCountByTurnKey.get("final")).toBe(4);
+    expect(folded.summaryTurnKeyByAssistantId.get("final")).toBe("final");
+
+    const expanded = collapseCompletedWork({
+      items,
+      expandedTurnKeys: new Set(["final"]),
+      keepLastTurnExpanded: false,
+    });
+    expect(expanded.items).toBe(items);
+  });
+
+  test("a wake row folds behind one summary even when both replies are final answers", () => {
+    const wake: StreamItem = {
+      ...nextBase("user_message", "wait-wake"),
+      kind: "user_message",
+      text: "<paseo-system>\nwait_for: file w_f fired pending=0\nWait event(report): file created: /tmp/r.json\n</paseo-system>",
+      origin: "system",
+    };
+    const user = item("user_message");
+    const waitCall = item("tool_call");
+    const waiting = assistant("waiting", { messageId: "m-waiting", phase: "final_answer" });
+    const read = item("tool_call");
+    const done = assistant("done", { messageId: "m-done", phase: "final_answer" });
+    const items = [user, waitCall, waiting, wake, read, done];
+
+    const folded = collapseCompletedWork({
+      items,
+      expandedTurnKeys: NONE,
+      keepLastTurnExpanded: false,
+    });
+    expect(folded.items).toEqual([user, waiting, done]);
+    expect(folded.workCountByTurnKey.size).toBe(1);
+    expect(folded.workCountByTurnKey.get("m-done")).toBe(3);
+    expect(folded.summaryTurnKeyByAssistantId.get("waiting")).toBe("m-done");
+  });
+
+  test("a wake row stays visible while its turn is still running", () => {
+    const wake: StreamItem = {
+      ...nextBase("user_message", "wait-wake"),
+      kind: "user_message",
+      text: "<paseo-system>\nwait_for: command w_1 fired pending=1\nWait event(logs): ERROR\n</paseo-system>",
+      origin: "system",
+    };
+    const items = [item("user_message"), item("tool_call"), assistant("waiting"), wake];
+
+    const result = collapseCompletedWork({
+      items,
+      expandedTurnKeys: NONE,
+      keepLastTurnExpanded: true,
+    });
+    expect(result.items).toBe(items);
+  });
+
   test("keeps the trailing turn fully visible and unsummarized while active", () => {
     const items = [
       item("user_message"),

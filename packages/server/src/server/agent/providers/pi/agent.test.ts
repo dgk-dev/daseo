@@ -23,7 +23,7 @@ import {
   PiRpcAgentClient,
   PiRpcAgentSession,
   projectPiScopedCatalog,
-  readPiWaitEnvelopePending,
+  readPiWaitEnvelope,
   transformPiModels,
 } from "./agent.js";
 import { FakePi } from "./test-utils/fake-pi.js";
@@ -3102,7 +3102,7 @@ describe("background waits (local fork)", () => {
   test("tracks the pending count from wait tool results and wake envelopes", async () => {
     const { pi, session, events } = await createSession();
     const fakeSession = pi.latestSession();
-    expect(session.backgroundWaits).toEqual({ pending: 0, raisedAt: null });
+    expect(session.backgroundWaits).toEqual({ pending: 0, raisedAt: null, labels: [] });
 
     await session.startTurn("wait for the build");
     fakeSession.emit({ type: "turn_start" });
@@ -3121,6 +3121,7 @@ describe("background waits (local fork)", () => {
     });
     expect(session.backgroundWaits.pending).toBe(1);
     expect(session.backgroundWaits.raisedAt).toEqual(expect.any(Number));
+    expect(session.backgroundWaits.labels).toEqual([]);
 
     // Other tools and failed wait tools never move the count.
     fakeSession.emit({
@@ -3148,7 +3149,7 @@ describe("background waits (local fork)", () => {
       parentId: null,
       text: "<paseo-system>\nwait_for: command w_1 exited pending=0\nWait event(build): exited with code 0\nFinal output:\nok\n</paseo-system>",
     });
-    expect(session.backgroundWaits).toEqual({ pending: 0, raisedAt: null });
+    expect(session.backgroundWaits).toEqual({ pending: 0, raisedAt: null, labels: [] });
   });
 
   test("a wait_status or wait_cancel result sets the count without re-raising the hold", async () => {
@@ -3169,7 +3170,102 @@ describe("background waits (local fork)", () => {
       toolName: "wait_cancel",
       result: waitResult({ wait: true, pending: 1 }),
     });
-    expect(session.backgroundWaits).toEqual({ pending: 1, raisedAt });
+    expect(session.backgroundWaits).toEqual({ pending: 1, raisedAt, labels: [] });
+  });
+
+  test("labels the pending waits newest first and drops each one when it settles", async () => {
+    const { pi, session } = await createSession();
+    const fakeSession = pi.latestSession();
+    await session.startTurn("build and deploy");
+    fakeSession.emit({ type: "turn_start" });
+    fakeSession.emit({
+      type: "tool_execution_end",
+      toolCallId: "wait-a",
+      toolName: "wait_for",
+      result: waitResult({
+        wait: true,
+        wait_id: "w_a",
+        pending: 1,
+        kind: "command",
+        description: "web build",
+      }),
+    });
+    fakeSession.emit({
+      type: "tool_execution_end",
+      toolCallId: "wait-b",
+      toolName: "wait_for",
+      result: waitResult({
+        wait: true,
+        wait_id: "w_b",
+        pending: 2,
+        kind: "command",
+        description: "deploy log",
+      }),
+    });
+    expect(session.backgroundWaits).toMatchObject({
+      pending: 2,
+      labels: ["deploy log", "web build"],
+    });
+    fakeSession.finishTurn();
+
+    // A matching output line of a command wait does not end it.
+    fakeSession.finishSubmittedUserMessage({
+      id: "wake-line",
+      parentId: null,
+      text: "<paseo-system>\nwait_for: command w_b fired pending=2\nWait event(deploy log): ERROR\n</paseo-system>",
+    });
+    expect(session.backgroundWaits).toMatchObject({
+      pending: 2,
+      labels: ["deploy log", "web build"],
+    });
+
+    fakeSession.finishSubmittedUserMessage({
+      id: "wake-exit",
+      parentId: null,
+      text: "<paseo-system>\nwait_for: command w_a exited pending=1\nWait event(web build): exited with code 0\n</paseo-system>",
+    });
+    expect(session.backgroundWaits).toMatchObject({ pending: 1, labels: ["deploy log"] });
+
+    fakeSession.emit({
+      type: "tool_execution_end",
+      toolCallId: "cancel-b",
+      toolName: "wait_cancel",
+      result: waitResult({ wait: true, pending: 0, cancelled: ["w_b"] }),
+    });
+    expect(session.backgroundWaits).toEqual({ pending: 0, raisedAt: null, labels: [] });
+  });
+
+  test("never labels more waits than are pending, and keeps at most three", async () => {
+    const { pi, session } = await createSession();
+    const fakeSession = pi.latestSession();
+    await session.startTurn("many waits");
+    fakeSession.emit({ type: "turn_start" });
+    for (const [index, id] of ["w_1", "w_2", "w_3", "w_4"].entries()) {
+      fakeSession.emit({
+        type: "tool_execution_end",
+        toolCallId: `wait-${id}`,
+        toolName: "wait_for",
+        result: waitResult({
+          wait: true,
+          wait_id: id,
+          pending: index + 1,
+          kind: "command",
+          description: `job ${index + 1}`,
+        }),
+      });
+    }
+    expect(session.backgroundWaits).toMatchObject({
+      pending: 4,
+      labels: ["job 4", "job 3", "job 2"],
+    });
+    // wait_status reports fewer pending than labels known: the oldest labels go.
+    fakeSession.emit({
+      type: "tool_execution_end",
+      toolCallId: "status",
+      toolName: "wait_status",
+      result: waitResult({ wait: true, pending: 1 }),
+    });
+    expect(session.backgroundWaits).toMatchObject({ pending: 1, labels: ["job 4"] });
   });
 
   test("a Pi process exit clears the count: its waits died with it", async () => {
@@ -3184,21 +3280,19 @@ describe("background waits (local fork)", () => {
       result: waitResult({ wait: true, wait_id: "w_3", pending: 1, kind: "command" }),
     });
     fakeSession.emit({ type: "process_exit", error: "Pi RPC process exited with code 143" });
-    expect(session.backgroundWaits).toEqual({ pending: 0, raisedAt: null });
+    expect(session.backgroundWaits).toEqual({ pending: 0, raisedAt: null, labels: [] });
   });
 
-  test("readPiWaitEnvelopePending reads only exact wake envelopes and takes the minimum", () => {
+  test("readPiWaitEnvelope reads only exact wake envelopes, takes the minimum, and lists settled waits", () => {
     expect(
-      readPiWaitEnvelopePending(
-        "<paseo-system>\nwait_for: command w_a fired pending=2\nwait_for: file w_b fired pending=1\nWait event(x): y\n</paseo-system>",
+      readPiWaitEnvelope(
+        "<paseo-system>\nwait_for: command w_a fired pending=2\nwait_for: file w_b fired pending=1\nwait_for: command w_c timed_out pending=1\nWait event(x): y\n</paseo-system>",
       ),
-    ).toBe(1);
-    expect(readPiWaitEnvelopePending("wait_for: command w_a exited pending=0")).toBeNull();
+    ).toEqual({ pending: 1, settledWaitIds: ["w_b", "w_c"] });
+    expect(readPiWaitEnvelope("wait_for: command w_a exited pending=0")).toBeNull();
+    expect(readPiWaitEnvelope("<paseo-system>\nAgent child finished.\n</paseo-system>")).toBeNull();
     expect(
-      readPiWaitEnvelopePending("<paseo-system>\nAgent child finished.\n</paseo-system>"),
-    ).toBeNull();
-    expect(
-      readPiWaitEnvelopePending(
+      readPiWaitEnvelope(
         "<paseo-system>\nwait_for: command w_a exited pending=0\n</paseo-system> tail",
       ),
     ).toBeNull();

@@ -382,11 +382,13 @@ interface ManagedAgentBase {
   lastError?: string;
   attention: AttentionState;
   /**
-   * Local fork, server-internal: waits the agent registered that will wake it later, as reported
-   * by its session and zeroed once the hold expires. While above zero, a running→idle transition
-   * is not "finished". Never sent to clients.
+   * Local fork: waits the agent registered that will wake it later, as reported by its session
+   * and zeroed once the hold expires. While above zero, a running→idle transition is not
+   * "finished", and the snapshot carries it with the labels as `backgroundWaits`.
    */
   pendingBackgroundWaits?: number;
+  /** Local fork: descriptions of the pending background waits, newest first, at most 3. */
+  backgroundWaitLabels?: string[];
   foregroundTurnWaiters: Set<ForegroundTurnWaiter>;
   finalizedForegroundTurnIds: Set<string>;
   unsubscribeSession: (() => void) | null;
@@ -4489,8 +4491,8 @@ export class AgentManager {
   }
 
   /**
-   * Local fork: copy the session's background-wait count onto the agent, where attention and
-   * notify-on-finish read it. A hold older than BACKGROUND_WAIT_HOLD_MAX_MS counts as zero.
+   * Local fork: copy the session's background-wait count and labels onto the agent, where
+   * attention, notify-on-finish, and the snapshot read them. A hold older than BACKGROUND_WAIT_HOLD_MAX_MS counts as zero.
    */
   private syncBackgroundWaits(agent: ManagedAgent): void {
     const reported = agent.session?.backgroundWaits;
@@ -4509,6 +4511,7 @@ export class AgentManager {
       pending = 0;
     }
     agent.pendingBackgroundWaits = pending;
+    agent.backgroundWaitLabels = pending > 0 ? [...(reported?.labels ?? [])] : [];
   }
 
   private checkAndSetAttention(agent: ManagedAgent): void {
