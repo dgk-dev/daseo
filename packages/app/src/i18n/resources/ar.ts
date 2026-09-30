@@ -387,6 +387,10 @@ export const ar: TranslationResources = {
       showNotification: "{{label}}، إظهار الإشعار",
       hideNotification: "{{label}}، إخفاء الإشعار",
     },
+    backgroundWait: {
+      waiting: "Waiting in background · {{label}}",
+      waitingUnlabeled: "Waiting in background",
+    },
     compaction: {
       loading: "الضغط...",
       auto: "يتم ضغط السياق تلقائيًا",

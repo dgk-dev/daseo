@@ -390,6 +390,10 @@ export const ja: TranslationResources = {
       showNotification: "{{label}}、通知を表示",
       hideNotification: "{{label}}、通知を隠す",
     },
+    backgroundWait: {
+      waiting: "Waiting in background · {{label}}",
+      waitingUnlabeled: "Waiting in background",
+    },
     compaction: {
       loading: "コンテキストを圧縮中...",
       auto: "コンテキストが自動的に圧縮されました",

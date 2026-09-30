@@ -386,6 +386,10 @@ export const zhCN: TranslationResources = {
       showNotification: "{{label}}，展开通知",
       hideNotification: "{{label}}，收起通知",
     },
+    backgroundWait: {
+      waiting: "Waiting in background · {{label}}",
+      waitingUnlabeled: "Waiting in background",
+    },
     compaction: {
       loading: "正在压缩...",
       auto: "上下文已自动压缩",

@@ -18,7 +18,10 @@ export interface ArchiveFinishedOutcome {
   failures: Array<{ id: string; error: unknown }>;
 }
 
-export type ManagedSubagentSnapshot = Pick<Agent, "id" | "status" | "parentAgentId" | "archivedAt">;
+export type ManagedSubagentSnapshot = Pick<
+  Agent,
+  "id" | "status" | "parentAgentId" | "archivedAt" | "backgroundWaits"
+>;
 
 export interface ArchiveFinishedSubagentsDeps {
   parentAgentId: string;
@@ -34,8 +37,19 @@ export interface ArchiveFinishedSubagents {
   archiveFinished(): Promise<ArchiveFinishedOutcome>;
 }
 
+/**
+ * Daseo delta 30: an idle managed agent with pending background waits (pi-local `wait_for`) is
+ * still working and will be woken; archiving it would kill its waits. Pending waits alone decide
+ * this, not the presentation rule `isAgentWaitingInBackground`: an old unread "finished" is not
+ * cleared when a delegated agent runs again, and it must not make a waiting agent archivable.
+ */
+function isIdleManagedAgentFinished(agent: Pick<Agent, "status" | "backgroundWaits">): boolean {
+  if (agent.status === "error") return true;
+  return agent.status === "idle" && (agent.backgroundWaits?.pending ?? 0) === 0;
+}
+
 export function isFinishedSubagent(row: SubagentRow): boolean {
-  if (row.kind === "paseo") return row.status === "idle" || row.status === "error";
+  if (row.kind === "paseo") return isIdleManagedAgentFinished(row);
   return row.status === "completed" || row.status === "failed" || row.status === "canceled";
 }
 
@@ -47,7 +61,7 @@ function canArchiveManagedSubagent(
     agent &&
     !agent.archivedAt &&
     agent.parentAgentId === parentAgentId &&
-    (agent.status === "idle" || agent.status === "error"),
+    isIdleManagedAgentFinished(agent),
   );
 }
 

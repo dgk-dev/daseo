@@ -425,4 +425,65 @@ describe("createArchiveFinishedSubagents", () => {
     expect(descriptors.get("finished")).toBe(finished);
     expect(descriptors.get("running")).toBe(running);
   });
+
+  it("never counts or archives a managed subagent that is waiting on background waits", async () => {
+    const waits = { pending: 1, labels: ["web build"] };
+    const waitingRow: PaseoSubagentRow = { ...paseo("waiting"), backgroundWaits: waits };
+    const current = new Map([
+      ["waiting", managed("waiting", "idle", { backgroundWaits: waits })],
+      ["done", managed("done")],
+    ]);
+    const archived: string[] = [];
+    const archive = createArchiveFinishedSubagents([waitingRow, paseo("done")], {
+      parentAgentId: "parent",
+      getManagedSubagent: (id) => current.get(id),
+      archiveManagedSubagent: async (id) => {
+        archived.push(id);
+      },
+      dismissProviderSubagents: () => undefined,
+    });
+
+    expect(archive.getState().eligibleCount).toBe(1);
+    await expect(archive.archiveFinished()).resolves.toMatchObject({
+      archivedPaseoIds: ["done"],
+      skippedPaseoIds: [],
+    });
+    expect(archived).toEqual(["done"]);
+  });
+
+  it("skips a subagent that started waiting after the archive set was taken", async () => {
+    const current = new Map([
+      ["late", managed("late", "idle", { backgroundWaits: { pending: 2, labels: ["a", "b"] } })],
+    ]);
+    const archived: string[] = [];
+    const archive = createArchiveFinishedSubagents([paseo("late")], {
+      parentAgentId: "parent",
+      getManagedSubagent: (id) => current.get(id),
+      archiveManagedSubagent: async (id) => {
+        archived.push(id);
+      },
+      dismissProviderSubagents: () => undefined,
+    });
+
+    expect(archive.getState().eligibleCount).toBe(1);
+    await expect(archive.archiveFinished()).resolves.toMatchObject({
+      archivedPaseoIds: [],
+      skippedPaseoIds: ["late"],
+    });
+    expect(archived).toEqual([]);
+  });
+
+  it("keeps an idle subagent with no pending waits eligible", () => {
+    const archive = createArchiveFinishedSubagents(
+      [{ ...paseo("idle"), backgroundWaits: { pending: 0, labels: [] } }],
+      {
+        parentAgentId: "parent",
+        getManagedSubagent: () => undefined,
+        archiveManagedSubagent: async () => undefined,
+        dismissProviderSubagents: () => undefined,
+      },
+    );
+
+    expect(archive.getState().eligibleCount).toBe(1);
+  });
 });

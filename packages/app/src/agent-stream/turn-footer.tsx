@@ -44,6 +44,15 @@ export type AssistantTurnForkHandler = (input: {
  */
 export type InFlightTurnForkHandler = (target: AssistantForkTarget) => Promise<void> | void;
 
+/**
+ * Daseo delta 30: an idle agent whose pending background waits (pi-local `wait_for`) will wake
+ * it. `label` is the newest pending wait's description; `moreCount` the other pending waits.
+ */
+export interface BackgroundWaitPresentation {
+  label: string | null;
+  moreCount: number;
+}
+
 export const TurnFooter = memo(function TurnFooter({
   isRunning,
   inFlightTurnStartedAt,
@@ -53,10 +62,12 @@ export const TurnFooter = memo(function TurnFooter({
   supportsTimelineCursor,
   onForkAssistantTurn,
   onForkInFlightTurn,
+  backgroundWait = null,
 }: {
   isRunning: boolean;
   inFlightTurnStartedAt: Date | null;
   activeCompaction?: ActiveCompaction | null;
+  backgroundWait?: BackgroundWaitPresentation | null;
   host: TurnFooterHost | null;
   strategy: TurnContentStrategy;
   supportsTimelineCursor: boolean;
@@ -71,6 +82,27 @@ export const TurnFooter = memo(function TurnFooter({
           activeCompaction={activeCompaction}
           onForkInFlightTurn={onForkInFlightTurn}
         />
+      </TurnFooterRow>
+    );
+  }
+  if (backgroundWait) {
+    // The last answer is complete, so its actions stay; the wait reads as work in progress below.
+    return (
+      <TurnFooterRow>
+        {host ? (
+          <CompletedTurnFooter
+            strategy={strategy}
+            items={host.items}
+            timing={host.timing}
+            startIndex={host.startIndex}
+            supportsTimelineCursor={supportsTimelineCursor}
+            onForkAssistantTurn={onForkAssistantTurn}
+            hasTrailingRow
+          />
+        ) : null}
+        <View style={stylesheet.turnFooterSlot} testID="turn-background-wait-indicator">
+          <WorkingIndicator backgroundWait={backgroundWait} />
+        </View>
       </TurnFooterRow>
     );
   }
@@ -121,10 +153,12 @@ export const CompletedTurnFooterRow = memo(function CompletedTurnFooterRow({
 const WorkingIndicator = memo(function WorkingIndicator({
   inFlightTurnStartedAt = null,
   activeCompaction = null,
+  backgroundWait = null,
   onForkInFlightTurn,
 }: {
   inFlightTurnStartedAt?: Date | null;
   activeCompaction?: ActiveCompaction | null;
+  backgroundWait?: BackgroundWaitPresentation | null;
   onForkInFlightTurn?: InFlightTurnForkHandler;
 }) {
   const active = useRetainedPanelActive();
@@ -143,6 +177,11 @@ const WorkingIndicator = memo(function WorkingIndicator({
           {t("message.compaction.loading")}
         </Text>
       ) : null}
+      {backgroundWait && !activeCompaction ? (
+        <Text style={stylesheet.compactingLabel} testID="turn-background-wait-label">
+          {formatBackgroundWaitLabel(backgroundWait, t)}
+        </Text>
+      ) : null}
       {/* Match the completed-turn footer: actions precede timing metadata. */}
       {onForkInFlightTurn ? <AssistantForkMenu onFork={onForkInFlightTurn} /> : null}
       {startedAt ? (
@@ -156,6 +195,15 @@ const WorkingIndicator = memo(function WorkingIndicator({
     </View>
   );
 });
+
+function formatBackgroundWaitLabel(
+  backgroundWait: BackgroundWaitPresentation,
+  t: (key: string, values?: Record<string, string>) => string,
+): string {
+  if (!backgroundWait.label) return t("message.backgroundWait.waitingUnlabeled");
+  const more = backgroundWait.moreCount > 0 ? ` +${backgroundWait.moreCount}` : "";
+  return t("message.backgroundWait.waiting", { label: `${backgroundWait.label}${more}` });
+}
 
 function RunningTurnFooter({
   inFlightTurnStartedAt,
@@ -184,6 +232,7 @@ function CompletedTurnFooter({
   startIndex,
   supportsTimelineCursor,
   onForkAssistantTurn,
+  hasTrailingRow = false,
 }: {
   strategy: TurnContentStrategy;
   items: StreamItem[];
@@ -191,6 +240,8 @@ function CompletedTurnFooter({
   startIndex: number;
   supportsTimelineCursor: boolean;
   onForkAssistantTurn?: AssistantTurnForkHandler;
+  /** Another footer row follows, which owns the bottom spacing. */
+  hasTrailingRow?: boolean;
 }) {
   const getContent = useCallback(
     () =>
@@ -221,7 +272,7 @@ function CompletedTurnFooter({
   // duration for turns with collapsed work; avoid repeating it here.
   const hasCollapsedWorkRow = Boolean(turnKey && (collapsedWork?.getWorkCount(turnKey) ?? 0) > 0);
   return (
-    <View style={stylesheet.turnFooterSlot}>
+    <View style={hasTrailingRow ? stylesheet.turnFooterSlotStacked : stylesheet.turnFooterSlot}>
       <AssistantTurnFooter
         getContent={getContent}
         completedAt={hasCollapsedWorkRow ? undefined : timing?.completedAt}
@@ -253,6 +304,12 @@ const stylesheet = StyleSheet.create((theme) => ({
     alignSelf: "flex-start",
     minHeight: 24,
     paddingBottom: theme.spacing[6],
+  },
+  turnFooterSlotStacked: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    minHeight: 24,
   },
   turnFooterContent: {
     height: 24,

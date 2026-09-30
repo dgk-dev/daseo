@@ -391,6 +391,10 @@ export const ptBR: TranslationResources = {
       showNotification: "{{label}}, mostrar notificação",
       hideNotification: "{{label}}, ocultar notificação",
     },
+    backgroundWait: {
+      waiting: "Waiting in background · {{label}}",
+      waitingUnlabeled: "Waiting in background",
+    },
     compaction: {
       loading: "Compactando...",
       auto: "Contexto compactado automaticamente",

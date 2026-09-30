@@ -287,6 +287,16 @@ function useRetainedValue<T>(value: T, active: boolean): T {
 const EMPTY_PENDING_MESSAGE_SUBMISSIONS: readonly PendingMessageSubmission[] = [];
 const GROUPED_TOOL_CALL_DETAIL_MAX_HEIGHT = 200;
 
+function selectIdleBackgroundWaits(
+  state: ReturnType<typeof useSessionStore.getState>,
+  serverId: string,
+  agentId: string,
+) {
+  const session = state.sessions[serverId];
+  const agent = session?.agents?.get(agentId) ?? session?.agentDetails?.get(agentId);
+  return agent?.status === "idle" ? agent.backgroundWaits : undefined;
+}
+
 const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamViewProps>(
   function AgentStreamView(
     {
@@ -357,6 +367,13 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     );
     const isTimelineDetached = useSessionStore(
       (state) => state.sessions[resolvedServerId]?.agentTimelineHasNewer.get(agentId) === true,
+    );
+    // Daseo delta 30: an idle agent that ended its turn to wait on background waits.
+    const backgroundWaitPending = useSessionStore(
+      (state) => selectIdleBackgroundWaits(state, resolvedServerId, agentId)?.pending ?? 0,
+    );
+    const backgroundWaitLabel = useSessionStore(
+      (state) => selectIdleBackgroundWaits(state, resolvedServerId, agentId)?.labels[0] ?? null,
     );
 
     const workspaceRoot = context.cwd?.trim() || "";
@@ -959,6 +976,15 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         }),
       [client, pendingPermissionItems],
     );
+    const backgroundWait = useMemo(() => {
+      if (isTurnActive || projectedCompaction.active !== null || backgroundWaitPending === 0) {
+        return null;
+      }
+      return {
+        label: backgroundWaitLabel,
+        moreCount: backgroundWaitLabel ? backgroundWaitPending - 1 : 0,
+      };
+    }, [isTurnActive, projectedCompaction.active, backgroundWaitPending, backgroundWaitLabel]);
     const turnFooterNode = useMemo(() => {
       // A compaction is running state even without a foreground turn: a manual
       // `/compact` is a daemon-handled command, so turn liveness alone would
@@ -966,11 +992,12 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       // fork in that case, so the in-flight fork menu stays off.
       const isFooterRunning = isTurnActive || projectedCompaction.active !== null;
       const onForkInFlightTurn = readOnly || !isTurnActive ? undefined : handleForkInFlightTurn;
-      return isFooterRunning || bottomTurnFooterHost ? (
+      return isFooterRunning || bottomTurnFooterHost || backgroundWait ? (
         <TurnFooter
           isRunning={isFooterRunning}
           inFlightTurnStartedAt={baseRenderModel.turnTiming.runningStartedAt}
           activeCompaction={projectedCompaction.active}
+          backgroundWait={backgroundWait}
           host={bottomTurnFooterHost}
           strategy={streamRenderStrategy}
           supportsTimelineCursor={supportsAgentForkContextCursor}
@@ -983,6 +1010,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       handleForkInFlightTurn,
       readOnly,
       isTurnActive,
+      backgroundWait,
       baseRenderModel.turnTiming.runningStartedAt,
       bottomTurnFooterHost,
       projectedCompaction.active,

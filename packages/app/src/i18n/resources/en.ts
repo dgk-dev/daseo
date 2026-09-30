@@ -386,6 +386,10 @@ export const en = {
       showNotification: "{{label}}, show notification",
       hideNotification: "{{label}}, hide notification",
     },
+    backgroundWait: {
+      waiting: "Waiting in background · {{label}}",
+      waitingUnlabeled: "Waiting in background",
+    },
     compaction: {
       loading: "Compacting...",
       auto: "Context automatically compacted",

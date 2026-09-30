@@ -392,6 +392,10 @@ export const fr: TranslationResources = {
       showNotification: "{{label}}, afficher la notification",
       hideNotification: "{{label}}, masquer la notification",
     },
+    backgroundWait: {
+      waiting: "Waiting in background · {{label}}",
+      waitingUnlabeled: "Waiting in background",
+    },
     compaction: {
       loading: "Compactage...",
       auto: "Contexte automatiquement compacté",

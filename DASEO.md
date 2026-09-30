@@ -411,12 +411,17 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     timeout), still expandable to the full body. In the
     completed-turn projection it is neither a turn boundary nor visible: it folds with that turn's
     tool calls behind the summary row. It stays a real `user_message` in the canonical stream.
-    Agent-finished and schedule rows are unchanged. There is no text status label: the app renders
-    agent state only as dot, ring, and icon. Key files: `packages/protocol/src/agent-state-bucket.ts`,
+    Agent-finished and schedule rows are unchanged. The app shows agent state elsewhere only as
+    dot, ring, and icon, so the waiting text lives in the conversation's bottom progress row: an
+    idle agent with pending waits shows the spinner and `백그라운드 대기 중 · <newest label> +N`
+    below the last answer's actions (`TurnFooter` `backgroundWait`). "Archive finished subagents"
+    never counts or archives an idle managed subagent with pending waits, whatever its attention
+    state (an old unread "finished" survives a later run). Key files: `packages/protocol/src/agent-state-bucket.ts`,
     `messages.ts` (`AgentBackgroundWaitsPayloadSchema`), `providers/pi/agent.ts`
     (`readPiWaitEnvelope`, `recordBackgroundWaits`), `agent-projections.ts`,
     `packages/app/src/agent-stream/system-notification.ts`, `system-notification-row.tsx`,
-    `collapsed-work.ts`. Takes effect with the next release and daemon restart.
+    `collapsed-work.ts`, `turn-footer.tsx`, `subagents/archive-finished.ts`. Takes effect with the
+    next release and daemon restart.
 
 ## Local reliability contracts
 

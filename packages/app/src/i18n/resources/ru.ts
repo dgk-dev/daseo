@@ -390,6 +390,10 @@ export const ru: TranslationResources = {
       showNotification: "{{label}}, показать уведомление",
       hideNotification: "{{label}}, скрыть уведомление",
     },
+    backgroundWait: {
+      waiting: "Waiting in background · {{label}}",
+      waitingUnlabeled: "Waiting in background",
+    },
     compaction: {
       loading: "Уплотнение...",
       auto: "Контекст автоматически сжимается",

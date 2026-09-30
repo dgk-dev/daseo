@@ -16,7 +16,10 @@ vi.mock("react-native", () => ({
 }));
 
 vi.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({
+    t: (key: string, values?: Record<string, string>) =>
+      values ? `${key} ${JSON.stringify(values)}` : key,
+  }),
 }));
 
 vi.mock("react-native-unistyles", () => ({
@@ -145,5 +148,59 @@ describe("TurnFooter", () => {
       "turn-compacting-label",
       "running-turn-timestamp",
     ]);
+  });
+
+  function renderFooter(props: Partial<React.ComponentProps<typeof TurnFooter>>) {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => {
+      root?.render(
+        <TurnFooter
+          isRunning={false}
+          inFlightTurnStartedAt={null}
+          host={null}
+          strategy={unusedRunningTurnStrategy}
+          supportsTimelineCursor
+          {...props}
+        />,
+      );
+    });
+    return container;
+  }
+
+  it("shows the spinner and the newest wait with the others counted for an agent waiting in background", () => {
+    const footer = renderFooter({ backgroundWait: { label: "web build", moreCount: 2 } });
+
+    const indicator = footer.querySelector('[data-testid="turn-background-wait-indicator"]');
+    expect(indicator?.querySelector('[data-testid="running-turn-loader"]')).not.toBeNull();
+    expect(
+      indicator?.querySelector('[data-testid="turn-background-wait-label"]')?.textContent,
+    ).toBe('message.backgroundWait.waiting {"label":"web build +2"}');
+    expect(indicator?.querySelector('[data-testid="running-turn-fork"]')).toBeNull();
+    expect(indicator?.querySelector('[data-testid="running-turn-timestamp"]')).toBeNull();
+  });
+
+  it("names a single wait without a count, and falls back when the wait has no description", () => {
+    const single = renderFooter({ backgroundWait: { label: "deploy log", moreCount: 0 } });
+    expect(single.querySelector('[data-testid="turn-background-wait-label"]')?.textContent).toBe(
+      'message.backgroundWait.waiting {"label":"deploy log"}',
+    );
+    act(() => root?.unmount());
+    root = null;
+    container?.remove();
+
+    const unlabeled = renderFooter({ backgroundWait: { label: null, moreCount: 0 } });
+    expect(unlabeled.querySelector('[data-testid="turn-background-wait-label"]')?.textContent).toBe(
+      "message.backgroundWait.waitingUnlabeled",
+    );
+  });
+
+  it("renders nothing for an idle agent without background waits", () => {
+    const footer = renderFooter({ backgroundWait: null });
+
+    expect(footer.querySelector('[data-testid="turn-background-wait-indicator"]')).toBeNull();
+    expect(footer.querySelector('[data-testid="turn-working-indicator"]')).toBeNull();
+    expect(footer.textContent).toBe("");
   });
 });

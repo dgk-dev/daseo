@@ -388,6 +388,10 @@ export const ko: TranslationResources = {
       showNotification: "{{label}}, 알림 펼치기",
       hideNotification: "{{label}}, 알림 접기",
     },
+    backgroundWait: {
+      waiting: "백그라운드 대기 중 · {{label}}",
+      waitingUnlabeled: "백그라운드 대기 중",
+    },
     compaction: {
       loading: "압축하는 중...",
       auto: "컨텍스트가 자동으로 압축되었습니다",
