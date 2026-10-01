@@ -31,6 +31,11 @@ export interface AgentListItem {
   provider: string;
   thinking: string;
   status: string;
+  /**
+   * Daseo: pi-local `wait_for` waits that will still wake an idle agent (delta 30). The
+   * activation gate reads it from `--json` to tell a real wait from an ordinary command.
+   */
+  backgroundWaits: number;
   cwd: string;
   created: string;
 }
@@ -88,7 +93,7 @@ export const agentLsSchema: OutputSchema<AgentListItem> = {
 };
 
 /** Transform agent snapshot to AgentListItem */
-function toListItem(agent: AgentSnapshotPayload): AgentListItem {
+export function toListItem(agent: AgentSnapshotPayload): AgentListItem {
   const model = normalizeModelId(agent.runtimeInfo?.model) ?? normalizeModelId(agent.model);
   return {
     id: agent.id,
@@ -97,6 +102,7 @@ function toListItem(agent: AgentSnapshotPayload): AgentListItem {
     provider: model ? `${agent.provider}/${model}` : agent.provider,
     thinking: agent.effectiveThinkingOptionId ?? "auto",
     status: agent.status,
+    backgroundWaits: agent.backgroundWaits?.pending ?? 0,
     cwd: shortenPath(agent.cwd),
     created: relativeTime(agent.createdAt),
   };

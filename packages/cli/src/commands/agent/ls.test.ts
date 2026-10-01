@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildAgentLsFetchOptions } from "./ls.js";
+import type { AgentSnapshotPayload } from "@getpaseo/protocol/messages";
+import { buildAgentLsFetchOptions, toListItem } from "./ls.js";
 
 describe("buildAgentLsFetchOptions", () => {
   it("fetches active agents by default", () => {
@@ -57,5 +58,27 @@ describe("buildAgentLsFetchOptions", () => {
         thinkingOptionId: "medium",
       },
     });
+  });
+});
+
+describe("toListItem", () => {
+  const snapshot = {
+    id: "0123456789abcdef",
+    title: "deploy",
+    provider: "pi",
+    model: "pi-claude/claude-opus-5-5",
+    status: "idle",
+    cwd: "/tmp/x",
+    createdAt: new Date().toISOString(),
+  } as unknown as AgentSnapshotPayload;
+
+  it("reports pending background waits, zero when the daemon sends none", () => {
+    expect(toListItem(snapshot).backgroundWaits).toBe(0);
+    expect(
+      toListItem({
+        ...snapshot,
+        backgroundWaits: { pending: 2, labels: ["web build"] },
+      } as AgentSnapshotPayload).backgroundWaits,
+    ).toBe(2);
   });
 });

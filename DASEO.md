@@ -436,6 +436,10 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     turn ends on the real answer followed by the one-line wake row. Matching is exact (backticks
     and a trailing period allowed); an answer that mentions the token renders normally. Takes
     effect with the next release and daemon restart.
+    Activation also must not kill a real wait: `paseo ls --json` items carry
+    `backgroundWaits` (pending count, 0 when none), and the activation script waits while any
+    agent has one (90-minute cap), not on shell children of pi, which ordinary bash tool calls
+    also are (`packages/cli/src/commands/agent/ls.ts`).
 
 ## Local reliability contracts
 
