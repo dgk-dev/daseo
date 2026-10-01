@@ -243,4 +243,37 @@ describe("InMemoryAgentTimelineStore", () => {
     });
     expect(store.findSystemUserMessageInTurn("agent-1", "turn-2", envelope)).toBeNull();
   });
+
+  it("skips a wait-noted reply when it picks the last assistant message", () => {
+    const store = new InMemoryAgentTimelineStore();
+    const at = (seq: number) => `2026-01-01T00:00:0${seq}.000Z`;
+    store.initialize("agent-1", {
+      epoch: "epoch-1",
+      nextSeq: 6,
+      rows: [
+        { seq: 1, timestamp: at(1), item: { type: "assistant_message", text: "Deployed " } },
+        { seq: 2, timestamp: at(2), item: { type: "assistant_message", text: "and verified." } },
+        {
+          seq: 3,
+          timestamp: at(3),
+          item: {
+            type: "user_message",
+            text: "<paseo-system>\nwait_for: command w_1 exited pending=0\n</paseo-system>",
+          },
+        },
+        { seq: 4, timestamp: at(4), item: { type: "assistant_message", text: "[wait " } },
+        { seq: 5, timestamp: at(5), item: { type: "assistant_message", text: "noted]" } },
+      ],
+    });
+    expect(store.getLastAssistantMessage("agent-1")).toBe("Deployed and verified.");
+
+    store.initialize("agent-2", {
+      epoch: "epoch-2",
+      nextSeq: 2,
+      rows: [
+        { seq: 1, timestamp: at(1), item: { type: "assistant_message", text: "[wait noted]" } },
+      ],
+    });
+    expect(store.getLastAssistantMessage("agent-2")).toBeNull();
+  });
 });

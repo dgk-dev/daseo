@@ -423,6 +423,19 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     `packages/app/src/agent-stream/system-notification.ts`, `system-notification-row.tsx`,
     `collapsed-work.ts`, `turn-footer.tsx`, `subagents/archive-finished.ts`. Takes effect with the
     next release and daemon restart.
+31. **A wake that needs nothing never becomes the last message** — a wake can land after the
+    agent's final answer (the Claude bridge injects it live only while a tool call is pending), and
+    the woken turn ended on "No response requested." That line became the last message in the
+    conversation, the push body, and a parent's `<agent-response>` for a held notify-on-finish
+    (delta 29), in place of the real report (2026-10-01). pi-local's wake footer now asks for
+    exactly `[wait noted]` when the wake needs nothing, and `wait_status` settles the completions
+    it shows (`details.settled`, read like `wait_cancel`'s `cancelled`), so they do not wake at
+    all. `isWaitNotedReply` and `lastAssistantRun` (`packages/protocol/src/wait-noted.ts`) skip
+    that reply wherever the daemon picks the last assistant message (`agent-manager.ts`, both
+    timeline stores), and `collapseCompletedWorkStream` drops it from the rendered stream, so the
+    turn ends on the real answer followed by the one-line wake row. Matching is exact (backticks
+    and a trailing period allowed); an answer that mentions the token renders normally. Takes
+    effect with the next release and daemon restart.
 
 ## Local reliability contracts
 

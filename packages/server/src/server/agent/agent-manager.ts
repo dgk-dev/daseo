@@ -15,6 +15,7 @@ import {
 import type { Logger } from "pino";
 import type { ProviderOptions, ToolPolicy } from "@getpaseo/protocol/agent-types";
 import type { AgentAttachment } from "@getpaseo/protocol/messages";
+import { isWaitNotedReply, lastAssistantRun } from "@getpaseo/protocol/wait-noted";
 import { z } from "zod";
 import type { TerminalManager } from "../../terminal/terminal-manager.js";
 
@@ -2808,29 +2809,14 @@ export class AgentManager {
   private getLastAssistantMessageSegmentFromTimeline(
     timeline: readonly AgentTimelineItem[],
   ): { text: string; startsAtBeginning: boolean } | null {
-    // Collect the last contiguous assistant messages (Claude streams chunks)
-    const chunks: string[] = [];
-    let startsAtBeginning = false;
-    for (let i = timeline.length - 1; i >= 0; i--) {
-      const item = timeline[i];
-      if (item.type !== "assistant_message") {
-        if (chunks.length) {
-          break;
-        }
-        continue;
-      }
-      chunks.push(item.text);
-      startsAtBeginning = i === 0;
-    }
-
-    if (!chunks.length) {
-      return null;
-    }
-
-    return {
-      text: chunks.toReversed().join(""),
-      startsAtBeginning,
-    };
+    // The last contiguous assistant messages (Claude streams chunks), skipping a
+    // Daseo wait-noted reply to a background-wait wake.
+    const run = lastAssistantRun(
+      timeline.length,
+      (index) => timeline[index],
+      (item) => (item.type === "assistant_message" ? item.text : null),
+    );
+    return run ? { text: run.text, startsAtBeginning: run.startIndex === 0 } : null;
   }
 
   private async getLastAssistantMessageFromStores(agentId: string): Promise<string | null> {
@@ -2849,7 +2835,8 @@ export class AgentManager {
     }
 
     const lastDurableItem = await this.durableTimelineStore.getLastItem(agentId);
-    if (lastDurableItem?.type !== "assistant_message") {
+    // A durable wait-noted reply is not the start of this answer.
+    if (lastDurableItem?.type !== "assistant_message" || isWaitNotedReply(lastDurableItem.text)) {
       return liveSegment.text;
     }
 

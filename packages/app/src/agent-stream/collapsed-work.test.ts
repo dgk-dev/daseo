@@ -220,6 +220,47 @@ describe("collapseCompletedWork", () => {
     expect(folded.summaryTurnKeyByAssistantId.get("waiting")).toBe("m-done");
   });
 
+  test("a wait-noted reply to a late wake never renders and never ends the turn", () => {
+    const wake: StreamItem = {
+      ...nextBase("user_message", "late-wake"),
+      kind: "user_message",
+      text: "<paseo-system>\nwait_for: command w_9 exited pending=0\nWait event(deploy): exited with code 0\n</paseo-system>",
+      origin: "system",
+    };
+    const user = item("user_message");
+    const work = item("tool_call");
+    const report = assistant("report", { text: "Deployed and verified." });
+    const noted = assistant("noted", { text: " `[wait noted]`.\n" });
+    const result = collapseCompletedWorkStream({
+      tail: [user, work, report, wake, noted],
+      head: [],
+      expandedTurnKeys: NONE,
+      isTurnActive: false,
+    });
+    expect(result.tail).toEqual([user, report, wake]);
+    expect(result.summaryTurnKeyByAssistantId.get("report")).toBe("report");
+
+    const streaming = collapseCompletedWorkStream({
+      tail: [user, work, report],
+      head: [wake, noted],
+      expandedTurnKeys: NONE,
+      isTurnActive: true,
+    });
+    expect(streaming.head).toEqual([wake]);
+  });
+
+  test("an answer that only mentions the wait-noted token stays visible", () => {
+    const user = item("user_message");
+    const answer = assistant("answer", { text: "I replied [wait noted] to the deploy wake." });
+    const result = collapseCompletedWorkStream({
+      tail: [user, answer],
+      head: [],
+      expandedTurnKeys: NONE,
+      isTurnActive: false,
+    });
+    expect(result.tail).toEqual([user, answer]);
+  });
+
   test("a wake row stays visible while its turn is still running", () => {
     const wake: StreamItem = {
       ...nextBase("user_message", "wait-wake"),

@@ -1,3 +1,4 @@
+import { isWaitNotedReply } from "@getpaseo/protocol/wait-noted";
 import type { StreamItem } from "@/types/stream";
 import { isWaitWakeNotificationText } from "./system-notification";
 
@@ -41,6 +42,18 @@ function isWaitWakeRow(item: StreamItem): boolean {
     item.origin === "system" &&
     isWaitWakeNotificationText(item.text)
   );
+}
+
+/**
+ * The agent's answer to a wake that needed nothing (pi-local `wait_for` footer). It says
+ * nothing to the reader, and left visible it would end the turn in place of the real answer.
+ */
+function isWaitNotedRow(item: StreamItem): boolean {
+  return item.kind === "assistant_message" && isWaitNotedReply(item.text);
+}
+
+function withoutWaitNotedReplies(items: StreamItem[]): StreamItem[] {
+  return items.some(isWaitNotedRow) ? items.filter((item) => !isWaitNotedRow(item)) : items;
 }
 
 export function isCollapsibleWorkItem(item: StreamItem): boolean {
@@ -351,7 +364,9 @@ export function collapseCompletedWorkStream(input: {
   expandedTurnKeys: ReadonlySet<string>;
   isTurnActive: boolean;
 }): CollapsedStreamResult {
-  const { tail, head, expandedTurnKeys, isTurnActive } = input;
+  const { expandedTurnKeys, isTurnActive } = input;
+  const tail = withoutWaitNotedReplies(input.tail);
+  const head = withoutWaitNotedReplies(input.head);
   if (isTurnActive) {
     const collapsedTail = collapseCompletedWork({
       items: tail,

@@ -1263,8 +1263,8 @@ function optionalBoolean(value: unknown): boolean | undefined {
 
 // Local fork: pi-local's `wait_for` tools report how many registered waits will
 // still wake the agent, in tool results (`details: { wait: true, pending }`, plus
-// `wait_id`/`description` on creation and `cancelled` ids on cancel) and in the
-// first lines of each wake envelope
+// `wait_id`/`description` on creation, `cancelled` ids on cancel, `settled` ids on
+// status) and in the first lines of each wake envelope
 // (`wait_for: <kind> <wait_id> <fired|exited|timed_out> pending=<N>`).
 const PI_WAIT_TOOL_NAMES = new Set(["wait_for", "wait_status", "wait_cancel"]);
 const PI_WAIT_ENVELOPE_PATTERN = /^<paseo-system>\n([\s\S]*)\n<\/paseo-system>$/;
@@ -1275,7 +1275,7 @@ export interface PiWaitToolSignal {
   pending: number;
   /** The wait this result created (`wait_for` create only). */
   registered: { waitId: string; description: string } | null;
-  /** Waits this result cancelled (`wait_cancel` only). */
+  /** Waits this result ended without a wake: `wait_cancel`'s cancelled ids and `wait_status`'s settled ids. */
   cancelled: string[];
 }
 
@@ -1294,6 +1294,7 @@ export function readPiWaitToolSignal(
     wait_id: waitId,
     description,
     cancelled,
+    settled,
   } = details as Record<string, unknown>;
   if (wait !== true || typeof pending !== "number" || !Number.isInteger(pending) || pending < 0) {
     return null;
@@ -1306,9 +1307,10 @@ export function readPiWaitToolSignal(
   return {
     pending,
     registered,
-    cancelled: Array.isArray(cancelled)
-      ? cancelled.filter((id): id is string => typeof id === "string")
-      : [],
+    // A completion wait_status shows is seen, so pi-local drops its wake.
+    cancelled: [cancelled, settled].flatMap((ids) =>
+      Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [],
+    ),
   };
 }
 

@@ -3267,6 +3267,32 @@ describe("background waits (local fork)", () => {
     expect(session.backgroundWaits).toEqual({ pending: 0, raisedAt: null, labels: [] });
   });
 
+  test("wait_status's settled ids drop the label of the wait it showed", async () => {
+    const { pi, session } = await createSession();
+    const fakeSession = pi.latestSession();
+    await session.startTurn("two waits");
+    fakeSession.emit({ type: "turn_start" });
+    for (const [id, description, pending] of [
+      ["w_a", "web build", 1],
+      ["w_b", "deploy log", 2],
+    ] as const) {
+      fakeSession.emit({
+        type: "tool_execution_end",
+        toolCallId: `create-${id}`,
+        toolName: "wait_for",
+        result: waitResult({ wait: true, wait_id: id, pending, kind: "command", description }),
+      });
+    }
+    // The older wait is the one still running; a count-only trim would drop its label instead.
+    fakeSession.emit({
+      type: "tool_execution_end",
+      toolCallId: "status",
+      toolName: "wait_status",
+      result: waitResult({ wait: true, pending: 1, settled: ["w_b"] }),
+    });
+    expect(session.backgroundWaits).toMatchObject({ pending: 1, labels: ["web build"] });
+  });
+
   test("never labels more waits than are pending, and keeps at most three", async () => {
     const { pi, session } = await createSession();
     const fakeSession = pi.latestSession();

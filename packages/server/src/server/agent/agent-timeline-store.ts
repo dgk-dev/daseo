@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { lastAssistantRun } from "@getpaseo/protocol/wait-noted";
 import type { AgentTimelineItem, AssistantTurnOutcome } from "./agent-sdk-types.js";
 import type {
   AgentTimelineFetchOptions,
@@ -366,23 +367,13 @@ export class InMemoryAgentTimelineStore {
 
   getLastAssistantMessage(agentId: string): string | null {
     const rows = this.requireState(agentId).rows;
-    const chunks: string[] = [];
-    for (let i = rows.length - 1; i >= 0; i -= 1) {
-      const item = rows[i].item;
-      if (item.type !== "assistant_message") {
-        if (chunks.length > 0) {
-          break;
-        }
-        continue;
-      }
-      chunks.push(item.text);
-    }
-
-    if (chunks.length === 0) {
-      return null;
-    }
-
-    return chunks.toReversed().join("");
+    return (
+      lastAssistantRun(
+        rows.length,
+        (index) => rows[index]?.item,
+        (item) => (item.type === "assistant_message" ? item.text : null),
+      )?.text ?? null
+    );
   }
 
   private requireState(agentId: string): AgentTimelineState {

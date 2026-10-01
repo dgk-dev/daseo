@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { AgentTimelineItemPayloadSchema } from "@getpaseo/protocol/messages";
+import { lastAssistantRun } from "@getpaseo/protocol/wait-noted";
 import { z } from "zod";
 import { writeJsonFileAtomic } from "../atomic-file.js";
 import { ensurePrivateDirectory, ensurePrivateFile } from "../private-files.js";
@@ -113,17 +114,13 @@ export class FileBackedAgentTimelineStore implements AgentTimelineStore {
 
   async getLastAssistantMessage(agentId: string): Promise<string | null> {
     const state = await this.load(agentId);
-    const chunks: string[] = [];
-    for (let index = state.rows.length - 1; index >= 0; index -= 1) {
-      const item = state.rows[index]?.item;
-      if (!item) continue;
-      if (item.type !== "assistant_message") {
-        if (chunks.length > 0) break;
-        continue;
-      }
-      chunks.push(item.text);
-    }
-    return chunks.length > 0 ? chunks.toReversed().join("") : null;
+    return (
+      lastAssistantRun(
+        state.rows.length,
+        (index) => state.rows[index]?.item,
+        (item) => (item.type === "assistant_message" ? item.text : null),
+      )?.text ?? null
+    );
   }
 
   async deleteAgent(agentId: string): Promise<void> {
