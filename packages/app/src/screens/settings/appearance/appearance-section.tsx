@@ -219,6 +219,34 @@ function ChatOutlineRow({ value, onChange }: ChatOutlineRowProps) {
   );
 }
 
+interface MessageTimestampsRowProps {
+  value: boolean;
+  onChange: (value: boolean) => void;
+}
+
+/** Daseo delta 32: message times always on screen, or hover-revealed as upstream has them. */
+function MessageTimestampsRow({ value, onChange }: MessageTimestampsRowProps) {
+  const { t } = useTranslation();
+  return (
+    <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>
+          {t("settings.appearance.messageTimestamps.title")}
+        </Text>
+        <Text style={settingsStyles.rowHint}>
+          {t("settings.appearance.messageTimestamps.description")}
+        </Text>
+      </View>
+      <Switch
+        value={value}
+        onValueChange={onChange}
+        accessibilityLabel={t("settings.appearance.messageTimestamps.title")}
+        testID="appearance-message-timestamps-switch"
+      />
+    </View>
+  );
+}
+
 const TOOL_CALL_DETAIL_LEVELS: readonly AppSettings["toolCallDetailLevel"][] = [
   "detailed",
   "overview",
@@ -517,6 +545,13 @@ export function AppearanceSection() {
     [updateSettings],
   );
 
+  const handleShowMessageTimestampsChange = useCallback(
+    (showMessageTimestamps: boolean) => {
+      void updateSettings({ showMessageTimestamps });
+    },
+    [updateSettings],
+  );
+
   const commitUiFontFamily = useCallback(
     (value: string) => {
       const sanitized = sanitizeFontFamily(value);
@@ -616,6 +651,10 @@ export function AppearanceSection() {
               onChange={handleChatOutlineChange}
             />
           ) : null}
+          <MessageTimestampsRow
+            value={settings.showMessageTimestamps}
+            onChange={handleShowMessageTimestampsChange}
+          />
         </View>
       </SettingsSection>
       <SettingsSection title={t("settings.appearance.fonts.title")}>

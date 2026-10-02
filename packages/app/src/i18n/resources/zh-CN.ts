@@ -1992,6 +1992,10 @@ export const zhCN: TranslationResources = {
         title: "聊天大纲",
         description: "显示用于在提示词之间跳转的大纲",
       },
+      messageTimestamps: {
+        title: "消息时间",
+        description: "始终显示发送时间和回复完成时间。关闭后仅在悬停时显示。",
+      },
       fonts: {
         title: "字体",
         systemDefault: "系统默认",

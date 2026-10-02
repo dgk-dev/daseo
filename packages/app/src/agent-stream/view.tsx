@@ -34,6 +34,7 @@ import { Check, ChevronDown, X } from "lucide-react-native";
 import { usePanelStore } from "@/stores/panel-store";
 import {
   AssistantMessage,
+  AssistantResponseBlock,
   SpeakMessage,
   UserMessage,
   ActivityLog,
@@ -746,27 +747,36 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const renderAssistantMessageItem = useCallback(
       (layoutItem: StreamLayoutItem, item: Extract<StreamItem, { kind: "assistant_message" }>) => {
         const collapsedWorkTurnKey = collapsedStream.summaryTurnKeyByAssistantId.get(item.id);
+        const body = (
+          <AssistantFileLinkResolverProvider
+            client={client}
+            serverId={resolvedServerId}
+            workspaceRoot={workspaceRoot}
+            onOpenWorkspaceFile={handleInlinePathPress}
+            toast={toast}
+          >
+            <AssistantMessage
+              occurrenceKey={createAssistantImageOccurrenceKey({ agentId, itemId: item.id })}
+              message={item.text}
+              timestamp={item.timestamp.getTime()}
+              workspaceRoot={workspaceRoot}
+              serverId={resolvedServerId}
+              client={client}
+              spacing={layoutItem.assistantSpacing}
+              phase={layoutItem.phase}
+            />
+          </AssistantFileLinkResolverProvider>
+        );
         return (
           <>
             {collapsedWorkTurnKey ? <CollapsedWorkRow turnKey={collapsedWorkTurnKey} /> : null}
-            <AssistantFileLinkResolverProvider
-              client={client}
-              serverId={resolvedServerId}
-              workspaceRoot={workspaceRoot}
-              onOpenWorkspaceFile={handleInlinePathPress}
-              toast={toast}
-            >
-              <AssistantMessage
-                occurrenceKey={createAssistantImageOccurrenceKey({ agentId, itemId: item.id })}
-                message={item.text}
-                timestamp={item.timestamp.getTime()}
-                workspaceRoot={workspaceRoot}
-                serverId={resolvedServerId}
-                client={client}
-                spacing={layoutItem.assistantSpacing}
-                phase={layoutItem.phase}
-              />
-            </AssistantFileLinkResolverProvider>
+            {layoutItem.responseFooter ? (
+              <AssistantResponseBlock content={item.text} timestamp={item.timestamp.getTime()}>
+                {body}
+              </AssistantResponseBlock>
+            ) : (
+              body
+            )}
           </>
         );
       },

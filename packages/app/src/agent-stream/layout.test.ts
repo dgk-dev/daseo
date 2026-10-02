@@ -351,6 +351,45 @@ describe("layoutStream", () => {
     expect(findLayoutItem(layout, thinking.id).toolSequence).toBe("last");
   });
 
+  it("closes a completed response that another response follows with its own time row", () => {
+    const user = userMessage("user-1", 1);
+    const first = assistantMessage("assistant-1", 2);
+    const second = assistantMessage("assistant-2", 3);
+    const trailingUser = userMessage("user-2", 4);
+    const third = assistantMessage("assistant-3", 5);
+
+    for (const platform of ["web", "android"] as const) {
+      const layout = layoutFor({
+        platform,
+        tail: [user, first, second, trailingUser, third],
+        timingIds: [second.id, third.id],
+      });
+      // Only the response another response follows gets the row; the turn footer closes
+      // the others, and user rows never get one.
+      expect(findLayoutItem(layout, first.id).responseFooter).toBe(true);
+      expect(findLayoutItem(layout, second.id).responseFooter).toBe(false);
+      expect(findLayoutItem(layout, third.id).responseFooter).toBe(false);
+      expect(findLayoutItem(layout, user.id).responseFooter).toBe(false);
+    }
+  });
+
+  it("does not split one streamed response promoted into several blocks", () => {
+    const user = userMessage("user-1", 1);
+    const blockA = assistantMessage("assistant-1a", 2, { groupId: "group-1", index: 0 });
+    const blockB = assistantMessage("assistant-1b", 3, { groupId: "group-1", index: 1 });
+    const toolRow = toolCall("tool-1", 4);
+    const after = assistantMessage("assistant-2", 5);
+
+    const layout = layoutFor({
+      platform: "web",
+      tail: [user, blockA, blockB, toolRow, after],
+      timingIds: [after.id],
+    });
+    expect(findLayoutItem(layout, blockA.id).responseFooter).toBe(false);
+    // A tool row already separates the two, so the response before it needs no time row.
+    expect(findLayoutItem(layout, blockB.id).responseFooter).toBe(false);
+  });
+
   it("keeps bottom and inline footer ownership mutually exclusive", () => {
     const assistant = assistantMessage("a1", 2);
     const layout = layoutFor({

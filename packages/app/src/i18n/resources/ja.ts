@@ -2031,6 +2031,10 @@ export const ja: TranslationResources = {
         title: "チャットのアウトライン",
         description: "プロンプト間を移動するためのアウトラインを表示します",
       },
+      messageTimestamps: {
+        title: "メッセージの時刻",
+        description: "送信時刻と応答完了時刻を常に表示します。オフにするとホバー時のみ表示します。",
+      },
       fonts: {
         title: "フォント",
         systemDefault: "システムデフォルト",

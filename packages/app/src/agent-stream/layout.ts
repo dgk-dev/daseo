@@ -1,6 +1,11 @@
 import type { TurnTiming } from "@/timeline/turn-time";
 import type { StreamItem } from "@/types/stream";
-import { getAssistantBlockSpacing, getGapBetweenStreamItems, isUserMessageBubble } from "./spacing";
+import {
+  getAssistantBlockSpacing,
+  getGapBetweenStreamItems,
+  isSameAssistantBlockGroup,
+  isUserMessageBubble,
+} from "./spacing";
 import type { StreamFrameChildOrder, StreamStrategy } from "./strategy";
 
 export type StreamToolSequence = "single" | "first" | "middle" | "last" | "none";
@@ -21,6 +26,13 @@ export interface StreamLayoutItem {
   gapBelow: number;
   assistantSpacing: "default" | "compactTop" | "compactBottom" | "compactBoth";
   completedFooter: TurnFooterHost | null;
+  /**
+   * Daseo delta 32: this completed response is directly followed by another visible response
+   * in the same turn (a wake, a steer, or a long answer kept visible beside its sign-off), so
+   * it closes with its own time row the way the turn footer closes the last one. Without it two
+   * answers run together as one block.
+   */
+  responseFooter: boolean;
   toolSequence: StreamToolSequence;
   isFirstInUserGroup: boolean;
   isLastInUserGroup: boolean;
@@ -268,6 +280,11 @@ function layoutSegment(input: LayoutSegmentInput): StreamLayoutItem[] {
       boundaryAboveIndex: input.boundaryAboveIndex,
     });
 
+    const responseFooter =
+      item.kind === "assistant_message" &&
+      belowItem?.kind === "assistant_message" &&
+      !isSameAssistantBlockGroup({ item, other: belowItem });
+
     return {
       item,
       index,
@@ -277,6 +294,7 @@ function layoutSegment(input: LayoutSegmentInput): StreamLayoutItem[] {
       gapBelow: completedFooter ? 0 : getGapBetweenStreamItems(item, belowItem),
       assistantSpacing,
       completedFooter,
+      responseFooter,
       toolSequence: getToolSequence({ item, aboveItem, belowItem }),
       isFirstInUserGroup: isUserGroupEdge(item, aboveItem),
       isLastInUserGroup: isUserGroupEdge(item, belowItem),

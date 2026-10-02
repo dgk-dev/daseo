@@ -71,6 +71,7 @@ import { resolveToolCallIcon } from "@/utils/tool-call-icon";
 import { getMarkdownListMarker, getMarkdownListSpacing } from "@/utils/markdown-list";
 import { markdownNodeContainsType } from "@/utils/markdown-ast";
 import { useStableEvent } from "@/hooks/use-stable-event";
+import { useSettings } from "@/hooks/use-settings";
 import { HighlightedCodeBlock } from "@/components/highlighted-code-block";
 import { MarkdownFenceBlock } from "@/components/markdown/fence";
 import type { MarkdownPhase } from "@/components/markdown/fence/types";
@@ -393,6 +394,11 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
     gap: theme.spacing[2],
     marginTop: theme.spacing[2],
   },
+  trailingActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+  },
   trailingRowHidden: {
     opacity: 0,
   },
@@ -461,6 +467,42 @@ function UserMessageImagePill({ image, onOpen, accessibilityLabel }: UserMessage
   );
 }
 
+/**
+ * Daseo delta 32: with message times on, the time under a prompt stays on screen; rewind and
+ * copy still wait for hover on desktop (always visible on compact/native, as upstream has them).
+ * With them off the whole row is hover-revealed, as upstream has it.
+ */
+function useUserMessageTrailingRow(input: {
+  isCompact: boolean;
+  isHovered: boolean;
+  isPending: boolean;
+  hasText: boolean;
+}) {
+  const showMessageTimestamps = useSettings((settings) => settings.showMessageTimestamps);
+  const hasRow = !input.isPending && input.hasText;
+  const showTrailingActions = hasRow && (input.isCompact || isNative || input.isHovered);
+  const showTrailingRow = showTrailingActions || (showMessageTimestamps && hasRow);
+  const trailingRowStyle = useMemo(
+    () => [
+      userMessageStylesheet.trailingRow,
+      showTrailingRow
+        ? userMessageStylesheet.trailingRowVisible
+        : userMessageStylesheet.trailingRowHidden,
+    ],
+    [showTrailingRow],
+  );
+  const trailingActionsStyle = useMemo(
+    () => [
+      userMessageStylesheet.trailingActions,
+      showTrailingActions
+        ? userMessageStylesheet.trailingRowVisible
+        : userMessageStylesheet.trailingRowHidden,
+    ],
+    [showTrailingActions],
+  );
+  return { showTrailingActions, showTrailingRow, trailingRowStyle, trailingActionsStyle };
+}
+
 export const UserMessage = memo(function UserMessage({
   serverId,
   agentId,
@@ -493,7 +535,8 @@ export const UserMessage = memo(function UserMessage({
   const hasImages = imageCount > 0;
   const hasAttachments = attachments.length > 0;
   const unavailableImageContent = useMemo(() => getUnavailableImagePillContent(t), [t]);
-  const showTrailingRow = !isPending && hasText && (isCompact || isNative || isHovered);
+  const { showTrailingActions, showTrailingRow, trailingRowStyle, trailingActionsStyle } =
+    useUserMessageTrailingRow({ isCompact, isHovered, isPending, hasText });
   const formattedTimestamp = useMemo(
     () => formatMessageTimestamp(new Date(timestamp)),
     [timestamp],
@@ -534,15 +577,6 @@ export const UserMessage = memo(function UserMessage({
       hasText ? userMessageStylesheet.imagePreviewSpacing : undefined,
     ],
     [hasText],
-  );
-  const trailingRowStyle = useMemo(
-    () => [
-      userMessageStylesheet.trailingRow,
-      showTrailingRow
-        ? userMessageStylesheet.trailingRowVisible
-        : userMessageStylesheet.trailingRowHidden,
-    ],
-    [showTrailingRow],
   );
 
   return (
@@ -608,19 +642,25 @@ export const UserMessage = memo(function UserMessage({
             <Text style={userMessageStylesheet.timestampText} testID="user-message-timestamp">
               {formattedTimestamp}
             </Text>
-            {capabilities && messageId ? (
-              <RewindMenu
-                capabilities={capabilities}
-                isPending={rewindMutation.isPending}
-                rewoundText={message}
-                onRewind={handleRewind}
+            <View
+              style={trailingActionsStyle}
+              pointerEvents={showTrailingActions ? "auto" : "none"}
+              testID="user-message-trailing-actions"
+            >
+              {capabilities && messageId ? (
+                <RewindMenu
+                  capabilities={capabilities}
+                  isPending={rewindMutation.isPending}
+                  rewoundText={message}
+                  onRewind={handleRewind}
+                />
+              ) : null}
+              <TurnCopyButton
+                getContent={getMessageContent}
+                containerStyle={userMessageStylesheet.copyButton}
+                accessibilityLabel={t("message.actions.copyMessage")}
               />
-            ) : null}
-            <TurnCopyButton
-              getContent={getMessageContent}
-              containerStyle={userMessageStylesheet.copyButton}
-              accessibilityLabel={t("message.actions.copyMessage")}
-            />
+            </View>
           </View>
         ) : null}
       </View>
@@ -670,9 +710,11 @@ const TIMESTAMP_REVEAL_MS = 3000;
 
 /**
  * Footer rendered next to the copy button at the end of an assistant turn.
- * Always shows the turn duration; swaps to the end timestamp on hover (web)
- * or tap (native). The hidden sizer keeps the label width stable while the
- * visible text swaps.
+ * With message times on (Daseo delta 32, the default) it reads like Codex's
+ * completion line, `Worked for 12s · 3:45 PM`, both parts always visible.
+ * With them off it shows the turn duration and swaps to the end timestamp on
+ * hover (web) or tap (native); the hidden sizer keeps the label width stable
+ * while the visible text swaps.
  */
 export const AssistantTurnFooter = memo(function AssistantTurnFooter({
   getContent,
@@ -680,6 +722,7 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
   durationMs,
   onFork,
 }: AssistantTurnFooterProps) {
+  const showMessageTimestamps = useSettings((settings) => settings.showMessageTimestamps);
   const [hovered, setHovered] = useState(false);
   const [pressedReveal, setPressedReveal] = useState(false);
   const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -706,8 +749,10 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
   );
 
   // A turn without a visible prompt has no duration; show its end timestamp directly.
-  const primaryLabel = durationLabel || timestampLabel;
-  const canSwap = Boolean(durationLabel && timestampLabel);
+  const primaryLabel = showMessageTimestamps
+    ? [durationLabel, timestampLabel].filter(Boolean).join(" · ")
+    : durationLabel || timestampLabel;
+  const canSwap = !showMessageTimestamps && Boolean(durationLabel && timestampLabel);
   const showTimestamp = canSwap && (isWeb ? hovered : pressedReveal);
 
   const handleHoverIn = useCallback(() => setHovered(true), []);
@@ -752,12 +797,101 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
             <Text style={assistantTurnFooterStylesheet.labelSizer} aria-hidden>
               {primaryLabel.length >= timestampLabel.length ? primaryLabel : timestampLabel}
             </Text>
-            <Text style={assistantTurnFooterStylesheet.labelOverlay}>
+            <Text
+              style={assistantTurnFooterStylesheet.labelOverlay}
+              testID="assistant-turn-footer-label"
+            >
               {showTimestamp ? timestampLabel : primaryLabel}
             </Text>
           </View>
         </Pressable>
       ) : null}
+    </View>
+  );
+});
+
+const assistantResponseFooterStylesheet = StyleSheet.create((theme) => ({
+  row: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    height: 24,
+    gap: theme.spacing[2],
+  },
+  actions: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  hidden: {
+    opacity: 0,
+  },
+  time: {
+    color: theme.colors.foregroundMuted,
+    fontSize: STREAM_METADATA_FONT_SIZE,
+  },
+}));
+
+interface AssistantResponseBlockProps {
+  /** Markdown of this one response, for its copy button. */
+  content: string;
+  timestamp: number;
+  children: ReactNode;
+}
+
+/**
+ * Daseo delta 32. A completed response that another response follows in the
+ * same turn (a background-wait wake, a steer, a long answer kept visible next
+ * to its short sign-off) closes with its own row: copy this message, and the
+ * time it arrived. That row is what separates the two answers; a rule line is
+ * reserved for conversation events (compaction, a system prompt), as in every
+ * GUI harness surveyed. Copy waits for hover on desktop like the user row's
+ * actions do; the time stays visible while message times are on.
+ */
+export const AssistantResponseBlock = memo(function AssistantResponseBlock({
+  content,
+  timestamp,
+  children,
+}: AssistantResponseBlockProps) {
+  const { t } = useTranslation();
+  const isCompact = useIsCompactFormFactor();
+  const showMessageTimestamps = useSettings((settings) => settings.showMessageTimestamps);
+  const [hovered, setHovered] = useState(false);
+  const handlePointerEnter = useCallback(() => setHovered(true), []);
+  const handlePointerLeave = useCallback(() => setHovered(false), []);
+  const getContent = useCallback(() => content, [content]);
+  const timeLabel = useMemo(() => formatMessageTimestamp(new Date(timestamp)), [timestamp]);
+  const actionsVisible = isCompact || isNative || hovered;
+  const timeVisible = showMessageTimestamps || actionsVisible;
+  const actionsStyle = useMemo(
+    () => [
+      assistantResponseFooterStylesheet.actions,
+      actionsVisible ? null : assistantResponseFooterStylesheet.hidden,
+    ],
+    [actionsVisible],
+  );
+  const timeStyle = useMemo(
+    () => [
+      assistantResponseFooterStylesheet.time,
+      timeVisible ? null : assistantResponseFooterStylesheet.hidden,
+    ],
+    [timeVisible],
+  );
+
+  return (
+    <View onPointerEnter={handlePointerEnter} onPointerLeave={handlePointerLeave}>
+      {children}
+      <View style={assistantResponseFooterStylesheet.row} testID="assistant-response-footer">
+        <View style={actionsStyle} pointerEvents={actionsVisible ? "auto" : "none"}>
+          <TurnCopyButton
+            getContent={getContent}
+            containerStyle={assistantTurnFooterStylesheet.copyButton}
+            accessibilityLabel={t("message.actions.copyMessage")}
+          />
+        </View>
+        <Text style={timeStyle} testID="assistant-response-timestamp">
+          {timeLabel}
+        </Text>
+      </View>
     </View>
   );
 });

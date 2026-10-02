@@ -2072,6 +2072,11 @@ export const en = {
         title: "Chat outline",
         description: "Show an outline for jumping between prompts",
       },
+      messageTimestamps: {
+        title: "Message times",
+        description:
+          "Always show when prompts were sent and responses finished. Off shows them on hover.",
+      },
       fonts: {
         title: "Fonts",
         systemDefault: "System default",

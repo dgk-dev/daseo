@@ -269,13 +269,14 @@ function CompletedTurnFooter({
   const turnKey = items[startIndex]?.id;
   const collapsedWork = useCollapsedWork();
   // The Codex-style "Worked for …" row above the message already shows the
-  // duration for turns with collapsed work; avoid repeating it here.
+  // duration for turns with collapsed work; avoid repeating it here. The end
+  // time is the footer's alone, so it stays (Daseo delta 32).
   const hasCollapsedWorkRow = Boolean(turnKey && (collapsedWork?.getWorkCount(turnKey) ?? 0) > 0);
   return (
     <View style={hasTrailingRow ? stylesheet.turnFooterSlotStacked : stylesheet.turnFooterSlot}>
       <AssistantTurnFooter
         getContent={getContent}
-        completedAt={hasCollapsedWorkRow ? undefined : timing?.completedAt}
+        completedAt={timing?.completedAt}
         durationMs={hasCollapsedWorkRow ? undefined : timing?.durationMs}
         onFork={boundary && onForkAssistantTurn ? handleFork : undefined}
       />

@@ -76,6 +76,12 @@ export interface AppSettings {
   autoExpandReasoning: boolean;
   toolCallDetailLevel: ToolCallDetailLevel;
   chatOutlineEnabled: boolean;
+  /**
+   * Daseo: message times are always on screen (user prompt, each completed response, the
+   * turn footer) instead of appearing on hover. Named after Claude Code's
+   * `showMessageTimestamps` setting; off restores the hover-revealed upstream behavior.
+   */
+  showMessageTimestamps: boolean;
   vimKeybindings: boolean;
 }
 
@@ -107,6 +113,7 @@ const StoredAppSettingsSchema = z.looseObject({
   toolCallDetailLevel: z.unknown().optional(),
   compactToolCalls: z.unknown().optional(),
   chatOutlineEnabled: z.unknown().optional(),
+  showMessageTimestamps: z.unknown().optional(),
   vimKeybindings: z.unknown().optional(),
   // COMPAT(rendererDesktopSettings): these fields used to share this renderer-owned key.
   manageBuiltInDaemon: z.unknown().optional(),
@@ -136,6 +143,7 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   autoExpandReasoning: false,
   toolCallDetailLevel: "detailed",
   chatOutlineEnabled: true,
+  showMessageTimestamps: true,
   vimKeybindings: false,
 };
 
@@ -309,6 +317,9 @@ function pickBooleanAppSettings(stored: StoredAppSettings): Partial<AppSettings>
   }
   if (typeof stored.chatOutlineEnabled === "boolean") {
     result.chatOutlineEnabled = stored.chatOutlineEnabled;
+  }
+  if (typeof stored.showMessageTimestamps === "boolean") {
+    result.showMessageTimestamps = stored.showMessageTimestamps;
   }
   return result;
 }

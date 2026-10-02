@@ -440,6 +440,33 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     `backgroundWaits` (pending count, 0 when none), and the activation script waits while any
     agent has one (90-minute cap), not on shell children of pi, which ordinary bash tool calls
     also are (`packages/cli/src/commands/agent/ls.ts`).
+32. **Message times and response boundaries** — from a 2026-10-02 survey of how the open-source
+    harnesses separate consecutive assistant messages and show time (Codex TUI, Claude Code
+    2.1.285, OpenCode TUI and web, Gemini CLI, Pi, Goose desktop, Zed agent panel, Cline, Roo,
+    Continue). Two answers in a row ran together as one block in Daseo, and the time was hidden
+    behind hover. What the survey settled: a rule line is reserved for conversation events
+    (compaction, interruption, a system prompt) in every GUI harness and none puts one between
+    two assistant messages; a response is closed by its own metadata row (Goose: time under each
+    message; OpenCode web: agent · model · duration on the last text part); the turn-end line
+    shows duration and completion time together, always visible (Codex `Worked for 12s • 3:45 PM`,
+    Claude Code `✻ Cooked for 2m 3s · done 3:45 PM`); per-message times are a setting named
+    `showMessageTimestamps` in Claude Code (default off, "Stamp each message with its arrival
+    time") and a `/timestamps` toggle in the OpenCode TUI (default hide), while the GUI harnesses
+    show them always; and the time tiers (today → time, under a week → weekday + time, older →
+    date + time) are the ones `formatMessageTimestamp` already had. Daseo now: (a) the turn
+    footer reads `Worked for 12s · 3:45 PM` with both parts on screen, and keeps the time when the
+    folded "Worked for …" row above the answer already shows the duration; (b) a completed response
+    that another visible response follows in the same turn (a wait wake, a steer, a long answer
+    kept visible beside its sign-off) closes with its own row — copy this message plus its arrival
+    time — which is what separates the two (`StreamLayoutItem.responseFooter`, never set between
+    blocks of one streamed message or across a tool row); (c) the user prompt's time is always on
+    screen while rewind and copy still wait for hover on desktop. The setting
+    `showMessageTimestamps` (Appearance → Detail level → "Message times", default on) governs
+    always-visible versus the upstream hover-revealed behavior, so off is exactly the old UI. Key
+    files: `packages/app/src/agent-stream/{layout,turn-footer,view}.ts{,x}`,
+    `packages/app/src/components/message.tsx` (`AssistantTurnFooter`, `AssistantResponseBlock`,
+    `UserMessage`), `packages/app/src/hooks/use-settings/storage.ts`, and
+    `packages/app/src/screens/settings/appearance/appearance-section.tsx`.
 
 ## Local reliability contracts
 

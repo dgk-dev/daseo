@@ -144,6 +144,26 @@ describe("loadAppSettingsFromStorage", () => {
     expect(result.chatOutlineEnabled).toBe(false);
   });
 
+  it("shows message times by default", async () => {
+    const deps = makeDeps();
+
+    const result = await loadAppSettingsFromStorage(deps);
+
+    expect(result.showMessageTimestamps).toBe(true);
+  });
+
+  it("loads a hover-only message time preference", async () => {
+    const deps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({ showMessageTimestamps: false }),
+      }),
+    });
+
+    const result = await loadAppSettingsFromStorage(deps);
+
+    expect(result.showMessageTimestamps).toBe(false);
+  });
+
   it("uses the native terminal renderer by default", async () => {
     const deps = makeDeps();
 
