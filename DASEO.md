@@ -461,14 +461,14 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     that another visible response follows in the same turn (a wait wake, a steer, a long answer
     kept visible beside its sign-off) closes with its own row — copy this message plus its arrival
     time — which is what separates the two (`StreamLayoutItem.responseFooter`, never set between
-    blocks of one streamed message or across a tool row); (c) the user prompt's time is always on
-    screen while rewind and copy still wait for hover on desktop. The setting
-    `showMessageTimestamps` (Appearance → Detail level → "Message times", default on) governs
-    always-visible versus the upstream hover-revealed behavior, so off is exactly the old UI. Key
-    files: `packages/app/src/agent-stream/{layout,turn-footer,view}.ts{,x}`,
+    blocks of one streamed message or across a tool row); (c) the user prompt's row (time,
+    rewind/fork, copy) is on screen once the prompt is delivered. All three rows stay visible on
+    desktop, web, and native alike, with no hover or tap reveal and no setting: David-Daniel asked
+    on 2026-10-04 for the row to be always on, so the 0.5.40 "Message times" toggle, whose only
+    job was choosing between always-on and hover, was removed (a stored value is ignored). Key
+    files: `packages/app/src/agent-stream/{layout,turn-footer,view}.ts{,x}` and
     `packages/app/src/components/message.tsx` (`AssistantTurnFooter`, `AssistantResponseBlock`,
-    `UserMessage`), `packages/app/src/hooks/use-settings/storage.ts`, and
-    `packages/app/src/screens/settings/appearance/appearance-section.tsx`.
+    `UserMessage`).
 
 33. **Idle resources step down and wake before use** — from the 2026-10-04 RAM audit of this Mac
     (24 GB, swap 5.5 GB): 38 parked tab renderers held 7.25 GB and about two cores, 13 idle Pi

@@ -2053,11 +2053,6 @@ export const ru: TranslationResources = {
         title: "Структура чата",
         description: "Показывать структуру для перехода между запросами",
       },
-      messageTimestamps: {
-        title: "Время сообщений",
-        description:
-          "Всегда показывать время отправки и завершения ответа. Если выключено, время появляется при наведении.",
-      },
       fonts: {
         title: "Шрифты",
         systemDefault: "Система по умолчанию",

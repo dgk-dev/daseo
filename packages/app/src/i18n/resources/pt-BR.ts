@@ -2047,11 +2047,6 @@ export const ptBR: TranslationResources = {
         title: "Estrutura do chat",
         description: "Mostrar uma estrutura para navegar entre prompts",
       },
-      messageTimestamps: {
-        title: "Horário das mensagens",
-        description:
-          "Sempre mostrar quando cada mensagem foi enviada e quando a resposta terminou. Desativado, aparece ao passar o mouse.",
-      },
       fonts: {
         title: "Fontes",
         systemDefault: "Sistema padrão",

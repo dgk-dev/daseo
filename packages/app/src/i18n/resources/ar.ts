@@ -2015,10 +2015,6 @@ export const ar: TranslationResources = {
         title: "مخطط المحادثة",
         description: "عرض مخطط للتنقل بين المطالبات",
       },
-      messageTimestamps: {
-        title: "وقت الرسائل",
-        description: "عرض وقت الإرسال ووقت انتهاء الرد دائمًا. عند الإيقاف يظهر عند التمرير فقط.",
-      },
       fonts: {
         title: "الخطوط",
         systemDefault: "الافتراضي للنظام",

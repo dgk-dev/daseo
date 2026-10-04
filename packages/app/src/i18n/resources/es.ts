@@ -2063,11 +2063,6 @@ export const es: TranslationResources = {
         title: "Esquema del chat",
         description: "Muestra un esquema para saltar entre instrucciones",
       },
-      messageTimestamps: {
-        title: "Hora de los mensajes",
-        description:
-          "Muestra siempre cuándo se envió cada mensaje y cuándo terminó la respuesta. Desactivado, solo aparece al pasar el cursor.",
-      },
       fonts: {
         title: "Fuentes",
         systemDefault: "Valor predeterminado del sistema",

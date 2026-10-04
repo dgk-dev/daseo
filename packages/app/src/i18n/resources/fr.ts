@@ -2066,11 +2066,6 @@ export const fr: TranslationResources = {
         title: "Plan de la discussion",
         description: "Afficher un plan pour passer d’une requête à l’autre",
       },
-      messageTimestamps: {
-        title: "Heure des messages",
-        description:
-          "Afficher en permanence l’heure d’envoi et de fin de réponse. Désactivé, elle apparaît au survol.",
-      },
       fonts: {
         title: "Polices",
         systemDefault: "Valeur par défaut du système",

@@ -2026,11 +2026,6 @@ export const ko: TranslationResources = {
         title: "채팅 개요",
         description: "프롬프트 사이를 이동하기 위한 개요 표시",
       },
-      messageTimestamps: {
-        title: "메시지 시각",
-        description:
-          "보낸 시각과 응답이 끝난 시각을 항상 표시합니다. 끄면 마우스를 올릴 때만 보입니다.",
-      },
       fonts: {
         title: "글꼴",
         systemDefault: "시스템 기본값",
