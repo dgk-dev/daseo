@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { BrowserSnapshotEngine, type SnapshotPage } from "./snapshot-engine.js";
+import type { AriaFindQuery } from "./aria-snapshot-script.js";
 import { dispatchFocusIsolatedClick } from "./focus-isolated-input.js";
 
 // Runs the real injected snapshot script against a DOM and renders it, so the
@@ -221,5 +222,157 @@ describe("ARIA snapshot script with iframes", () => {
     expect(result.truncated).toBe(true);
     expect(result.stats.nodeCount).toBe(1500);
     expect(result.snapshot).toContain('- text: "Snapshot truncated."');
+  });
+});
+
+describe("browser_find script", () => {
+  const originalRect = Element.prototype.getBoundingClientRect;
+  const originalScrollIntoView = Element.prototype.scrollIntoView;
+  const query = (input: Partial<AriaFindQuery>): AriaFindQuery => ({
+    role: null,
+    name: null,
+    exact: false,
+    pattern: null,
+    limit: 10,
+    ...input,
+  });
+
+  beforeEach(() => {
+    Element.prototype.getBoundingClientRect = () =>
+      ({ x: 0, y: 0, top: 0, left: 0, right: 10, bottom: 10, width: 10, height: 10 }) as DOMRect;
+    // jsdom has no layout, so no scrolling either.
+    Element.prototype.scrollIntoView = () => undefined;
+    document.head.innerHTML = `<title>Shop</title><style>${INLINE_STYLE}</style>`;
+  });
+
+  afterEach(() => {
+    Element.prototype.getBoundingClientRect = originalRect;
+    Element.prototype.scrollIntoView = originalScrollIntoView;
+    document.body.innerHTML = "";
+    delete (window as unknown as Record<string, unknown>).__PASEO_BROWSER_AUTOMATION__;
+  });
+
+  it("returns a ref that clicks the matched button", async () => {
+    document.body.innerHTML =
+      '<nav aria-label="상단 메뉴"><button>장바구니</button></nav><main><button id="add">장바구니 담기</button></main>';
+    const clicks: string[] = [];
+    document.querySelector("#add")?.addEventListener("click", () => clicks.push("add"));
+    const engine = new BrowserSnapshotEngine();
+
+    const found = await engine.find({
+      browserId: "browser-1",
+      page: page(),
+      query: query({ role: "button", name: "장바구니 담기" }),
+    });
+
+    expect(found).toEqual({
+      total: 1,
+      matches: [
+        {
+          ref: expect.stringMatching(/^@e\d+$/),
+          role: "button",
+          name: "장바구니 담기",
+          states: [],
+          landmark: "main",
+        },
+      ],
+    });
+    const ref = found.matches[0]?.ref ?? "";
+    const expression = engine.runtimeElementExpression({ browserId: "browser-1", ref });
+    if (typeof expression !== "string") throw new Error("find ref did not resolve");
+    expect(await dispatchFocusIsolatedClick(page(), expression, { x: 5, y: 5 })).toBe(true);
+    expect(clicks).toEqual(["add"]);
+  });
+
+  it("matches names as a case-insensitive substring and names the landmark", async () => {
+    document.body.innerHTML =
+      '<nav aria-label="상단 메뉴"><button>장바구니</button></nav><main><button>장바구니 담기</button><button>Buy</button></main>';
+
+    const found = await new BrowserSnapshotEngine().find({
+      browserId: "browser-1",
+      page: page(),
+      query: query({ role: "button", name: "장바구니" }),
+    });
+
+    expect(found.total).toBe(2);
+    expect(found.matches.map((match) => [match.name, match.landmark])).toEqual([
+      ["장바구니", 'navigation "상단 메뉴"'],
+      ["장바구니 담기", "main"],
+    ]);
+  });
+
+  it("gives the same ref a snapshot shows and keeps the snapshot's refs working", async () => {
+    document.body.innerHTML = "<button>Save</button><a href='/next'>Next</a>";
+    const engine = new BrowserSnapshotEngine();
+    const snapshot = (await engine.snapshot({ browserId: "browser-1", page: page() })).snapshot;
+    const snapshotRef = /button "Save" \[ref=(@e\d+)\]/.exec(snapshot)?.[1];
+    const linkRef = /link "Next" \[ref=(@e\d+)\]/.exec(snapshot)?.[1] ?? "";
+
+    const found = await engine.find({
+      browserId: "browser-1",
+      page: page(),
+      query: query({ name: "save" }),
+    });
+
+    expect(found.matches[0]?.ref).toBe(snapshotRef);
+    const linkExpression = engine.runtimeElementExpression({
+      browserId: "browser-1",
+      ref: linkRef,
+    });
+    if (typeof linkExpression !== "string") throw new Error("snapshot ref stopped resolving");
+    expect((0, eval)(linkExpression)).toBe(document.querySelector("a"));
+  });
+
+  it("returns non-actionable matches without a ref, with their state and text", async () => {
+    document.body.innerHTML =
+      '<h2>Reviews</h2><p hidden><button>Hidden buy</button></p><button disabled>Buy</button><div style="display:none"><h2>Old reviews</h2></div>';
+
+    const engine = new BrowserSnapshotEngine();
+    const headings = await engine.find({
+      browserId: "browser-1",
+      page: page(),
+      query: query({ role: "heading" }),
+    });
+    const buttons = await engine.find({
+      browserId: "browser-1",
+      page: page(),
+      query: query({ role: "button" }),
+    });
+
+    expect(headings).toEqual({
+      total: 1,
+      matches: [{ role: "heading", name: "Reviews", states: ["level=2"] }],
+    });
+    expect(buttons).toEqual({
+      total: 1,
+      matches: [{ role: "button", name: "Buy", states: ["disabled=true"] }],
+    });
+  });
+
+  it("supports exact names, regular expressions, and the limit", async () => {
+    document.body.innerHTML =
+      "<button>Add</button><button>Add more</button><button>Remove</button>";
+    const engine = new BrowserSnapshotEngine();
+
+    const exact = await engine.find({
+      browserId: "browser-1",
+      page: page(),
+      query: query({ name: "Add", exact: true }),
+    });
+    const pattern = await engine.find({
+      browserId: "browser-1",
+      page: page(),
+      query: query({ pattern: { source: "^(add|remove)$", flags: "i" } }),
+    });
+    const limited = await engine.find({
+      browserId: "browser-1",
+      page: page(),
+      query: query({ role: "button", limit: 1 }),
+    });
+
+    expect(exact.matches.map((match) => match.name)).toEqual(["Add"]);
+    expect(pattern.matches.map((match) => match.name)).toEqual(["Add", "Remove"]);
+    expect(limited.total).toBe(3);
+    expect(limited.matches.map((match) => match.name)).toEqual(["Add"]);
   });
 });

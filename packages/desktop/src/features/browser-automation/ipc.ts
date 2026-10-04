@@ -134,14 +134,22 @@ interface BrowserAutomationWebContents extends ConsoleMessageEmitter {
   capturePage(rect?: Rectangle, options?: { stayHidden?: boolean }): Promise<FullPageCaptureImage>;
   invalidate(): void;
   sendInputEvent(event: IsolatedKeyboardInputEvent): void;
-  addListener?(event: "did-navigate", listener: (event: unknown, url: string) => void): unknown;
+  addListener?(event: "did-navigate", listener: DidNavigateListener): unknown;
   addListener?(event: "did-start-loading" | "did-stop-loading", listener: () => void): unknown;
   addListener?(
     event: "did-start-navigation",
     listener: (details: { url?: string; isMainFrame?: boolean; isSameDocument?: boolean }) => void,
   ): unknown;
-  removeListener?(event: "did-navigate", listener: (event: unknown, url: string) => void): unknown;
+  removeListener?(event: "did-navigate", listener: DidNavigateListener): unknown;
 }
+
+// Electron: (event, url, httpResponseCode, httpStatusText); the code is -1 for non-HTTP documents.
+type DidNavigateListener = (
+  event: unknown,
+  url: string,
+  httpResponseCode?: number,
+  httpStatusText?: string,
+) => void;
 
 export function preparePersistentBrowserDialogMonitoring(
   contents: BrowserAutomationWebContents,
@@ -244,7 +252,13 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
     onMainFrameNavigated: (listener) => {
       // Electron's did-navigate fires only for main-frame cross-document commits,
       // exactly the navigations that destroy a pending evaluate's context.
-      const handler = (_event: unknown, url: string) => listener(url);
+      const handler: DidNavigateListener = (_event, url, httpResponseCode, httpStatusText) =>
+        listener(
+          url,
+          typeof httpResponseCode === "number" && httpResponseCode > 0
+            ? { httpStatus: httpResponseCode, httpStatusText: httpStatusText ?? "" }
+            : undefined,
+        );
       contents.addListener?.("did-navigate", handler);
       return () => contents.removeListener?.("did-navigate", handler);
     },

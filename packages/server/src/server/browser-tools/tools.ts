@@ -1,14 +1,21 @@
 import { mkdir, writeFile } from "node:fs/promises";
+import { STATUS_CODES } from "node:http";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve as resolveFsPath } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
 import {
+  BROWSER_AUTOMATION_READ_DEFAULT_MAX_CHARS,
+  BROWSER_AUTOMATION_READ_MAX_CHARS,
   BrowserAutomationBrowserIdSchema,
   BrowserAutomationNetworkActionSchema,
   BrowserAutomationNetworkResourceTypeSchema,
+  BrowserAutomationReadScopeSchema,
+  BrowserAutomationWaitLoadStateSchema,
   type BrowserAutomationCapturedRequest,
+  type BrowserAutomationFindResult,
   type BrowserAutomationNetworkResult,
+  type BrowserAutomationReadResult,
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import type { BrowserToolsBroker } from "./broker.js";
 import type { BrowserToolsResponsePayload } from "./errors.js";
@@ -75,16 +82,77 @@ const BrowserWaitInputSchema = z
   .object({
     text: z.string().min(1).optional(),
     url: z.string().min(1).optional(),
+    selector: z.string().min(1).optional(),
+    script: z.string().min(1).optional(),
+    load: BrowserAutomationWaitLoadStateSchema.optional(),
     timeoutMs: BrowserWaitTimeoutInputSchema.optional(),
     browserId: BrowserAutomationBrowserIdSchema,
   })
   .refine(
-    (input) =>
-      input.text && input.url ? false : Boolean(input.text || input.url || input.timeoutMs),
+    (input) => {
+      const conditions = countWaitConditions(input);
+      return conditions === 1 || (conditions === 0 && Boolean(input.timeoutMs));
+    },
     {
-      message: "browser_wait requires text or url (not both), or timeoutMs alone to pause",
+      message:
+        "browser_wait requires one condition (text, url, selector, script, or load), or timeoutMs alone to pause",
     },
   );
+const BrowserReadMaxCharsInputSchema = z
+  .number()
+  .int()
+  .positive()
+  .transform((value) => Math.min(value, BROWSER_AUTOMATION_READ_MAX_CHARS));
+const BrowserFindLimitInputSchema = z
+  .number()
+  .int()
+  .positive()
+  .transform((value) => Math.min(value, 50));
+// `/pattern/flags` asks for a regular expression, as Lightpanda's findElement and
+// Playwright's getByRole accept one. g and y are dropped: they make test() stateful.
+const BROWSER_FIND_REGEX_NAME_PATTERN = /^\/(.+)\/([a-z]*)$/s;
+const BrowserFindInputSchema = z
+  .object({
+    browserId: BrowserAutomationBrowserIdSchema,
+    role: z.string().trim().min(1).optional(),
+    name: z.string().min(1).optional(),
+    exact: z.boolean().optional(),
+    limit: BrowserFindLimitInputSchema.optional(),
+  })
+  .refine((input) => Boolean(input.role || input.name), {
+    message: "browser_find requires role, name, or both",
+  })
+  .superRefine((input, context) => {
+    const pattern = input.name ? parseFindNamePattern(input.name) : null;
+    if (pattern && "error" in pattern) {
+      context.addIssue({ code: "custom", path: ["name"], message: pattern.error });
+    }
+  });
+function countWaitConditions(input: {
+  text?: string;
+  url?: string;
+  selector?: string;
+  script?: string;
+  load?: string;
+}): number {
+  return [input.text, input.url, input.selector, input.script, input.load].filter(Boolean).length;
+}
+
+/** null for a plain name; the compiled pattern or why it does not compile for `/pattern/flags`. */
+function parseFindNamePattern(name: string): { pattern: RegExp } | { error: string } | null {
+  const match = BROWSER_FIND_REGEX_NAME_PATTERN.exec(name);
+  if (!match) {
+    return null;
+  }
+  try {
+    return { pattern: new RegExp(match[1] ?? "", (match[2] ?? "").replace(/[gy]/g, "")) };
+  } catch (error) {
+    return {
+      error: `name is not a valid regular expression: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
 const BrowserScrollDeltaInputSchema = z.number().default(0);
 const BrowserUploadFilePathsInputSchema = z
   .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
@@ -181,6 +249,47 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
   );
 
   options.registerTool(
+    "browser_read",
+    {
+      title: "Read browser page",
+      description:
+        "Read a Paseo browser tab as Markdown: headings, lists, tables, and links with absolute URLs; images appear as alt text only. scope main (default) picks the main content with Readability and falls back to the whole page when it finds none; page reads the whole page minus page-level navigation, header, footer, and sidebars; ref (from the latest browser_snapshot) reads one element. Same-origin iframes are included and hidden elements are left out. Product, offer, article, and organization data from JSON-LD and Open Graph or product meta tags is summarized first. links false keeps link text only. maxChars defaults to 40000 (max 120000). Use this instead of browser_evaluate to read page text; use browser_snapshot to act on elements. Use browserId from browser_new_tab or browser_list_tabs.",
+      inputSchema: {
+        browserId: BrowserAutomationBrowserIdSchema,
+        scope: BrowserAutomationReadScopeSchema.optional(),
+        ref: BrowserRefInputSchema.optional(),
+        links: z.boolean().optional(),
+        maxChars: BrowserReadMaxCharsInputSchema.optional(),
+      },
+    },
+    async ({ browserId, scope, ref, links, maxChars }) => {
+      const context = resolveBrowserToolContext(options);
+      const requestedScope = scope ?? "main";
+      const payload = await options.broker.execute({
+        agentId: context.agentId,
+        cwd: context.cwd,
+        ...(context.workspaceId ? { workspaceId: context.workspaceId } : {}),
+
+        command: {
+          command: "read",
+          args: {
+            browserId,
+            scope: requestedScope,
+            ...(ref ? { ref } : {}),
+            links: links ?? true,
+            maxChars: maxChars ?? BROWSER_AUTOMATION_READ_DEFAULT_MAX_CHARS,
+          },
+        },
+      });
+      return browserToolResult({
+        payload,
+        context: { ...context, browserId },
+        readScope: ref ? "ref" : requestedScope,
+      });
+    },
+  );
+
+  options.registerTool(
     "browser_click",
     {
       title: "Click browser element",
@@ -253,12 +362,12 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Wait for browser condition",
       description:
-        "Wait until a Paseo browser tab contains text or reaches a URL fragment, or pass only timeoutMs to pause. Use browserId from browser_new_tab or browser_list_tabs; conditions wait up to 5s by default and timeoutMs is capped at 30000.",
+        "Wait for one condition in a Paseo browser tab: text the page contains, a URL fragment, a CSS selector that matches an element (attached, visible or not; searches same-origin iframes and open shadow roots), a JavaScript script expression or function polled until it returns a truthy value (a throw fails at once), or load: load for the load event or networkidle for no requests in flight for 500ms (long polling or streaming keeps some pages from ever going idle). Pass only timeoutMs to pause. Use browserId from browser_new_tab or browser_list_tabs; conditions wait up to 5s by default and timeoutMs is capped at 30000.",
       inputSchema: BrowserWaitInputSchema,
     },
-    async ({ text, url, timeoutMs, browserId }, executionContext) => {
+    async ({ text, url, selector, script, load, timeoutMs, browserId }, executionContext) => {
       const context = resolveBrowserToolContext(options);
-      if (!text && !url) {
+      if (countWaitConditions({ text, url, selector, script, load }) === 0) {
         const waitedMs = await pause(timeoutMs ?? 0, executionContext?.signal);
         return {
           content: [{ type: "text", text: `Browser wait paused ${waitedMs}ms.` }],
@@ -281,11 +390,48 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
             browserId,
             ...(text ? { text } : {}),
             ...(url ? { url } : {}),
+            ...(selector ? { selector } : {}),
+            ...(script ? { script } : {}),
+            ...(load ? { load } : {}),
             ...(timeoutMs ? { timeoutMs } : {}),
           },
         },
       });
       return browserToolResult({ payload, context: { ...context, browserId } });
+    },
+  );
+
+  options.registerTool(
+    "browser_find",
+    {
+      title: "Find browser elements",
+      description:
+        "Find elements in a Paseo browser tab by ARIA role and accessible name, as Playwright's getByRole does. name matches case-insensitively as a substring; exact true requires the whole name; /pattern/flags is a regular expression. Actionable matches return a ref that browser_click, browser_fill, and the other ref tools accept, the same ref browser_snapshot shows for that element; other matches (headings, cells) return role, name, and text. Each match names the landmark or dialog around it, to tell same-named buttons apart. limit defaults to 10 (max 50). Use browserId from browser_new_tab or browser_list_tabs.",
+      inputSchema: BrowserFindInputSchema,
+    },
+    async ({ browserId, role, name, exact, limit }) => {
+      const context = resolveBrowserToolContext(options);
+      const payload = await options.broker.execute({
+        agentId: context.agentId,
+        cwd: context.cwd,
+        ...(context.workspaceId ? { workspaceId: context.workspaceId } : {}),
+
+        command: {
+          command: "find",
+          args: {
+            browserId,
+            ...(role ? { role } : {}),
+            ...(name ? { name } : {}),
+            exact: exact ?? false,
+            limit: limit ?? 10,
+          },
+        },
+      });
+      return browserToolResult({
+        payload,
+        context: { ...context, browserId },
+        findQuery: { role, name, exact: exact ?? false },
+      });
     },
   );
 
@@ -911,14 +1057,28 @@ function requireWorkspaceContext(context: {
   });
 }
 
-function browserToolResult(params: {
-  payload: BrowserToolsResponsePayload;
-  context: { agentId?: string; cwd?: string; workspaceId?: string; browserId?: string };
-}): PaseoToolResult {
+interface BrowserFindQuery {
+  role?: string;
+  name?: string;
+  exact: boolean;
+}
+
+interface BrowserToolSummaryOptions {
+  /** What browser_read was asked for, to say when `main` fell back to the page. */
+  readScope?: "main" | "page" | "ref";
+  findQuery?: BrowserFindQuery;
+}
+
+function browserToolResult(
+  params: {
+    payload: BrowserToolsResponsePayload;
+    context: { agentId?: string; cwd?: string; workspaceId?: string; browserId?: string };
+  } & BrowserToolSummaryOptions,
+): PaseoToolResult {
   const { payload, context } = params;
   if (payload.ok) {
     return {
-      content: browserToolSuccessContent(payload),
+      content: browserToolSuccessContent(payload, params),
       structuredContent: {
         ok: true,
         result: browserToolStructuredResult(payload.result),
@@ -947,6 +1107,11 @@ function browserToolResult(params: {
 function browserToolStructuredResult(
   result: Extract<BrowserToolsResponsePayload, { ok: true }>["result"],
 ): Extract<BrowserToolsResponsePayload, { ok: true }>["result"] | Record<string, unknown> {
+  if (result.command === "read") {
+    // The text block already carries the page; MCP gateways forward both.
+    const { content: _content, ...metadata } = result;
+    return metadata;
+  }
   if (result.command !== "screenshot") {
     return result;
   }
@@ -957,8 +1122,9 @@ function browserToolStructuredResult(
 
 function browserToolSuccessContent(
   payload: Extract<BrowserToolsResponsePayload, { ok: true }>,
+  options: BrowserToolSummaryOptions,
 ): PaseoToolResult["content"] {
-  const textContent = { type: "text" as const, text: summarizeBrowserSuccess(payload) };
+  const textContent = { type: "text" as const, text: summarizeBrowserSuccess(payload, options) };
   const imageContent = browserToolImageContent(payload.result);
   return imageContent ? [textContent, imageContent] : [textContent];
 }
@@ -983,8 +1149,15 @@ function formatTabLoading(loadingForMs: number | undefined): string {
 
 function summarizeBrowserSuccess(
   payload: Extract<BrowserToolsResponsePayload, { ok: true }>,
+  options: BrowserToolSummaryOptions,
 ): string {
   const withDialogs = (summary: string) => appendDialogSummary(summary, payload.dialogs);
+  if (payload.result.command === "read") {
+    return withDialogs(summarizeBrowserRead(payload.result, options.readScope ?? "main"));
+  }
+  if (payload.result.command === "find") {
+    return withDialogs(summarizeBrowserFind(payload.result, options.findQuery));
+  }
   const controlSummary = summarizeBrowserControlSuccess(payload.result);
   if (controlSummary) {
     return withDialogs(controlSummary);
@@ -1062,6 +1235,73 @@ function summarizeBrowserSuccess(
   return withDialogs(`Browser ${payload.result.command} complete.`);
 }
 
+function summarizeBrowserRead(
+  result: BrowserAutomationReadResult,
+  requestedScope: "main" | "page" | "ref",
+): string {
+  const source = describeReadSource(result.scope, requestedScope);
+  const shown = result.truncated
+    ? `${result.stats.chars.toLocaleString("en-US")} chars, truncated to maxChars; raise maxChars (up to ${BROWSER_AUTOMATION_READ_MAX_CHARS}) or read one element with ref`
+    : `${result.stats.chars.toLocaleString("en-US")} chars`;
+  return [
+    `Title: ${result.title || "Untitled"}`,
+    `URL: ${result.url}`,
+    `Read: ${source}, ${shown}.`,
+    "",
+    result.content,
+  ].join("\n");
+}
+
+function describeReadSource(
+  scope: BrowserAutomationReadResult["scope"],
+  requestedScope: "main" | "page" | "ref",
+): string {
+  if (scope === "ref") {
+    return "one element";
+  }
+  if (scope === "main") {
+    return "main content (Readability)";
+  }
+  return requestedScope === "main" ? "whole page (no main content detected)" : "whole page";
+}
+
+function describeFindQuery(query: BrowserFindQuery | undefined): string {
+  if (!query) {
+    return "the query";
+  }
+  const parts = [
+    ...(query.role ? [`role=${query.role}`] : []),
+    ...(query.name ? [`name${query.exact ? "=" : "~"}${JSON.stringify(query.name)}`] : []),
+  ];
+  return parts.join(" ");
+}
+
+function summarizeBrowserFind(
+  result: BrowserAutomationFindResult,
+  query: BrowserFindQuery | undefined,
+): string {
+  const description = describeFindQuery(query);
+  if (result.total === 0) {
+    return `No match for ${description}. Take a browser_snapshot to see the page's roles and names.`;
+  }
+  const shown =
+    result.matches.length < result.total
+      ? ` (showing ${result.matches.length}; raise limit up to 50 to see more)`
+      : "";
+  const lines = result.matches.map((match) => {
+    const attributes = [...match.states, ...(match.ref ? [`ref=${match.ref}`] : [])];
+    const name = match.name ? ` ${JSON.stringify(match.name)}` : "";
+    const suffix = attributes.length > 0 ? ` [${attributes.join(" ")}]` : "";
+    const landmark = match.landmark ? ` in ${match.landmark}` : "";
+    const text = match.text ? `: ${JSON.stringify(match.text)}` : "";
+    return `- ${match.role}${name}${suffix}${landmark}${text}`;
+  });
+  return [
+    `Found ${result.total} match${result.total === 1 ? "" : "es"} for ${description}${shown}.`,
+    ...lines,
+  ].join("\n");
+}
+
 function appendDialogSummary(
   summary: string,
   dialogs: BrowserToolsResponsePayload["dialogs"],
@@ -1109,14 +1349,41 @@ function summarizeBrowserNavigationSuccess(
   result: Extract<BrowserToolsResponsePayload, { ok: true }>["result"],
 ): string | null {
   if (result.command === "navigate") {
-    return `Navigated browser to ${result.url}.`;
+    return result.httpStatus === undefined
+      ? `Navigated browser to ${result.url}.`
+      : describeNavigationStatus(
+          `Navigated to ${result.url}`,
+          result.httpStatus,
+          result.httpStatusText,
+        );
   }
 
   if (result.command === "back" || result.command === "forward" || result.command === "reload") {
-    return `Browser ${result.command} complete.`;
+    return result.httpStatus === undefined
+      ? `Browser ${result.command} complete.`
+      : describeNavigationStatus(
+          `Browser ${result.command} complete: ${result.url ?? "the tab"}`,
+          result.httpStatus,
+          result.httpStatusText,
+        );
   }
 
   return null;
+}
+
+// A 404 or 500 page loads like any other, so without the status an agent read
+// the site's error page as the content it asked for.
+function describeNavigationStatus(
+  lead: string,
+  httpStatus: number,
+  httpStatusText: string | undefined,
+): string {
+  // HTTP/2 responses carry no reason phrase.
+  const reason = httpStatusText || STATUS_CODES[httpStatus] || "";
+  if (httpStatus >= 400) {
+    return `${lead}, but the server answered HTTP ${httpStatus}${reason ? ` ${reason}` : ""}. The page content is the site's error page.`;
+  }
+  return `${lead} (HTTP ${httpStatus}).`;
 }
 
 function summarizeBrowserDiagnosticsSuccess(

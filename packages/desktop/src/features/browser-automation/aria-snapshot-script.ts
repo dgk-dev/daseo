@@ -1,12 +1,12 @@
 export const ARIA_SNAPSHOT_SCRIPT_MARKER = "__PASEO_ARIA_SNAPSHOT__";
+export const ARIA_FIND_SCRIPT_MARKER = "__PASEO_ARIA_FIND__";
 
 // Adapted from Playwright's injected ARIA snapshot model.
 // Copyright (c) Microsoft Corporation. Licensed under the Apache License, Version 2.0.
-export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
-  const MARKER = ${JSON.stringify(ARIA_SNAPSHOT_SCRIPT_MARKER)};
-  const MAX_NODES = 1500;
-  const MAX_REFS = 500;
-  const MAX_TEXT_LENGTH = 80000;
+//
+// Role, name, visibility, state, and ref numbering shared by the snapshot and
+// browser_find, so a find match and a snapshot line agree on the same element.
+export const ARIA_SHARED_SOURCE = String.raw`
   const ACTIONABLE_ROLES = new Set([
     'button',
     'checkbox',
@@ -209,8 +209,14 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
   // next row's "Delete" button. The resolver itself is rebuilt each snapshot.
   // Elements inside same-origin iframes share this registry; a frame that
   // navigated or was removed leaves its old document without a window.
-  function ensureRuntime() {
+  // keepRefs (browser_find) adds to the refs of the latest snapshot instead of
+  // starting a new set, so the snapshot's refs keep resolving.
+  function ensureRuntime(keepRefs) {
     const previous = window.__PASEO_BROWSER_AUTOMATION__;
+    if (keepRefs && previous && previous.refs instanceof Map && previous.numbering &&
+      previous.numbering.refByElement instanceof WeakMap) {
+      return previous;
+    }
     const numbering = previous && previous.numbering && previous.numbering.refByElement instanceof WeakMap
       ? previous.numbering
       : { refByElement: new WeakMap(), nextRef: 1 };
@@ -276,6 +282,50 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
     return active === owner.body || active === owner.documentElement ? null : active;
   }
 
+  // Rendered children, following Playwright's ariaSnapshot traversal: a slot
+  // renders its assigned light-DOM nodes, and a shadow host renders its
+  // unslotted light children followed by its open shadow tree.
+  // A same-origin iframe renders its document's body in place of its own
+  // (fallback) children; a cross-origin one renders nothing.
+  function renderedChildren(element) {
+    if (isFrameElement(element)) {
+      const doc = frameDocument(element);
+      const body = doc && (doc.body || doc.documentElement);
+      return body ? renderedChildren(body) : [];
+    }
+    if (element.nodeName === 'SLOT' && typeof element.assignedNodes === 'function') {
+      const assigned = element.assignedNodes();
+      if (assigned.length) return assigned;
+    }
+    const children = [];
+    for (const child of Array.from(element.childNodes)) {
+      if (!child.assignedSlot) children.push(child);
+    }
+    if (element.shadowRoot) {
+      for (const child of Array.from(element.shadowRoot.childNodes)) children.push(child);
+    }
+    return children;
+  }
+
+  // Assigns the element's document-lifetime ref and registers it for resolving.
+  function refFor(runtime, element) {
+    let ref = runtime.numbering.refByElement.get(element);
+    if (!ref) {
+      ref = '@e' + runtime.numbering.nextRef;
+      runtime.numbering.nextRef += 1;
+      runtime.numbering.refByElement.set(element, ref);
+    }
+    runtime.refs.set(ref, element);
+    return ref;
+  }
+`;
+
+export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
+  const MARKER = ${JSON.stringify(ARIA_SNAPSHOT_SCRIPT_MARKER)};
+  const MAX_NODES = 1500;
+  const MAX_REFS = 500;
+  const MAX_TEXT_LENGTH = 80000;
+${ARIA_SHARED_SOURCE}
   // leadingSpace/trailingSpace record whitespace the page had at the edges of the
   // run before normalizeText trimmed it, so the renderer joins inline runs with a
   // space only where the page has one ("<span>T</span><span>h</span>" is "Th").
@@ -303,7 +353,7 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
   let maxDepth = 0;
   let truncated = false;
   let textBudget = MAX_TEXT_LENGTH;
-  const runtime = ensureRuntime();
+  const runtime = ensureRuntime(false);
   const focusedElement = deepActiveElement();
 
   function countNode(depth) {
@@ -325,31 +375,6 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
     const capped = text.slice(0, Math.max(0, textBudget));
     textBudget = 0;
     return capped;
-  }
-
-  // Rendered children, following Playwright's ariaSnapshot traversal: a slot
-  // renders its assigned light-DOM nodes, and a shadow host renders its
-  // unslotted light children followed by its open shadow tree.
-  // A same-origin iframe renders its document's body in place of its own
-  // (fallback) children; a cross-origin one renders nothing.
-  function renderedChildren(element) {
-    if (isFrameElement(element)) {
-      const doc = frameDocument(element);
-      const body = doc && (doc.body || doc.documentElement);
-      return body ? renderedChildren(body) : [];
-    }
-    if (element.nodeName === 'SLOT' && typeof element.assignedNodes === 'function') {
-      const assigned = element.assignedNodes();
-      if (assigned.length) return assigned;
-    }
-    const children = [];
-    for (const child of Array.from(element.childNodes)) {
-      if (!child.assignedSlot) children.push(child);
-    }
-    if (element.shadowRoot) {
-      for (const child of Array.from(element.shadowRoot.childNodes)) children.push(child);
-    }
-    return children;
   }
 
   function visitNode(domNode, depth) {
@@ -399,15 +424,9 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
     }
     snapshotNode.children = children;
     if (role && isActionable(domNode, role) && refCount < MAX_REFS) {
-      let ref = runtime.numbering.refByElement.get(domNode);
-      if (!ref) {
-        ref = '@e' + runtime.numbering.nextRef;
-        runtime.numbering.nextRef += 1;
-        runtime.numbering.refByElement.set(domNode, ref);
-      }
+      const ref = refFor(runtime, domNode);
       const fingerprint = fingerprintFor(domNode, role, name);
       refCount += 1;
-      runtime.refs.set(ref, domNode);
       snapshotNode.ref = ref;
       snapshotNode.fingerprint = fingerprint;
     } else if (role && isActionable(domNode, role)) {
@@ -442,3 +461,113 @@ export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
     stats: { nodeCount, refCount, textLength: 0, iframeCount, maxDepth }
   });
 })()`;
+
+export interface AriaFindQuery {
+  role: string | null;
+  /** Plain name to match; null with a pattern or without a name. */
+  name: string | null;
+  exact: boolean;
+  pattern: { source: string; flags: string } | null;
+  limit: number;
+}
+
+// browser_find: the snapshot's walk without its node and ref caps, keeping
+// only elements whose role and accessible name match. Hidden elements never
+// match, as in Playwright's getByRole; actionable matches get the element's
+// document-lifetime ref.
+export function buildAriaFindScript(query: AriaFindQuery): string {
+  return String.raw`(() => {
+  const MARKER = ${JSON.stringify(ARIA_FIND_SCRIPT_MARKER)};
+  const QUERY = ${JSON.stringify(query)};
+  const MAX_TEXT = 200;
+${ARIA_SHARED_SOURCE}
+  const runtime = ensureRuntime(true);
+  const focusedElement = deepActiveElement();
+  const LANDMARK_ROLES = new Set([
+    'banner', 'complementary', 'contentinfo', 'form', 'main', 'navigation', 'region', 'search',
+    'dialog', 'alertdialog'
+  ]);
+
+  const roleQuery = QUERY.role ? QUERY.role.toLowerCase() : null;
+  let nameMatches = () => true;
+  if (QUERY.pattern) {
+    const pattern = new RegExp(QUERY.pattern.source, QUERY.pattern.flags);
+    nameMatches = (name) => pattern.test(name);
+  } else if (QUERY.name !== null) {
+    const needle = normalizeText(QUERY.name);
+    const lowered = needle.toLowerCase();
+    nameMatches = QUERY.exact ? (name) => name === needle : (name) => name.toLowerCase().includes(lowered);
+  }
+
+  // Up through shadow hosts and frame elements, so a button inside a web
+  // component or a same-origin frame still finds the landmark around it.
+  function parentAcrossBoundaries(element) {
+    if (element.parentElement) return element.parentElement;
+    const root = element.getRootNode ? element.getRootNode() : null;
+    if (root && root.host) return root.host;
+    try {
+      const view = element.ownerDocument && element.ownerDocument.defaultView;
+      return view && view.frameElement ? view.frameElement : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function landmarkRoleFor(element) {
+    const role = roleFor(element);
+    if (role) return LANDMARK_ROLES.has(role) ? role : null;
+    const tag = element.tagName.toLowerCase();
+    if (tag === 'aside') return 'complementary';
+    if (tag === 'dialog') return 'dialog';
+    if (tag === 'search') return 'search';
+    if (tag === 'form' && (element.getAttribute('aria-label') || element.getAttribute('aria-labelledby'))) return 'form';
+    return null;
+  }
+
+  function landmarkFor(element) {
+    for (let current = parentAcrossBoundaries(element); current; current = parentAcrossBoundaries(current)) {
+      const role = landmarkRoleFor(current);
+      if (!role) continue;
+      const name = nameFor(current, role);
+      return name ? role + ' ' + JSON.stringify(name) : role;
+    }
+    return null;
+  }
+
+  function describeMatch(element, role, name) {
+    const match = { role, name, states: stateAttributes(element, role) };
+    if (isActionable(element, role)) {
+      match.ref = refFor(runtime, element);
+      match.fingerprint = fingerprintFor(element, role, name);
+    } else {
+      const text = normalizeText(element.textContent);
+      if (text && text !== name) match.text = text.length > MAX_TEXT ? text.slice(0, MAX_TEXT) + '…' : text;
+    }
+    const landmark = landmarkFor(element);
+    if (landmark) match.landmark = landmark;
+    return match;
+  }
+
+  const matches = [];
+  let total = 0;
+  const stack = renderedChildren(document.body || document.documentElement).reverse();
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!isElement(node)) continue;
+    const visibility = visibilityFor(node);
+    if (!visibility || node.getAttribute('aria-hidden') === 'true') continue;
+    const role = roleFor(node);
+    if (visibility === 'box' && role && (!roleQuery || role === roleQuery)) {
+      const name = nameFor(node, role);
+      if (nameMatches(name)) {
+        total += 1;
+        if (matches.length < QUERY.limit) matches.push(describeMatch(node, role, name));
+      }
+    }
+    const children = renderedChildren(node);
+    for (let index = children.length - 1; index >= 0; index -= 1) stack.push(children[index]);
+  }
+
+  return JSON.stringify({ marker: MARKER, matches, total });
+})()`;
+}

@@ -1,4 +1,5 @@
 import { isAbsolute, relative, resolve as resolvePath } from "node:path";
+import { compileFunction } from "node:vm";
 
 import type {
   BrowserAutomationCommand,
@@ -7,7 +8,10 @@ import type {
   BrowserAutomationErrorCode,
   BrowserAutomationExecuteResponse,
   BrowserAutomationExecuteRequest,
+  BrowserAutomationFindCommandArgs,
   BrowserAutomationNetworkLogEntry,
+  BrowserAutomationReadCommandArgs,
+  BrowserAutomationWaitLoadState,
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import { waitForActionableTarget, type ActionabilityResult } from "./actionability.js";
 import { dispatchFocusIsolatedClick, dispatchFocusIsolatedDrag } from "./focus-isolated-input.js";
@@ -16,6 +20,8 @@ import { planStreamInputCdpSteps } from "./stream-input.js";
 import { FullPageCaptureUnsupportedError } from "./full-page-capture.js";
 import type { TabLoadingInfo } from "./load-tracker.js";
 import type { NetworkCaptureControl } from "./network-capture.js";
+import { capReadContent, parseReadScriptResult } from "./read.js";
+import { buildReadScript } from "./read-script.js";
 import { BrowserSnapshotEngine } from "./snapshot-engine.js";
 import {
   dispatchTrustedClick,
@@ -59,10 +65,20 @@ export interface TabContents {
     task: () => Promise<T>,
   ): Promise<{ result: T; dialogs: BrowserAutomationDialogEvent[] }>;
   sendDebugCommand?(command: string, params?: Record<string, unknown>): Promise<unknown>;
-  /** Calls `listener` when the main frame commits a cross-document navigation; returns an unsubscribe. */
-  onMainFrameNavigated?(listener: (url: string) => void): () => void;
+  /**
+   * Calls `listener` when the main frame commits a cross-document navigation, with the HTTP
+   * response that committed it when there was one; returns an unsubscribe.
+   */
+  onMainFrameNavigated?(
+    listener: (url: string, response?: MainFrameNavigationResponse) => void,
+  ): () => void;
   /** The tab's opt-in request capture; one per tab, idle until started. */
   getNetworkCapture?(): NetworkCaptureControl;
+}
+
+export interface MainFrameNavigationResponse {
+  httpStatus: number;
+  httpStatusText: string;
 }
 
 export interface TabImage {
@@ -94,6 +110,9 @@ type FailurePayload = Extract<AutomationCommandPayload, { ok: false }>;
 const defaultSnapshotEngine = new BrowserSnapshotEngine();
 const DEFAULT_WAIT_TIMEOUT_MS = 5_000;
 const WAIT_POLL_INTERVAL_MS = 25;
+// back/forward/reload wait this long for the main frame to commit so they can report its HTTP
+// status; a navigation still waiting for its response after that returns without one.
+const NAVIGATION_COMMIT_WAIT_MS = 10_000;
 const PIXEL_CAPTURE_TIMEOUT_MS = 5_000;
 const FULL_PAGE_CAPTURE_TIMEOUT_MS = 30_000;
 const PIXEL_CAPTURE_RETRY_INTERVAL_MS = 200;
@@ -423,6 +442,9 @@ const commandHandlers: Record<BrowserAutomationCommand["command"], CommandHandle
       {
         text: waitCommand.args.text,
         url: waitCommand.args.url,
+        selector: waitCommand.args.selector,
+        script: waitCommand.args.script,
+        load: waitCommand.args.load,
         timeoutMs: waitCommand.args.timeoutMs,
       },
       registry,
@@ -611,7 +633,176 @@ const commandHandlers: Record<BrowserAutomationCommand["command"], CommandHandle
     const networkCommand = command as Extract<BrowserAutomationCommand, { command: "network" }>;
     return executeNetwork(requestId, workspaceId, networkCommand.args, registry);
   },
+  read: ({ command, requestId, workspaceId, registry, snapshotEngine }) => {
+    const readCommand = command as Extract<BrowserAutomationCommand, { command: "read" }>;
+    return executeRead(requestId, workspaceId, readCommand.args, registry, snapshotEngine);
+  },
+  find: ({ command, requestId, workspaceId, registry, snapshotEngine }) => {
+    const findCommand = command as Extract<BrowserAutomationCommand, { command: "find" }>;
+    return executeFind(requestId, workspaceId, findCommand.args, registry, snapshotEngine);
+  },
 };
+
+async function executeRead(
+  requestId: string,
+  workspaceId: string | undefined,
+  args: BrowserAutomationReadCommandArgs,
+  registry: BrowserRegistry,
+  snapshotEngine: BrowserSnapshotEngine,
+): Promise<AutomationCommandPayload> {
+  const target = resolveTabTarget({ requestId, workspaceId, browserId: args.browserId, registry });
+  if ("ok" in target) {
+    return target;
+  }
+  return withDialogCapture(target.contents, async () => {
+    let elementExpression: string | undefined;
+    if (args.ref) {
+      const expression = snapshotEngine.runtimeElementExpression({
+        browserId: target.browserId,
+        ref: args.ref,
+      });
+      if (typeof expression !== "string") {
+        return staleRefFailure(requestId, args.ref);
+      }
+      elementExpression = expression;
+    }
+
+    let settled: EvaluateSettlement;
+    try {
+      const script = buildReadScript({
+        scope: args.scope,
+        links: args.links,
+        ...(elementExpression ? { elementExpression } : {}),
+      });
+      settled = await settleEvaluate(target.contents, target.contents.executeJavaScript(script));
+    } catch (error) {
+      return fail(
+        requestId,
+        "browser_unknown_error",
+        `Reading the page failed: ${evaluateErrorMessage(error)}`,
+      );
+    }
+    if (settled.kind === "navigated") {
+      return fail(
+        requestId,
+        "browser_unknown_error",
+        `The page navigated to ${settled.url} while it was being read. Read it again.`,
+      );
+    }
+    if (settled.kind === "timeout") {
+      return readTimeoutFailure(requestId, target);
+    }
+
+    const outcome = parseReadScriptResult(settled.value);
+    if (!outcome) {
+      return fail(requestId, "browser_unknown_error", "The page returned no readable content.");
+    }
+    if (outcome.kind === "stale_ref") {
+      return staleRefFailure(requestId, args.ref ?? "unknown");
+    }
+    const { page } = outcome;
+    const capped = capReadContent(page.content, args.maxChars);
+    return {
+      requestId,
+      ok: true,
+      result: {
+        command: "read",
+        browserId: target.browserId,
+        url: target.contents.getURL(),
+        title: target.contents.getTitle(),
+        format: "markdown",
+        scope: page.scope,
+        content: capped.content,
+        truncated: capped.truncated,
+        stats: {
+          chars: page.content.length,
+          links: page.links,
+          structuredDataFound: page.structuredDataFound,
+        },
+      },
+    };
+  });
+}
+
+// executeJavaScript waits for a load to stop, so a read of a stuck tab times out;
+// say so the way the broker does for any tab-scoped tool.
+function readTimeoutFailure(requestId: string, target: ResolvedTabTarget): FailurePayload {
+  if (!target.contents.isDestroyed() && target.contents.isLoading()) {
+    const loading = target.contents.getLoadingInfo?.() ?? null;
+    const duration = loading
+      ? `has been loading ${Math.round(loading.loadingForMs / 1000)}s`
+      : "is still loading";
+    const url = loading?.url ?? target.contents.getURL();
+    return fail(
+      requestId,
+      "browser_timeout",
+      `Tab ${target.browserId} ${duration}${url ? ` (url: ${url})` : ""}. The page has not finished loading; try browser_reload, a different URL, or wait.`,
+      true,
+    );
+  }
+  return fail(
+    requestId,
+    "browser_timeout",
+    `Reading the page did not finish within ${EVALUATE_RESULT_TIMEOUT_MS / 1000}s. Read one element with a ref from browser_snapshot instead.`,
+    true,
+  );
+}
+
+// `/pattern/flags` asks for a regular expression; g and y would make test() stateful.
+const FIND_NAME_PATTERN = /^\/(.+)\/([a-z]*)$/s;
+
+async function executeFind(
+  requestId: string,
+  workspaceId: string | undefined,
+  args: BrowserAutomationFindCommandArgs,
+  registry: BrowserRegistry,
+  snapshotEngine: BrowserSnapshotEngine,
+): Promise<AutomationCommandPayload> {
+  const target = resolveTabTarget({ requestId, workspaceId, browserId: args.browserId, registry });
+  if ("ok" in target) {
+    return target;
+  }
+  let pattern: { source: string; flags: string } | null = null;
+  const patternMatch = args.name ? FIND_NAME_PATTERN.exec(args.name) : null;
+  if (patternMatch) {
+    try {
+      const compiled = new RegExp(
+        patternMatch[1] ?? "",
+        (patternMatch[2] ?? "").replace(/[gy]/g, ""),
+      );
+      pattern = { source: compiled.source, flags: compiled.flags };
+    } catch (error) {
+      return fail(
+        requestId,
+        "browser_unknown_error",
+        `browser_find name is not a valid regular expression: ${evaluateErrorMessage(error)}`,
+      );
+    }
+  }
+  return withDialogCapture(target.contents, async () => {
+    const found = await snapshotEngine.find({
+      browserId: target.browserId,
+      page: target.contents,
+      query: {
+        role: args.role ?? null,
+        name: pattern ? null : (args.name ?? null),
+        exact: args.exact,
+        pattern,
+        limit: args.limit,
+      },
+    });
+    return {
+      requestId,
+      ok: true,
+      result: {
+        command: "find",
+        browserId: target.browserId,
+        matches: found.matches,
+        total: found.total,
+      },
+    };
+  });
+}
 
 async function executeNetwork(
   requestId: string,
@@ -1414,11 +1605,20 @@ function cdpSender(contents: TabContents): NonNullable<TabContents["sendDebugCom
   return contents.sendDebugCommand?.bind(contents) as NonNullable<TabContents["sendDebugCommand"]>;
 }
 
+interface WaitCondition {
+  text?: string;
+  url?: string;
+  selector?: string;
+  script?: string;
+  load?: BrowserAutomationWaitLoadState;
+  timeoutMs?: number;
+}
+
 async function executeWait(
   requestId: string,
   workspaceId: string | undefined,
   browserId: string,
-  condition: { text?: string; url?: string; timeoutMs?: number },
+  condition: WaitCondition,
   registry: BrowserRegistry,
 ): Promise<AutomationCommandPayload> {
   const target = resolveTabTarget({ requestId, workspaceId, browserId, registry });
@@ -1426,12 +1626,27 @@ async function executeWait(
     return target;
   }
   return withDialogCapture(target.contents, async () => {
+    const deadline = Date.now() + (condition.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS);
+    if (condition.selector) {
+      return waitForSelector(requestId, target, condition.selector, deadline);
+    }
+    if (condition.script) {
+      return waitForScript(requestId, target, condition.script, deadline);
+    }
+    if (condition.load === "load") {
+      return waitForLoad(requestId, target, deadline);
+    }
+    if (condition.load === "networkidle") {
+      return waitForNetworkIdle(requestId, target, deadline);
+    }
     if (!condition.text && !condition.url) {
-      return fail(requestId, "browser_unsupported", "browser_wait requires text or url");
+      return fail(
+        requestId,
+        "browser_unsupported",
+        "browser_wait requires text, url, selector, script, or load",
+      );
     }
 
-    const timeoutMs = condition.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
-    const deadline = Date.now() + timeoutMs;
     do {
       if (condition.url && target.contents.getURL().includes(condition.url)) {
         return {
@@ -1473,6 +1688,265 @@ async function executeWait(
     }
     return fail(requestId, "browser_unsupported", "browser_wait requires text or url");
   });
+}
+
+function waitMatched(
+  requestId: string,
+  browserId: string,
+  matched: "selector" | "script" | "load",
+): AutomationCommandPayload {
+  return { requestId, ok: true, result: { command: "wait", browserId, matched } };
+}
+
+type PolledValue<T> = { kind: "value"; value: T } | { kind: "deadline" };
+
+// executeJavaScript waits while the tab loads and never settles for a promise
+// that never resolves, so one poll must not outlive the wait's own deadline.
+async function pollBeforeDeadline<T>(
+  evaluation: Promise<T>,
+  deadline: number,
+): Promise<PolledValue<T>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      evaluation.then((value): PolledValue<T> => ({ kind: "value", value })),
+      new Promise<PolledValue<T>>((resolve) => {
+        timer = setTimeout(() => resolve({ kind: "deadline" }), Math.max(0, deadline - Date.now()));
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+// Existence only, as Playwright's state "attached": visibility is a separate
+// question the snapshot answers. Same reach as the text wait: the document,
+// same-origin frames, and open shadow roots.
+async function waitForSelector(
+  requestId: string,
+  target: ResolvedTabTarget,
+  selector: string,
+  deadline: number,
+): Promise<AutomationCommandPayload> {
+  do {
+    const polled = await pollBeforeDeadline(
+      target.contents.executeJavaScript(selectorExistsScript(selector)),
+      deadline,
+    );
+    if (polled.kind === "value") {
+      const value = polled.value as { found?: unknown; error?: unknown } | null;
+      if (typeof value?.error === "string") {
+        return fail(requestId, "browser_unknown_error", value.error);
+      }
+      if (value?.found === true) {
+        return waitMatched(requestId, target.browserId, "selector");
+      }
+    }
+    await delay(WAIT_POLL_INTERVAL_MS);
+  } while (Date.now() < deadline);
+  return fail(
+    requestId,
+    "browser_timeout",
+    `Timed out waiting for browser selector: ${selector}`,
+    true,
+  );
+}
+
+function selectorExistsScript(selector: string): string {
+  return String.raw`(() => {
+    const selector = ${JSON.stringify(selector)};
+    try {
+      document.createDocumentFragment().querySelector(selector);
+    } catch {
+      return { error: 'Invalid CSS selector: ' + selector };
+    }
+    if (document.querySelector(selector)) return { found: true };
+    const frameDocument = (element) => {
+      try {
+        const doc = element.contentDocument;
+        return doc && doc.defaultView ? doc : null;
+      } catch {
+        return null;
+      }
+    };
+    const roots = [document];
+    while (roots.length > 0) {
+      const root = roots.pop();
+      if (root !== document && root.querySelector(selector)) return { found: true };
+      for (const element of root.querySelectorAll('*')) {
+        if (element.tagName === 'IFRAME' || element.tagName === 'FRAME') {
+          const doc = frameDocument(element);
+          if (doc) roots.push(doc);
+          continue;
+        }
+        if (element.shadowRoot) roots.push(element.shadowRoot);
+      }
+    }
+    return { found: false };
+  })()`;
+}
+
+// Playwright waitForFunction semantics: the expression (or a function it
+// evaluates to) is polled until truthy, a returned promise is awaited, and a
+// throw fails the wait at once instead of turning a typo into a timeout.
+async function waitForScript(
+  requestId: string,
+  target: ResolvedTabTarget,
+  script: string,
+  deadline: number,
+): Promise<AutomationCommandPayload> {
+  const syntaxError = waitScriptSyntaxError(script);
+  if (syntaxError) {
+    return fail(requestId, "browser_unknown_error", `browser_wait script ${syntaxError}`);
+  }
+  const pageScript = waitScriptPageScript(script);
+  do {
+    let polled: PolledValue<unknown>;
+    try {
+      polled = await pollBeforeDeadline(target.contents.executeJavaScript(pageScript), deadline);
+    } catch (error) {
+      return fail(
+        requestId,
+        "browser_unknown_error",
+        `browser_wait script threw: ${evaluateErrorMessage(error)}`,
+      );
+    }
+    if (polled.kind === "value") {
+      const value = polled.value as { truthy?: unknown; error?: unknown } | null;
+      if (typeof value?.error === "string") {
+        return fail(
+          requestId,
+          "browser_unknown_error",
+          `browser_wait script threw: ${capEvaluateErrorMessage(value.error)}`,
+        );
+      }
+      if (value?.truthy === true) {
+        return waitMatched(requestId, target.browserId, "script");
+      }
+    }
+    await delay(WAIT_POLL_INTERVAL_MS);
+  } while (Date.now() < deadline);
+  return fail(
+    requestId,
+    "browser_timeout",
+    `Timed out waiting for browser script to return a truthy value: ${script}`,
+    true,
+  );
+}
+
+// The expression is compiled here, never run, so a syntax error names itself
+// instead of failing inside the page as a generic script error. It compiles in
+// an async body, as the page runs it, so `await` is allowed.
+function waitScriptSyntaxError(script: string): string | null {
+  try {
+    compileFunction(`return async () => (${script}\n);`);
+    return null;
+  } catch (error) {
+    return `has a syntax error: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+// Inlined rather than passed to eval, so a page whose CSP forbids eval can
+// still be waited on.
+function waitScriptPageScript(script: string): string {
+  return String.raw`(async () => {
+    const __PASEO_BROWSER_WAIT_SCRIPT__ = true;
+    try {
+      let value = (${script}
+      );
+      if (typeof value === 'function') value = value();
+      value = await value;
+      return { truthy: Boolean(value) };
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  })()`;
+}
+
+async function waitForLoad(
+  requestId: string,
+  target: ResolvedTabTarget,
+  deadline: number,
+): Promise<AutomationCommandPayload> {
+  do {
+    if (!target.contents.isLoading()) {
+      return waitMatched(requestId, target.browserId, "load");
+    }
+    await delay(WAIT_POLL_INTERVAL_MS);
+  } while (Date.now() < deadline);
+  const loading = target.contents.getLoadingInfo?.() ?? null;
+  const detail = loading
+    ? ` It has been loading ${Math.round(loading.loadingForMs / 1000)}s${loading.url ? ` (url: ${loading.url})` : ""}.`
+    : "";
+  return fail(
+    requestId,
+    "browser_timeout",
+    `Timed out waiting for the page to finish loading.${detail}`,
+    true,
+  );
+}
+
+/** Playwright's networkidle: no request in flight for this long. */
+const NETWORK_IDLE_QUIET_MS = 500;
+
+// The CDP Network domain counts requests from the moment the wait starts;
+// requests sent before it are covered by also requiring the load to be done.
+async function waitForNetworkIdle(
+  requestId: string,
+  target: ResolvedTabTarget,
+  deadline: number,
+): Promise<AutomationCommandPayload> {
+  const capture = target.contents.getNetworkCapture?.();
+  if (!capture) {
+    return fail(
+      requestId,
+      "browser_unsupported",
+      "Waiting for network idle is not available for this tab.",
+    );
+  }
+  let tracker: Awaited<ReturnType<typeof capture.trackInflightRequests>>;
+  try {
+    tracker = await capture.trackInflightRequests();
+  } catch (error) {
+    return fail(
+      requestId,
+      "browser_unknown_error",
+      `Could not watch the tab's network: ${evaluateErrorMessage(error)}`,
+    );
+  }
+  try {
+    let quietSince: number | null = null;
+    do {
+      if (tracker.lost()) {
+        return fail(
+          requestId,
+          "browser_unknown_error",
+          "The browser debugger detached while waiting for network idle (DevTools may have opened). Try again.",
+        );
+      }
+      if (!target.contents.isLoading() && tracker.inflight() === 0) {
+        quietSince ??= Date.now();
+        if (Date.now() - quietSince >= NETWORK_IDLE_QUIET_MS) {
+          return waitMatched(requestId, target.browserId, "load");
+        }
+      } else {
+        quietSince = null;
+      }
+      await delay(WAIT_POLL_INTERVAL_MS);
+    } while (Date.now() < deadline);
+    const inflight = tracker.inflight();
+    const pending = target.contents.isLoading()
+      ? "the page is still loading"
+      : `${inflight} request${inflight === 1 ? " is" : "s are"} still in flight`;
+    return fail(
+      requestId,
+      "browser_timeout",
+      `Timed out waiting for network idle: ${pending}. Long polling, streaming responses, and analytics beacons can keep a page from ever going idle; wait for text, a selector, or a script instead.`,
+      true,
+    );
+  } finally {
+    await tracker.release().catch(() => undefined);
+  }
 }
 
 // body.innerText stops at shadow roots and iframes, so text rendered inside a
@@ -1693,15 +2167,24 @@ async function executeNavigate(
       );
     }
     snapshotEngine.clearBrowser(browserId);
+    const commits = watchMainFrameCommits(target.contents);
     try {
       await target.contents.loadURL(url);
     } catch (error) {
-      return navigationFailure(requestId, url, target.contents, error);
+      return navigationFailure(requestId, url, target.contents, error, commits.latest());
+    } finally {
+      commits.stop();
     }
+    const commit = commits.latest();
     return {
       requestId,
       ok: true,
-      result: { command: "navigate", browserId: target.browserId, url },
+      result: {
+        command: "navigate",
+        browserId: target.browserId,
+        url: commit?.url || url,
+        ...navigationStatusFields(commit),
+      },
     };
   });
 }
@@ -1719,26 +2202,95 @@ async function executeNavigationAction(
     return target;
   }
   return withDialogCapture(target.contents, async () => {
-    if (action === "back") {
-      if (!target.contents.canGoBack()) {
-        return fail(requestId, "browser_denied", "There is nothing to go back to.");
-      }
-      snapshotEngine.clearBrowser(browserId);
-      target.contents.goBack();
-      return { requestId, ok: true, result: { command: "back", browserId: target.browserId } };
+    if (action === "back" && !target.contents.canGoBack()) {
+      return fail(requestId, "browser_denied", "There is nothing to go back to.");
     }
-    if (action === "forward") {
-      if (!target.contents.canGoForward()) {
-        return fail(requestId, "browser_denied", "There is nothing to go forward to.");
-      }
-      snapshotEngine.clearBrowser(browserId);
-      target.contents.goForward();
-      return { requestId, ok: true, result: { command: "forward", browserId: target.browserId } };
+    if (action === "forward" && !target.contents.canGoForward()) {
+      return fail(requestId, "browser_denied", "There is nothing to go forward to.");
     }
     snapshotEngine.clearBrowser(browserId);
-    target.contents.reload();
-    return { requestId, ok: true, result: { command: "reload", browserId: target.browserId } };
+    const commits = watchMainFrameCommits(target.contents);
+    let commit: MainFrameCommit | null;
+    try {
+      if (action === "back") {
+        target.contents.goBack();
+      } else if (action === "forward") {
+        target.contents.goForward();
+      } else {
+        target.contents.reload();
+      }
+      commit = await waitForMainFrameCommit(target.contents, commits);
+    } finally {
+      commits.stop();
+    }
+    return {
+      requestId,
+      ok: true,
+      result: {
+        command: action,
+        browserId: target.browserId,
+        ...(commit ? { url: commit.url, ...navigationStatusFields(commit) } : {}),
+      },
+    };
   });
+}
+
+interface MainFrameCommit {
+  url: string;
+  response?: MainFrameNavigationResponse;
+}
+
+interface MainFrameCommitWatch {
+  latest(): MainFrameCommit | null;
+  stop(): void;
+}
+
+// Electron reports the response code of the main-frame commit only on did-navigate, so the
+// listener goes up before the navigation starts. Same-document moves never commit here.
+function watchMainFrameCommits(contents: TabContents): MainFrameCommitWatch {
+  let latest: MainFrameCommit | null = null;
+  const unsubscribe = contents.onMainFrameNavigated?.((url, response) => {
+    latest = { url, ...(response ? { response } : {}) };
+  });
+  return {
+    latest: () => latest,
+    stop: () => unsubscribe?.(),
+  };
+}
+
+// A history move or reload returns once its document commits; it does not wait for the load,
+// as before. A navigation that ends without a commit (same-document, failed, or a download)
+// stops loading, which ends the wait without a status.
+async function waitForMainFrameCommit(
+  contents: TabContents,
+  commits: MainFrameCommitWatch,
+): Promise<MainFrameCommit | null> {
+  const deadline = Date.now() + NAVIGATION_COMMIT_WAIT_MS;
+  do {
+    if (commits.latest()) {
+      break;
+    }
+    await delay(WAIT_POLL_INTERVAL_MS);
+  } while (
+    !commits.latest() &&
+    !contents.isDestroyed() &&
+    contents.isLoading() &&
+    Date.now() < deadline
+  );
+  return commits.latest();
+}
+
+function navigationStatusFields(commit: MainFrameCommit | null): {
+  httpStatus?: number;
+  httpStatusText?: string;
+} {
+  if (!commit?.response) {
+    return {};
+  }
+  return {
+    httpStatus: commit.response.httpStatus,
+    ...(commit.response.httpStatusText ? { httpStatusText: commit.response.httpStatusText } : {}),
+  };
 }
 
 async function executeScreenshot(
@@ -2064,11 +2616,13 @@ function navigationFailure(
   url: string,
   contents: TabContents,
   error: unknown,
+  commit: MainFrameCommit | null,
 ): FailurePayload {
   const message = error instanceof Error ? error.message : String(error);
   const netError = /\b(ERR_[A-Z_]+) \((-?\d+)\)/.exec(message)?.[1];
   const current = contents.isDestroyed() ? "" : contents.getURL();
-  const where = current ? ` The tab is now at ${current}.` : "";
+  const status = commit?.response ? ` (HTTP ${commit.response.httpStatus})` : "";
+  const where = current ? ` The tab is now at ${current}${status}.` : "";
   if (netError === "ERR_ABORTED") {
     return fail(
       requestId,

@@ -29,8 +29,11 @@
   "dependencies": {
     "@getpaseo/cli": "*",
     "@getpaseo/server": "*",
+    "@mozilla/readability": "^0.6.0",
     "electron-log": "^5.4.3",
     "electron-updater": "^6.8.9",
+    "turndown": "^7.2.4",
+    "turndown-plugin-gfm": "^1.0.2",
     "ws": "^8.21.3",
     "zod": "^4.4.3"
   },

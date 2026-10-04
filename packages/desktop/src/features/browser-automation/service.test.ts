@@ -125,7 +125,13 @@ class FakeTab implements TabContents {
   }
 
   public isLoading(): boolean {
-    return false;
+    return this.loading;
+  }
+
+  private commitNavigation(): void {
+    if (this.navigationCommit) {
+      this.navigationListener?.(this.navigationCommit.url, this.navigationCommit.response);
+    }
   }
 
   public isDestroyed(): boolean {
@@ -187,11 +193,21 @@ class FakeTab implements TabContents {
     return this.actionScriptResult;
   }
 
-  public navigationListener: ((url: string) => void) | null = null;
+  public navigationListener:
+    | ((url: string, response?: { httpStatus: number; httpStatusText: string }) => void)
+    | null = null;
+  /** The main-frame commit each navigation call reports, as Electron's did-navigate would. */
+  public navigationCommit: {
+    url: string;
+    response?: { httpStatus: number; httpStatusText: string };
+  } | null = null;
+  public loading = false;
   public evaluateHangs = false;
   public refIsContentEditable = false;
 
-  public onMainFrameNavigated(listener: (url: string) => void): () => void {
+  public onMainFrameNavigated(
+    listener: (url: string, response?: { httpStatus: number; httpStatusText: string }) => void,
+  ): () => void {
     this.navigationListener = listener;
     return () => {
       this.navigationListener = null;
@@ -202,6 +218,7 @@ class FakeTab implements TabContents {
 
   public async loadURL(url: string): Promise<void> {
     this.loadedUrls.push(url);
+    this.commitNavigation();
     if (this.loadUrlError) {
       throw this.loadUrlError;
     }
@@ -209,14 +226,17 @@ class FakeTab implements TabContents {
 
   public goBack(): void {
     this.actions.push("back");
+    this.commitNavigation();
   }
 
   public goForward(): void {
     this.actions.push("forward");
+    this.commitNavigation();
   }
 
   public reload(): void {
     this.actions.push("reload");
+    this.commitNavigation();
   }
 
   public async capturePage(options?: { stayHidden?: boolean }): Promise<TabImage> {
@@ -1613,6 +1633,82 @@ describe("executeAutomationCommand", () => {
       result: { command: "navigate", browserId: BROWSER_A, url: "https://example.com/next" },
     });
     expect(browser.tab.loadedUrls).toEqual(["https://example.com/next"]);
+  });
+
+  test("navigate reports the committed URL and its HTTP status", async () => {
+    const browser = new BrowserAutomationHarness();
+    browser.tab.navigationCommit = {
+      url: "https://example.com/gone/",
+      response: { httpStatus: 404, httpStatusText: "Not Found" },
+    };
+
+    const result = await browser.execute({
+      command: "navigate",
+      args: { browserId: BROWSER_A, url: "https://example.com/gone" },
+    });
+
+    expect(result).toEqual({
+      requestId: "req-navigate",
+      ok: true,
+      result: {
+        command: "navigate",
+        browserId: BROWSER_A,
+        url: "https://example.com/gone/",
+        httpStatus: 404,
+        httpStatusText: "Not Found",
+      },
+    });
+    expect(browser.tab.navigationListener).toBeNull();
+  });
+
+  test("back waits for the history commit and reports its status", async () => {
+    vi.useFakeTimers();
+    try {
+      const browser = new BrowserAutomationHarness();
+      browser.tab.loading = true;
+
+      const pending = browser.execute({ command: "back", args: { browserId: BROWSER_A } });
+      await vi.advanceTimersByTimeAsync(100);
+      browser.tab.navigationListener?.("https://a.test/list", {
+        httpStatus: 200,
+        httpStatusText: "",
+      });
+      await vi.advanceTimersByTimeAsync(30);
+
+      await expect(pending).resolves.toEqual({
+        requestId: "req-back",
+        ok: true,
+        result: {
+          command: "back",
+          browserId: BROWSER_A,
+          url: "https://a.test/list",
+          httpStatus: 200,
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("reload that never commits returns without a status once loading stops", async () => {
+    vi.useFakeTimers();
+    try {
+      const browser = new BrowserAutomationHarness();
+      browser.tab.loading = true;
+
+      const pending = browser.execute({ command: "reload", args: { browserId: BROWSER_A } });
+      await vi.advanceTimersByTimeAsync(100);
+      browser.tab.loading = false;
+      await vi.advanceTimersByTimeAsync(30);
+
+      await expect(pending).resolves.toEqual({
+        requestId: "req-reload",
+        ok: true,
+        result: { command: "reload", browserId: BROWSER_A },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("navigate denies non-http URLs before loading the explicit tab", async () => {

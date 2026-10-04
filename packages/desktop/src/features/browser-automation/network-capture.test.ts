@@ -292,6 +292,44 @@ describe("TabNetworkCapture", () => {
     expect(capture.capturing).toBe(false);
   });
 
+  it("counts requests in flight for an idle watcher without buffering them", async () => {
+    const { capture, commands } = captureWith({});
+    const tracker = await capture.trackInflightRequests();
+    deliver(capture, [sent("a"), sent("b"), sent("b", { redirectResponse: { status: 302 } })]);
+    expect(tracker.inflight()).toBe(2);
+    deliver(capture, [finished("a"), ["Network.loadingFailed", { requestId: "b" }]]);
+    expect(tracker.inflight()).toBe(0);
+    expect(capture.capturing).toBe(false);
+
+    await tracker.release();
+    expect(commands.map(([method]) => method)).toEqual(["Network.enable", "Network.disable"]);
+  });
+
+  it("keeps the domain on for a running capture or another watcher", async () => {
+    const { capture, commands } = captureWith({});
+    await capture.start();
+    const first = await capture.trackInflightRequests();
+    const second = await capture.trackInflightRequests();
+    await capture.stop();
+    await first.release();
+    expect(commands.map(([method]) => method)).toEqual(["Network.enable"]);
+
+    deliver(capture, [sent("late")]);
+    expect(second.inflight()).toBe(1);
+    await second.release();
+    expect(commands.map(([method]) => method)).toEqual(["Network.enable", "Network.disable"]);
+  });
+
+  it("tells an idle watcher when the debugger detached under it", async () => {
+    const { capture } = captureWith({});
+    const tracker = await capture.trackInflightRequests();
+    deliver(capture, [sent("a")]);
+    capture.handleDebuggerDetached();
+
+    expect(tracker.lost()).toBe(true);
+    expect(tracker.inflight()).toBe(0);
+  });
+
   it("fetches bodies on demand, decodes text, and explains missing ones", async () => {
     const { capture } = captureWith({
       "Network.getResponseBody": (params) => {

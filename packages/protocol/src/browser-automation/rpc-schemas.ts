@@ -18,7 +18,8 @@ const BROWSER_AUTOMATION_BROWSER_ID_PATTERN =
 const BROWSER_AUTOMATION_BROWSER_ID_MESSAGE =
   "browserId must be a real id returned by browser_new_tab or browser_list_tabs";
 const BROWSER_AUTOMATION_WAIT_CONDITION_MESSAGE =
-  "browser_wait requires exactly one of text or url";
+  "browser_wait requires exactly one of text, url, selector, script, or load";
+const BROWSER_AUTOMATION_FIND_QUERY_MESSAGE = "browser_find requires role, name, or both";
 
 export const BROWSER_AUTOMATION_COMMAND_NAMES = [
   "list_tabs",
@@ -47,6 +48,8 @@ export const BROWSER_AUTOMATION_COMMAND_NAMES = [
   "stream_stop",
   "stream_input",
   "network",
+  "read",
+  "find",
 ] as const;
 
 export const BrowserAutomationCommandNameSchema = z.enum(BROWSER_AUTOMATION_COMMAND_NAMES);
@@ -111,15 +114,25 @@ export const BrowserAutomationFillCommandSchema = z.object({
   }),
 });
 
+/** `load` waits for the load event; `networkidle` for no requests in flight for 500 ms. */
+export const BrowserAutomationWaitLoadStateSchema = z.enum(["load", "networkidle"]);
+
 export const BrowserAutomationWaitCommandSchema = z.object({
   command: z.literal("wait"),
   args: BrowserAutomationTabTargetSchema.extend({
     text: z.string().min(1).optional(),
     url: z.string().min(1).optional(),
+    /** CSS selector that must match an element (existence only, not visibility). */
+    selector: z.string().min(1).optional(),
+    /** JavaScript expression (or function) polled until it returns a truthy value. */
+    script: z.string().min(1).optional(),
+    load: BrowserAutomationWaitLoadStateSchema.optional(),
     timeoutMs: z.number().int().positive().max(30_000).optional(),
-  }).refine((args) => Number(Boolean(args.text)) + Number(Boolean(args.url)) === 1, {
-    message: BROWSER_AUTOMATION_WAIT_CONDITION_MESSAGE,
-  }),
+  }).refine(
+    (args) =>
+      [args.text, args.url, args.selector, args.script, args.load].filter(Boolean).length === 1,
+    { message: BROWSER_AUTOMATION_WAIT_CONDITION_MESSAGE },
+  ),
 });
 
 export const BrowserAutomationTypeCommandSchema = z.object({
@@ -326,6 +339,39 @@ export const BrowserAutomationNetworkCommandSchema = z.object({
   }),
 });
 
+export const BrowserAutomationReadScopeSchema = z.enum(["main", "page"]);
+export const BROWSER_AUTOMATION_READ_DEFAULT_MAX_CHARS = 40_000;
+export const BROWSER_AUTOMATION_READ_MAX_CHARS = 120_000;
+
+export const BrowserAutomationReadCommandSchema = z.object({
+  command: z.literal("read"),
+  args: BrowserAutomationTabTargetSchema.extend({
+    /** `main` picks the article with Readability and falls back to `page`; ignored with `ref`. */
+    scope: BrowserAutomationReadScopeSchema.default("main"),
+    ref: BrowserAutomationRefSchema.optional(),
+    links: z.boolean().default(true),
+    maxChars: z
+      .number()
+      .int()
+      .positive()
+      .max(BROWSER_AUTOMATION_READ_MAX_CHARS)
+      .default(BROWSER_AUTOMATION_READ_DEFAULT_MAX_CHARS),
+  }),
+});
+
+export const BrowserAutomationFindCommandSchema = z.object({
+  command: z.literal("find"),
+  args: BrowserAutomationTabTargetSchema.extend({
+    role: z.string().min(1).optional(),
+    /** Accessible name: case-insensitive substring, exact with `exact`, or `/regex/flags`. */
+    name: z.string().min(1).optional(),
+    exact: z.boolean().default(false),
+    limit: z.number().int().positive().max(50).default(10),
+  }).refine((args) => Boolean(args.role || args.name), {
+    message: BROWSER_AUTOMATION_FIND_QUERY_MESSAGE,
+  }),
+});
+
 export const BrowserAutomationCommandSchema = z.discriminatedUnion("command", [
   BrowserAutomationListTabsCommandSchema,
   BrowserAutomationNewTabCommandSchema,
@@ -353,6 +399,8 @@ export const BrowserAutomationCommandSchema = z.discriminatedUnion("command", [
   BrowserAutomationStreamStopCommandSchema,
   BrowserAutomationStreamInputCommandSchema,
   BrowserAutomationNetworkCommandSchema,
+  BrowserAutomationReadCommandSchema,
+  BrowserAutomationFindCommandSchema,
 ]);
 
 export const BrowserAutomationTabInfoSchema = z.object({
@@ -422,7 +470,7 @@ export const BrowserAutomationFillResultSchema = z.object({
 export const BrowserAutomationWaitResultSchema = z.object({
   command: z.literal("wait"),
   browserId: BrowserAutomationBrowserIdSchema,
-  matched: z.enum(["text", "url"]),
+  matched: z.enum(["text", "url", "selector", "script", "load"]),
 });
 
 export const BrowserAutomationTypeResultSchema = z.object({
@@ -442,25 +490,40 @@ export const BrowserAutomationKeypressResultSchema = z.object({
   y: z.number().optional(),
 });
 
+// The main-frame response that committed the navigation. Absent when no
+// cross-document commit was seen (same-document moves, downloads, old hosts).
+const BrowserAutomationNavigationStatusFields = {
+  httpStatus: z.number().int().optional(),
+  httpStatusText: z.string().optional(),
+};
+
 export const BrowserAutomationNavigateResultSchema = z.object({
   command: z.literal("navigate"),
   browserId: BrowserAutomationBrowserIdSchema,
+  /** Where the tab committed (after redirects); the requested URL when no commit was seen. */
   url: z.string().min(1),
+  ...BrowserAutomationNavigationStatusFields,
 });
 
 export const BrowserAutomationBackResultSchema = z.object({
   command: z.literal("back"),
   browserId: BrowserAutomationBrowserIdSchema,
+  url: z.string().optional(),
+  ...BrowserAutomationNavigationStatusFields,
 });
 
 export const BrowserAutomationForwardResultSchema = z.object({
   command: z.literal("forward"),
   browserId: BrowserAutomationBrowserIdSchema,
+  url: z.string().optional(),
+  ...BrowserAutomationNavigationStatusFields,
 });
 
 export const BrowserAutomationReloadResultSchema = z.object({
   command: z.literal("reload"),
   browserId: BrowserAutomationBrowserIdSchema,
+  url: z.string().optional(),
+  ...BrowserAutomationNavigationStatusFields,
 });
 
 export const BrowserAutomationScreenshotResultSchema = z.object({
@@ -613,6 +676,46 @@ export const BrowserAutomationNetworkResultSchema = z.object({
   droppedCount: z.number().int().nonnegative().optional(),
 });
 
+export const BrowserAutomationReadResultSchema = z.object({
+  command: z.literal("read"),
+  browserId: BrowserAutomationBrowserIdSchema,
+  url: z.string(),
+  title: z.string(),
+  format: z.literal("markdown"),
+  /** What was read: `page` also when `main` found no article. */
+  scope: z.enum(["main", "page", "ref"]),
+  /** Structured-data summary (when the page has one) followed by the Markdown body. */
+  content: z.string(),
+  truncated: z.boolean(),
+  stats: z.object({
+    /** Length of the full content before `maxChars` cut it. */
+    chars: z.number().int().nonnegative(),
+    links: z.number().int().nonnegative(),
+    structuredDataFound: z.boolean(),
+  }),
+});
+
+export const BrowserAutomationFindMatchSchema = z.object({
+  /** Present for actionable matches; the same ref a snapshot shows for the element. */
+  ref: BrowserAutomationRefSchema.optional(),
+  role: z.string(),
+  name: z.string(),
+  /** Snapshot notation: `checked=true`, `disabled=true`, `focused=true`, `level=2`. */
+  states: z.array(z.string()),
+  /** Nearest landmark or dialog around the element, e.g. `navigation "Main menu"`. */
+  landmark: z.string().optional(),
+  /** Text of a match without a ref when it adds to the name. */
+  text: z.string().optional(),
+});
+
+export const BrowserAutomationFindResultSchema = z.object({
+  command: z.literal("find"),
+  browserId: BrowserAutomationBrowserIdSchema,
+  matches: z.array(BrowserAutomationFindMatchSchema),
+  /** All matches on the page; `matches` holds at most `limit` of them. */
+  total: z.number().int().nonnegative(),
+});
+
 export const BrowserAutomationResultSchema = z.discriminatedUnion("command", [
   BrowserAutomationListTabsResultSchema,
   BrowserAutomationNewTabResultSchema,
@@ -640,6 +743,8 @@ export const BrowserAutomationResultSchema = z.discriminatedUnion("command", [
   BrowserAutomationStreamStopResultSchema,
   BrowserAutomationStreamInputResultSchema,
   BrowserAutomationNetworkResultSchema,
+  BrowserAutomationReadResultSchema,
+  BrowserAutomationFindResultSchema,
 ]);
 
 export const BrowserAutomationErrorSchema = z.object({
@@ -709,3 +814,13 @@ export type BrowserAutomationCapturedRequest = z.infer<
   typeof BrowserAutomationCapturedRequestSchema
 >;
 export type BrowserAutomationNetworkResult = z.infer<typeof BrowserAutomationNetworkResultSchema>;
+export type BrowserAutomationWaitLoadState = z.infer<typeof BrowserAutomationWaitLoadStateSchema>;
+export type BrowserAutomationReadCommandArgs = z.infer<
+  typeof BrowserAutomationReadCommandSchema
+>["args"];
+export type BrowserAutomationReadResult = z.infer<typeof BrowserAutomationReadResultSchema>;
+export type BrowserAutomationFindCommandArgs = z.infer<
+  typeof BrowserAutomationFindCommandSchema
+>["args"];
+export type BrowserAutomationFindMatch = z.infer<typeof BrowserAutomationFindMatchSchema>;
+export type BrowserAutomationFindResult = z.infer<typeof BrowserAutomationFindResultSchema>;

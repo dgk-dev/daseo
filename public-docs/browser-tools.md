@@ -29,13 +29,15 @@ Arguments marked `?` are optional.
 
 ## Reading the page
 
-| Tool                 | Arguments                                                                                                             | Purpose                                                                                                                                                            |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `browser_snapshot`   | `browserId`                                                                                                           | Return the page as an accessibility tree with element refs.                                                                                                        |
-| `browser_screenshot` | `browserId, fullPage?`                                                                                                | Capture a PNG of the viewport, or the full page with `fullPage`.                                                                                                   |
-| `browser_logs`       | `browserId, maxEntries?`                                                                                              | Read recent console messages and network timing entries.                                                                                                           |
-| `browser_network`    | `browserId, action, urlIncludes?, method?, resourceType?, since?, maxEntries?, includeBodies?, includeRequestBodies?` | Start, list, or stop a per-tab capture of the page's requests with their payloads and responses. Cookie and Authorization values and password fields are redacted. |
-| `browser_wait`       | `browserId, text? \| url?, timeoutMs?`                                                                                | Wait until the page contains text or reaches a URL fragment (exactly one of the two).                                                                              |
+| Tool                 | Arguments                                                                                                             | Purpose                                                                                                                                                                                     |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `browser_snapshot`   | `browserId`                                                                                                           | Return the page as an accessibility tree with element refs.                                                                                                                                 |
+| `browser_read`       | `browserId, scope?, ref?, links?, maxChars?`                                                                          | Return the page as Markdown: the main content (Readability, falling back to the whole page), the whole page, or one `ref`. Product and article data from JSON-LD and meta tags comes first. |
+| `browser_find`       | `browserId, role?, name?, exact?, limit?`                                                                             | Find elements by role and accessible name; actionable matches return refs. `name` is a case-insensitive substring, exact with `exact`, or `/regex/flags`.                                   |
+| `browser_screenshot` | `browserId, fullPage?`                                                                                                | Capture a PNG of the viewport, or the full page with `fullPage`.                                                                                                                            |
+| `browser_logs`       | `browserId, maxEntries?`                                                                                              | Read recent console messages and network timing entries.                                                                                                                                    |
+| `browser_network`    | `browserId, action, urlIncludes?, method?, resourceType?, since?, maxEntries?, includeBodies?, includeRequestBodies?` | Start, list, or stop a per-tab capture of the page's requests with their payloads and responses. Cookie and Authorization values and password fields are redacted.                          |
+| `browser_wait`       | `browserId, text? \| url? \| selector? \| script? \| load?, timeoutMs?`                                               | Wait for exactly one condition: page text, a URL fragment, a CSS selector, a script that returns a truthy value, or `load`/`networkidle`. `timeoutMs` alone pauses.                         |
 
 ## Interacting
 
@@ -53,12 +55,12 @@ Arguments marked `?` are optional.
 
 ## Navigation
 
-| Tool               | Arguments        | Purpose                                             |
-| ------------------ | ---------------- | --------------------------------------------------- |
-| `browser_navigate` | `browserId, url` | Go to an `http(s)` URL.                             |
-| `browser_back`     | `browserId`      | Go back — errors when there is no history to go to. |
-| `browser_forward`  | `browserId`      | Go forward — errors when there is no forward entry. |
-| `browser_reload`   | `browserId`      | Reload the page.                                    |
+| Tool               | Arguments        | Purpose                                                       |
+| ------------------ | ---------------- | ------------------------------------------------------------- |
+| `browser_navigate` | `browserId, url` | Go to an `http(s)` URL and report the response's HTTP status. |
+| `browser_back`     | `browserId`      | Go back — errors when there is no history to go to.           |
+| `browser_forward`  | `browserId`      | Go forward — errors when there is no forward entry.           |
+| `browser_reload`   | `browserId`      | Reload the page.                                              |
 
 ## Scripting
 

@@ -197,6 +197,25 @@ class FakeWebContents {
     this.inputEvents.push(event);
   }
 
+  public readonly eventListeners = new Map<string, Array<(...args: never[]) => void>>();
+
+  public addListener(event: string, listener: (...args: never[]) => void): void {
+    this.eventListeners.set(event, [...(this.eventListeners.get(event) ?? []), listener]);
+  }
+
+  public removeListener(event: string, listener: (...args: never[]) => void): void {
+    this.eventListeners.set(
+      event,
+      (this.eventListeners.get(event) ?? []).filter((candidate) => candidate !== listener),
+    );
+  }
+
+  public emit(event: string, ...args: unknown[]): void {
+    for (const listener of this.eventListeners.get(event) ?? []) {
+      (listener as (...values: unknown[]) => void)(...args);
+    }
+  }
+
   public on(event: "console-message", listener: ConsoleMessageListener): void {
     expect(event).toBe("console-message");
     this.consoleMessageListener = listener;
@@ -263,6 +282,28 @@ describe("browser automation IPC adapter", () => {
     expect(image.getSize()).toEqual({ width: 640, height: 480 });
     expect(contents.captures).toEqual([{ rect: undefined, options: { stayHidden: false } }]);
     expect(contents.invalidations).toEqual(["invalidate"]);
+  });
+
+  test("main-frame commits carry the HTTP response code, and only for HTTP documents", () => {
+    const contents = new FakeWebContents(23);
+    const tab = adaptWebContents(contents);
+    const commits: unknown[] = [];
+
+    const unsubscribe = tab.onMainFrameNavigated?.((url, response) =>
+      commits.push({ url, response }),
+    );
+    contents.emit("did-navigate", {}, "https://example.com/missing", 404, "Not Found");
+    contents.emit("did-navigate", {}, "data:text/html,hi", -1, "");
+    unsubscribe?.();
+    contents.emit("did-navigate", {}, "https://example.com/after", 200, "OK");
+
+    expect(commits).toEqual([
+      {
+        url: "https://example.com/missing",
+        response: { httpStatus: 404, httpStatusText: "Not Found" },
+      },
+      { url: "data:text/html,hi", response: undefined },
+    ]);
   });
 
   test("names numeric console severities", () => {

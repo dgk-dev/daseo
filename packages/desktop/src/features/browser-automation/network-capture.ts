@@ -341,14 +341,32 @@ export interface NetworkCaptureListResult {
   droppedCount: number;
 }
 
+/** A `browser_wait` load "networkidle" watcher's view of the tab's requests. */
+export interface InflightRequestTracker {
+  /** Requests sent since tracking began that have not finished or failed. */
+  inflight(): number;
+  /** The debugger detached while tracking, so the count stopped being observed. */
+  lost(): boolean;
+  /** Ends tracking; disables the Network domain when nothing else uses it. */
+  release(): Promise<void>;
+}
+
 /**
  * The per-tab capture. It rides the debugger session the tab already shares
  * with screencast, dialog handling, and trusted input: it never attaches a
  * second client and never detaches, so it cannot interrupt the others.
+ *
+ * The Network domain also serves `browser_wait` networkidle, which only counts
+ * requests in flight and buffers nothing. The domain stays enabled while the
+ * capture runs or any idle watcher is waiting.
  */
 export class TabNetworkCapture {
   private readonly buffer = new NetworkCaptureBuffer();
+  private readonly inflightRequestIds = new Set<string>();
   private active = false;
+  private domainEnabled = false;
+  private idleWatchers = 0;
+  private detachGeneration = 0;
 
   public constructor(private readonly cdp: NetworkCaptureDebugger) {}
 
@@ -356,9 +374,15 @@ export class TabNetworkCapture {
     return this.active;
   }
 
-  /** Feeds every debugger event; ignored unless capture is running. */
+  /** Feeds every debugger event; ignored unless capture or an idle watcher is running. */
   public handleDebuggerMessage(method: string, params: Record<string, unknown> | undefined): void {
-    if (this.active && method.startsWith("Network.")) {
+    if (!method.startsWith("Network.")) {
+      return;
+    }
+    if (this.domainEnabled) {
+      this.trackInflight(method, params ?? {});
+    }
+    if (this.active) {
       this.buffer.handleEvent(method, params ?? {});
     }
   }
@@ -366,10 +390,14 @@ export class TabNetworkCapture {
   /** The debugger went away (DevTools took over, renderer gone): capture has stopped. */
   public handleDebuggerDetached(): void {
     this.active = false;
+    this.domainEnabled = false;
+    this.inflightRequestIds.clear();
+    this.detachGeneration += 1;
   }
 
   public async start(): Promise<void> {
     this.buffer.clear();
+    this.domainEnabled = true;
     await this.cdp.sendCommand("Network.enable", {
       maxTotalBufferSize: NETWORK_TOTAL_BUFFER_BYTES,
       maxResourceBufferSize: NETWORK_RESOURCE_BUFFER_BYTES,
@@ -382,7 +410,65 @@ export class TabNetworkCapture {
     this.active = false;
     this.buffer.clear();
     if (wasActive) {
-      await this.cdp.sendCommand("Network.disable");
+      await this.disableDomainWhenUnused();
+    }
+  }
+
+  /**
+   * Counts the tab's requests in flight from now on. Requests sent before the
+   * call are not seen, so a caller that needs the whole load also checks that
+   * the tab stopped loading.
+   */
+  public async trackInflightRequests(): Promise<InflightRequestTracker> {
+    this.idleWatchers += 1;
+    const generation = this.detachGeneration;
+    if (!this.domainEnabled) {
+      this.inflightRequestIds.clear();
+      this.domainEnabled = true;
+      try {
+        await this.cdp.sendCommand("Network.enable");
+      } catch (error) {
+        this.idleWatchers -= 1;
+        this.domainEnabled = this.active;
+        throw error;
+      }
+    }
+    let released = false;
+    return {
+      inflight: () => this.inflightRequestIds.size,
+      lost: () => this.detachGeneration !== generation,
+      release: async () => {
+        if (released) return;
+        released = true;
+        this.idleWatchers -= 1;
+        await this.disableDomainWhenUnused();
+      },
+    };
+  }
+
+  private async disableDomainWhenUnused(): Promise<void> {
+    if (this.active || this.idleWatchers > 0 || !this.domainEnabled) {
+      return;
+    }
+    this.domainEnabled = false;
+    this.inflightRequestIds.clear();
+    await this.cdp.sendCommand("Network.disable");
+  }
+
+  private trackInflight(method: string, params: Record<string, unknown>): void {
+    const requestId = readString(params.requestId);
+    if (!requestId) {
+      return;
+    }
+    if (method === "Network.requestWillBeSent") {
+      // A redirect reuses the request id, so the set keeps counting it once.
+      this.inflightRequestIds.add(requestId);
+      if (this.inflightRequestIds.size > MAX_PENDING_REQUESTS) {
+        const oldest = this.inflightRequestIds.values().next().value;
+        if (oldest !== undefined) this.inflightRequestIds.delete(oldest);
+      }
+    } else if (method === "Network.loadingFinished" || method === "Network.loadingFailed") {
+      this.inflightRequestIds.delete(requestId);
     }
   }
 
@@ -481,7 +567,7 @@ export class TabNetworkCapture {
 /** What the automation service needs from a tab's capture. */
 export type NetworkCaptureControl = Pick<
   TabNetworkCapture,
-  "capturing" | "start" | "stop" | "list"
+  "capturing" | "start" | "stop" | "list" | "trackInflightRequests"
 >;
 
 function publicEntry(record: CapturedRequestRecord): BrowserAutomationCapturedRequest {

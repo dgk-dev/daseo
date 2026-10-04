@@ -1,4 +1,11 @@
-import { ARIA_SNAPSHOT_SCRIPT, ARIA_SNAPSHOT_SCRIPT_MARKER } from "./aria-snapshot-script.js";
+import type { BrowserAutomationFindMatch } from "@getpaseo/protocol/browser-automation/rpc-schemas";
+import {
+  ARIA_FIND_SCRIPT_MARKER,
+  ARIA_SNAPSHOT_SCRIPT,
+  ARIA_SNAPSHOT_SCRIPT_MARKER,
+  buildAriaFindScript,
+  type AriaFindQuery,
+} from "./aria-snapshot-script.js";
 
 export interface SnapshotPage {
   getURL(): string;
@@ -63,6 +70,11 @@ interface BrowserRefState {
   refs: Map<string, BrowserRefMetadata>;
 }
 
+export interface BrowserFindResult {
+  matches: BrowserAutomationFindMatch[];
+  total: number;
+}
+
 export type BrowserRefActionResult =
   | { ok: true }
   | { ok: false; reason: "stale_ref" | "missing_ref" };
@@ -92,6 +104,31 @@ export class BrowserSnapshotEngine {
         refCount: rawSnapshot.refs.length,
         textLength: capped.snapshot.length,
       },
+    };
+  }
+
+  /**
+   * Matches by role and name. Refs of actionable matches join the tab's refs
+   * from the latest snapshot rather than replacing them, so both keep working.
+   */
+  async find(input: {
+    browserId: string;
+    page: SnapshotPage;
+    query: AriaFindQuery;
+  }): Promise<BrowserFindResult> {
+    const raw = parseFindResult(
+      await input.page.executeJavaScript(buildAriaFindScript(input.query)),
+    );
+    const state = this.statesByBrowserId.get(input.browserId) ?? { refs: new Map() };
+    for (const match of raw.matches) {
+      if (match.ref && match.fingerprint) {
+        state.refs.set(match.ref, { ref: match.ref, fingerprint: match.fingerprint });
+      }
+    }
+    this.statesByBrowserId.set(input.browserId, state);
+    return {
+      matches: raw.matches.map(({ fingerprint: _fingerprint, ...match }) => match),
+      total: raw.total,
     };
   }
 
@@ -185,6 +222,46 @@ function parseAriaSnapshot(value: unknown): RawAriaSnapshot {
     truncated: record.truncated === true,
     stats: parseStats(record.stats),
   };
+}
+
+interface RawFindMatch extends BrowserAutomationFindMatch {
+  fingerprint?: BrowserRefFingerprint;
+}
+
+function parseFindResult(value: unknown): { matches: RawFindMatch[]; total: number } {
+  const parsed = typeof value === "string" ? JSON.parse(value) : value;
+  if (!parsed || typeof parsed !== "object") {
+    return { matches: [], total: 0 };
+  }
+  const record = parsed as Record<string, unknown>;
+  if (record.marker !== ARIA_FIND_SCRIPT_MARKER || !Array.isArray(record.matches)) {
+    return { matches: [], total: 0 };
+  }
+  const matches = record.matches.flatMap((item): RawFindMatch[] => {
+    if (!item || typeof item !== "object") {
+      return [];
+    }
+    const match = item as Record<string, unknown>;
+    const role = readString(match.role);
+    if (role === null) {
+      return [];
+    }
+    const ref = readString(match.ref);
+    const fingerprint = parseFingerprint(match.fingerprint);
+    const landmark = readString(match.landmark);
+    const text = readString(match.text);
+    return [
+      {
+        role,
+        name: readString(match.name) ?? "",
+        states: readStringArray(match.states),
+        ...(ref && fingerprint ? { ref, fingerprint } : {}),
+        ...(landmark ? { landmark } : {}),
+        ...(text ? { text } : {}),
+      },
+    ];
+  });
+  return { matches, total: readNumber(record.total) ?? matches.length };
 }
 
 function emptySnapshot(): RawAriaSnapshot {

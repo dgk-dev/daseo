@@ -17,7 +17,7 @@ const POPUP_BROWSER_ID = "22222222-2222-4222-8222-222222222222";
 const BROWSER_ID_MESSAGE =
   "browserId must be a real id returned by browser_new_tab or browser_list_tabs";
 const WAIT_CONDITION_MESSAGE =
-  "browser_wait requires text or url (not both), or timeoutMs alone to pause";
+  "browser_wait requires one condition (text, url, selector, script, or load), or timeoutMs alone to pause";
 const HTTP_URL_MESSAGE = "URL must use http/https only";
 const WORKSPACE_CONTEXT_MESSAGE =
   "This browser tool needs a workspace. Start the agent from a Paseo workspace before calling browser_new_tab or browser_list_tabs.";
@@ -652,9 +652,11 @@ describe("registerBrowserTools", () => {
       "browser_list_tabs",
       "browser_new_tab",
       "browser_snapshot",
+      "browser_read",
       "browser_click",
       "browser_fill",
       "browser_wait",
+      "browser_find",
       "browser_type",
       "browser_keypress",
       "browser_navigate",
@@ -1155,6 +1157,46 @@ describe("registerBrowserTools", () => {
     expect(response.content).toEqual([{ type: "text", text: "Browser wait matched text." }]);
   });
 
+  test("wait sends a selector, script, or load condition to the host", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-wait",
+      ok: true,
+      result: { command: "wait", browserId: BROWSER_ID, matched: "load" },
+    });
+
+    for (const condition of [
+      { selector: "#results" },
+      { script: "window.ready === true" },
+      { load: "networkidle" },
+    ]) {
+      await harness.execute("browser_wait", { browserId: BROWSER_ID, ...condition });
+    }
+
+    expect(harness.broker.calls.map((call) => call.command)).toEqual([
+      { command: "wait", args: { browserId: BROWSER_ID, selector: "#results" } },
+      { command: "wait", args: { browserId: BROWSER_ID, script: "window.ready === true" } },
+      { command: "wait", args: { browserId: BROWSER_ID, load: "networkidle" } },
+    ]);
+  });
+
+  test("wait rejects two conditions together, new ones included", () => {
+    const harness = new BrowserToolHarness();
+
+    for (const conditions of [
+      { selector: "#a", script: "true" },
+      { text: "Ready", load: "load" },
+      { url: "/next", selector: "#a", timeoutMs: 1000 },
+    ]) {
+      expect(
+        harness.validate("browser_wait", { browserId: BROWSER_ID, ...conditions }),
+      ).toMatchObject({
+        success: false,
+        error: { issues: [expect.objectContaining({ message: WAIT_CONDITION_MESSAGE })] },
+      });
+    }
+  });
+
   test("wait with only timeoutMs pauses without calling the browser host", async () => {
     const harness = new BrowserToolHarness();
 
@@ -1323,5 +1365,221 @@ describe("registerBrowserTools", () => {
       result: snapshotPayload().result,
       context: { browserId: BROWSER_ID },
     });
+  });
+
+  test("navigate text carries the HTTP status and calls out error pages", async () => {
+    const harness = new BrowserToolHarness();
+    const navigate = async (result: Record<string, unknown>) => {
+      harness.broker.setResponse({
+        requestId: "req-navigate",
+        ok: true,
+        result: { command: "navigate", browserId: BROWSER_ID, ...result },
+      } as BrowserToolsResponsePayload);
+      return (
+        await harness.execute("browser_navigate", { browserId: BROWSER_ID, url: "example.com" })
+      ).content[0]?.text;
+    };
+
+    expect(await navigate({ url: "https://example.com/" })).toBe(
+      "Navigated browser to https://example.com/.",
+    );
+    expect(await navigate({ url: "https://example.com/", httpStatus: 200 })).toBe(
+      "Navigated to https://example.com/ (HTTP 200).",
+    );
+    expect(await navigate({ url: "https://example.com/gone", httpStatus: 404 })).toBe(
+      "Navigated to https://example.com/gone, but the server answered HTTP 404 Not Found. The page content is the site's error page.",
+    );
+  });
+
+  test("back, forward, and reload keep their text without a status and add it with one", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-back",
+      ok: true,
+      result: { command: "back", browserId: BROWSER_ID },
+    });
+    const plain = await harness.execute("browser_back", { browserId: BROWSER_ID });
+    harness.broker.setResponse({
+      requestId: "req-reload",
+      ok: true,
+      result: {
+        command: "reload",
+        browserId: BROWSER_ID,
+        url: "https://example.com/down",
+        httpStatus: 503,
+        httpStatusText: "Service Unavailable",
+      },
+    });
+    const failed = await harness.execute("browser_reload", { browserId: BROWSER_ID });
+
+    expect(plain.content[0]?.text).toBe("Browser back complete.");
+    expect(failed.content[0]?.text).toBe(
+      "Browser reload complete: https://example.com/down, but the server answered HTTP 503 Service Unavailable. The page content is the site's error page.",
+    );
+  });
+
+  test("read sends defaults, says when main fell back, and keeps the body out of structuredContent", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-read",
+      ok: true,
+      result: {
+        command: "read",
+        browserId: BROWSER_ID,
+        url: "https://shop.example/p/1",
+        title: "Tee",
+        format: "markdown",
+        scope: "page",
+        content: 'Structured data:\n- Product: "Tee" · 7000 KRW · SoldOut\n\n# Tee',
+        truncated: false,
+        stats: { chars: 54, links: 0, structuredDataFound: true },
+      },
+    });
+
+    const response = await harness.execute("browser_read", { browserId: BROWSER_ID });
+
+    expect(harness.broker.calls[0]?.command).toEqual({
+      command: "read",
+      args: { browserId: BROWSER_ID, scope: "main", links: true, maxChars: 40_000 },
+    });
+    expect(response.content).toEqual([
+      {
+        type: "text",
+        text: [
+          "Title: Tee",
+          "URL: https://shop.example/p/1",
+          "Read: whole page (no main content detected), 54 chars.",
+          "",
+          'Structured data:\n- Product: "Tee" · 7000 KRW · SoldOut\n\n# Tee',
+        ].join("\n"),
+      },
+    ]);
+    expect(response.structuredContent).toMatchObject({
+      ok: true,
+      result: { command: "read", scope: "page", stats: { chars: 54 } },
+    });
+    expect(
+      (response.structuredContent as { result: Record<string, unknown> }).result.content,
+    ).toBeUndefined();
+  });
+
+  test("read clamps maxChars to 120000 and passes a ref", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-read",
+      ok: true,
+      result: {
+        command: "read",
+        browserId: BROWSER_ID,
+        url: "https://example.com",
+        title: "Example",
+        format: "markdown",
+        scope: "ref",
+        content: "x",
+        truncated: true,
+        stats: { chars: 200_000, links: 0, structuredDataFound: false },
+      },
+    });
+
+    const response = await harness.execute("browser_read", {
+      browserId: BROWSER_ID,
+      ref: "@e4",
+      maxChars: 500_000,
+    });
+
+    expect(harness.broker.calls[0]?.command).toEqual({
+      command: "read",
+      args: { browserId: BROWSER_ID, scope: "main", ref: "@e4", links: true, maxChars: 120_000 },
+    });
+    expect(response.content[0]?.text).toContain(
+      "Read: one element, 200,000 chars, truncated to maxChars; raise maxChars (up to 120000) or read one element with ref.",
+    );
+  });
+
+  test("find lists matches with refs, states, and landmarks", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-find",
+      ok: true,
+      result: {
+        command: "find",
+        browserId: BROWSER_ID,
+        matches: [
+          { ref: "@e12", role: "button", name: "장바구니 담기", states: [], landmark: "main" },
+          {
+            role: "button",
+            name: "장바구니",
+            states: ["disabled=true"],
+            landmark: 'navigation "상단 메뉴"',
+          },
+        ],
+        total: 3,
+      },
+    });
+
+    const response = await harness.execute("browser_find", {
+      browserId: BROWSER_ID,
+      role: "button",
+      name: "장바구니",
+      limit: 2,
+    });
+
+    expect(harness.broker.calls[0]?.command).toEqual({
+      command: "find",
+      args: { browserId: BROWSER_ID, role: "button", name: "장바구니", exact: false, limit: 2 },
+    });
+    expect(response.content[0]?.text).toBe(
+      [
+        'Found 3 matches for role=button name~"장바구니" (showing 2; raise limit up to 50 to see more).',
+        '- button "장바구니 담기" [ref=@e12] in main',
+        '- button "장바구니" [disabled=true] in navigation "상단 메뉴"',
+      ].join("\n"),
+    );
+  });
+
+  test("find says how to proceed when nothing matches", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-find",
+      ok: true,
+      result: { command: "find", browserId: BROWSER_ID, matches: [], total: 0 },
+    });
+
+    const response = await harness.execute("browser_find", {
+      browserId: BROWSER_ID,
+      name: "Buy",
+      exact: true,
+    });
+
+    expect(response.content[0]?.text).toBe(
+      'No match for name="Buy". Take a browser_snapshot to see the page\'s roles and names.',
+    );
+  });
+
+  test("find requires a role or name and rejects an invalid regular expression", () => {
+    const harness = new BrowserToolHarness();
+
+    expect(harness.validate("browser_find", { browserId: BROWSER_ID })).toMatchObject({
+      success: false,
+      error: {
+        issues: [expect.objectContaining({ message: "browser_find requires role, name, or both" })],
+      },
+    });
+    expect(
+      harness.validate("browser_find", { browserId: BROWSER_ID, name: "/[a-/i" }),
+    ).toMatchObject({
+      success: false,
+      error: {
+        issues: [
+          expect.objectContaining({
+            path: ["name"],
+            message: expect.stringContaining("name is not a valid regular expression"),
+          }),
+        ],
+      },
+    });
+    expect(
+      harness.validate("browser_find", { browserId: BROWSER_ID, name: "/add|buy/i" }).success,
+    ).toBe(true);
   });
 });

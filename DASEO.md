@@ -515,6 +515,60 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     `packages/app/src/assistant-file-links/use-file-link.ts`, and
     `packages/server/src/server/agent/{idle-agent-unloader,agent-manager}.ts`.
 
+34. **Read, find, richer waits, and HTTP status in browser tools** — from the 2026-10-05
+    Lightpanda comparison and 30 days of browser calls (388 sessions, 5,823 calls through
+    `browser_evaluate`): agents scraped page text 664 times, collected links 703 times, read
+    `innerText`/`textContent` 2,750 times, searched elements by text 934 times, and wrote 203
+    `setTimeout`/promise polling loops beside 1,116 `browser_wait` calls; and `browser_navigate`
+    reported success on a 404 page. All four are additions to the `paseo` MCP browser tools
+    (reached through the gateway, so their schemas cost no prompt tokens); existing calls
+    behave as before. The engine stays Chromium.
+    - `browser_read` returns the tab as Markdown. One page-injected script (Readability +
+      Turndown with GFM tables, evaluated against a local `module` so nothing lands on
+      `window`) works on a copy of the rendered tree: hidden (`display:none`,
+      `visibility:hidden`, `hidden`, `aria-hidden`), script, and media elements are left out,
+      open shadow roots and same-origin frames are inlined through `contentDocument`
+      (delta 27), cross-origin frames read `[iframe: <src>]`, links are absolute, images keep
+      only `![alt]`. `scope: "main"` (default) runs Readability and falls back to the whole
+      page below 500 characters, saying so; `page` drops page-level landmarks by the HTML-AAM
+      rule (`nav`, `header`/`footer`/`aside` outside sectioning content, explicit
+      banner/contentinfo/navigation/complementary roles); `ref` reads one snapshot element.
+      A JSON-LD (Product, ProductGroup with variants, Offer, Article, Organization) and
+      `og:`/`product:` meta summary, capped at 2,000 characters, comes before the body,
+      because Readability picked an exchange-policy block as the HDEX product page's article
+      and missed the price, sold-out state, and options that only JSON-LD and meta carry.
+      `maxChars` defaults to 40,000 (max 120,000) and never splits a surrogate pair;
+      `stats.chars` is the full length. Layout tables (nested or `role=presentation`) become
+      blocks and data tables get a header row. The text block carries the page and
+      `structuredContent` only the metadata. Slow reads follow evaluate's 14-second and
+      navigation rules; a stuck load says the tab is still loading.
+    - `browser_find` matches by ARIA role and accessible name (case-insensitive substring,
+      `exact`, or `/regex/flags`) with the snapshot's own role, name, visibility, and state
+      code (`ARIA_SHARED_SOURCE`). Actionable matches return the element's document-lifetime
+      ref (0.5.35) and are added to the latest snapshot's refs instead of replacing them, so
+      both keep resolving. Each match names its nearest landmark or dialog
+      (`in navigation "상단 메뉴"`); `total` counts matches past `limit` (10, max 50).
+    - `browser_wait` takes exactly one of `text`, `url`, `selector` (attached, through
+      same-origin frames and open shadow roots), `script` (Playwright `waitForFunction`:
+      expression or function, awaited, a throw or syntax error fails at once, inlined so an
+      eval-blocking CSP does not matter), or `load` (`load`, or `networkidle`: not loading and
+      no request in flight for 500 ms, counted through the tab's CDP Network domain, which
+      `browser_network` capture now shares by reference so either can run without the other).
+      One poll never outlives the wait's deadline. A lone `timeoutMs` still pauses.
+    - `browser_navigate` reports the committed URL and the main-frame HTTP status from
+      `did-navigate`: `Navigated to … (HTTP 200)`, and for 400 and above
+      `…, but the server answered HTTP 404 Not Found` plus a note that the content is the
+      site's error page. `back`/`forward`/`reload` now wait for the commit (up to 10 s, ending
+      early when loading stops without one) and report it too. Same-document moves and old
+      hosts report as before.
+
+    The protocol changes are additive and ledgered; new wait conditions reach only the desktop
+    host that ships with the daemon. Key files: the
+    `packages/desktop/src/features/browser-automation/` modules `read-script`, `read`,
+    `aria-snapshot-script`, `snapshot-engine`, `network-capture`, `ipc`, and `service`;
+    `packages/server/src/server/browser-tools/tools.ts`;
+    `packages/protocol/src/browser-automation/rpc-schemas.ts` and `paseo-tool-call-detail.ts`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

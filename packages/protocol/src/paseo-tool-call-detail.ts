@@ -90,6 +90,16 @@ const BROWSER_FIELDS = [
   "since",
   "includeBodies",
   "includeRequestBodies",
+  "selector",
+  "script",
+  "load",
+  "scope",
+  "links",
+  "maxChars",
+  "role",
+  "name",
+  "exact",
+  "limit",
 ] as const;
 
 const TOOL_SPECS: Readonly<Record<string, ToolDetailSpec>> = {
@@ -177,6 +187,8 @@ const TOOL_SPECS: Readonly<Record<string, ToolDetailSpec>> = {
   browser_resize: { inputOrder: BROWSER_FIELDS },
   browser_close_tab: { inputOrder: BROWSER_FIELDS },
   browser_network: { inputOrder: BROWSER_FIELDS },
+  browser_read: { inputOrder: BROWSER_FIELDS },
+  browser_find: { inputOrder: BROWSER_FIELDS },
 };
 
 const FIELD_LABELS: Readonly<Record<string, string>> = {

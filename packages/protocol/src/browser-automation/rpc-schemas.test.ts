@@ -10,7 +10,9 @@ const POPUP_BROWSER_ID = "22222222-2222-4222-8222-222222222222";
 const FALLBACK_BROWSER_ID = "1777777777777-abcdef";
 const BROWSER_ID_MESSAGE =
   "browserId must be a real id returned by browser_new_tab or browser_list_tabs";
-const WAIT_CONDITION_MESSAGE = "browser_wait requires exactly one of text or url";
+const WAIT_CONDITION_MESSAGE =
+  "browser_wait requires exactly one of text, url, selector, script, or load";
+const FIND_QUERY_MESSAGE = "browser_find requires role, name, or both";
 
 const commandParseCases = [
   {
@@ -604,6 +606,187 @@ describe("browser automation execute RPC schemas", () => {
       command: "wait",
       args: { browserId: BROWSER_ID, text: "Ready", timeoutMs: 1000 },
     });
+  });
+
+  test.each([
+    { condition: { selector: "#ready" }, label: "selector" },
+    { condition: { script: "window.appReady === true" }, label: "script" },
+    { condition: { load: "load" }, label: "load" },
+    { condition: { load: "networkidle" }, label: "networkidle" },
+  ])("wait accepts one $label condition", ({ condition }) => {
+    const parsed = BrowserAutomationExecuteRequestSchema.parse({
+      type: "browser.automation.execute.request",
+      requestId: "req-wait",
+      command: { command: "wait", args: { browserId: BROWSER_ID, ...condition } },
+    });
+
+    expect(parsed.command).toEqual({
+      command: "wait",
+      args: { browserId: BROWSER_ID, ...condition },
+    });
+  });
+
+  test("wait rejects two of the new conditions together and unknown load states", () => {
+    for (const args of [
+      { selector: "#ready", script: "true" },
+      { text: "Ready", load: "load" },
+      { load: "domcontentloaded" },
+    ]) {
+      const parsed = BrowserAutomationExecuteRequestSchema.safeParse({
+        type: "browser.automation.execute.request",
+        requestId: "req-wait",
+        command: { command: "wait", args: { browserId: BROWSER_ID, ...args } },
+      });
+      expect(parsed.success).toBe(false);
+    }
+  });
+
+  test("read defaults to the main scope with links and 40000 characters", () => {
+    const parsed = BrowserAutomationExecuteRequestSchema.parse({
+      type: "browser.automation.execute.request",
+      requestId: "req-read",
+      command: { command: "read", args: { browserId: BROWSER_ID } },
+    });
+
+    expect(parsed.command).toEqual({
+      command: "read",
+      args: { browserId: BROWSER_ID, scope: "main", links: true, maxChars: 40_000 },
+    });
+  });
+
+  test("read rejects maxChars over 120000 and unknown scopes", () => {
+    for (const args of [{ maxChars: 120_001 }, { scope: "article" }]) {
+      const parsed = BrowserAutomationExecuteRequestSchema.safeParse({
+        type: "browser.automation.execute.request",
+        requestId: "req-read",
+        command: { command: "read", args: { browserId: BROWSER_ID, ...args } },
+      });
+      expect(parsed.success).toBe(false);
+    }
+  });
+
+  test("find requires a role or a name and defaults to 10 inexact matches", () => {
+    const missing = BrowserAutomationExecuteRequestSchema.safeParse({
+      type: "browser.automation.execute.request",
+      requestId: "req-find",
+      command: { command: "find", args: { browserId: BROWSER_ID } },
+    });
+    expect(missing).toMatchObject({
+      success: false,
+      error: { issues: [expect.objectContaining({ message: FIND_QUERY_MESSAGE })] },
+    });
+
+    const parsed = BrowserAutomationExecuteRequestSchema.parse({
+      type: "browser.automation.execute.request",
+      requestId: "req-find",
+      command: { command: "find", args: { browserId: BROWSER_ID, role: "button" } },
+    });
+    expect(parsed.command).toEqual({
+      command: "find",
+      args: { browserId: BROWSER_ID, role: "button", exact: false, limit: 10 },
+    });
+
+    const overLimit = BrowserAutomationExecuteRequestSchema.safeParse({
+      type: "browser.automation.execute.request",
+      requestId: "req-find",
+      command: { command: "find", args: { browserId: BROWSER_ID, name: "Cart", limit: 51 } },
+    });
+    expect(overLimit.success).toBe(false);
+  });
+
+  test("navigation results without HTTP status still parse (old hosts)", () => {
+    for (const result of [
+      { command: "navigate", browserId: BROWSER_ID, url: "https://example.com/" },
+      { command: "back", browserId: BROWSER_ID },
+      { command: "forward", browserId: BROWSER_ID },
+      { command: "reload", browserId: BROWSER_ID },
+    ]) {
+      const parsed = BrowserAutomationExecuteResponseSchema.parse({
+        type: "browser.automation.execute.response",
+        payload: { requestId: "req-nav", ok: true, result },
+      });
+      expect(parsed.payload).toEqual({ requestId: "req-nav", ok: true, result });
+    }
+  });
+
+  test("navigation results carry the HTTP status of the committed response", () => {
+    const parsed = BrowserAutomationExecuteResponseSchema.parse({
+      type: "browser.automation.execute.response",
+      payload: {
+        requestId: "req-nav",
+        ok: true,
+        result: {
+          command: "back",
+          browserId: BROWSER_ID,
+          url: "https://example.com/missing",
+          httpStatus: 404,
+          httpStatusText: "Not Found",
+        },
+      },
+    });
+    expect(parsed.payload).toMatchObject({
+      result: { httpStatus: 404, httpStatusText: "Not Found" },
+    });
+  });
+
+  test("read and find results parse", () => {
+    const read = BrowserAutomationExecuteResponseSchema.parse({
+      type: "browser.automation.execute.response",
+      payload: {
+        requestId: "req-read",
+        ok: true,
+        result: {
+          command: "read",
+          browserId: BROWSER_ID,
+          url: "https://shop.example/p/1",
+          title: "Shirt",
+          format: "markdown",
+          scope: "page",
+          content: "# Shirt",
+          truncated: false,
+          stats: { chars: 7, links: 0, structuredDataFound: true },
+        },
+      },
+    });
+    expect(read.payload).toMatchObject({ result: { command: "read", scope: "page" } });
+
+    const find = BrowserAutomationExecuteResponseSchema.parse({
+      type: "browser.automation.execute.response",
+      payload: {
+        requestId: "req-find",
+        ok: true,
+        result: {
+          command: "find",
+          browserId: BROWSER_ID,
+          matches: [
+            {
+              ref: "@e3",
+              role: "button",
+              name: "Add to cart",
+              states: ["disabled=true"],
+              landmark: 'main "Product"',
+            },
+            { role: "heading", name: "Shirt", states: ["level=1"] },
+          ],
+          total: 2,
+        },
+      },
+    });
+    expect(find.payload).toMatchObject({ result: { command: "find", total: 2 } });
+  });
+
+  test("wait results name the new conditions", () => {
+    for (const matched of ["selector", "script", "load"] as const) {
+      const parsed = BrowserAutomationExecuteResponseSchema.parse({
+        type: "browser.automation.execute.response",
+        payload: {
+          requestId: "req-wait",
+          ok: true,
+          result: { command: "wait", browserId: BROWSER_ID, matched },
+        },
+      });
+      expect(parsed.payload).toMatchObject({ result: { matched } });
+    }
   });
 
   test.each(commandParseCases)(

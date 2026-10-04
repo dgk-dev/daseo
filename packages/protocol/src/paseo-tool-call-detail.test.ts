@@ -147,6 +147,31 @@ describe("Paseo tool-call detail presentation", () => {
     expect(buildPaseoToolDetailSections("mcp__github__create_issue", {}, {})).toBeNull();
   });
 
+  it("labels browser find inputs in tool order", () => {
+    const sections = buildPaseoToolDetailSections(
+      "mcp__paseo__browser_find",
+      {
+        limit: 5,
+        name: "Add to cart",
+        role: "button",
+        browserId: "11111111-1111-4111-8111-111111111111",
+      },
+      undefined,
+    );
+    expect(sections).toEqual([
+      {
+        kind: "fields",
+        title: "Details",
+        fields: [
+          { label: "Browser tab", value: "11111111-1111-4111-8111-111111111111" },
+          { label: "Role", value: "button" },
+          { label: "Name", value: "Add to cart" },
+          { label: "Limit", value: "5" },
+        ],
+      },
+    ]);
+  });
+
   it("labels browser network capture inputs", () => {
     const sections = buildPaseoToolDetailSections(
       "mcp__paseo__browser_network",
