@@ -151,6 +151,11 @@ export class JsonlRpcProcess {
     });
   }
 
+  /** OS process id of the child, or undefined when the spawn failed. */
+  get pid(): number | undefined {
+    return this.child.pid;
+  }
+
   onMessage(callback: (message: Record<string, unknown>) => void): () => void {
     this.messageSubscribers.add(callback);
     return () => {

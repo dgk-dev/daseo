@@ -72,6 +72,10 @@ import {
   registerAttachedPaseoBrowser,
   setWorkspaceActivePaseoBrowserId,
   unregisterPaseoBrowserHost,
+  getPaseoBrowserTabLifecycle,
+  setPaseoBrowserContentsPresented,
+  setPaseoBrowserPresented,
+  trackPaseoBrowserDownload,
 } from "./features/browser-webviews/index.js";
 import {
   BROWSER_POPUP_TARGETS_EVENT,
@@ -348,6 +352,9 @@ const browserPopupTargets = new BrowserPopupTargetManager({
   },
   onSetActiveTarget: ({ browserId, workspaceId, hostWebContentsId }) => {
     setWorkspaceActivePaseoBrowserId({ browserId, workspaceId, hostWebContentsId });
+  },
+  onTargetVisibilityChanged: ({ webContentsId, visible }) => {
+    setPaseoBrowserContentsPresented(webContentsId, visible);
   },
   onSnapshot: (snapshot) => {
     const hostContents = webContents.fromId(snapshot.hostWebContentsId);
@@ -755,6 +762,22 @@ ipcMain.handle("paseo:browser:set-workspace-active-browser", (event, rawInput: u
   }
 });
 
+ipcMain.handle("paseo:browser:set-presented", (event, rawInput: unknown) => {
+  if (typeof rawInput !== "object" || rawInput === null || Array.isArray(rawInput)) {
+    return;
+  }
+  const input = rawInput as Record<string, unknown>;
+  const browserId = typeof input.browserId === "string" ? input.browserId.trim() : "";
+  if (!browserId || typeof input.presented !== "boolean") {
+    return;
+  }
+  setPaseoBrowserPresented({
+    hostWebContentsId: event.sender.id,
+    browserId,
+    presented: input.presented,
+  });
+});
+
 ipcMain.handle("paseo:browser:list-popup-targets", (event, rootBrowserId: unknown) => {
   if (typeof rootBrowserId !== "string" || rootBrowserId.trim().length === 0) {
     return null;
@@ -993,7 +1016,9 @@ ipcMain.handle(
     try {
       // capturePage expects an integer rect in CSS pixels relative to the
       // guest viewport, which matches getBoundingClientRect() on the page.
-      const image = await contents.capturePage(captureRect);
+      const image = await getPaseoBrowserTabLifecycle().runAwake(contents.id, () =>
+        contents.capturePage(captureRect),
+      );
       if (image.isEmpty()) {
         return null;
       }
@@ -1387,6 +1412,23 @@ async function runCliPassthroughIfRequested(): Promise<boolean> {
   return true;
 }
 
+// Delta 33: idle browser tabs step down to throttled and frozen unless the desktop settings file
+// sets browser.suspendIdleTabs to false. A tab with a download in progress is never frozen.
+async function configureBrowserTabLifecycle(): Promise<void> {
+  try {
+    const settings = await getDesktopSettingsStore().get();
+    getPaseoBrowserTabLifecycle().setEnabled(settings.browser.suspendIdleTabs);
+  } catch (error) {
+    log.warn("[browser-lifecycle] settings unavailable; idle tab suspension stays on", error);
+  }
+  session
+    .fromPartition(PASEO_BROWSER_PROFILE_PARTITION)
+    .on("will-download", (_event, item, contents) => {
+      if (!contents || contents.isDestroyed()) return;
+      item.once("done", trackPaseoBrowserDownload(contents.id));
+    });
+}
+
 async function bootstrap(): Promise<void> {
   if (!setupSingleInstanceLock()) {
     return;
@@ -1396,6 +1438,7 @@ async function bootstrap(): Promise<void> {
   // Before any window exists: browser webviews and popups take the session's user agent
   // when they are created.
   applyPaseoBrowserProfileUserAgent(session, app.getName());
+  await configureBrowserTabLifecycle();
 
   const appDistDir = getAppDistDir();
   protocol.handle(APP_SCHEME, (request) => {

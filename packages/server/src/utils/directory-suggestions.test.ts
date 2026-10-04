@@ -981,3 +981,95 @@ describe("home-tree scan cost", () => {
     },
   );
 });
+
+describe("discovery read bounds", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = realpathSync.native(mkdtempSync(path.join(tmpdir(), "directory-read-bounds-")));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function suffixSearch(
+    query: string,
+    options: Partial<Parameters<typeof searchDirectoryEntries>[0]> = {},
+  ) {
+    return searchDirectoryEntries({
+      root,
+      query,
+      pathFormat: "relative",
+      includeFiles: true,
+      includeDirectories: true,
+      matchMode: "suffix",
+      pathQueryPolicy: "slashes",
+      blankQueryBehavior: "children",
+      homeDirectory: path.join(root, "not-home"),
+      ...options,
+    });
+  }
+
+  it("keeps an oversized directory as a candidate without discovering its children", async () => {
+    const cache = path.join(root, "cache");
+    mkdirSync(cache);
+    for (let index = 0; index <= 5_000; index += 1) {
+      writeFileSync(path.join(cache, `entry-${index}.bin`), "");
+    }
+    writeFileSync(path.join(cache, "index.ts"), "");
+    mkdirSync(path.join(root, "src"));
+    writeFileSync(path.join(root, "src", "index.ts"), "");
+
+    await expect(suffixSearch("index.ts")).resolves.toEqual([
+      { path: "src/index.ts", kind: "file" },
+    ]);
+    await expect(suffixSearch("cache")).resolves.toEqual([{ path: "cache", kind: "directory" }]);
+    // Retrieval of a named path does not depend on discovery.
+    await expect(suffixSearch("cache/index.ts", { limit: 1 })).resolves.toEqual([
+      { path: "cache/index.ts", kind: "file" },
+    ]);
+  });
+
+  it("stops descending once the read budget is spent", async () => {
+    for (let index = 0; index < 10; index += 1) {
+      mkdirSync(path.join(root, `a-noise-${index}`, "deep"), { recursive: true });
+    }
+    mkdirSync(path.join(root, "z-target"), { recursive: true });
+    writeFileSync(path.join(root, "z-target", "wanted.md"), "");
+
+    await expect(suffixSearch("wanted.md", { maxEntriesRead: 11 })).resolves.toEqual([]);
+    await expect(suffixSearch("wanted.md", { maxEntriesRead: 100 })).resolves.toEqual([
+      { path: "z-target/wanted.md", kind: "file" },
+    ]);
+  });
+
+  it("skips home application and media folders only when the root is home", async () => {
+    for (const name of ["Library", "Pictures", "Projects"]) {
+      mkdirSync(path.join(root, name, "notes"), { recursive: true });
+      writeFileSync(path.join(root, name, "notes", "todo.md"), "");
+    }
+
+    await expect(suffixSearch("todo.md", { homeDirectory: root, limit: 10 })).resolves.toEqual([
+      { path: "Projects/notes/todo.md", kind: "file" },
+    ]);
+    await expect(suffixSearch("Library/notes/todo.md", { homeDirectory: root })).resolves.toEqual([
+      { path: "Library/notes/todo.md", kind: "file" },
+    ]);
+    const elsewhere = await suffixSearch("todo.md", { limit: 10 });
+    expect(elsewhere.map((entry) => entry.path).sort()).toEqual([
+      "Library/notes/todo.md",
+      "Pictures/notes/todo.md",
+      "Projects/notes/todo.md",
+    ]);
+  });
+
+  it("rejects with the abort reason when the caller aborts", async () => {
+    mkdirSync(path.join(root, "src"));
+    const controller = new AbortController();
+    const reason = new Error("superseded");
+    controller.abort(reason);
+
+    await expect(suffixSearch("index.ts", { signal: controller.signal })).rejects.toBe(reason);
+  });
+});

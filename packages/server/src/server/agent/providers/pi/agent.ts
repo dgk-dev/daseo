@@ -2115,6 +2115,10 @@ export class PiRpcAgentSession implements AgentSession {
     });
   }
 
+  getRuntimeProcessId(): number | null {
+    return this.runtimeSession.processId ?? null;
+  }
+
   describePersistence(): AgentPersistenceHandle | null {
     return {
       provider: this.provider,

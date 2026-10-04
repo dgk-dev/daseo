@@ -1,6 +1,8 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { PASEO_BROWSER_PROFILE_PARTITION } from "../browser-profile.js";
 import {
+  getPaseoBrowserTabLifecycle,
+  setPaseoBrowserPresented,
   getPaseoBrowserIdForWebContents,
   getPaseoBrowserWorkspaceId,
   isPaseoBrowserWebviewAttach,
@@ -20,6 +22,11 @@ class FakeRenderer {
 
 class FakeBrowserGuest {
   public readonly backgroundThrottlingCalls: boolean[] = [];
+  public readonly debugger = {
+    isAttached: () => true,
+    attach: () => {},
+    sendCommand: async () => ({}),
+  };
   private destroyedListener: (() => void) | null = null;
   private destroyed = false;
 
@@ -31,6 +38,14 @@ class FakeBrowserGuest {
 
   public isDestroyed(): boolean {
     return this.destroyed;
+  }
+
+  public isLoading(): boolean {
+    return false;
+  }
+
+  public isCurrentlyAudible(): boolean {
+    return false;
   }
 
   public setBackgroundThrottling(allowed: boolean): void {
@@ -208,5 +223,48 @@ describe("browser webview attachment", () => {
 
     expect(getPaseoBrowserIdForWebContents(guest)).toBeNull();
     expect(guest.backgroundThrottlingCalls).toEqual([false]);
+  });
+
+  test("holds a presented browser awake, including one presented before it registers", () => {
+    const lifecycle = getPaseoBrowserTabLifecycle();
+    const release = vi.fn();
+    const hold = vi.spyOn(lifecycle, "hold").mockReturnValue(release);
+    const profileSession = {};
+    const renderer = new FakeRenderer(41);
+    const guest = new FakeBrowserGuest(701, renderer, profileSession);
+    try {
+      setPaseoBrowserPresented({
+        hostWebContentsId: 41,
+        browserId: "browser-shown",
+        presented: true,
+      });
+      expect(hold).not.toHaveBeenCalled();
+
+      registerAttachedPaseoBrowser({
+        browserId: "browser-shown",
+        workspaceId: "workspace-shown",
+        webContentsId: guest.id,
+        sender: renderer,
+        profileSession,
+        findWebContents: () => guest,
+      });
+      expect(hold).toHaveBeenCalledWith(701);
+
+      setPaseoBrowserPresented({
+        hostWebContentsId: 41,
+        browserId: "browser-shown",
+        presented: true,
+      });
+      expect(hold).toHaveBeenCalledTimes(1);
+      setPaseoBrowserPresented({
+        hostWebContentsId: 41,
+        browserId: "browser-shown",
+        presented: false,
+      });
+      expect(release).toHaveBeenCalledTimes(1);
+    } finally {
+      hold.mockRestore();
+      unregisterPaseoBrowser("browser-shown");
+    }
   });
 });

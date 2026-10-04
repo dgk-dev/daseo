@@ -307,6 +307,61 @@ describe("useFileLink", () => {
     });
   });
 
+  it("prefetches only for a link the pointer rests on", async () => {
+    const getDirectorySuggestions = vi.fn(async () =>
+      resolvedSuggestions([{ path: "docs/dumm.md", kind: "file" }]),
+    );
+    const { result } = renderHook(() => useFileLink(SOURCE), {
+      wrapper: createWrapper({ client: { getDirectorySuggestions }, openedFiles: [] }),
+    });
+
+    act(() => {
+      result.current.onHoverIn();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    act(() => {
+      result.current.onHoverOut();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(getDirectorySuggestions).not.toHaveBeenCalled();
+
+    act(() => {
+      result.current.onHoverIn();
+    });
+    await waitFor(() => {
+      expect(getDirectorySuggestions).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("does not start a hover prefetch while another lookup is running", async () => {
+    const running = createDeferred<DirectorySuggestionResult>();
+    const getDirectorySuggestions = vi.fn(() => running.promise);
+    const openedFiles: OpenedFile[] = [];
+    const wrapper = createWrapper({ client: { getDirectorySuggestions }, openedFiles });
+    const first = renderHook(() => useFileLink(SOURCE), { wrapper });
+    const second = renderHook(
+      () => useFileLink({ href: "http://other.md", text: "other.md", markup: "linkify" }),
+      { wrapper },
+    );
+
+    act(() => {
+      first.result.current.onPress();
+    });
+    await waitFor(() => {
+      expect(getDirectorySuggestions).toHaveBeenCalledTimes(1);
+    });
+    act(() => {
+      second.result.current.onHoverIn();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(getDirectorySuggestions).toHaveBeenCalledTimes(1);
+
+    running.resolve(resolvedSuggestions([{ path: "docs/dumm.md", kind: "file" }]));
+    await waitFor(() => {
+      expect(openedFiles).toHaveLength(1);
+    });
+  });
+
   it("hover then click uses the prefetched result", async () => {
     const getDirectorySuggestions = vi.fn(async () =>
       resolvedSuggestions([{ path: "docs/dumm.md", kind: "file" }]),

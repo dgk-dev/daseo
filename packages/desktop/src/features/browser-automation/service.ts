@@ -46,6 +46,8 @@ export interface TabContents {
   capturePage(options?: TabCapturePageOptions): Promise<TabImage>;
   captureFullPage?(options?: { signal?: AbortSignal }): Promise<TabImage>;
   invalidate(): void;
+  /** Runs a pixel capture with the tab producing frames (upstream #4646). */
+  withFrameProduction<T>(capture: () => Promise<T>): Promise<T>;
   sendInputEvent(event: IsolatedKeyboardInputEvent): void;
   startScreencast?(
     options: ScreencastOptions,
@@ -95,6 +97,12 @@ const WAIT_POLL_INTERVAL_MS = 25;
 const PIXEL_CAPTURE_TIMEOUT_MS = 5_000;
 const FULL_PAGE_CAPTURE_TIMEOUT_MS = 30_000;
 const PIXEL_CAPTURE_RETRY_INTERVAL_MS = 200;
+// A tab just woken from frozen or throttled may still show its last surface. Waiting for two
+// animation frames lets pending DOM updates paint first. Best effort: a page whose frames never
+// arrive (a hidden window) still gets the invalidate-and-retry capture it always had.
+const PIXEL_CAPTURE_PAINT_WAIT_MS = 1_000;
+const WAIT_FOR_PAINT_SCRIPT =
+  "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))";
 const SCREENSHOT_NO_FRAME_MESSAGE = "The tab has not painted yet. Retry the screenshot.";
 const ALLOWED_PAGE_URL_PROTOCOLS = new Set(["http:", "https:"]);
 const MAX_EVALUATE_RESULT_JSON_LENGTH = 80_000;
@@ -215,11 +223,10 @@ async function runSerializedPixelCapture<T>(capture: () => Promise<T>): Promise<
 async function capturePixelFrameWithRetry<T>(
   contents: TabContents,
   capture: (signal: AbortSignal) => Promise<T>,
+  deadline: number,
   options: PixelCaptureOptions = {},
 ): Promise<T> {
-  const timeoutMs = options.timeoutMs ?? PIXEL_CAPTURE_TIMEOUT_MS;
   const createTimeoutError = options.createTimeoutError ?? (() => new ScreenshotNoFrameError());
-  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const controller = new AbortController();
     try {
@@ -253,12 +260,37 @@ function isKnownNoFrameCaptureError(error: unknown): boolean {
   );
 }
 
+async function waitForPaint(contents: TabContents, deadline: number): Promise<void> {
+  const waitMs = Math.min(PIXEL_CAPTURE_PAINT_WAIT_MS, deadline - Date.now());
+  if (waitMs <= 0) {
+    return;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      contents.executeJavaScript(WAIT_FOR_PAINT_SCRIPT).catch(() => undefined),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, waitMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+// Paint and pixel capture share one deadline, so the paint wait never extends the budget.
 async function runPaintedPixelCapture<T>(
   contents: TabContents,
   capture: (signal: AbortSignal) => Promise<T>,
   options?: PixelCaptureOptions,
 ): Promise<T> {
-  return runSerializedPixelCapture(() => capturePixelFrameWithRetry(contents, capture, options));
+  return runSerializedPixelCapture(() =>
+    contents.withFrameProduction(async () => {
+      const deadline = Date.now() + (options?.timeoutMs ?? PIXEL_CAPTURE_TIMEOUT_MS);
+      await waitForPaint(contents, deadline);
+      return capturePixelFrameWithRetry(contents, capture, deadline, options);
+    }),
+  );
 }
 
 async function capturePaintedViewport(contents: TabContents): Promise<TabImage> {

@@ -3223,6 +3223,214 @@ function networkArgs(browserId, action) {
   return { browserId, action, maxEntries: 50, includeBodies: false, includeRequestBodies: false };
 }
 
+// Delta 33 tab lifecycle, through the production IPC handler, lifecycle, CDP adapter, and
+// automation service against a real parked guest. Unlike the Playwright desktop E2E, nothing here
+// enables DevTools focus emulation, which pins a page visible and so unfreezable.
+const LIFECYCLE_THROTTLE_MS = 1_500;
+const LIFECYCLE_FREEZE_MS = 3_000;
+const LIFECYCLE_FROZEN_GAP_MS = 2_000;
+// Captures pass through the display color profile, so the page's rgb(42,157,143) comes back near
+// rgb(29,148,132); the tolerance accepts that shift and still rejects a blank or stale frame.
+const LIFECYCLE_PAGE_RGB = [42, 157, 143];
+
+async function startLifecycleServer() {
+  const server = http.createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(`<!doctype html><html><head><title>Lifecycle target</title></head>
+      <body style="margin:0;min-height:100vh;background:rgb(42,157,143)">
+        <button id="lifecycle-target" onclick="window.__clicks++">Lifecycle target</button>
+        <script>
+          window.__clicks = 0;
+          window.__lastTickAt = Date.now();
+          window.__maxTickGapMs = 0;
+          setInterval(() => {
+            const now = Date.now();
+            window.__maxTickGapMs = Math.max(window.__maxTickGapMs, now - window.__lastTickAt);
+            window.__lastTickAt = now;
+          }, 50);
+        </script>
+      </body></html>`);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return { server, url: `http://127.0.0.1:${server.address().port}/` };
+}
+
+async function runTabLifecycleGroup() {
+  process.env.PASEO_BROWSER_TAB_LIFECYCLE_MS = `${LIFECYCLE_THROTTLE_MS},${LIFECYCLE_FREEZE_MS}`;
+  const webviews = require(
+    path.join(ROOT, "..", "dist", "features", "browser-webviews", "index.js"),
+  );
+  const { registerBrowserAutomationIpc } = require(PRODUCTION_BROWSER_AUTOMATION_IPC_PATH);
+  const handlers = new Map();
+  registerBrowserAutomationIpc({
+    ipc: { handle: (channel, handler) => handlers.set(channel, handler) },
+  });
+  const lifecycle = webviews.getPaseoBrowserTabLifecycle();
+  const target = await startLifecycleServer();
+  const handle = createInactiveHarnessWindow({
+    width: 1000,
+    height: 700,
+    backgroundColor: "#202020",
+    webPreferences: { webviewTag: true, contextIsolation: true, nodeIntegration: false },
+  });
+  const { win } = handle;
+  installHarnessWebviewGuards(win);
+  const tracker = trackAttachedGuests(win);
+  const browserId = "44444444-4444-4444-8444-444444444444";
+  const workspaceId = "lifecycle-harness-workspace";
+  const frames = [];
+  const host = {
+    id: win.webContents.id,
+    isDestroyed: () => false,
+    once: () => {},
+    send: (channel, frame) => {
+      if (channel === "paseo:browser:stream-frame") frames.push(frame);
+    },
+  };
+  let requestCounter = 0;
+  const execute = async (command) => {
+    const payload = await handlers.get("paseo:browser:execute-automation-command")(
+      { sender: host },
+      {
+        type: "browser.automation.execute.request",
+        requestId: `lifecycle-${(requestCounter += 1)}`,
+        workspaceId,
+        command,
+      },
+    );
+    if (!payload.ok) fail(`${command.command} failed: ${JSON.stringify(payload.error)}`);
+    return payload.result;
+  };
+  const readPage = async () => {
+    const result = await execute({
+      command: "evaluate",
+      args: {
+        browserId,
+        function:
+          "() => { const s = { clicks: window.__clicks, gap: window.__maxTickGapMs }; window.__maxTickGapMs = 0; return s; }",
+      },
+    });
+    return JSON.parse(result.resultJson);
+  };
+  const waitFrozen = async (label) => {
+    const deadline = Date.now() + LIFECYCLE_FREEZE_MS + 5_000;
+    while (lifecycle.getState(guest.id) !== "frozen") {
+      if (Date.now() > deadline) fail(`${label}: tab never reached frozen`);
+      await delay(100);
+    }
+    await delay(LIFECYCLE_FROZEN_GAP_MS + 500);
+  };
+  const timed = async (task) => {
+    const startedAt = Date.now();
+    const result = await task();
+    return { result, ms: Date.now() - startedAt };
+  };
+  let guest;
+  try {
+    await withTimeout(
+      win.loadFile(path.join(ROOT, "index.html"), {
+        query: { webviewCount: "0", permanentParkingState: "p1-overflow-1x1" },
+      }),
+      "lifecycle harness window loadFile",
+    );
+    await waitForInactiveReveal(handle, "lifecycle harness window");
+    ({ guest } = await appendPermanentWebview({
+      win,
+      tracker,
+      state: { id: "p1-overflow-1x1" },
+      sourceUrl: target.url,
+    }));
+    webviews.preparePaseoBrowserWebContents(guest);
+    webviews.registerManagedPaseoBrowserTarget({
+      browserId,
+      workspaceId,
+      webContentsId: guest.id,
+      hostWebContentsId: win.webContents.id,
+      metadata: { kind: "tab" },
+    });
+    await waitForGuestLoad(guest);
+    const snapshot = await execute({ command: "snapshot", args: { browserId } });
+    const ref = snapshot.snapshot.match(
+      /button "Lifecycle target" \[(?:[^\]]* )?ref=(@e\d+)\]/,
+    )?.[1];
+    if (!ref) fail(`lifecycle fixture button missing: ${snapshot.snapshot}`);
+
+    const warm = await timed(() => execute({ command: "click", args: { browserId, ref } }));
+    await readPage();
+    await waitFrozen("click");
+    const frozenClick = await timed(() => execute({ command: "click", args: { browserId, ref } }));
+    const afterClick = await readPage();
+    if (afterClick.gap < LIFECYCLE_FROZEN_GAP_MS)
+      fail(`page kept running while frozen: ${JSON.stringify(afterClick)}`);
+    if (afterClick.clicks !== 2)
+      fail(`click on a woken tab was lost: ${JSON.stringify(afterClick)}`);
+    if (frozenClick.ms - warm.ms >= 500)
+      fail(`waking added ${frozenClick.ms - warm.ms}ms to click`);
+    pass(
+      `tab-lifecycle click after freeze: warm=${warm.ms}ms frozen=${frozenClick.ms}ms pageGap=${afterClick.gap}ms`,
+    );
+
+    await waitFrozen("screenshot");
+    const shot = await timed(() => execute({ command: "screenshot", args: { browserId } }));
+    const image = nativeImage.createFromBuffer(Buffer.from(shot.result.dataBase64, "base64"));
+    const size = image.getSize();
+    const bitmap = image.toBitmap();
+    const offset = (Math.floor(size.height / 2) * size.width + Math.floor(size.width / 2)) * 4;
+    const [b, g, r] = bitmap.subarray(offset, offset + 3);
+    const afterShot = await readPage();
+    if (afterShot.gap < LIFECYCLE_FROZEN_GAP_MS)
+      fail(`page kept running before screenshot: ${JSON.stringify(afterShot)}`);
+    if ([r, g, b].some((value, index) => Math.abs(value - LIFECYCLE_PAGE_RGB[index]) > 24)) {
+      fail(`screenshot of a woken tab is not the page: rgb(${r},${g},${b})`);
+    }
+    pass(
+      `tab-lifecycle screenshot after freeze: ${shot.ms}ms ${size.width}x${size.height} center=rgb(${r},${g},${b}) pageGap=${afterShot.gap}ms`,
+    );
+
+    await waitFrozen("stream");
+    const streamStarted = Date.now();
+    await execute({ command: "stream_start", args: { browserId, quality: 40 } });
+    while (frames.length === 0 && Date.now() - streamStarted < 5_000) await delay(50);
+    const firstFrameMs = Date.now() - streamStarted;
+    await execute({ command: "stream_stop", args: { browserId } });
+    const afterStream = await readPage();
+    if (afterStream.gap < LIFECYCLE_FROZEN_GAP_MS)
+      fail(`page kept running before stream: ${JSON.stringify(afterStream)}`);
+    if (frames.length === 0) fail("phone stream of a woken tab sent no frame");
+    pass(
+      `tab-lifecycle stream after freeze: first frame ${firstFrameMs}ms pageGap=${afterStream.gap}ms`,
+    );
+    return [
+      {
+        group: "tab-lifecycle",
+        check: "click",
+        warmMs: warm.ms,
+        frozenMs: frozenClick.ms,
+        pageGapMs: afterClick.gap,
+        pass: true,
+      },
+      {
+        group: "tab-lifecycle",
+        check: "screenshot",
+        ms: shot.ms,
+        center: [r, g, b],
+        pageGapMs: afterShot.gap,
+        pass: true,
+      },
+      {
+        group: "tab-lifecycle",
+        check: "stream",
+        firstFrameMs,
+        pageGapMs: afterStream.gap,
+        pass: true,
+      },
+    ];
+  } finally {
+    if (!win.isDestroyed()) win.close();
+    await closeServer(target.server);
+  }
+}
+
 async function main() {
   ensureDirSync(OUT_DIR);
   if (
@@ -3233,9 +3441,20 @@ async function main() {
       "automation",
       "browser-profile",
       "frames-network",
+      "tab-lifecycle",
     ].includes(HARNESS_GROUP)
   ) {
     fail(`unknown harness group ${HARNESS_GROUP}`);
+  }
+
+  if (HARNESS_GROUP === "tab-lifecycle") {
+    const tabLifecycleResults = await runTabLifecycleGroup();
+    await fsp.writeFile(
+      path.join(OUT_DIR, "results.json"),
+      `${JSON.stringify({ generatedAt: new Date().toISOString(), tabLifecycleResults }, null, 2)}\n`,
+    );
+    pass(`capture harness tab-lifecycle complete output=${OUT_DIR}`);
+    return;
   }
 
   if (HARNESS_GROUP === "frames-network") {

@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useStableEvent } from "@/hooks/use-stable-event";
@@ -19,6 +19,7 @@ import {
 export interface UseFileLinkResult {
   target: InlinePathTarget | null;
   onHoverIn: () => void;
+  onHoverOut: () => void;
   onPress: () => void;
   onAuxPress: () => void;
   open: (source: AssistantFileLinkSource, disposition: OpenFileDisposition) => void;
@@ -38,6 +39,21 @@ type AssistantFileLinkQueryKey = readonly [
 ];
 
 const DISABLED_QUERY_KEY = ["assistantFileLink", null, null, ""] as const;
+
+// A pointer sweeping across an answer passes over many links. Each lookup is a gitignore-aware
+// suffix search of the workspace; in the root workspace that is the whole home tree. Prefetch
+// only for a link the pointer rests on, and only while no other lookup from this app is running.
+const HOVER_PREFETCH_DELAY_MS = 300;
+let fileLinkLookupsInFlight = 0;
+
+async function trackFileLinkLookup<T>(lookup: () => Promise<T>): Promise<T> {
+  fileLinkLookupsInFlight += 1;
+  try {
+    return await lookup();
+  } finally {
+    fileLinkLookupsInFlight -= 1;
+  }
+}
 
 export function useFileLink(source: AssistantFileLinkSource): UseFileLinkResult {
   const { t } = useTranslation();
@@ -97,25 +113,44 @@ export function useFileLink(source: AssistantFileLinkSource): UseFileLinkResult 
     },
   );
 
+  const hoverPrefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelHoverPrefetch = useStableEvent(() => {
+    if (hoverPrefetchTimerRef.current !== null) {
+      clearTimeout(hoverPrefetchTimerRef.current);
+      hoverPrefetchTimerRef.current = null;
+    }
+  });
+  useEffect(() => cancelHoverPrefetch, [cancelHoverPrefetch]);
+
   const onHoverIn = useStableEvent(() => {
     if (resolution.kind !== "needsLookup") {
       return;
     }
 
-    void queryClient.prefetchQuery({
-      queryKey,
-      queryFn: () =>
-        fetchDaemonResolution({
-          ambiguousQuery: resolution.ambiguousQuery,
-          token: resolution.token,
-          target: resolution.target,
-          workspaceRoot,
-          getDirectorySuggestions: context.getDirectorySuggestions,
-        }),
-      retry: 0,
-      staleTime: Infinity,
-    });
+    cancelHoverPrefetch();
+    hoverPrefetchTimerRef.current = setTimeout(() => {
+      hoverPrefetchTimerRef.current = null;
+      if (fileLinkLookupsInFlight > 0 || queryClient.getQueryData(queryKey) !== undefined) {
+        return;
+      }
+      void queryClient.prefetchQuery({
+        queryKey,
+        queryFn: () =>
+          trackFileLinkLookup(() =>
+            fetchDaemonResolution({
+              ambiguousQuery: resolution.ambiguousQuery,
+              token: resolution.token,
+              target: resolution.target,
+              workspaceRoot,
+              getDirectorySuggestions: context.getDirectorySuggestions,
+            }),
+          ),
+        retry: 0,
+        staleTime: Infinity,
+      });
+    }, HOVER_PREFETCH_DELAY_MS);
   });
+  const onHoverOut = cancelHoverPrefetch;
 
   const onPress = useStableEvent(() => {
     open(stableSource, "main");
@@ -132,8 +167,8 @@ export function useFileLink(source: AssistantFileLinkSource): UseFileLinkResult 
   }, [query.data, resolution]);
 
   return useMemo(
-    () => ({ target, onHoverIn, onPress, onAuxPress, open }),
-    [target, onHoverIn, onPress, onAuxPress, open],
+    () => ({ target, onHoverIn, onHoverOut, onPress, onAuxPress, open }),
+    [target, onHoverIn, onHoverOut, onPress, onAuxPress, open],
   );
 }
 
@@ -194,13 +229,15 @@ function openAssistantFileLink(input: {
       const target = await input.queryClient.fetchQuery({
         queryKey: capturedQueryKey,
         queryFn: () =>
-          fetchDaemonResolution({
-            ambiguousQuery: capturedResolution.ambiguousQuery,
-            token: capturedResolution.token,
-            target: capturedResolution.target,
-            workspaceRoot: capturedConfig.workspaceRoot,
-            getDirectorySuggestions: input.context.getDirectorySuggestions,
-          }),
+          trackFileLinkLookup(() =>
+            fetchDaemonResolution({
+              ambiguousQuery: capturedResolution.ambiguousQuery,
+              token: capturedResolution.token,
+              target: capturedResolution.target,
+              workspaceRoot: capturedConfig.workspaceRoot,
+              getDirectorySuggestions: input.context.getDirectorySuggestions,
+            }),
+          ),
         retry: 0,
         staleTime: Infinity,
       });

@@ -117,6 +117,8 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
       browserId: string | null;
       isForeground?: boolean;
     }) => ipcRenderer.invoke("paseo:browser:set-workspace-active-browser", input),
+    setBrowserPresented: (input: { browserId: string; presented: boolean }) =>
+      ipcRenderer.invoke("paseo:browser:set-presented", input),
     listPopupTargets: (rootBrowserId: string) =>
       ipcRenderer.invoke("paseo:browser:list-popup-targets", rootBrowserId),
     presentPopupTarget: (input: {

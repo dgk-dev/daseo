@@ -10077,3 +10077,94 @@ test("onWorkspaceStateMayHaveChanged is not called for running shell tool calls"
 
   expect(onWorkspaceStateMayHaveChanged).not.toHaveBeenCalled();
 });
+
+test("an idle unload stops the runtime, keeps the agent idle, and resumes with its history", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-idle-unload-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const durableTimelineStore = new FileBackedAgentTimelineStore(join(workdir, "timelines"));
+  const sessions: CloseRecordingTestAgentSession[] = [];
+  const client = new (class extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      const session = new CloseRecordingTestAgentSession(config);
+      sessions.push(session);
+      return session;
+    }
+  })();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    durableTimelineStore,
+    logger,
+  });
+
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    await manager.appendTimelineItem(agent.id, { type: "user_message", text: "hello" });
+    await manager.appendTimelineItem(agent.id, { type: "assistant_message", text: "hi there" });
+    await manager.flush();
+    const before = manager.fetchTimeline(agent.id, { direction: "tail", limit: 0 });
+    const lifecycles: string[] = [];
+    const unsubscribe = manager.subscribe(
+      (event) => {
+        if (event.type === "agent_state" && event.agent.id === agent.id) {
+          lifecycles.push(event.agent.lifecycle);
+        }
+      },
+      { replayState: false },
+    );
+
+    await expect(manager.unloadIdleAgent(agent.id, async () => true)).resolves.toBe(true);
+    unsubscribe();
+
+    expect(manager.getAgent(agent.id)).toBeNull();
+    expect(sessions[0]?.closed).toBe(true);
+    expect(lifecycles).toEqual([]);
+    await storage.flush();
+    expect((await storage.get(agent.id))?.lastStatus).toBe("idle");
+
+    const resumed = await ensureAgentLoaded(agent.id, {
+      agentManager: manager,
+      agentStorage: storage,
+      logger,
+    });
+    expect(resumed.lifecycle).toBe("idle");
+    expect(client.resumeOverrides).toHaveLength(1);
+    const after = manager.fetchTimeline(agent.id, { direction: "tail", limit: 0 });
+    expect(after.epoch).toBe(before.epoch);
+    expect(after.rows.map((row) => [row.seq, row.item])).toEqual(
+      before.rows.map((row) => [row.seq, row.item]),
+    );
+    expect(await manager.getTimelineRows(agent.id)).toEqual(
+      await durableTimelineStore.getCommittedRows(agent.id),
+    );
+  } finally {
+    await manager.flush().catch(() => undefined);
+    await storage.flush().catch(() => undefined);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("an idle unload leaves the agent loaded when the eligibility check fails", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-idle-unload-refused-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const manager = new AgentManager({
+    clients: { codex: new TestAgentClient() },
+    registry: storage,
+    logger,
+  });
+
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    await expect(manager.unloadIdleAgent(agent.id, async () => false)).resolves.toBe(false);
+    expect(manager.getAgent(agent.id)?.lifecycle).toBe("idle");
+    expect(manager.getAgentLastActivityAt(agent.id)).toEqual(expect.any(Number));
+  } finally {
+    await manager.flush().catch(() => undefined);
+    await storage.flush().catch(() => undefined);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});

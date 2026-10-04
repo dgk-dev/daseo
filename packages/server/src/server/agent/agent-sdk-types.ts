@@ -676,6 +676,12 @@ export interface AgentSession {
   readonly features?: AgentFeature[];
   /** Local fork: while `pending > 0` the manager holds "finished" attention and notify-on-finish. */
   readonly backgroundWaits?: AgentBackgroundWaits;
+  /**
+   * Local fork (Daseo delta 33): OS pid of a provider process this session alone owns. Closing the
+   * session tree-kills that process, so the idle unloader leaves a session alone while the process
+   * still has children (a dev server or watcher the agent started in the background).
+   */
+  getRuntimeProcessId?(): number | null;
   run(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<AgentRunResult>;
   startTurn(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<{ turnId: string }>;
   /**

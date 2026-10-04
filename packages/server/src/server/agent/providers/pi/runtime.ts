@@ -70,6 +70,8 @@ export interface PiRuntimeSession {
   ): void;
   cancelExtensionUiRequest(id: string): void;
   close(): Promise<void>;
+  /** OS process id of the Pi process this session owns, when it runs as a child process. */
+  readonly processId?: number;
 }
 
 export interface PiRuntime {

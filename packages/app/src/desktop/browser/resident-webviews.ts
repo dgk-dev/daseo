@@ -15,6 +15,7 @@ const RESIDENT_VIEWPORT_HEIGHT = 800;
 const residentWebviewsByBrowserId = new Map<string, HTMLElement>();
 const residentSurfacesByBrowserId = new Map<string, HTMLElement>();
 const residentWebviewSizesByBrowserId = new Map<string, { width: number; height: number }>();
+const reportedPresentationByBrowserId = new Map<string, boolean>();
 
 interface BrowserWebviewElement extends HTMLElement {
   src: string;
@@ -96,6 +97,22 @@ function registerBrowserWhenAttached(
       { once: true },
     );
   });
+}
+
+// Main throttles and then freezes a browser no pane presents (delta 33). Presenting and parking both
+// pass through this module, so it reports each change once; a pane resize re-presents without
+// re-reporting.
+function reportBrowserPresentation(browserId: string, presented: boolean): void {
+  if ((reportedPresentationByBrowserId.get(browserId) ?? false) === presented) {
+    return;
+  }
+  if (presented) reportedPresentationByBrowserId.set(browserId, true);
+  else reportedPresentationByBrowserId.delete(browserId);
+  void getDesktopHost()
+    ?.browser?.setBrowserPresented?.({ browserId, presented })
+    .catch((error) => {
+      console.error("[browser-webview] presentation report failed", error);
+    });
 }
 
 function trimNonEmpty(value: string | null | undefined): string | null {
@@ -334,6 +351,7 @@ export function presentBrowserWebview(
   webview.style.position = "absolute";
   webview.style.left = `${Math.round(anchorBounds.left - surfaceLeft)}px`;
   webview.style.top = `${Math.round(anchorBounds.top - surfaceTop)}px`;
+  reportBrowserPresentation(normalizedBrowserId, hasVisibleArea);
 }
 
 export function prepareBrowserWebview(
@@ -443,6 +461,7 @@ export function releaseResidentBrowserWebview(browserId: string, webview: HTMLEl
   if (webview.parentElement !== surface) {
     surface.appendChild(webview);
   }
+  reportBrowserPresentation(normalizedBrowserId, false);
 }
 
 export function resizeResidentBrowserWebview(input: {
@@ -479,6 +498,7 @@ export function removeResidentBrowserWebview(browserId: string): void {
   residentWebviewsByBrowserId.delete(normalizedBrowserId);
   residentSurfacesByBrowserId.delete(normalizedBrowserId);
   residentWebviewSizesByBrowserId.delete(normalizedBrowserId);
+  reportBrowserPresentation(normalizedBrowserId, false);
   resident?.remove();
   surface?.remove();
 }
@@ -490,5 +510,6 @@ export function clearResidentBrowserWebviewsForTests(): void {
   residentWebviewsByBrowserId.clear();
   residentSurfacesByBrowserId.clear();
   residentWebviewSizesByBrowserId.clear();
+  reportedPresentationByBrowserId.clear();
   readDocument()?.getElementById(RESIDENT_BROWSER_HOST_ID)?.remove();
 }

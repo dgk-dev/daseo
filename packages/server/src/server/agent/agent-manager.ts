@@ -700,6 +700,8 @@ export class AgentManager {
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly agentRegistrationTasks = new Set<Promise<void>>();
   private readonly inFlightAgentCloses = new Map<string, Promise<void>>();
+  /** Local fork (delta 33): epoch ms of the last stream event, state change, or wait change. */
+  private readonly lastActivityAtByAgentId = new Map<string, number>();
   private readonly lifecycleMutationTails = new Map<string, Promise<void>>();
   private readonly agentStreamCoalescer: AgentStreamCoalescer;
   private mcpBaseUrl: string | null;
@@ -1547,6 +1549,79 @@ export class AgentManager {
     if (persistError !== undefined) {
       throw persistError;
     }
+  }
+
+  /**
+   * Local fork (delta 33): when the agent last did anything — a stream event, a state change, a
+   * change in its pending background waits — as epoch ms, or null when it is not loaded.
+   */
+  getAgentLastActivityAt(agentId: string): number | null {
+    if (!this.agents.has(agentId)) {
+      return null;
+    }
+    return this.lastActivityAtByAgentId.get(agentId) ?? null;
+  }
+
+  /**
+   * Local fork (delta 33): stop an idle agent's provider runtime and drop its in-memory timeline,
+   * leaving the agent exactly as a daemon restart leaves it: stored as idle, resumed through
+   * `ensureAgentLoaded` by the next open, prompt, or send. Unlike `closeAgent` it neither records
+   * nor broadcasts a closed state, so clients keep showing an idle agent. `isEligible` runs inside
+   * the agent's lifecycle lane after its queued stream events drain; returns whether it unloaded.
+   */
+  unloadIdleAgent(
+    agentId: string,
+    isEligible: (agent: ManagedAgent) => Promise<boolean>,
+  ): Promise<boolean> {
+    if (this.inFlightAgentCloses.has(agentId)) {
+      return Promise.resolve(false);
+    }
+    return this.runLifecycleMutation(agentId, async () => {
+      const agent = this.agents.get(agentId);
+      if (!agent || agent.lifecycle !== "idle" || this.inFlightAgentCloses.has(agentId)) {
+        return false;
+      }
+      await this.drainSessionEvents(agentId);
+      if (
+        this.agents.get(agentId) !== agent ||
+        agent.lifecycle !== "idle" ||
+        this.hasInFlightRun(agentId) ||
+        !(await isEligible(agent))
+      ) {
+        return false;
+      }
+      const unload = this.unloadAgentRuntime(agent);
+      this.inFlightAgentCloses.set(agentId, unload);
+      try {
+        await unload;
+      } finally {
+        if (this.inFlightAgentCloses.get(agentId) === unload) {
+          this.inFlightAgentCloses.delete(agentId);
+        }
+      }
+      return true;
+    });
+  }
+
+  private async unloadAgentRuntime(agent: ManagedAgentIdle): Promise<void> {
+    // The stored record must say idle and every timeline row must be durable before the
+    // in-memory copy goes: resume seeds the timeline (same epoch, next seq) from durable storage.
+    this.agentStreamCoalescer.flushFor(agent.id);
+    await this.persistSnapshot(agent);
+    // One snapshot of in-flight writes covers this agent's rows: it has been idle and its queued
+    // events drained. Looping until the set is empty would wait on agents that are streaming.
+    await Promise.allSettled(this.backgroundTasks);
+    this.prepareAgentForClosure(agent, "agent unloaded while idle");
+    try {
+      await agent.session.close();
+    } catch (error) {
+      this.logger.warn({ err: error, agentId: agent.id }, "agent.manager.idle_unload.close_failed");
+    }
+    this.discardRetainedAgentState(agent.id);
+    this.logger.info(
+      { agentId: agent.id, provider: agent.provider, sessionId: agent.persistence?.sessionId },
+      "agent.manager.idle_unload",
+    );
   }
 
   private cancelRunningProviderSubagents(parentAgentId: string): void {
@@ -3271,6 +3346,7 @@ export class AgentManager {
     this.agentStreamCoalescer.flushAndDiscard(agent.id);
     this.agents.delete(agent.id);
     this.previousStatuses.delete(agent.id);
+    this.lastActivityAtByAgentId.delete(agent.id);
     this.deferredFinishes.delete(agent.id);
     if (agent.unsubscribeSession) {
       agent.unsubscribeSession();
@@ -3322,6 +3398,7 @@ export class AgentManager {
   }
 
   private enqueueSessionEvent(agentId: string, event: AgentStreamEvent): void {
+    this.lastActivityAtByAgentId.set(agentId, Date.now());
     this.logger.trace(
       {
         agentId,
@@ -4435,6 +4512,9 @@ export class AgentManager {
   }
 
   private emitState(agent: ManagedAgent, options?: { persist?: boolean }): void {
+    if (agent.lifecycle !== "closed") {
+      this.lastActivityAtByAgentId.set(agent.id, Date.now());
+    }
     this.syncBackgroundWaits(agent);
     // Keep attention as an edge-triggered unread signal, not a level signal.
     this.checkAndSetAttention(agent);

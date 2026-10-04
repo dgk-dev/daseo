@@ -588,7 +588,7 @@ describe("mountBrowserAutomationHandler", () => {
     });
   });
 
-  test("workspace list_tabs returns every layout browser and materializes unmounted guests", async () => {
+  test("workspace list_tabs returns every layout browser without starting a guest", async () => {
     const browser = new BrowserAutomationHandlerHarness();
     const workspaceKey = buildWorkspaceTabPersistenceKey({
       serverId: "server-1",
@@ -673,11 +673,48 @@ describe("mountBrowserAutomationHandler", () => {
         ],
       },
     });
-    expect(browser.resident.ensuredWebviews).toEqual([
-      { browserId: firstId, workspaceId: "wks_workspace_a", url: "https://one.example" },
-      { browserId: secondId, workspaceId: "wks_workspace_a", url: "https://two.example" },
-    ]);
+    expect(browser.resident.ensuredWebviews).toEqual([]);
     expect(browser.browser.executedRequests).toEqual([workspaceBrowserListRequest()]);
+  });
+
+  test("a command for a layout browser with no guest starts only that guest, then runs", async () => {
+    const browser = new BrowserAutomationHandlerHarness();
+    const workspaceKey = buildWorkspaceTabPersistenceKey({
+      serverId: "server-1",
+      workspaceId: "wks_workspace_a",
+    });
+    if (!workspaceKey) throw new Error("Expected workspace key");
+    const targetId = useBrowserStore
+      .getState()
+      .createBrowser({ initialUrl: "https://one.example" });
+    const otherId = useBrowserStore.getState().createBrowser({ initialUrl: "https://two.example" });
+    for (const browserId of [targetId, otherId]) {
+      useWorkspaceLayoutStore.getState().openTabFocused(workspaceKey, {
+        kind: "browser",
+        browserId,
+      });
+    }
+    browser.mount({ serverId: "server-1" });
+    const snapshot: BrowserAutomationExecuteRequest = {
+      type: "browser.automation.execute.request",
+      requestId: "req-snapshot",
+      agentId: "agent-1",
+      workspaceId: "wks_workspace_a",
+      command: { command: "snapshot", args: { browserId: targetId } },
+    };
+
+    browser.receive(snapshot);
+    await flushAsyncWork();
+    await flushAsyncWork();
+
+    expect(browser.resident.ensuredWebviews).toEqual([
+      { browserId: targetId, workspaceId: "wks_workspace_a", url: "https://one.example" },
+    ]);
+    expect(browser.browser.executedRequests.map((request) => request.command.command)).toEqual([
+      "list_tabs",
+      "snapshot",
+    ]);
+    expect(browser.browser.executedRequests.at(-1)).toEqual(snapshot);
   });
 
   test("workspace list_tabs places live popup targets after their owning root", async () => {

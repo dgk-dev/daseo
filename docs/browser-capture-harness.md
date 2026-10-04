@@ -12,8 +12,8 @@ It validates the compositor behavior that unit tests cannot see:
   by retrying until the frame appears;
 - both viewport `capturePage` and the compiled production full-page capture return real pixels
   from the permanent production parking state, including the fixture's bottom marker;
-- guest background throttling can be disabled once at attach without per-capture
-  renderer coordination;
+- a parked guest in the tab lifecycle's active state (background throttling off, which
+  every capture holds) needs no per-capture renderer coordination;
 - the real-Electron host-composer sentinel proves guest Enter cannot submit a focused
   host composer;
 - production browser click, drag, type, remote tap, and remote text paths can operate a
@@ -108,10 +108,13 @@ plane stays below the overlay plane regardless of body insertion order; menus ke
 layering inside `overlay-root`. Activating a presented browser also focuses its registered guest
 `WebContents` in main so macOS assigns keyboard first-responder ownership to the page.
 
-There is no host-renderer parking handshake. Main disables guest background throttling once
-when the webview attaches, then screenshot capture uses the shared serialized queue, invalidates
-before each attempt, and retries known first-frame failures. Viewport screenshots retain the
-5-second budget and use `capturePage({ stayHidden:false })`.
+There is no host-renderer parking handshake. Main tracks every guest in the tab lifecycle
+(`packages/desktop/src/features/browser-webviews/lifecycle.ts`): a guest starts active with
+background throttling off, throttles after 2 unused minutes, and freezes after 15. A screenshot
+holds its tab active for the whole capture, so a throttled or frozen tab wakes first; it then
+waits up to one second for two animation frames, uses the shared serialized queue, invalidates
+before each attempt, and retries known first-frame failures, all inside one deadline. Viewport
+screenshots retain the 5-second budget and use `capturePage({ stayHidden:false })`.
 
 CDP pointer presses on an embedded guest move host DOM focus into the `<webview>`, even when its
 parked surface has `pointer-events:none`. CDP `Input.insertText` follows Chromium's active focus

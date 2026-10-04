@@ -1,5 +1,6 @@
 import type { Dirent, Stats } from "node:fs";
-import { readdir, realpath, stat } from "node:fs/promises";
+import { opendir, readdir, realpath, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import { isPathInsideRoot } from "./path.js";
 import { runGitCommand } from "./run-git-command.js";
@@ -29,8 +30,18 @@ export interface SearchDirectoryEntriesOptions {
   limit?: number;
   maxDepth?: number;
   maxEntriesScanned?: number;
+  /**
+   * Directory entries discovery may read with readdir, across all directories. The yield budget
+   * above counts only entries that pass discovery, so one round of a breadth-first walk could
+   * otherwise read millions of children it never yields.
+   */
+  maxEntriesRead?: number;
   confidentResultScanThreshold?: number;
   respectGitIgnore?: boolean;
+  /** The user's home directory; a search rooted there skips HOME_ROOT_UNSEARCHED_DIRECTORIES. */
+  homeDirectory?: string;
+  /** Aborts discovery between directory reads; the search rejects with the signal's reason. */
+  signal?: AbortSignal;
 }
 
 interface QueryPlan {
@@ -71,6 +82,19 @@ interface DirectoryListCacheEntry {
   modifiedAtMs: number;
   changedAtMs: number;
   entries: RawChildEntry[];
+  /** Listing stopped at MAX_DISCOVERY_DIRECTORY_ENTRIES; only discovery may use it. */
+  oversized: boolean;
+  readCount: number;
+}
+
+interface DirectoryListing {
+  entries: RawChildEntry[];
+  oversized: boolean;
+  /**
+   * Dirents this listing covers, cached or not. A cache hit must still charge the read budget:
+   * otherwise each search in a burst walks further than the last on the listings it inherits.
+   */
+  readCount: number;
 }
 
 interface GitIgnoredPathsCacheEntry {
@@ -82,6 +106,21 @@ const DEFAULT_LIMIT = 30;
 const MAX_LIMIT = 100;
 const DEFAULT_MAX_DEPTH = 12;
 const DEFAULT_MAX_ENTRIES_SCANNED = 20_000;
+const DEFAULT_MAX_ENTRIES_READ = 60_000;
+// Discovery never descends into a directory with more children than this (caches, mail stores,
+// photo libraries). The directory itself stays a candidate, and a path the caller names inside it
+// still resolves, because retrieval reads only the named path.
+const MAX_DISCOVERY_DIRECTORY_ENTRIES = 5_000;
+// Top-level home folders that hold application state or media rather than files an agent writes
+// about. ~/Library alone was 26 GB on the machine that hit the heap spikes. Discovery rooted at
+// home skips them; browsing ~ still lists them and explicit paths still open.
+const HOME_ROOT_UNSEARCHED_DIRECTORY_NAMES = new Set([
+  "Library",
+  "Applications",
+  "Movies",
+  "Music",
+  "Pictures",
+]);
 const DIRECTORY_LIST_CACHE_TTL_MS = 8_000;
 const DIRECTORY_LIST_CACHE_MAX_ENTRIES = 4_000;
 const GIT_IGNORED_PATHS_CACHE_TTL_MS = 8_000;
@@ -134,7 +173,10 @@ export async function searchDirectoryEntries(
   const gitIgnoredPaths = options.respectGitIgnore
     ? await loadGitIgnoredPaths(root)
     : new Set<string>();
-  const input = buildSearchInput(options, root, gitIgnoredPaths);
+  const homeDirectory = await realpath(
+    options.homeDirectory ?? process.env.HOME ?? homedir(),
+  ).catch(() => null);
+  const input = buildSearchInput(options, root, gitIgnoredPaths, homeDirectory === root);
   if (!input) return [];
 
   const exact =
@@ -158,6 +200,7 @@ function buildSearchInput(
   options: SearchDirectoryEntriesOptions,
   root: string,
   gitIgnoredPaths: Set<string>,
+  rootIsHome: boolean,
 ): SearchInput | null {
   const includeDirectories = options.includeDirectories ?? true;
   const includeFiles = options.includeFiles ?? false;
@@ -184,8 +227,11 @@ function buildSearchInput(
     limit: normalizeLimit(options.limit),
     maxDepth: options.maxDepth ?? DEFAULT_MAX_DEPTH,
     maxEntriesScanned: options.maxEntriesScanned ?? DEFAULT_MAX_ENTRIES_SCANNED,
+    readBudget: { remaining: options.maxEntriesRead ?? DEFAULT_MAX_ENTRIES_READ },
     confidentResultScanThreshold: options.confidentResultScanThreshold,
     gitIgnoredPaths,
+    rootIsHome,
+    signal: options.signal,
   };
 }
 
@@ -218,8 +264,11 @@ interface SearchInput {
   limit: number;
   maxDepth: number;
   maxEntriesScanned: number;
+  readBudget: { remaining: number };
   confidentResultScanThreshold: number | undefined;
   gitIgnoredPaths: Set<string>;
+  rootIsHome: boolean;
+  signal: AbortSignal | undefined;
 }
 
 async function searchChildren(input: SearchInput): Promise<RankedEntry[]> {
@@ -242,8 +291,11 @@ async function searchChildren(input: SearchInput): Promise<RankedEntry[]> {
 
 async function searchTree(input: SearchInput): Promise<RankedEntry[]> {
   if (!(input.maxEntriesScanned > 0)) return [];
-  const roots = (await readChildren(input.root)).filter((entry) =>
-    staysInsideRoot(entry, input.root),
+  input.signal?.throwIfAborted();
+  const roots = (await readDiscoveryChildren(input.root, input)).filter(
+    (entry) =>
+      staysInsideRoot(entry, input.root) &&
+      !(input.rootIsHome && HOME_ROOT_UNSEARCHED_DIRECTORY_NAMES.has(entry.name)),
   );
   const visited = new Set<string>([input.root]);
   const branches = roots.flatMap((entry) =>
@@ -261,6 +313,7 @@ async function searchTree(input: SearchInput): Promise<RankedEntry[]> {
   let scanned = 0;
   const threshold = input.confidentResultScanThreshold;
   for await (const entry of roundRobin(branches)) {
+    input.signal?.throwIfAborted();
     scanned += 1;
     if (shouldSuggest(entry, input)) ranked.push(rank(entry, input));
     if (
@@ -285,7 +338,8 @@ async function* walkBranch(
   )
     return;
   visited.add(entry.resolvedPath);
-  const children = (await readChildren(entry.resolvedPath)).filter((child) =>
+  input.signal?.throwIfAborted();
+  const children = (await readDiscoveryChildren(entry.resolvedPath, input)).filter((child) =>
     staysInsideRoot(child, input.root),
   );
   const branches = children.flatMap((child) =>
@@ -552,40 +606,98 @@ async function resolveDirectory(inputPath: string): Promise<string | null> {
   return info?.isDirectory() ? resolved : null;
 }
 
+// Discovery reads stop once the search has read its budget of directory entries, and a directory
+// past MAX_DISCOVERY_DIRECTORY_ENTRIES contributes no children. Both bound memory and time by
+// what was read from disk, not by what discovery kept.
+async function readDiscoveryChildren(directory: string, input: SearchInput): Promise<ChildEntry[]> {
+  if (input.readBudget.remaining <= 0) return [];
+  const listing = await listDirectory(directory, MAX_DISCOVERY_DIRECTORY_ENTRIES);
+  input.readBudget.remaining -= listing.readCount;
+  if (listing.oversized) return [];
+  return resolveChildren(directory, listing.entries);
+}
+
 async function readChildren(directory: string): Promise<ChildEntry[]> {
+  const listing = await listDirectory(directory);
+  return resolveChildren(directory, listing.entries);
+}
+
+async function resolveChildren(
+  directory: string,
+  rawEntries: readonly RawChildEntry[],
+): Promise<ChildEntry[]> {
+  return (await Promise.all(rawEntries.map((entry) => resolveChild(directory, entry))))
+    .filter((entry): entry is ChildEntry => entry !== null)
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+async function listDirectory(directory: string, maxEntries?: number): Promise<DirectoryListing> {
   const directoryInfo = await stat(directory).catch(() => null);
-  if (!directoryInfo?.isDirectory()) return [];
+  if (!directoryInfo?.isDirectory()) return { entries: [], oversized: false, readCount: 0 };
 
   const cached = CAN_VALIDATE_DIRECTORY_CACHE_FROM_METADATA
     ? directoryListCache.get(directory)
     : undefined;
-  let rawEntries: RawChildEntry[];
   if (
     cached &&
     cached.expiresAt > Date.now() &&
     cached.modifiedAtMs === directoryInfo.mtimeMs &&
-    cached.changedAtMs === directoryInfo.ctimeMs
+    cached.changedAtMs === directoryInfo.ctimeMs &&
+    (!cached.oversized || maxEntries !== undefined)
   ) {
-    rawEntries = cached.entries;
-  } else {
-    const dirents = await readdir(directory, { withFileTypes: true }).catch(() => [] as Dirent[]);
-    rawEntries = dirents
-      .map(toRawChildEntry)
-      .filter((entry): entry is RawChildEntry => entry !== null)
-      .sort((left, right) => left.name.localeCompare(right.name));
-    if (CAN_VALIDATE_DIRECTORY_CACHE_FROM_METADATA) {
-      directoryListCache.set(directory, {
-        expiresAt: Date.now() + DIRECTORY_LIST_CACHE_TTL_MS,
-        modifiedAtMs: directoryInfo.mtimeMs,
-        changedAtMs: directoryInfo.ctimeMs,
-        entries: rawEntries,
-      });
-      pruneCache();
-    }
+    return { entries: cached.entries, oversized: cached.oversized, readCount: cached.readCount };
   }
 
-  return (await Promise.all(rawEntries.map((entry) => resolveChild(directory, entry))))
-    .filter((entry): entry is ChildEntry => entry !== null)
+  const listing =
+    maxEntries === undefined
+      ? await readWholeDirectory(directory)
+      : await readDirectoryUpTo(directory, maxEntries);
+  if (CAN_VALIDATE_DIRECTORY_CACHE_FROM_METADATA) {
+    directoryListCache.set(directory, {
+      expiresAt: Date.now() + DIRECTORY_LIST_CACHE_TTL_MS,
+      modifiedAtMs: directoryInfo.mtimeMs,
+      changedAtMs: directoryInfo.ctimeMs,
+      entries: listing.entries,
+      oversized: listing.oversized,
+      readCount: listing.readCount,
+    });
+    pruneCache();
+  }
+  return listing;
+}
+
+async function readWholeDirectory(directory: string): Promise<DirectoryListing> {
+  const dirents = await readdir(directory, { withFileTypes: true }).catch(() => [] as Dirent[]);
+  return { entries: toSortedRawEntries(dirents), oversized: false, readCount: dirents.length };
+}
+
+// Streams the directory so an oversized one costs at most maxEntries + 1 dirents in memory.
+async function readDirectoryUpTo(directory: string, maxEntries: number): Promise<DirectoryListing> {
+  const handle = await opendir(directory).catch(() => null);
+  if (!handle) return { entries: [], oversized: false, readCount: 0 };
+  const dirents: Dirent[] = [];
+  let oversized = false;
+  try {
+    for await (const dirent of handle) {
+      if (dirents.length >= maxEntries) {
+        oversized = true;
+        break;
+      }
+      dirents.push(dirent);
+    }
+  } catch {
+    // A directory that disappears or turns unreadable mid-listing keeps what was read.
+  }
+  const readCount = dirents.length + (oversized ? 1 : 0);
+  return oversized
+    ? { entries: [], oversized: true, readCount }
+    : { entries: toSortedRawEntries(dirents), oversized: false, readCount };
+}
+
+function toSortedRawEntries(dirents: readonly Dirent[]): RawChildEntry[] {
+  return dirents
+    .map(toRawChildEntry)
+    .filter((entry): entry is RawChildEntry => entry !== null)
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 

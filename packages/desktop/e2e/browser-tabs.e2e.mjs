@@ -25,6 +25,11 @@ const workspaceIds = [
   "desktop-browser-evict-three",
 ];
 const timeoutMs = 90_000;
+// Delta 33: the desktop runs with shortened tab lifecycle steps so the lifecycle regression can
+// watch a background tab throttle and freeze in seconds.
+const LIFECYCLE_THROTTLE_MS = 4_000;
+const LIFECYCLE_FREEZE_MS = 8_000;
+const LIFECYCLE_BACKGROUND_RGB = { r: 42, g: 157, b: 143 };
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -223,6 +228,29 @@ async function startTargetPage() {
             <script>
               window.focus();
               setTimeout(() => document.querySelector('#background-autofocus').focus(), 250);
+            </script>
+          </body>
+        </html>`);
+      return;
+    }
+    if (requestUrl.pathname === "/lifecycle") {
+      response.end(`<!doctype html>
+        <html>
+          <head><title>Lifecycle target</title></head>
+          <body style="margin:0;min-height:100vh;background:rgb(42,157,143)">
+            <button id="lifecycle-target" onclick="window.__clicks++">Lifecycle target</button>
+            <script>
+              window.__clicks = 0;
+              window.__frozen = 0;
+              document.addEventListener('freeze', () => window.__frozen++);
+              // A frozen page runs no timers: the longest gap between ticks is the proof.
+              window.__lastTickAt = Date.now();
+              window.__maxTickGapMs = 0;
+              setInterval(() => {
+                const now = Date.now();
+                window.__maxTickGapMs = Math.max(window.__maxTickGapMs, now - window.__lastTickAt);
+                window.__lastTickAt = now;
+              }, 50);
             </script>
           </body>
         </html>`);
@@ -561,6 +589,133 @@ async function capturePopupStreamFrame(page, popupBrowserId, workspaceId) {
   );
 }
 
+async function readLifecycleFixture(client, browserId) {
+  const evaluated = await callBrowserTool(client, "browser_evaluate", {
+    browserId,
+    function: `() => {
+      const state = {
+        frozen: window.__frozen ?? null,
+        clicks: window.__clicks ?? null,
+        maxTickGapMs: window.__maxTickGapMs ?? null,
+      };
+      window.__maxTickGapMs = 0;
+      return state;
+    }`,
+  });
+  return JSON.parse(evaluated.resultJson);
+}
+
+async function readPngCenterPixel(page, dataBase64) {
+  return await page.evaluate(async (data) => {
+    const image = new Image();
+    image.src = `data:image/png;base64,${data}`;
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = image.width;
+    canvas.height = image.height;
+    const context = canvas.getContext("2d");
+    context.drawImage(image, 0, 0);
+    const [r, g, b] = context.getImageData(
+      Math.floor(image.width / 2),
+      Math.floor(image.height / 2),
+      1,
+      1,
+    ).data;
+    return { r, g, b, width: image.width, height: image.height };
+  }, dataBase64);
+}
+
+async function timed(task) {
+  const startedAt = Date.now();
+  const result = await task();
+  return { result, ms: Date.now() - startedAt };
+}
+
+// Delta 33: an agent's background tab throttles, then freezes; each command, capture, and phone
+// stream wakes it first. The page counts its own freeze events, so a pass proves it was frozen.
+// Playwright auto-attaches to every new guest and turns on DevTools focus emulation, which
+// Chromium implements as a visible capture: a captured page is never hidden, so CDP cannot freeze
+// it, and one session cannot release another session's emulation. Here the main process's
+// lifecycle log proves each tab reached frozen and each command woke it; the capture harness
+// tab-lifecycle group, which has no Playwright, proves the page itself stops while frozen.
+function countLifecycleLogEntries(artifactDir, browserId, state) {
+  const log = fs.readFileSync(path.join(artifactDir, "desktop.log"), "utf8");
+  return log
+    .split(`[browser-lifecycle] ${state}`)
+    .slice(1)
+    .filter((chunk) => chunk.slice(0, 200).includes(browserId)).length;
+}
+
+async function waitForLifecycleFreeze(artifactDir, browserId, previousCount) {
+  const deadline = Date.now() + LIFECYCLE_FREEZE_MS + 10_000;
+  while (countLifecycleLogEntries(artifactDir, browserId, "frozen") <= previousCount) {
+    assert(Date.now() < deadline, `Background tab ${browserId} never reached frozen`);
+    await delay(200);
+  }
+  return previousCount + 1;
+}
+
+async function runTabLifecycleRegression({ page, client, workspaceId, targetUrl, artifactDir }) {
+  const created = await callBrowserTool(client, "browser_new_tab", {
+    url: `${targetUrl}lifecycle`,
+  });
+  const browserId = created.browserId;
+  const deadline = Date.now() + timeoutMs;
+  while ((await readLifecycleFixture(client, browserId)).clicks !== 0) {
+    assert(Date.now() < deadline, "Lifecycle fixture never loaded");
+    await delay(100);
+  }
+  const snapshot = await callBrowserTool(client, "browser_snapshot", { browserId });
+  const ref = snapshot.snapshot.match(/button "Lifecycle target" \[(?:[^\]]* )?ref=(@e\d+)\]/)?.[1];
+  assert(ref, `Lifecycle fixture button missing from snapshot: ${snapshot.snapshot}`);
+
+  const warmClick = await timed(() => callBrowserTool(client, "browser_click", { browserId, ref }));
+  let freezes = await waitForLifecycleFreeze(artifactDir, browserId, 0);
+  const frozenClick = await timed(() =>
+    callBrowserTool(client, "browser_click", { browserId, ref }),
+  );
+  const afterClick = await readLifecycleFixture(client, browserId);
+  assert(afterClick.clicks === 2, `Click on a woken tab was lost: ${JSON.stringify(afterClick)}`);
+  assert(
+    frozenClick.ms - warmClick.ms < 500,
+    `Waking a frozen tab added ${frozenClick.ms - warmClick.ms}ms to browser_click`,
+  );
+
+  freezes = await waitForLifecycleFreeze(artifactDir, browserId, freezes);
+  // The tool returns the PNG as MCP image content; the structured payload carries only metadata.
+  const screenshot = await timed(() =>
+    client.callTool({ name: "browser_screenshot", args: { browserId } }),
+  );
+  mcpPayload(screenshot.result, "browser_screenshot");
+  const png = screenshot.result.content?.find((item) => item.type === "image")?.data;
+  assert(typeof png === "string" && png.length > 0, "browser_screenshot returned no image");
+  const pixel = await readPngCenterPixel(page, png);
+  assert(
+    Math.abs(pixel.r - LIFECYCLE_BACKGROUND_RGB.r) <= 24 &&
+      Math.abs(pixel.g - LIFECYCLE_BACKGROUND_RGB.g) <= 24 &&
+      Math.abs(pixel.b - LIFECYCLE_BACKGROUND_RGB.b) <= 24,
+    `Screenshot of a woken tab is not the page: ${JSON.stringify(pixel)}`,
+  );
+
+  freezes = await waitForLifecycleFreeze(artifactDir, browserId, freezes);
+  const stream = await timed(() => capturePopupStreamFrame(page, browserId, workspaceId));
+  assert(
+    stream.result && stream.result.dataLength > 0,
+    "Phone stream of a woken tab sent no frame",
+  );
+
+  return {
+    browserId,
+    warmClickMs: warmClick.ms,
+    frozenClickMs: frozenClick.ms,
+    screenshotMs: screenshot.ms,
+    screenshotCenterPixel: pixel,
+    streamFirstFrameMs: stream.ms,
+    streamFrame: stream.result,
+    freezes,
+  };
+}
+
 async function ensureHumanPopupPresented({ page, originalDeck, rootBrowserId, popupBrowserId }) {
   const snapshot = await readPopupTargets(page, rootBrowserId);
   const alreadyVisible = snapshot?.targets?.find(
@@ -604,7 +759,9 @@ async function runPopupRegression({
   const popupSnapshot = await callBrowserTool(client, "browser_snapshot", {
     browserId: agentPopup.browserId,
   });
-  const notifyRef = popupSnapshot.snapshot.match(/button "Notify opener" \[ref=(@e\d+)\]/)?.[1];
+  const notifyRef = popupSnapshot.snapshot.match(
+    /button "Notify opener" \[(?:[^\]]* )?ref=(@e\d+)\]/,
+  )?.[1];
   assert(notifyRef, `Popup snapshot did not expose its controls: ${popupSnapshot.snapshot}`);
   const popupHitTest = await callBrowserTool(client, "browser_evaluate", {
     browserId: agentPopup.browserId,
@@ -670,7 +827,9 @@ async function runPopupRegression({
   const alertSnapshot = await callBrowserTool(client, "browser_snapshot", {
     browserId: agentPopup.browserId,
   });
-  const alertRef = alertSnapshot.snapshot.match(/button "Show alert" \[ref=(@e\d+)\]/)?.[1];
+  const alertRef = alertSnapshot.snapshot.match(
+    /button "Show alert" \[(?:[^\]]* )?ref=(@e\d+)\]/,
+  )?.[1];
   assert(alertRef, `Popup snapshot did not expose its alert control: ${alertSnapshot.snapshot}`);
   const alertResponse = await client.callTool({
     name: "browser_click",
@@ -687,7 +846,7 @@ async function runPopupRegression({
     browserId: agentPopup.browserId,
   });
   const delayedRef = delayedSnapshot.snapshot.match(
-    /button "Schedule confirm" \[ref=(@e\d+)\]/,
+    /button "Schedule confirm" \[(?:[^\]]* )?ref=(@e\d+)\]/,
   )?.[1];
   assert(
     delayedRef,
@@ -996,7 +1155,7 @@ async function runRegression({
   });
   const backgroundInputSnapshot = await callBrowserTool(client, "browser_snapshot", { browserId });
   const backgroundInputRef = backgroundInputSnapshot.snapshot.match(
-    /textbox "Typing target" \[ref=(@e\d+)\]/,
+    /textbox "Typing target" \[(?:[^\]]* )?ref=(@e\d+)\]/,
   )?.[1];
   assert(backgroundInputRef, "Browser snapshot did not expose the background typing target");
   await callBrowserTool(client, "browser_fill", {
@@ -1042,7 +1201,7 @@ async function runRegression({
     browserId: backgroundCreated.browserId,
   });
   const crossWorkspaceInputRef = backgroundSnapshot.snapshot.match(
-    /textbox "Background autofocus" \[ref=(@e\d+)\]/,
+    /textbox "Background autofocus" \[(?:[^\]]* )?ref=(@e\d+)\]/,
   )?.[1];
   assert(crossWorkspaceInputRef, "Background workspace snapshot missed the typing target");
   await callBrowserTool(backgroundClient, "browser_fill", {
@@ -1106,7 +1265,7 @@ async function runRegression({
     browserId: backgroundPopup.browserId,
   });
   const backgroundPopupRef = backgroundPopupSnapshot.snapshot.match(
-    /button "Notify opener" \[ref=(@e\d+)\]/,
+    /button "Notify opener" \[(?:[^\]]* )?ref=(@e\d+)\]/,
   )?.[1];
   assert(backgroundPopupRef, "Background workspace popup snapshot missed its action");
   await callBrowserTool(backgroundClient, "browser_click", {
@@ -1332,7 +1491,7 @@ async function runRegression({
   );
 
   const snapshot = await callBrowserTool(client, "browser_snapshot", { browserId });
-  const ref = snapshot.snapshot.match(/button "Bridge target" \[ref=(@e\d+)\]/)?.[1];
+  const ref = snapshot.snapshot.match(/button "Bridge target" \[(?:[^\]]* )?ref=(@e\d+)\]/)?.[1];
   assert(ref, `browser_snapshot did not expose the target button: ${snapshot.snapshot}`);
 
   const clicked = await callBrowserTool(client, "browser_click", { browserId, ref });
@@ -1614,6 +1773,7 @@ async function main() {
           PASEO_ELECTRON_REMOTE_DEBUGGING_PORT: String(cdpPort),
           PASEO_ELECTRON_USER_DATA_DIR: userData,
           PASEO_ELECTRON_FLAGS: `--remote-debugging-address=127.0.0.1 --remote-debugging-port=${cdpPort}`,
+          PASEO_BROWSER_TAB_LIFECYCLE_MS: `${LIFECYCLE_THROTTLE_MS},${LIFECYCLE_FREEZE_MS}`,
         },
       },
       artifactDir,
@@ -1659,6 +1819,14 @@ async function main() {
       callerAgentId,
       artifactDir,
     });
+    report.lifecycle = await runTabLifecycleRegression({
+      artifactDir,
+      page,
+      client,
+      workspaceId: workspaceIds[0],
+      targetUrl: target.url,
+    });
+    console.log(`Browser tab lifecycle regression passed: ${JSON.stringify(report.lifecycle)}`);
     writeJson(path.join(artifactDir, "result.json"), report);
     console.log(
       `Browser desktop browser E2E passed: WebContents ${report.originalWebContentsId} remained ${report.finalWebContentsId}; viewport, inactive capture, cross-session focus continuity, list, snapshot, click, local-page selectors passed.`,

@@ -262,6 +262,7 @@ import {
 import { runGitCommand } from "../utils/run-git-command.js";
 import { CreateAgentLifecycleDispatch } from "./agent/create-agent-lifecycle-dispatch.js";
 import { resolveWorktreeSourceCwd } from "./workspace-source.js";
+import { DirectorySuggestionsScheduler } from "./session/files/directory-suggestions-scheduler.js";
 
 type ProviderSubagentManagerEvent = Extract<
   AgentManagerEvent,
@@ -730,6 +731,7 @@ export class Session {
   private readonly defaultTimelineSubscriptionSource = {};
   private unsubscribeTerminalWorkspaceContributionEvents: (() => void) | null = null;
   private readonly agentUpdates: AgentUpdatesService;
+  private readonly directorySuggestions = new DirectorySuggestionsScheduler();
   private workspaceUpdatesSubscription: WorkspaceUpdatesSubscriptionState | null = null;
   private projectSyncEnabled = false;
   private readonly workspaceUpdateTails = new Map<string, Promise<void>>();
@@ -4222,23 +4224,37 @@ export class Session {
     try {
       const workspaceCwd = cwd?.trim();
       const searchesWorkspace = Boolean(workspaceCwd);
-      const entries = await searchDirectoryEntries({
-        root: workspaceCwd ? expandTilde(workspaceCwd) : (process.env.HOME ?? homedir()),
-        query,
-        pathFormat: searchesWorkspace ? "relative" : "absolute",
-        pathQueryPolicy: searchesWorkspace ? "slashes" : "rooted",
-        blankQueryBehavior: searchesWorkspace ? "children" : "none",
-        rootAliases: searchesWorkspace ? [] : ["~"],
-        traversableHiddenDirectoryNames: searchesWorkspace
-          ? WORKSPACE_SEARCH_HIDDEN_DIRECTORIES
-          : [],
-        confidentResultScanThreshold: searchesWorkspace ? undefined : 5_000,
-        respectGitIgnore: searchesWorkspace,
-        includeFiles,
-        includeDirectories,
-        matchMode,
-        limit,
-      });
+      // Typeahead searches supersede the previous query of the same picker; a suffix lookup is
+      // a click or hover on one named file, so it waits its turn instead.
+      const supersedeGroup =
+        matchMode === "suffix"
+          ? null
+          : [
+              workspaceCwd ?? "",
+              includeFiles ?? "",
+              includeDirectories ?? "",
+              matchMode ?? "",
+            ].join("\0");
+      const entries = await this.directorySuggestions.run(supersedeGroup, (signal) =>
+        searchDirectoryEntries({
+          signal,
+          root: workspaceCwd ? expandTilde(workspaceCwd) : (process.env.HOME ?? homedir()),
+          query,
+          pathFormat: searchesWorkspace ? "relative" : "absolute",
+          pathQueryPolicy: searchesWorkspace ? "slashes" : "rooted",
+          blankQueryBehavior: searchesWorkspace ? "children" : "none",
+          rootAliases: searchesWorkspace ? [] : ["~"],
+          traversableHiddenDirectoryNames: searchesWorkspace
+            ? WORKSPACE_SEARCH_HIDDEN_DIRECTORIES
+            : [],
+          confidentResultScanThreshold: searchesWorkspace ? undefined : 5_000,
+          respectGitIgnore: searchesWorkspace,
+          includeFiles,
+          includeDirectories,
+          matchMode,
+          limit,
+        }),
+      );
       const directories = entries
         .filter((entry) => entry.kind === "directory")
         .map((entry) => entry.path);
@@ -7466,6 +7482,7 @@ export class Session {
     this.unsubscribeWorkspaceMutations?.();
     this.unsubscribeWorkspaceMutations = null;
     this.agentUpdates.dispose();
+    this.directorySuggestions.dispose();
     await this.hubExecutionController?.cleanup();
     if (this.unsubscribeTerminalWorkspaceContributionEvents) {
       this.unsubscribeTerminalWorkspaceContributionEvents();

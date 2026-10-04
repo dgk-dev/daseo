@@ -7,6 +7,7 @@ import {
   preparePersistentBrowserDialogMonitoring,
 } from "./ipc.js";
 import type { IsolatedKeyboardInputEvent } from "./trusted-input.js";
+import { getPaseoBrowserTabLifecycle } from "../browser-webviews/index.js";
 
 class FakeImage implements FullPageCaptureImage {
   public toPNG(): Uint8Array {
@@ -726,3 +727,39 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
+
+describe("browser tab lifecycle holds", () => {
+  test("a pixel capture runs with the tab held awake", async () => {
+    const lifecycle = getPaseoBrowserTabLifecycle();
+    const runAwake = vi.spyOn(lifecycle, "runAwake");
+    try {
+      const tab = adaptWebContents(new FakeWebContents(9101));
+      await expect(tab.withFrameProduction(async () => "pixels")).resolves.toBe("pixels");
+      expect(runAwake).toHaveBeenCalledWith(9101, expect.any(Function));
+    } finally {
+      runAwake.mockRestore();
+    }
+  });
+
+  test("a phone stream holds the tab from stream start until stream stop", async () => {
+    const lifecycle = getPaseoBrowserTabLifecycle();
+    const releases: Array<ReturnType<typeof vi.fn>> = [];
+    const hold = vi.spyOn(lifecycle, "hold").mockImplementation(() => {
+      const release = vi.fn();
+      releases.push(release);
+      return release;
+    });
+    try {
+      const tab = adaptWebContents(new FakeWebContents(9102));
+      await tab.startScreencast?.({}, () => {});
+      await tab.startScreencast?.({ quality: 60 }, () => {});
+      expect(hold).toHaveBeenCalledTimes(1);
+      expect(releases[0]).not.toHaveBeenCalled();
+
+      await tab.stopScreencast?.();
+      expect(releases[0]).toHaveBeenCalledTimes(1);
+    } finally {
+      hold.mockRestore();
+    }
+  });
+});

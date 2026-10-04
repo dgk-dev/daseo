@@ -151,6 +151,7 @@ import {
 } from "./workspace-registry.js";
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { ScheduleService } from "./schedule/service.js";
+import { DEFAULT_IDLE_UNLOAD_MINUTES, IdleAgentUnloader } from "./agent/idle-agent-unloader.js";
 import { DaemonConfigStore, type MutableDaemonConfig } from "./daemon-config-store.js";
 import { resolveConfigFromPersisted, type CliConfigOverrides } from "./config.js";
 import { BrowserToolsBroker } from "./browser-tools/broker.js";
@@ -444,6 +445,8 @@ export interface PaseoDaemonConfig {
   downloadTokenTtlMs?: number;
   agentProviderSettings?: AgentProviderRuntimeSettingsMap;
   providerCatalogRefreshTimeoutMs?: number;
+  /** Local fork (delta 33): `agents.idleUnloadMinutes`, read at start; 0 turns unloading off. */
+  idleUnloadMinutes?: number;
   metadataGeneration?: {
     providers?: Array<{
       provider: string;
@@ -1284,6 +1287,20 @@ export async function createPaseoDaemon(
     archiveWorkspace: archiveScheduleWorkspaceExternal,
   });
   await scheduleService.start();
+  const idleAgentUnloader = new IdleAgentUnloader({
+    agentManager,
+    getIdleUnloadMinutes: () => config.idleUnloadMinutes ?? DEFAULT_IDLE_UNLOAD_MINUTES,
+    listScheduleTargetAgentIds: async () =>
+      new Set(
+        (await scheduleService.list()).flatMap((schedule) =>
+          schedule.status === "active" && schedule.target.type === "agent"
+            ? [schedule.target.agentId]
+            : [],
+        ),
+      ),
+    logger: logger.child({ module: "idle-agent-unloader" }),
+  });
+  idleAgentUnloader.start();
   agentManager.setAgentArchivedCallback(async (agentId) => {
     try {
       await scheduleService.completeForAgent(agentId);
@@ -1755,6 +1772,7 @@ export async function createPaseoDaemon(
     wsServer?.prepareForShutdown();
     agentManager.prepareForShutdown();
     await closeAllAgents(logger, agentManager);
+    idleAgentUnloader.stop();
     await agentManager.flushForShutdown().catch(() => undefined);
     detachAgentStoragePersistence();
     await agentStorage.flush().catch(() => undefined);

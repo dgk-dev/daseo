@@ -2,6 +2,7 @@ import type { SessionInboundMessage, SessionOutboundMessage } from "@getpaseo/pr
 import { getDesktopHost, type DesktopHostBridge } from "@/desktop/host";
 import {
   ensureResidentBrowserWebview as ensureResidentBrowserWebviewDefault,
+  getResidentBrowserWebview,
   removeResidentBrowserWebview,
   resizeResidentBrowserWebview,
 } from "@/desktop/browser/resident-webviews";
@@ -150,12 +151,7 @@ async function handleBrowserAutomationRequest(params: {
   if (request.command.command === "list_tabs" && serverId && request.workspaceId) {
     client.sendBrowserAutomationExecuteResponse({
       type: "browser.automation.execute.response",
-      payload: await listWorkspaceBrowserTabsForRequest({
-        request,
-        serverId,
-        browserHost,
-        ensureResidentBrowserWebview,
-      }),
+      payload: await listWorkspaceBrowserTabsForRequest({ request, serverId, browserHost }),
     });
     return;
   }
@@ -222,6 +218,14 @@ async function handleBrowserAutomationRequest(params: {
   }
 
   try {
+    await materializeWorkspaceBrowserForCommand({
+      request,
+      serverId,
+      executeAutomationCommand,
+      ensureResidentBrowserWebview,
+      ...(registrationWaitTimeoutMs !== undefined ? { registrationWaitTimeoutMs } : {}),
+      ...(registrationPollIntervalMs !== undefined ? { registrationPollIntervalMs } : {}),
+    });
     const payload = await executeAutomationCommand(request);
     client.sendBrowserAutomationExecuteResponse({
       type: "browser.automation.execute.response",
@@ -235,13 +239,59 @@ async function handleBrowserAutomationRequest(params: {
   }
 }
 
+/**
+ * A layout tab that no pane has shown since launch has no webview yet: listing reports it from
+ * the persisted layout and browser store without starting a renderer for it (delta 2). The first
+ * command aimed at it creates that one guest and waits for main to register it, the same wait a
+ * new tab uses, so the command meets a live page.
+ */
+async function materializeWorkspaceBrowserForCommand(params: {
+  request: BrowserAutomationExecuteRequest;
+  serverId?: string;
+  executeAutomationCommand: (
+    request: BrowserAutomationExecuteRequest,
+  ) => Promise<BrowserAutomationResponsePayload>;
+  ensureResidentBrowserWebview: typeof ensureResidentBrowserWebviewDefault;
+  registrationWaitTimeoutMs?: number;
+  registrationPollIntervalMs?: number;
+}): Promise<void> {
+  const { request, serverId } = params;
+  const workspaceId = request.workspaceId;
+  const args = request.command.args as { browserId?: unknown } | undefined;
+  const browserId = typeof args?.browserId === "string" ? args.browserId : null;
+  if (!serverId || !workspaceId || !browserId || request.command.command === "stream_stop") {
+    return;
+  }
+  const browser = getBrowserRecord(browserId);
+  if (
+    !browser ||
+    getResidentBrowserWebview(browserId) !== null ||
+    !findWorkspaceBrowserTab({ serverId, workspaceId, browserId })
+  ) {
+    return;
+  }
+  params.ensureResidentBrowserWebview({ browserId, workspaceId, url: browser.url });
+  // A guest that misses the deadline still gets the command, which then reports the tab missing.
+  await waitForBrowserRegistration({
+    request,
+    browserId,
+    workspaceId,
+    executeAutomationCommand: params.executeAutomationCommand,
+    ...(params.registrationWaitTimeoutMs !== undefined
+      ? { timeoutMs: params.registrationWaitTimeoutMs }
+      : {}),
+    ...(params.registrationPollIntervalMs !== undefined
+      ? { pollIntervalMs: params.registrationPollIntervalMs }
+      : {}),
+  });
+}
+
 async function listWorkspaceBrowserTabsForRequest(params: {
   request: BrowserAutomationExecuteRequest;
   serverId: string;
   browserHost: DesktopHostBridge["browser"] | undefined;
-  ensureResidentBrowserWebview: typeof ensureResidentBrowserWebviewDefault;
 }): Promise<BrowserAutomationResponsePayload> {
-  const { request, serverId, browserHost, ensureResidentBrowserWebview } = params;
+  const { request, serverId, browserHost } = params;
   const workspaceId = request.workspaceId;
   if (!workspaceId) {
     return browserAutomationFailure({
@@ -284,13 +334,6 @@ async function listWorkspaceBrowserTabsForRequest(params: {
     }
     if (!browser) return [];
 
-    if (browserHost?.executeAutomationCommand) {
-      try {
-        ensureResidentBrowserWebview({ browserId, workspaceId, url: browser.url });
-      } catch {
-        // The layout remains authoritative even while a guest is reattaching.
-      }
-    }
     return [
       {
         browserId,

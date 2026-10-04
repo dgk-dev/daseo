@@ -30,8 +30,10 @@ import { BrowserSnapshotEngine } from "./snapshot-engine.js";
 import { observeTabLoading, tabLoadingInfo } from "./load-tracker.js";
 import { TabNetworkCapture } from "./network-capture.js";
 import {
+  addPaseoBrowserFreezeExemption,
   listRegisteredPaseoBrowserIds,
   listRegisteredPaseoBrowserIdsForWorkspace,
+  getPaseoBrowserTabLifecycle,
   getPaseoBrowserWebContentsForHostWindow,
   getWorkspaceActivePaseoBrowserIdForHostWindow,
   getPaseoBrowserWorkspaceId,
@@ -44,6 +46,14 @@ const cdpQueuesByContentsId = new Map<number, CdpSessionQueue>();
 const dialogMonitorsByContentsId = new Map<number, DialogMonitor>();
 const networkCapturesByContentsId = new Map<number, TabNetworkCapture>();
 const observedContentsIds = new Set<number>();
+// A phone watching a tab keeps it awake from stream_start until stream_stop or destruction.
+const streamHoldReleasesByContentsId = new Map<number, () => void>();
+
+// An agent that started network capture expects requests made while it waits; a frozen page
+// makes none.
+addPaseoBrowserFreezeExemption(
+  (contentsId) => networkCapturesByContentsId.get(contentsId)?.capturing === true,
+);
 
 interface IpcHandlerRegistry {
   handle(channel: string, listener: (event: unknown, ...args: unknown[]) => unknown): void;
@@ -199,6 +209,10 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
       contents.reload();
     },
     capturePage: (captureOptions) => contents.capturePage(undefined, captureOptions),
+    // Upstream #4646 toggled background throttling around each capture. Here the tab lifecycle
+    // owns throttling, so a capture holds the tab active instead of flipping it behind the
+    // lifecycle's back.
+    withFrameProduction: (capture) => getPaseoBrowserTabLifecycle().runAwake(contentsId, capture),
     captureFullPage: (options) =>
       cdpQueue.run(async () => {
         if (!contents.debugger.isAttached()) {
@@ -251,9 +265,23 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
         return contents.debugger.sendCommand(command, params ?? {});
       });
     },
-    startScreencast: (options, onFrame) =>
-      cdpQueue.run(() => startScreencast(contents, options, onFrame)),
-    stopScreencast: () => cdpQueue.run(() => stopScreencast(contents)),
+    startScreencast: async (options, onFrame) => {
+      if (!streamHoldReleasesByContentsId.has(contentsId)) {
+        streamHoldReleasesByContentsId.set(
+          contentsId,
+          getPaseoBrowserTabLifecycle().hold(contentsId),
+        );
+      }
+      await cdpQueue.run(() => startScreencast(contents, options, onFrame));
+    },
+    stopScreencast: async () => {
+      try {
+        await cdpQueue.run(() => stopScreencast(contents));
+      } finally {
+        streamHoldReleasesByContentsId.get(contentsId)?.();
+        streamHoldReleasesByContentsId.delete(contentsId);
+      }
+    },
     getNetworkCapture: () => {
       markPaseoBrowserAutomationActivity(contentsId);
       return getNetworkCapture(contents, contentsId, cdpQueue);
@@ -320,6 +348,7 @@ function observeConsoleMessages(contents: BrowserAutomationWebContents, contents
     cdpQueuesByContentsId.delete(contentsId);
     dialogMonitorsByContentsId.delete(contentsId);
     networkCapturesByContentsId.delete(contentsId);
+    streamHoldReleasesByContentsId.delete(contentsId);
     clearPaseoBrowserAutomationActivity(contentsId);
   });
 }
@@ -630,17 +659,42 @@ export function registerBrowserAutomationIpc(options?: { ipc?: IpcHandlerRegistr
         },
       };
     }
-    return executeAutomationCommand(parsed.data, registry, {
-      snapshotEngine: hostSnapshotEngines.get(hostContents),
-      streamSink: {
-        sendFrame: (frame) => {
-          if (hostContents.isDestroyed?.() !== true) {
-            hostContents.send?.("paseo:browser:stream-frame", frame);
-          }
-        },
-      },
-    });
+    const execute = () =>
+      Promise.resolve(
+        executeAutomationCommand(parsed.data, registry, {
+          snapshotEngine: hostSnapshotEngines.get(hostContents),
+          streamSink: {
+            sendFrame: (frame) => {
+              if (hostContents.isDestroyed?.() !== true) {
+                hostContents.send?.("paseo:browser:stream-frame", frame);
+              }
+            },
+          },
+        }),
+      );
+    const target = resolveCommandTargetContents(parsed.data, hostWebContentsId);
+    // An idle tab may be throttled or frozen. Every command that touches one wakes it first and
+    // holds it awake until the command answers.
+    return target === null ? execute() : getPaseoBrowserTabLifecycle().runAwake(target, execute);
   });
+}
+
+function resolveCommandTargetContents(
+  request: { command: { command: string; args?: unknown } },
+  hostWebContentsId: number,
+): number | null {
+  if (request.command.command === "stream_stop") {
+    return null;
+  }
+  const args = request.command.args;
+  const browserId =
+    typeof args === "object" && args !== null && "browserId" in args
+      ? (args as { browserId?: unknown }).browserId
+      : undefined;
+  if (typeof browserId !== "string") {
+    return null;
+  }
+  return getPaseoBrowserWebContentsForHostWindow(browserId, hostWebContentsId)?.id ?? null;
 }
 
 function readRequestId(rawRequest: unknown): string {

@@ -126,6 +126,8 @@ export interface BrowserPopupTargetManagerOptions {
     workspaceId: string;
     hostWebContentsId: number;
   }): void;
+  /** A popup target's native view was shown or hidden. */
+  onTargetVisibilityChanged?(input: { webContentsId: number; visible: boolean }): void;
   onSnapshot?(snapshot: BrowserPopupTargetsSnapshot): void;
   /**
    * Second line of defense behind the renderer's per-pane gating: when this
@@ -153,6 +155,7 @@ export class BrowserPopupTargetManager {
   private readonly onRegisterTarget: (registration: BrowserPopupTargetRegistration) => void;
   private readonly onUnregisterTarget: (browserId: string) => void;
   private readonly onSetActiveTarget: BrowserPopupTargetManagerOptions["onSetActiveTarget"];
+  private readonly onTargetVisibilityChanged: BrowserPopupTargetManagerOptions["onTargetVisibilityChanged"];
   private readonly onSnapshot: (snapshot: BrowserPopupTargetsSnapshot) => void;
   private readonly externalPresentationAllowed: BrowserPopupTargetManagerOptions["isPresentationAllowed"];
   private readonly targetsByBrowserId = new Map<string, BrowserPopupTargetRecord>();
@@ -178,6 +181,7 @@ export class BrowserPopupTargetManager {
     this.onRegisterTarget = options.onRegisterTarget ?? (() => {});
     this.onUnregisterTarget = options.onUnregisterTarget ?? (() => {});
     this.onSetActiveTarget = options.onSetActiveTarget;
+    this.onTargetVisibilityChanged = options.onTargetVisibilityChanged;
     this.onSnapshot = options.onSnapshot ?? (() => {});
     this.externalPresentationAllowed = options.isPresentationAllowed;
   }
@@ -608,6 +612,7 @@ export class BrowserPopupTargetManager {
       // Reparent first so the parking resize cannot flash over the workspace.
       target.hostView.setChildViewVisible(target.view, false);
       target.visible = false;
+      this.onTargetVisibilityChanged?.({ webContentsId: target.view.contents.id, visible: false });
       changed = true;
     }
     if (!sameBounds(target.lastBounds, nextBounds)) {
@@ -618,6 +623,7 @@ export class BrowserPopupTargetManager {
     if (!target.visible && shouldShow) {
       target.hostView.setChildViewVisible(target.view, true);
       target.visible = true;
+      this.onTargetVisibilityChanged?.({ webContentsId: target.view.contents.id, visible: true });
       changed = true;
     }
     return changed;

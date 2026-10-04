@@ -8,6 +8,7 @@ interface MarkdownLinkTextProps {
   dataSet?: Record<string, string>;
   onPress(): void;
   onHoverIn?(): void;
+  onHoverOut?(): void;
   children?: ReactNode;
 }
 
@@ -16,6 +17,7 @@ export function MarkdownLinkText({
   dataSet,
   onPress,
   onHoverIn,
+  onHoverOut,
   children,
 }: MarkdownLinkTextProps) {
   const [hovered, setHovered] = useState(false);
@@ -23,7 +25,10 @@ export function MarkdownLinkText({
     setHovered(true);
     onHoverIn?.();
   });
-  const handleHoverOut = useStableEvent(() => setHovered(false));
+  const handleHoverOut = useStableEvent(() => {
+    setHovered(false);
+    onHoverOut?.();
+  });
   const textStyle = useMemo(() => markdownLinkTextStyle(style, hovered), [hovered, style]);
 
   return (

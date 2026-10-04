@@ -34,6 +34,13 @@ class FakeImage implements TabImage {
 }
 
 class FakeTab implements TabContents {
+  public frameProductionDepth = 0;
+  public withFrameProduction<T>(capture: () => Promise<T>): Promise<T> {
+    this.frameProductionDepth += 1;
+    return capture().finally(() => {
+      this.frameProductionDepth -= 1;
+    });
+  }
   public readonly loadedUrls: string[] = [];
   public readonly scripts: string[] = [];
   public readonly actions: string[] = [];
@@ -2025,6 +2032,24 @@ describe("executeAutomationCommand", () => {
     });
     expect(browser.tab.capturedViewports).toEqual([{ stayHidden: false }]);
     expect(browser.tab.actions).toEqual(["invalidate", "capture"]);
+  });
+
+  test("screenshot waits for paint and captures while the tab produces frames", async () => {
+    const browser = new BrowserAutomationHarness();
+    const depthAtCapture: number[] = [];
+    const capturePage = browser.tab.capturePage.bind(browser.tab);
+    browser.tab.capturePage = async (options) => {
+      depthAtCapture.push(browser.tab.frameProductionDepth);
+      return capturePage(options);
+    };
+
+    await browser.execute({ command: "screenshot", args: { browserId: BROWSER_A } });
+
+    expect(depthAtCapture).toEqual([1]);
+    expect(browser.tab.frameProductionDepth).toBe(0);
+    expect(browser.tab.scripts.some((script) => script.includes("requestAnimationFrame"))).toBe(
+      true,
+    );
   });
 
   test("screenshot returns no-frame when the viewport never paints", async () => {

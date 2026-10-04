@@ -186,6 +186,8 @@ export interface DesktopBrowserBridge {
     browserId: string | null;
     isForeground?: boolean;
   }) => Promise<void>;
+  /** Delta 33: a pane started or stopped presenting this browser; main keeps a presented tab awake. */
+  setBrowserPresented?: (input: { browserId: string; presented: boolean }) => Promise<void>;
   listPopupTargets?: (rootBrowserId: string) => Promise<DesktopBrowserPopupTargetsSnapshot | null>;
   presentPopupTarget?: (input: DesktopBrowserPopupPresentation) => Promise<boolean>;
   closePopupTarget?: (input: { browserId: string; workspaceId: string }) => Promise<boolean>;

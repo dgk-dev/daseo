@@ -86,6 +86,7 @@ describe("desktop-settings", () => {
         manageBuiltInDaemon: true,
         keepRunningAfterQuit: false,
       },
+      browser: { suspendIdleTabs: true },
     });
   });
 
@@ -108,6 +109,7 @@ describe("desktop-settings", () => {
         manageBuiltInDaemon: true,
         keepRunningAfterQuit: false,
       },
+      browser: { suspendIdleTabs: true },
     });
     expect(files).toEqual(["desktop-settings.json"]);
   });
@@ -275,6 +277,7 @@ describe("desktop-settings", () => {
         manageBuiltInDaemon: false,
         keepRunningAfterQuit: false,
       },
+      browser: { suspendIdleTabs: true },
     });
     expect(ignoredSecondMigration).toEqual(migrated);
   });
@@ -317,6 +320,24 @@ describe("desktop-settings", () => {
       releaseChannel: "beta",
       notifications: { playSound: false },
       daemon: { manageBuiltInDaemon: true, keepRunningAfterQuit: false },
+      browser: { suspendIdleTabs: true },
+    });
+  });
+
+  it("turns idle browser tab suspension off and back to its default on invalid input", async () => {
+    const userDataPath = await createTempUserDataDir();
+    directories.add(userDataPath);
+    const store = createDesktopSettingsStore({ userDataPath });
+
+    await expect(store.patch({ browser: { suspendIdleTabs: false } })).resolves.toMatchObject({
+      browser: { suspendIdleTabs: false },
+    });
+    await writeFile(
+      settingsFilePath(userDataPath),
+      JSON.stringify({ version: 1, settings: { browser: { suspendIdleTabs: "no" } } }),
+    );
+    await expect(createDesktopSettingsStore({ userDataPath }).get()).resolves.toMatchObject({
+      browser: { suspendIdleTabs: true },
     });
   });
 

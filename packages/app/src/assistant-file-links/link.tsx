@@ -32,7 +32,7 @@ export function AssistantMarkdownLink({
   monoSurface,
   children,
 }: AssistantMarkdownLinkProps) {
-  const { target, onHoverIn, onPress, onAuxPress } = useFileLink(source);
+  const { target, onHoverIn, onHoverOut, onPress, onAuxPress } = useFileLink(source);
   const { configRef } = useAssistantFileLinkResolverContext();
   const workspaceRoot = configRef.current.workspaceRoot;
   const tooltipPath = useMemo(
@@ -102,6 +102,7 @@ export function AssistantMarkdownLink({
         style={style}
         onPress={onPress}
         onHoverIn={onHoverIn}
+        onHoverOut={onHoverOut}
       >
         {children}
       </MarkdownLinkText>

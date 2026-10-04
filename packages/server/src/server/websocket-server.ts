@@ -500,6 +500,9 @@ const WS_CLOSE_SERVER_SHUTDOWN = 1001;
 const WS_PROTOCOL_VERSION = 1;
 const WS_RUNTIME_METRICS_FLUSH_MS = 30_000;
 const WS_RUNTIME_METRICS_DISCONNECT_STORM = 3;
+// Normal daemon heap is 300–400 MB. Past this, a metrics window gets one warn line with the request
+// types of that window, so a spike survives log rotation with its likely cause next to it.
+const DAEMON_HEAP_WARN_BYTES = 1024 * 1024 * 1024;
 
 /**
  * A metrics window worth keeping in the rotating daemon log. Normal windows log at debug: at info they
@@ -2763,6 +2766,17 @@ export class VoiceAssistantWebSocketServer {
       this.logger.info(loggedMetrics, "ws_runtime_metrics");
     } else {
       this.logger.debug(loggedMetrics, "ws_runtime_metrics");
+    }
+    if (loggedMetrics.memory.heapUsed >= DAEMON_HEAP_WARN_BYTES) {
+      this.logger.warn(
+        {
+          heapUsed: loggedMetrics.memory.heapUsed,
+          heapTotal: loggedMetrics.memory.heapTotal,
+          rss: loggedMetrics.memory.rss,
+          inboundSessionRequestTypesTop: loggedMetrics.inboundSessionRequestTypesTop,
+        },
+        "daemon_heap_high",
+      );
     }
   }
 

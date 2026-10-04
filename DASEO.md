@@ -44,7 +44,9 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
    phones open real desktop tabs, continuously discover tabs created by Mac UI or agent
    browser tools, refresh URL/title/navigation/loading state, and close the authoritative
    Mac tab. The desktop workspace layout—not only currently mounted webviews—is the tab-list
-   SSOT; listing materializes every persisted browser guest without parking the visible guest.
+   SSOT; listing answers from the persisted layout and browser store without starting any guest,
+   and the first command aimed at a tab with no guest creates that one guest and waits for its
+   registration (delta 33).
    Newly discovered browsers sit directly after the current mobile tab in host order. Desktop
    active-browser state seeds an otherwise empty mobile selection, but subsequent mobile tab
    choices remain local so background refresh cannot pull an open agent back to a browser. Mobile
@@ -468,6 +470,51 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     `UserMessage`), `packages/app/src/hooks/use-settings/storage.ts`, and
     `packages/app/src/screens/settings/appearance/appearance-section.tsx`.
 
+33. **Idle resources step down and wake before use** — from the 2026-10-04 RAM audit of this Mac
+    (24 GB, swap 5.5 GB): 38 parked tab renderers held 7.25 GB and about two cores, 13 idle Pi
+    processes 3.2 GB, and the daemon heap spiked to 2.6 GB on file-link lookups. The models are
+    Edge sleeping tabs and VS Code's retained webviews for tabs, Codex app-server's thread unload
+    and OpenCode's instance TTL for agents; Zed's leaked ACP processes are what happens without.
+    (a) **Tab lifecycle.** Each browser guest is active (shown in a pane, held by a command,
+    capture, or phone stream, or used in the last 2 minutes; background throttling off as before),
+    then throttled after 2 unused minutes, then frozen after 15 through CDP
+    `Page.setWebLifecycleState frozen`, which stops script and rendering but keeps memory, so page
+    state survives and macOS compresses it. Every automation command, capture (including element
+    capture), `stream_start`, and pane presentation wakes the tab first: lifecycle `active`, then
+    throttling off, because an active page left throttled keeps 1 Hz timers. A phone stream holds
+    its tab until `stream_stop`. Loading, audible, downloading, and network-capturing tabs
+    throttle but never freeze. A frozen page's WebSockets drop and reconnect on wake, as in any
+    frozen Chrome tab. Panes report presentation from `resident-webviews.ts`, the one place guests
+    are presented and parked; popups report through their native view. Desktop setting file
+    `browser.suspendIdleTabs: false` restores always-active tabs. Discarding tabs (loses state) is
+    not done. (b) **Listing starts no guests** (delta 2). (c) **Bounded directory suggestions.**
+    Discovery charges a read budget of 60,000 directory entries, cache hits included; a directory
+    over 5,000 entries contributes no children; a search rooted at home skips `Library`,
+    `Applications`, `Movies`, `Music`, and `Pictures` (browsing `~` and explicit paths still
+    reach them). Each session runs one search at a time; a typeahead search supersedes the
+    previous one of the same picker, while file-link (suffix) lookups are never cancelled, since
+    each click names its own file. Hover prefetch waits for a 300 ms rest and skips while another
+    lookup runs. The daemon logs `daemon_heap_high` when heap passes 1 GB. Home-root lookup: 2.7 s
+    and 613 MB heap before, 0.65 s and 106 MB after; 8 concurrent lookups ran out of heap before
+    and peak at 555 MB after. (d) **Idle agents unload.** After 60 quiet minutes
+    (`~/.paseo/config.json` `agents.idleUnloadMinutes`, read at daemon start, 0 turns it off) an
+    agent's provider process stops and its in-memory timeline is dropped, but only when it is idle
+    with no run, has no pending background wait or permission, is not the target of an active
+    schedule or heartbeat nor the child of a running orchestrator, has no child processes under its
+    runtime (closing tree-kills them, which would stop a dev server it started), is not internal,
+    and has a stored session to resume. The agent stays stored and shown as idle: no closed state
+    is broadcast, because "Archive finished" and other client logic treat only `idle` as done. The
+    next open, prompt, or send resumes it through `ensureAgentLoaded`, the path every agent takes
+    after a daemon restart, with the same timeline epoch and rows (about 1 s for Pi). (e) pi-local's
+    browser credential broker loads its MCP client on first use (about 34 MB less per Pi). Key
+    files: `packages/desktop/src/features/browser-webviews/{lifecycle,index}.ts`,
+    `packages/desktop/src/features/browser-automation/{ipc,service}.ts`,
+    `packages/app/src/desktop/browser/{resident-webviews,automation/handler}.ts`,
+    `packages/server/src/utils/directory-suggestions.ts`,
+    `packages/server/src/server/session/files/directory-suggestions-scheduler.ts`,
+    `packages/app/src/assistant-file-links/use-file-link.ts`, and
+    `packages/server/src/server/agent/{idle-agent-unloader,agent-manager}.ts`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including
@@ -610,7 +657,7 @@ Reviewed for 0.5.31 and deliberately not adopted:
   worth the port).
 - #4442 / #4844 / #4839 / #4895 / #4926 / #4737 (creation, layout, catalog, and older-host paths
   Daseo replaced in deltas 7 and 9; no observed symptom).
-- #4646 (overlaps delta 1's hidden-pane unsubscribe).
+- #4646 (overlaps delta 1's hidden-pane unsubscribe). Revisited and adopted for 0.5.43, below.
 - #4824 / #4902 / #4946 / #4845 / #4958 / #4927 (composer and voice paths overlap delta 18/native
   composer).
 - #4596 / #4470 / #4575 (213-/31-/195-file architecture changes).
@@ -653,6 +700,14 @@ Reviewed for 0.5.32 and deliberately not adopted:
   items (#5200 #5285 #5289 #5240 #5206 #5326 #5273 #5239 #5274 #5296 #5338 #3628 #3258 #5243
   #5248 #5253 #5231 #5298 #5302 #5219 #5297 #5258 #5358 #5310 #5335 #5305 #5347 #5174 #5249
   #5221 #5238 #5229 #5374 e3c853df5): paths Daseo does not use.
+
+Adopted for 0.5.43 (reviewed 2026-10-04):
+
+- #4646 (`16d932651`) capture-time frame production and paint wait (hand-port into delta 33:
+  `withFrameProduction` holds the tab in the lifecycle instead of toggling background throttling,
+  and the two-frame paint wait is capped at one second and never fails the capture). On its own it
+  does not help Daseo: an Electron 41 PoC showed a parked 1×1 tab keeps 75 fps with throttling on
+  while the window is visible; only freezing stops it.
 
 ## Product version policy
 

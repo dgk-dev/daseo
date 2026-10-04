@@ -15,12 +15,21 @@ export interface DesktopSettings {
     manageBuiltInDaemon: boolean;
     keepRunningAfterQuit: boolean;
   };
+  browser: {
+    /**
+     * Daseo delta 33: browser tabs nobody uses are throttled after 2 minutes and frozen after 15,
+     * and wake before every command, capture, phone stream, or pane display. False restores the
+     * old behavior: every tab runs unthrottled from attach. File-only; no UI.
+     */
+    suspendIdleTabs: boolean;
+  };
 }
 
 interface DesktopSettingsPatch {
   releaseChannel?: AppReleaseChannel;
   notifications?: Partial<DesktopSettings["notifications"]>;
   daemon?: Partial<DesktopSettings["daemon"]>;
+  browser?: Partial<DesktopSettings["browser"]>;
 }
 
 export interface DesktopSettingsStore {
@@ -37,6 +46,9 @@ export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   daemon: {
     manageBuiltInDaemon: true,
     keepRunningAfterQuit: false,
+  },
+  browser: {
+    suspendIdleTabs: true,
   },
 };
 
@@ -57,11 +69,18 @@ const DaemonSchema = z
   })
   .catch(() => ({ ...DEFAULT_DESKTOP_SETTINGS.daemon }));
 
+const BrowserSchema = z
+  .looseObject({
+    suspendIdleTabs: z.boolean().catch(DEFAULT_DESKTOP_SETTINGS.browser.suspendIdleTabs),
+  })
+  .catch(() => ({ ...DEFAULT_DESKTOP_SETTINGS.browser }));
+
 const DesktopSettingsSchema = z
   .looseObject({
     releaseChannel: ReleaseChannelSchema.catch(DEFAULT_DESKTOP_SETTINGS.releaseChannel),
     notifications: NotificationsSchema,
     daemon: DaemonSchema,
+    browser: BrowserSchema,
   })
   .catch(() => buildDefaultSettings());
 
@@ -108,6 +127,7 @@ function buildDefaultSettings(): StoredDesktopSettings {
     releaseChannel: DEFAULT_DESKTOP_SETTINGS.releaseChannel,
     notifications: { ...DEFAULT_DESKTOP_SETTINGS.notifications },
     daemon: { ...DEFAULT_DESKTOP_SETTINGS.daemon },
+    browser: { ...DEFAULT_DESKTOP_SETTINGS.browser },
   };
 }
 
@@ -130,6 +150,7 @@ function toDesktopSettings(stored: StoredDesktopSettings): DesktopSettings {
       manageBuiltInDaemon: stored.daemon.manageBuiltInDaemon,
       keepRunningAfterQuit: stored.daemon.keepRunningAfterQuit,
     },
+    browser: { suspendIdleTabs: stored.browser.suspendIdleTabs },
   };
 }
 
@@ -166,6 +187,13 @@ function coerceDesktopSettingsPatch(input: unknown): DesktopSettingsPatch {
     }
   }
 
+  if (isRecord(input.browser)) {
+    const suspendIdleTabs = coerceBoolean(input.browser.suspendIdleTabs);
+    if (suspendIdleTabs !== null) {
+      patch.browser = { suspendIdleTabs };
+    }
+  }
+
   return patch;
 }
 
@@ -199,6 +227,7 @@ function mergeDesktopSettings(
     releaseChannel: patch.releaseChannel ?? current.releaseChannel,
     notifications: { ...current.notifications, ...patch.notifications },
     daemon: { ...current.daemon, ...patch.daemon },
+    browser: { ...current.browser, ...patch.browser },
   };
 }
 

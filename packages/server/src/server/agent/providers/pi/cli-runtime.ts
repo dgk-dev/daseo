@@ -259,6 +259,10 @@ class PiCliRuntimeSession implements PiRuntimeSession {
     await this.process.close(new Error("Pi RPC session is closed"));
   }
 
+  get processId(): number | undefined {
+    return this.process.pid;
+  }
+
   request(command: PiRpcCommand, timeoutMs?: number | null): Promise<unknown> {
     return this.process.request(command, timeoutMs);
   }
