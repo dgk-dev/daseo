@@ -1,3 +1,4 @@
+import { ChildProcess } from "node:child_process";
 import treeKill from "tree-kill";
 
 export interface TreeKillTarget {
@@ -18,6 +19,7 @@ export interface TerminateWithTreeKillOptions {
 
 export type TerminateWithTreeKillResult =
   | "already-exited"
+  | "not-started"
   | "terminated"
   | "killed"
   | "kill-timeout";
@@ -35,6 +37,9 @@ export async function terminateWithTreeKill(
 ): Promise<TerminateWithTreeKillResult> {
   if (isProcessExited(child)) {
     return "already-exited";
+  }
+  if (isUnspawnedChildProcess(child)) {
+    return "not-started";
   }
 
   const exitPromise = waitForProcessExit(child);
@@ -58,12 +63,12 @@ export function signalProcessTree(child: TreeKillTarget, signal: NodeJS.Signals)
     return Promise.resolve();
   }
 
-  const pid = child.pid;
-  if (typeof pid !== "number" || pid <= 0) {
+  if (!hasPositivePid(child)) {
     signalDirectChild(child, signal);
     return Promise.resolve();
   }
 
+  const pid = child.pid;
   return new Promise((resolve) => {
     treeKill(pid, signal, (error) => {
       if (error) {
@@ -75,11 +80,29 @@ export function signalProcessTree(child: TreeKillTarget, signal: NodeJS.Signals)
 }
 
 function signalDirectChild(child: TreeKillTarget, signal: NodeJS.Signals): void {
+  if (isUnspawnedChildProcess(child)) {
+    return;
+  }
   try {
     child.kill(signal);
   } catch {
     // Ignore cleanup races.
   }
+}
+
+function hasPositivePid(child: TreeKillTarget): child is TreeKillTarget & { pid: number } {
+  const pid = child.pid;
+  return typeof pid === "number" && Number.isInteger(pid) && pid > 0;
+}
+
+// A Node child process without a pid never started: spawn failed (ENOENT for the binary or the
+// cwd) and Node delivers that error on the next tick. There is nothing to signal, and
+// ChildProcess.kill() inside that window reaches uv_process_kill with pid 0, i.e.
+// kill(0, signal), which signals the caller's own process group: the daemon (or a vitest run
+// and the shell that started it) SIGTERMs itself. In-memory targets without a pid are still
+// signalled directly.
+function isUnspawnedChildProcess(child: TreeKillTarget): boolean {
+  return child instanceof ChildProcess && !hasPositivePid(child);
 }
 
 function isProcessExited(child: TreeKillTarget): boolean {

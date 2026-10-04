@@ -2,8 +2,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
-import { terminateWithTreeKill } from "./tree-kill.js";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { signalProcessTree, terminateWithTreeKill, type TreeKillTarget } from "./tree-kill.js";
 
 const pollIntervalMs = 50;
 
@@ -181,4 +181,39 @@ describe("terminateWithTreeKill", () => {
       );
     },
   );
+});
+
+describe("children that never started", () => {
+  // ChildProcess.kill() on a failed spawn reaches kill(0, signal) and signals the caller's
+  // own process group, so a Node child process without a pid must never be signalled.
+  test("a real spawn that failed on a missing cwd is reported as not started and never signalled", async () => {
+    const child = spawn(process.execPath, ["-e", ""], {
+      cwd: join(tmpdir(), "paseo-tree-kill-missing-cwd-does-not-exist"),
+      stdio: "ignore",
+    });
+    const spawnError = new Promise<NodeJS.ErrnoException>((resolve) => {
+      child.once("error", resolve);
+    });
+    const kill = vi.spyOn(child, "kill");
+
+    // Same tick as spawn: the error has not been delivered yet, so exitCode is still null.
+    expect(child.pid).toBeUndefined();
+    expect(child.exitCode).toBeNull();
+    await expect(terminateWithTreeKill(child, { gracefulTimeoutMs: 10 })).resolves.toBe(
+      "not-started",
+    );
+    await signalProcessTree(child, "SIGKILL");
+
+    expect(kill).not.toHaveBeenCalled();
+    await expect(spawnError).resolves.toMatchObject({ code: "ENOENT" });
+  });
+
+  test("an in-memory target without a pid is still signalled directly", async () => {
+    const kill = vi.fn<TreeKillTarget["kill"]>(() => true);
+    const target: TreeKillTarget = { exitCode: null, signalCode: null, kill };
+
+    await signalProcessTree(target, "SIGTERM");
+
+    expect(kill).toHaveBeenCalledWith("SIGTERM");
+  });
 });

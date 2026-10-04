@@ -1,8 +1,10 @@
-import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import pino from "pino";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { JsonlRpcProcess, type JsonlRpcExit } from "./jsonl-rpc-process.js";
 
@@ -229,6 +231,36 @@ describe("JsonlRpcProcess", () => {
     await transport.close();
 
     await rejection;
+  });
+
+  test("closing a process whose spawn failed never signals it", async () => {
+    let child: ChildProcessWithoutNullStreams | null = null;
+    let kill: ReturnType<typeof vi.spyOn> | null = null;
+    const transport = new JsonlRpcProcess({
+      launch: {
+        command: process.execPath,
+        args: ["-e", ""],
+        cwd: join(tmpdir(), "paseo-jsonl-rpc-missing-cwd-does-not-exist"),
+        env: {},
+      },
+      logger: pino({ level: "silent" }),
+      spawn: (launch) => {
+        const spawned = spawn(launch.command, launch.args, {
+          cwd: launch.cwd,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+        kill = vi.spyOn(spawned, "kill");
+        child = spawned;
+        return spawned;
+      },
+    });
+
+    // Same tick as spawn: Node has not delivered the ENOENT yet, so the child looks alive.
+    expect(transport.pid).toBeUndefined();
+    await transport.close();
+
+    expect(child).not.toBeNull();
+    expect(kill).not.toHaveBeenCalled();
   });
 
   test("closes the transport when a direct send synchronously throws EPIPE", async () => {
