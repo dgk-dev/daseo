@@ -1239,7 +1239,7 @@ function summarizeBrowserRead(
   result: BrowserAutomationReadResult,
   requestedScope: "main" | "page" | "ref",
 ): string {
-  const source = describeReadSource(result.scope, requestedScope);
+  const source = describeReadSource(result, requestedScope);
   const shown = result.truncated
     ? `${result.stats.chars.toLocaleString("en-US")} chars, truncated to maxChars; raise maxChars (up to ${BROWSER_AUTOMATION_READ_MAX_CHARS}) or read one element with ref`
     : `${result.stats.chars.toLocaleString("en-US")} chars`;
@@ -1253,14 +1253,17 @@ function summarizeBrowserRead(
 }
 
 function describeReadSource(
-  scope: BrowserAutomationReadResult["scope"],
+  result: BrowserAutomationReadResult,
   requestedScope: "main" | "page" | "ref",
 ): string {
-  if (scope === "ref") {
+  if (result.scope === "ref") {
     return "one element";
   }
-  if (scope === "main") {
+  if (result.scope === "main") {
     return "main content (Readability)";
+  }
+  if (result.mainFallback === "product_page") {
+    return "whole page (product page)";
   }
   return requestedScope === "main" ? "whole page (no main content detected)" : "whole page";
 }

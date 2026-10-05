@@ -283,7 +283,7 @@ describe("browser_wait load", () => {
 
     await expect(wait(tab, { load: "networkidle", timeoutMs: 3_000 })).resolves.toMatchObject({
       ok: true,
-      result: { matched: "load" },
+      result: { matched: "networkidle" },
     });
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(600);
     expect(tab.trackerReleased).toBe(true);
@@ -375,6 +375,53 @@ describe("browser_read", () => {
 
     expect(result.scope).toBe("page");
     expect(result.content).toContain("Loading the shop.");
+  });
+
+  test("a product page skips Readability and reads the whole page", async () => {
+    document.head.innerHTML =
+      '<title>메인로고 삭스 4 color - HDEX</title><meta property="og:type" content="product">';
+    const recent = Array.from(
+      { length: 12 },
+      (_, index) =>
+        `<li><a href="/p/${index}">최근 본 상품 ${index}: 헤비 코튼 티셔츠와 와이드 데님 팬츠 세트, 사이즈와 색상 옵션을 고를 수 있는 상품입니다.</a></li>`,
+    ).join("");
+    document.body.innerHTML = `<div id="contents"><h1>메인로고 삭스 4 color</h1>
+      <table><tr><th>판매가</th><td>₩7,000</td></tr></table>
+      <select><option>색상 선택</option><option>Black</option><option>White</option></select></div>
+      <div id="sidebar"><h2>최근 본 상품</h2><ul>${recent}</ul></div>`;
+
+    const result = await read(new JsdomTab());
+
+    expect(result.scope).toBe("page");
+    expect(result.mainFallback).toBe("product_page");
+    expect(result.content).toContain("# 메인로고 삭스 4 color");
+    expect(result.content).toContain("| 판매가 | ₩7,000 |");
+    expect(result.content).toContain("[options: 색상 선택 / Black / White]");
+  });
+
+  test("main falls back to the page when Readability's pick misses the first h1", async () => {
+    document.head.innerHTML = "<title>Shop</title>";
+    document.body.innerHTML = `<div id="product"><h1>Heavy Tee</h1>
+      <table><tr><th>Price</th><td>7,000</td></tr></table></div>
+      <div class="content"><p>${LONG_PARAGRAPH}</p><p>${LONG_PARAGRAPH}</p></div>`;
+
+    const result = await read(new JsdomTab());
+
+    expect(result.scope).toBe("page");
+    expect(result.mainFallback).toBe("no_article");
+    expect(result.content.startsWith("# Heavy Tee")).toBe(true);
+  });
+
+  test("main keeps an article whose h1 repeats the page title, heading included", async () => {
+    document.head.innerHTML = "<title>Heavy tee review</title>";
+    document.body.innerHTML = `<nav><a href="/home">Home</a></nav>
+      <article><h1>Heavy tee review</h1><p>${LONG_PARAGRAPH}</p><p>${LONG_PARAGRAPH}</p></article>`;
+
+    const result = await read(new JsdomTab());
+
+    expect(result.scope).toBe("main");
+    expect(result.mainFallback).toBeUndefined();
+    expect(result.content.startsWith("# Heavy tee review\n\nThis review covers")).toBe(true);
   });
 
   test("main reads the article without the page's navigation", async () => {

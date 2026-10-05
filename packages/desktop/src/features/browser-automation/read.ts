@@ -2,6 +2,8 @@ import { READ_SCRIPT_MARKER } from "./read-script.js";
 
 export interface ReadPageContent {
   scope: "main" | "page" | "ref";
+  /** Why a `main` read became `page`. */
+  mainFallback?: "product_page" | "no_article";
   /** Structured-data summary (when found) followed by the Markdown body. */
   content: string;
   links: number;
@@ -31,10 +33,12 @@ export function parseReadScriptResult(value: unknown): ReadScriptOutcome | null 
   ) {
     return null;
   }
+  const mainFallback = record.mainFallback;
   return {
     kind: "content",
     page: {
       scope,
+      ...(mainFallback === "product_page" || mainFallback === "no_article" ? { mainFallback } : {}),
       content: record.content,
       links: typeof record.links === "number" && Number.isFinite(record.links) ? record.links : 0,
       structuredDataFound: record.structuredDataFound === true,

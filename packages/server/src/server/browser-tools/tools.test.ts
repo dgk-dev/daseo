@@ -1463,6 +1463,46 @@ describe("registerBrowserTools", () => {
     ).toBeUndefined();
   });
 
+  test("read says when a product page was read whole instead of through Readability", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-read",
+      ok: true,
+      result: {
+        command: "read",
+        browserId: BROWSER_ID,
+        url: "https://hdex.co.kr/product/889",
+        title: "HDEX",
+        format: "markdown",
+        scope: "page",
+        mainFallback: "product_page",
+        content: "# 메인로고 삭스 4 color",
+        truncated: false,
+        stats: { chars: 4510, links: 12, structuredDataFound: true },
+      },
+    });
+
+    const response = await harness.execute("browser_read", { browserId: BROWSER_ID });
+
+    expect(response.content[0]?.text).toContain("Read: whole page (product page), 4,510 chars.");
+  });
+
+  test("wait says networkidle when that is what matched", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-wait",
+      ok: true,
+      result: { command: "wait", browserId: BROWSER_ID, matched: "networkidle" },
+    });
+
+    const response = await harness.execute("browser_wait", {
+      browserId: BROWSER_ID,
+      load: "networkidle",
+    });
+
+    expect(response.content).toEqual([{ type: "text", text: "Browser wait matched networkidle." }]);
+  });
+
   test("read clamps maxChars to 120000 and passes a ref", async () => {
     const harness = new BrowserToolHarness();
     harness.broker.setResponse({

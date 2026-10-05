@@ -712,6 +712,7 @@ async function executeRead(
         title: target.contents.getTitle(),
         format: "markdown",
         scope: page.scope,
+        ...(page.mainFallback ? { mainFallback: page.mainFallback } : {}),
         content: capped.content,
         truncated: capped.truncated,
         stats: {
@@ -1693,7 +1694,7 @@ async function executeWait(
 function waitMatched(
   requestId: string,
   browserId: string,
-  matched: "selector" | "script" | "load",
+  matched: "selector" | "script" | "load" | "networkidle",
 ): AutomationCommandPayload {
   return { requestId, ok: true, result: { command: "wait", browserId, matched } };
 }
@@ -1927,7 +1928,7 @@ async function waitForNetworkIdle(
       if (!target.contents.isLoading() && tracker.inflight() === 0) {
         quietSince ??= Date.now();
         if (Date.now() - quietSince >= NETWORK_IDLE_QUIET_MS) {
-          return waitMatched(requestId, target.browserId, "load");
+          return waitMatched(requestId, target.browserId, "networkidle");
         }
       } else {
         quietSince = null;

@@ -530,7 +530,13 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
       open shadow roots and same-origin frames are inlined through `contentDocument`
       (delta 27), cross-origin frames read `[iframe: <src>]`, links are absolute, images keep
       only `![alt]`. `scope: "main"` (default) runs Readability and falls back to the whole
-      page below 500 characters, saying so; `page` drops page-level landmarks by the HTML-AAM
+      page below 500 characters, saying so. Since 0.5.46 a page that declares itself a product
+      (`og:type` product, or a JSON-LD Product/ProductGroup/IndividualProduct/ProductModel)
+      skips Readability and reads whole (`whole page (product page)`), and any other page keeps
+      Readability's pick only when it holds the text of the first visible h1 (the h1 passes
+      through as a marked paragraph, because Readability deletes the heading that repeats the
+      title), because on the HDEX product page Readability chose the 1,423-character "최근 본
+      상품" sidebar over the heading, price table, and option lists. `page` drops page-level landmarks by the HTML-AAM
       rule (`nav`, `header`/`footer`/`aside` outside sectioning content, explicit
       banner/contentinfo/navigation/complementary roles); `ref` reads one snapshot element.
       A JSON-LD (Product, ProductGroup with variants, Offer, Article, Organization) and
@@ -554,7 +560,8 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
       eval-blocking CSP does not matter), or `load` (`load`, or `networkidle`: not loading and
       no request in flight for 500 ms, counted through the tab's CDP Network domain, which
       `browser_network` capture now shares by reference so either can run without the other).
-      One poll never outlives the wait's deadline. A lone `timeoutMs` still pauses.
+      One poll never outlives the wait's deadline. A lone `timeoutMs` still pauses. A
+      networkidle match reports `matched: "networkidle"` (0.5.46; 0.5.45 said `load`).
     - `browser_navigate` reports the committed URL and the main-frame HTTP status from
       `did-navigate`: `Navigated to … (HTTP 200)`, and for 400 and above
       `…, but the server answered HTTP 404 Not Found` plus a note that the content is the

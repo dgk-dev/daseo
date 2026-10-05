@@ -742,13 +742,16 @@ describe("browser automation execute RPC schemas", () => {
           title: "Shirt",
           format: "markdown",
           scope: "page",
+          mainFallback: "product_page",
           content: "# Shirt",
           truncated: false,
           stats: { chars: 7, links: 0, structuredDataFound: true },
         },
       },
     });
-    expect(read.payload).toMatchObject({ result: { command: "read", scope: "page" } });
+    expect(read.payload).toMatchObject({
+      result: { command: "read", scope: "page", mainFallback: "product_page" },
+    });
 
     const find = BrowserAutomationExecuteResponseSchema.parse({
       type: "browser.automation.execute.response",
@@ -776,7 +779,7 @@ describe("browser automation execute RPC schemas", () => {
   });
 
   test("wait results name the new conditions", () => {
-    for (const matched of ["selector", "script", "load"] as const) {
+    for (const matched of ["selector", "script", "load", "networkidle"] as const) {
       const parsed = BrowserAutomationExecuteResponseSchema.parse({
         type: "browser.automation.execute.response",
         payload: {

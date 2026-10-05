@@ -250,17 +250,64 @@ const READ_PAGE_SOURCE = String.raw`
     return container;
   }
 
+  // Readability scores prose density, so on a page whose real content is a short
+  // heading and a table it can pick a long sidebar list instead. Its article is
+  // kept only when it holds the page's first visible h1. Readability deletes the
+  // h1 that repeats the page title, so that heading goes in as a marked paragraph
+  // and comes back out as an h1.
   function articleOf(container) {
+    const heading = container.querySelector('h1');
+    const headingText = heading ? normalizeText(heading.textContent).toLowerCase() : '';
+    if (heading) {
+      const marker = inert.createElement('p');
+      marker.setAttribute('data-paseo-h1', '');
+      while (heading.firstChild) marker.appendChild(heading.firstChild);
+      heading.replaceWith(marker);
+    }
     const doc = document.implementation.createHTMLDocument(document.title || '');
     doc.body.appendChild(doc.importNode(container, true));
+    let content;
     try {
       const article = new Readability(doc, { serializer: (element) => element }).parse();
-      if (!article || !article.content) return null;
-      if (normalizeText(article.content.textContent).length < MIN_ARTICLE_CHARS) return null;
-      return article.content;
+      content = article && article.content;
     } catch {
       return null;
     }
+    if (!content) return null;
+    const text = normalizeText(content.textContent);
+    if (text.length < MIN_ARTICLE_CHARS) return null;
+    if (headingText && !text.toLowerCase().includes(headingText)) return null;
+    const marker = content.querySelector('[data-paseo-h1]');
+    if (marker) {
+      const restored = marker.ownerDocument.createElement('h1');
+      while (marker.firstChild) restored.appendChild(marker.firstChild);
+      marker.replaceWith(restored);
+    }
+    return content;
+  }
+
+  const PRODUCT_TYPES = new Set(['Product', 'ProductGroup', 'IndividualProduct', 'ProductModel']);
+
+  function metaContent(key) {
+    const element = document.querySelector('meta[property="' + key + '"], meta[name="' + key + '"]');
+    return element ? normalizeText(element.getAttribute('content')) : '';
+  }
+
+  function jsonLdItems() {
+    const items = [];
+    for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+      try {
+        collectJsonLd(JSON.parse(script.textContent || ''), items);
+      } catch {}
+    }
+    return items;
+  }
+
+  // A page that declares itself a product is a heading, a price table, and
+  // option lists, not an article; its whole page is the content.
+  function isProductPage() {
+    if (/^(og:)?product(\.|$)/i.test(metaContent('og:type'))) return true;
+    return jsonLdItems().some((item) => typesOf(item).some((type) => PRODUCT_TYPES.has(type)));
   }
 
   let linkCount = 0;
@@ -382,13 +429,7 @@ const READ_PAGE_SOURCE = String.raw`
 
   function structuredDataLines() {
     const lines = [];
-    const items = [];
-    for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
-      try {
-        collectJsonLd(JSON.parse(script.textContent || ''), items);
-      } catch {}
-    }
-    for (const item of items) {
+    for (const item of jsonLdItems()) {
       const types = typesOf(item);
       if (types.includes('ProductGroup')) {
         lines.push('- ProductGroup: ' + productParts(item).join(' · '));
@@ -419,10 +460,7 @@ const READ_PAGE_SOURCE = String.raw`
         lines.push('- Organization: ' + JSON.stringify(textOf(item.name)));
       }
     }
-    const meta = (key) => {
-      const element = document.querySelector('meta[property="' + key + '"], meta[name="' + key + '"]');
-      return element ? normalizeText(element.getAttribute('content')) : '';
-    };
+    const meta = metaContent;
     const og = [];
     for (const key of ['title', 'type', 'description', 'image']) {
       const value = meta('og:' + key);
@@ -456,11 +494,21 @@ const READ_PAGE_SOURCE = String.raw`
   function readPage(element) {
     let scope;
     let body;
+    // Why main became page: a product page, or no article holding the h1.
+    let mainFallback = null;
     if (element) {
       scope = 'ref';
       body = markdownOf(cleanCopy(element, false));
     } else {
-      const article = OPTIONS.scope === 'main' ? articleOf(cleanCopy(null, false)) : null;
+      let article = null;
+      if (OPTIONS.scope === 'main') {
+        if (isProductPage()) {
+          mainFallback = 'product_page';
+        } else {
+          article = articleOf(cleanCopy(null, false));
+          if (!article) mainFallback = 'no_article';
+        }
+      }
       scope = article ? 'main' : 'page';
       body = markdownOf(article || cleanCopy(null, true));
     }
@@ -468,6 +516,7 @@ const READ_PAGE_SOURCE = String.raw`
     return {
       marker: MARKER,
       scope,
+      ...(mainFallback ? { mainFallback } : {}),
       content: structured ? structured + '\n\n' + body : body,
       links: linkCount,
       structuredDataFound: structured.length > 0

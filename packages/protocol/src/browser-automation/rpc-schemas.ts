@@ -470,7 +470,7 @@ export const BrowserAutomationFillResultSchema = z.object({
 export const BrowserAutomationWaitResultSchema = z.object({
   command: z.literal("wait"),
   browserId: BrowserAutomationBrowserIdSchema,
-  matched: z.enum(["text", "url", "selector", "script", "load"]),
+  matched: z.enum(["text", "url", "selector", "script", "load", "networkidle"]),
 });
 
 export const BrowserAutomationTypeResultSchema = z.object({
@@ -684,6 +684,8 @@ export const BrowserAutomationReadResultSchema = z.object({
   format: z.literal("markdown"),
   /** What was read: `page` also when `main` found no article. */
   scope: z.enum(["main", "page", "ref"]),
+  /** Why a `main` read returned the whole page: a product page, or no article holding the h1. */
+  mainFallback: z.enum(["product_page", "no_article"]).optional(),
   /** Structured-data summary (when the page has one) followed by the Markdown body. */
   content: z.string(),
   truncated: z.boolean(),
