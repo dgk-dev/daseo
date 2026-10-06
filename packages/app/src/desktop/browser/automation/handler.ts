@@ -10,6 +10,7 @@ import {
   adoptWorkspaceBrowser,
   createFixedBrowserViewport,
   createWorkspaceBrowser,
+  DEFAULT_BROWSER_URL,
   getBrowserRecord,
   useBrowserStore,
 } from "@/desktop/browser/store";
@@ -599,7 +600,7 @@ async function openBrowserTabForRequest(params: {
     });
   }
 
-  const url = command.args.url ?? "https://example.com";
+  const url = command.args.url ?? DEFAULT_BROWSER_URL;
   const { browserId, url: normalizedUrl } = createWorkspaceBrowser({ initialUrl: url });
   const workspaceKey = buildWorkspaceTabPersistenceKey({ serverId, workspaceId });
   if (!workspaceKey) {

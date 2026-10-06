@@ -62,7 +62,9 @@ import {
 import {
   type BrowserViewport,
   createFixedBrowserViewport,
+  DEFAULT_BROWSER_URL,
   normalizeWorkspaceBrowserUrl,
+  resolveWorkspaceBrowserAddressInput,
   RESPONSIVE_BROWSER_VIEWPORT,
   useBrowserStore,
 } from "@/desktop/browser/store";
@@ -642,7 +644,7 @@ export function BrowserPane({
   const webviewHostRef = useRef<HTMLDivElement | null>(null);
   const webviewClipRef = useRef<HTMLElement | null>(null);
   const urlInputRef = useRef<EditingTextInputHandle | null>(null);
-  const initialUrlRef = useRef(browser?.url ?? "https://example.com");
+  const initialUrlRef = useRef(browser?.url ?? DEFAULT_BROWSER_URL);
   const browserIdRef = useRef(browserId);
   browserIdRef.current = browserId;
   const browserRef = useRef(browser);
@@ -664,7 +666,7 @@ export function BrowserPane({
     null,
   );
   const annotationCaptureGenerationRef = useRef(0);
-  const [draftUrl, setDraftUrl] = useState(browser?.url ?? "https://example.com");
+  const [draftUrl, setDraftUrl] = useState(browser?.url ?? DEFAULT_BROWSER_URL);
   const [popupActionError, setPopupActionError] = useState<string | null>(null);
   const workspaceAttachmentScopeKey = useMemo(
     () => buildBrowserAttachmentScopeKey({ cwd, serverId, workspaceId }),
@@ -752,7 +754,7 @@ export function BrowserPane({
   }, [onFocusPane, popupTargetState.snapshot]);
 
   useEffect(() => {
-    const nextUrl = selectedPopup?.url ?? browser?.url ?? "https://example.com";
+    const nextUrl = selectedPopup?.url ?? browser?.url ?? DEFAULT_BROWSER_URL;
     urlInputRef.current?.replaceText(nextUrl);
     setDraftUrl((current) => (current === nextUrl ? current : nextUrl));
   }, [browser?.url, selectedPopup?.url]);
@@ -1130,7 +1132,7 @@ export function BrowserPane({
 
   const navigate = useCallback(
     (nextUrl: string) => {
-      const normalizedUrl = normalizeWorkspaceBrowserUrl(nextUrl);
+      const normalizedUrl = resolveWorkspaceBrowserAddressInput(nextUrl);
       const webview = webviewRef.current;
       const popup = selectedPopupRef.current;
       const unsafeNavigationMessage = getUnsafeNavigationMessage(normalizedUrl, browserErrorLabels);

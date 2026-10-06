@@ -87,15 +87,46 @@ export function trimNonEmpty(value: string | null | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+export const DEFAULT_BROWSER_URL = "https://www.google.com";
+
+const LOCAL_HOST_PATTERN =
+  /^(localhost|\d{1,3}(?:\.\d{1,3}){3}|\[[\da-fA-F:.]+])(?::\d+)?(?:[/?#]|$)/;
+// Host with an alphabetic TLD (or punycode), optional port, then path/query/hash or end.
+const PUBLIC_HOST_PATTERN =
+  /^(?:[^\s/?#@:]+@)?[^\s/?#:.]+(?:\.[^\s/?#:.]+)*\.(?:[a-zA-Z]{2,}|xn--[a-zA-Z\d-]+)(?::\d+)?(?:[/?#]|$)/;
+const EXPLICIT_SCHEME_PATTERN =
+  /^(?:[a-zA-Z][a-zA-Z\d+.-]*:\/\/|(?:about|data|file|mailto|javascript|blob):)/;
+
+/**
+ * Address-bar input: URL-shaped text navigates, anything else becomes a Google search,
+ * matching what Chrome's omnibox does.
+ */
+export function resolveBrowserAddressInput(value: string | null | undefined): string {
+  const trimmed = trimNonEmpty(value);
+  if (!trimmed) {
+    return DEFAULT_BROWSER_URL;
+  }
+  const looksLikeUrl =
+    !/\s/.test(trimmed) &&
+    (EXPLICIT_SCHEME_PATTERN.test(trimmed) ||
+      trimmed.startsWith("//") ||
+      LOCAL_HOST_PATTERN.test(trimmed) ||
+      PUBLIC_HOST_PATTERN.test(trimmed));
+  if (looksLikeUrl) {
+    return normalizeBrowserUrl(trimmed);
+  }
+  return `https://www.google.com/search?q=${encodeURIComponent(trimmed)}`;
+}
+
 export function normalizeBrowserUrl(value: string | null | undefined): string {
   const trimmed = trimNonEmpty(value);
   if (!trimmed) {
-    return "https://example.com";
+    return DEFAULT_BROWSER_URL;
   }
-  if (/^(localhost|\d{1,3}(?:\.\d{1,3}){3}|\[[\da-fA-F:.]+])(?::\d+)?(?:[/?#]|$)/.test(trimmed)) {
+  if (LOCAL_HOST_PATTERN.test(trimmed)) {
     return `http://${trimmed}`;
   }
-  if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(trimmed)) {
+  if (/^[a-zA-Z][a-zA-Z\d+.-]*:(?!\d)/.test(trimmed)) {
     return trimmed;
   }
   if (trimmed.startsWith("//")) {

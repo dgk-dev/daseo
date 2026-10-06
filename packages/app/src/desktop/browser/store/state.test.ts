@@ -7,6 +7,7 @@ import {
   normalizeBrowserIndexState,
   normalizeBrowserUrl,
   removeBrowserFromIndex,
+  resolveBrowserAddressInput,
   sanitizeBrowsersForPersist,
 } from "./state";
 
@@ -37,8 +38,44 @@ describe("normalizeBrowserUrl", () => {
   });
 
   it("falls back to a default URL when input is blank", () => {
-    expect(normalizeBrowserUrl(null)).toBe("https://example.com");
-    expect(normalizeBrowserUrl("   ")).toBe("https://example.com");
+    expect(normalizeBrowserUrl(null)).toBe("https://www.google.com");
+    expect(normalizeBrowserUrl("   ")).toBe("https://www.google.com");
+  });
+
+  it("treats a public host with a port as a host, not a scheme", () => {
+    expect(normalizeBrowserUrl("example.com:8080/path")).toBe("https://example.com:8080/path");
+  });
+});
+
+describe("resolveBrowserAddressInput", () => {
+  it("navigates URL-shaped input", () => {
+    expect(resolveBrowserAddressInput("google.com")).toBe("https://google.com");
+    expect(resolveBrowserAddressInput("docs.example.co.kr/a?b=1")).toBe(
+      "https://docs.example.co.kr/a?b=1",
+    );
+    expect(resolveBrowserAddressInput("localhost:8081")).toBe("http://localhost:8081");
+    expect(resolveBrowserAddressInput("192.168.0.8")).toBe("http://192.168.0.8");
+    expect(resolveBrowserAddressInput("https://example.com")).toBe("https://example.com");
+    expect(resolveBrowserAddressInput("about:blank")).toBe("about:blank");
+    expect(resolveBrowserAddressInput("example.com:8080")).toBe("https://example.com:8080");
+  });
+
+  it("searches Google for everything else", () => {
+    expect(resolveBrowserAddressInput("날씨")).toBe(
+      `https://www.google.com/search?q=${encodeURIComponent("날씨")}`,
+    );
+    expect(resolveBrowserAddressInput("react useEffect cleanup")).toBe(
+      "https://www.google.com/search?q=react%20useEffect%20cleanup",
+    );
+    expect(resolveBrowserAddressInput("naver")).toBe("https://www.google.com/search?q=naver");
+    expect(resolveBrowserAddressInput("3.14")).toBe("https://www.google.com/search?q=3.14");
+    expect(resolveBrowserAddressInput("what is example.com")).toBe(
+      "https://www.google.com/search?q=what%20is%20example.com",
+    );
+  });
+
+  it("opens Google when input is blank", () => {
+    expect(resolveBrowserAddressInput("  ")).toBe("https://www.google.com");
   });
 });
 

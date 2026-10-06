@@ -14,12 +14,14 @@ import {
   normalizeBrowserIndexState,
   normalizeBrowserUrl,
   removeBrowserFromIndex,
+  resolveBrowserAddressInput,
   sanitizeBrowsersForPersist,
   trimNonEmpty,
 } from "./state";
 
 export {
   createFixedBrowserViewport,
+  DEFAULT_BROWSER_URL,
   RESPONSIVE_BROWSER_VIEWPORT,
   type BrowserRecord,
   type BrowserViewport,
@@ -130,6 +132,10 @@ export function createWorkspaceBrowser(input?: { initialUrl?: string }): {
 
 export function normalizeWorkspaceBrowserUrl(value: string | null | undefined): string {
   return normalizeBrowserUrl(value);
+}
+
+export function resolveWorkspaceBrowserAddressInput(value: string | null | undefined): string {
+  return resolveBrowserAddressInput(value);
 }
 
 /** Register a browser record for a tab that already exists on the desktop host. */
