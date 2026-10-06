@@ -50,6 +50,7 @@ export const BROWSER_AUTOMATION_COMMAND_NAMES = [
   "network",
   "read",
   "find",
+  "styles",
 ] as const;
 
 export const BrowserAutomationCommandNameSchema = z.enum(BROWSER_AUTOMATION_COMMAND_NAMES);
@@ -93,7 +94,12 @@ export const BrowserAutomationNewTabCommandSchema = z.object({
 
 export const BrowserAutomationSnapshotCommandSchema = z.object({
   command: z.literal("snapshot"),
-  args: BrowserAutomationTabTargetSchema,
+  args: BrowserAutomationTabTargetSchema.extend({
+    /** Render only this element's subtree (a ref from an earlier snapshot or find). */
+    ref: BrowserAutomationRefSchema.optional(),
+    /** Keep only elements that carry a ref and the containers that lead to them. */
+    interactive: z.boolean().optional(),
+  }),
 });
 
 export const BrowserAutomationClickCommandSchema = z.object({
@@ -177,6 +183,8 @@ export const BrowserAutomationScreenshotCommandSchema = z.object({
   command: z.literal("screenshot"),
   args: BrowserAutomationTabTargetSchema.extend({
     fullPage: z.boolean().default(false),
+    /** Capture only this element (scrolled into view, clipped to the viewport). */
+    ref: BrowserAutomationRefSchema.optional(),
   }),
 });
 
@@ -211,10 +219,14 @@ export const BrowserAutomationDragCommandSchema = z.object({
   }),
 });
 
+/** Console severities from least to most severe; a `level` filter keeps that one and above. */
+export const BrowserAutomationConsoleLevelSchema = z.enum(["debug", "info", "warning", "error"]);
+
 export const BrowserAutomationLogsCommandSchema = z.object({
   command: z.literal("logs"),
   args: BrowserAutomationTabTargetSchema.extend({
     maxEntries: z.number().int().positive().max(200).default(50),
+    level: BrowserAutomationConsoleLevelSchema.optional(),
   }),
 });
 
@@ -240,6 +252,11 @@ export const BrowserAutomationResizeCommandSchema = z.object({
   args: BrowserAutomationTabTargetSchema.extend({
     width: z.number().int().positive(),
     height: z.number().int().positive(),
+    /** Emulate a phone: touch, mobile viewport rules, an Android Chrome user agent. */
+    mobile: z.boolean().optional(),
+    /** User agent (and its client hints) the tab reports, e.g. an in-app browser's. */
+    userAgent: z.string().min(1).max(1024).optional(),
+    deviceScaleFactor: z.number().min(0.5).max(4).optional(),
   }),
 });
 
@@ -372,6 +389,16 @@ export const BrowserAutomationFindCommandSchema = z.object({
   }),
 });
 
+export const BrowserAutomationStylesCommandSchema = z.object({
+  command: z.literal("styles"),
+  args: BrowserAutomationTabTargetSchema.extend({
+    ref: BrowserAutomationRefSchema,
+    /** Keep declarations of these properties; a shorthand also keeps its longhands. */
+    properties: z.array(z.string().min(1)).max(50).optional(),
+    maxRules: z.number().int().positive().max(100).default(30),
+  }),
+});
+
 export const BrowserAutomationCommandSchema = z.discriminatedUnion("command", [
   BrowserAutomationListTabsCommandSchema,
   BrowserAutomationNewTabCommandSchema,
@@ -401,6 +428,7 @@ export const BrowserAutomationCommandSchema = z.discriminatedUnion("command", [
   BrowserAutomationNetworkCommandSchema,
   BrowserAutomationReadCommandSchema,
   BrowserAutomationFindCommandSchema,
+  BrowserAutomationStylesCommandSchema,
 ]);
 
 export const BrowserAutomationTabInfoSchema = z.object({
@@ -574,6 +602,8 @@ export const BrowserAutomationConsoleLogEntrySchema = z.object({
   source: z.string().optional(),
   line: z.number().int().optional(),
   timestamp: z.number(),
+  /** Logged before the tab's latest main-frame navigation, so by an earlier page. */
+  previousPage: z.boolean().optional(),
 });
 
 export const BrowserAutomationNetworkLogEntrySchema = z.object({
@@ -615,6 +645,14 @@ export const BrowserAutomationResizeResultSchema = z.object({
   browserId: BrowserAutomationBrowserIdSchema,
   width: z.number().int().positive(),
   height: z.number().int().positive(),
+  /** Present while device emulation is on. */
+  emulation: z
+    .object({
+      mobile: z.boolean(),
+      userAgent: z.string(),
+      deviceScaleFactor: z.number(),
+    })
+    .optional(),
 });
 
 export const BrowserAutomationCloseTabResultSchema = z.object({
@@ -718,6 +756,45 @@ export const BrowserAutomationFindResultSchema = z.object({
   total: z.number().int().nonnegative(),
 });
 
+export const BrowserAutomationStyleDeclarationSchema = z.object({
+  name: z.string(),
+  value: z.string(),
+  important: z.boolean().optional(),
+  /** A higher-precedence declaration of the same property wins over this one. */
+  overridden: z.boolean().optional(),
+  /** Chromium could not parse the value, so the declaration is ignored. */
+  invalid: z.boolean().optional(),
+});
+
+export const BrowserAutomationStyleRuleSchema = z.object({
+  /** The selector, `element.style` for the style attribute, or `attributes` for presentational hints. */
+  selector: z.string(),
+  /** Stylesheet URL, or the page URL for an inline <style>; absent for the style attribute. */
+  source: z.string().optional(),
+  /** 1-based line of the rule in its source. */
+  line: z.number().int().positive().optional(),
+  /** Enclosing @media, @container, @supports, @layer, and @scope conditions, outermost first. */
+  conditions: z.array(z.string()).optional(),
+  /** Set for rules matched on an ancestor; only inherited properties are kept from them. */
+  inheritedFrom: z.string().optional(),
+  declarations: z.array(BrowserAutomationStyleDeclarationSchema),
+});
+
+export const BrowserAutomationStylesResultSchema = z.object({
+  command: z.literal("styles"),
+  browserId: BrowserAutomationBrowserIdSchema,
+  ref: BrowserAutomationRefSchema,
+  /** The element as tag#id.class. */
+  element: z.string(),
+  /** Highest cascade precedence first. */
+  rules: z.array(BrowserAutomationStyleRuleSchema),
+  /** Computed values of the properties the rules set (or of `properties`). */
+  computed: z.record(z.string(), z.string()),
+  /** Browser-default rules left out. */
+  userAgentRules: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+});
+
 export const BrowserAutomationResultSchema = z.discriminatedUnion("command", [
   BrowserAutomationListTabsResultSchema,
   BrowserAutomationNewTabResultSchema,
@@ -747,6 +824,7 @@ export const BrowserAutomationResultSchema = z.discriminatedUnion("command", [
   BrowserAutomationNetworkResultSchema,
   BrowserAutomationReadResultSchema,
   BrowserAutomationFindResultSchema,
+  BrowserAutomationStylesResultSchema,
 ]);
 
 export const BrowserAutomationErrorSchema = z.object({
@@ -797,6 +875,7 @@ export type BrowserAutomationErrorCode = z.infer<typeof BrowserAutomationErrorCo
 export type BrowserAutomationCommandName = z.infer<typeof BrowserAutomationCommandNameSchema>;
 export type BrowserAutomationCommand = z.infer<typeof BrowserAutomationCommandSchema>;
 export type BrowserAutomationResult = z.infer<typeof BrowserAutomationResultSchema>;
+export type BrowserAutomationConsoleLevel = z.infer<typeof BrowserAutomationConsoleLevelSchema>;
 export type BrowserAutomationConsoleLogEntry = z.infer<
   typeof BrowserAutomationConsoleLogEntrySchema
 >;
@@ -826,3 +905,12 @@ export type BrowserAutomationFindCommandArgs = z.infer<
 >["args"];
 export type BrowserAutomationFindMatch = z.infer<typeof BrowserAutomationFindMatchSchema>;
 export type BrowserAutomationFindResult = z.infer<typeof BrowserAutomationFindResultSchema>;
+export type BrowserAutomationStylesCommandArgs = z.infer<
+  typeof BrowserAutomationStylesCommandSchema
+>["args"];
+export type BrowserAutomationStyleRule = z.infer<typeof BrowserAutomationStyleRuleSchema>;
+export type BrowserAutomationStylesResult = z.infer<typeof BrowserAutomationStylesResultSchema>;
+export type BrowserAutomationResizeCommandArgs = z.infer<
+  typeof BrowserAutomationResizeCommandSchema
+>["args"];
+export type BrowserAutomationResizeResult = z.infer<typeof BrowserAutomationResizeResultSchema>;

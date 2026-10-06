@@ -576,6 +576,61 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     `packages/server/src/server/browser-tools/tools.ts`;
     `packages/protocol/src/browser-automation/rpc-schemas.ts` and `paseo-tool-call-detail.ts`.
 
+35. **Browser tools tuned for debugging** — from the 2026-10-06 comparison with Chrome DevTools
+    MCP, Playwright MCP, and agent-browser against 30 days of browser calls (104 sessions):
+    - `browser_evaluate` inlines the function into the injected script instead of passing it to
+      `eval`, the way `browser_wait` script already did; Node checks the syntax first, since an
+      inlined syntax error only comes back as a generic injection failure. Pages whose CSP lacks
+      `unsafe-eval` or that require Trusted Types (Meta Business, Slack API, Stripe docs) had
+      failed 64 times in 40 days. The 14-second timeout message now points at `browser_wait`
+      `selector`/`script` (49 of 75 evaluates after 0.5.45 still polled in the page).
+    - Every browser tool rejects parameters it does not take, naming the right one
+      (`path → savePath`, `timeout → timeoutMs`) and listing its parameters. The SDK used to
+      strip them: about 250 calls in 30 days, including 23 screenshots that reported success
+      with no file written and 35 waits that ran the default 5 s.
+    - `browser_logs` marks console messages logged before the tab's latest main-frame
+      navigation `previousPage` (a reload repeats the same errors) and takes `level`
+      (`debug|info|warning|error`, that level and above); its summary counts errors, earlier
+      pages, and failed or 4xx/5xx requests.
+    - `browser_snapshot` takes `ref` (that element's subtree) and `interactive` (elements with
+      refs and the named containers around them); the whole page is still walked, so every ref
+      stays live. Agents had passed `filter`/`selector`/`query`/`interactiveOnly` 55 times.
+    - `browser_screenshot` takes `ref`: the element scrolled into view, its box (plus
+      same-origin frame offsets) clipped to the viewport and passed to `capturePage`.
+    - `browser_resize` takes `mobile`, `userAgent`, and `deviceScaleFactor`. The app sizes the
+      webview and then sends the same resize to the desktop host, which applies DevTools'
+      device mode over CDP: `Emulation.setDeviceMetricsOverride` (width/height 0, DPR, mobile),
+      touch emulation with 5 points, and a user agent with matching client hints (Android
+      Chrome by default with the browser's Chrome major; none for an iOS user agent). A resize
+      without the fields clears it; the app only contacts the host for a tab it emulated. A
+      HYM session had faked 18 in-app user agents in jsdom because the tab could not.
+    - New `browser_styles`: `CSS.getMatchedStylesForNode` and `CSS.getComputedStyleForNode`
+      inside one CDP queue slot, with `CSS.enable` reporting stylesheet URLs through
+      `styleSheetAdded`, then CSS and DOM disabled again. Rules come highest precedence first
+      with selector, sheet URL and 1-based line, and `@layer/@supports/@media/@container/@scope`
+      conditions; declarations that lose are `overridden`, unparsable ones `invalid`;
+      ancestors contribute inherited properties only; browser-default rules are counted.
+      `properties` narrows by name (a shorthand matches its longhands). Agents had scanned
+      `document.styleSheets` by hand 45 times, which cannot read cross-origin sheets.
+
+    Verified in real Electron by the capture harness `debugging` group
+    (`docs/browser-capture-harness.md`). Protocol additions are optional fields and a `styles`
+    command gated through `browserHost.supportedCommands`, ledgered. Rejected with reasons in
+    the 2026-10-06 research: console object previews (need `Runtime.enable`, a bot-detection
+    signal), performance traces, Lighthouse and heap tools (83 performance evaluates in 30
+    days), React source mapping (2), and an always-on request log (`browser_logs` already
+    shows the page's requests with status). Key files: the browser-automation modules
+    `css-styles`, `device-emulation`, `snapshot-engine`, `ipc`, and `service`;
+    `packages/app/src/desktop/browser/automation/handler.ts`;
+    `packages/server/src/server/browser-tools/tools.ts`;
+    `packages/protocol/src/browser-automation/rpc-schemas.ts`.
+
+36. **New tabs open Google; the address bar searches** — upstream opens `https://example.com`.
+    `DEFAULT_BROWSER_URL` is `https://www.google.com` for user and agent tabs, and address-bar
+    input that is not URL-shaped (no scheme, local host, or `host.tld`; any whitespace) goes to
+    Google search, as Chrome's omnibox does. `host:port` is no longer mistaken for a scheme.
+    Agent navigation is unchanged. Key file: `packages/app/src/desktop/browser/store/state.ts`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

@@ -431,7 +431,11 @@ async function resizeBrowserTabForRequest(params: {
       width: dimensions.width,
       height: dimensions.height,
     });
-    return browserResizeSuccess(request.requestId, browserId, settledDimensions ?? dimensions);
+    return applyResizeEmulation({
+      request,
+      browserHost,
+      sized: browserResizeSuccess(request.requestId, browserId, settledDimensions ?? dimensions),
+    });
   }
 
   if (workspaceId && browserHost?.resizePopupTarget) {
@@ -442,10 +446,69 @@ async function resizeBrowserTabForRequest(params: {
       height: command.args.height,
     });
     if (dimensions) {
-      return browserResizeSuccess(request.requestId, browserId, dimensions);
+      return applyResizeEmulation({
+        request,
+        browserHost,
+        sized: browserResizeSuccess(request.requestId, browserId, dimensions),
+      });
     }
   }
   return browserTabNotFound(request.requestId, browserId);
+}
+
+// Browsers whose last resize turned device emulation on; a plain resize of one
+// of them goes to the desktop host too, to turn it off.
+const emulatedBrowserIds = new Set<string>();
+
+// The webview size is the app's; the device emulation (touch, DPR, user agent)
+// is a CDP override the desktop host applies to the same tab.
+async function applyResizeEmulation(params: {
+  request: BrowserAutomationExecuteRequest;
+  browserHost: DesktopHostBridge["browser"] | undefined;
+  sized: BrowserAutomationResponsePayload;
+}): Promise<BrowserAutomationResponsePayload> {
+  const { request, browserHost, sized } = params;
+  const command = request.command as Extract<
+    BrowserAutomationExecuteRequest["command"],
+    { command: "resize" }
+  >;
+  const { browserId, mobile, userAgent, deviceScaleFactor } = command.args;
+  const wantsEmulation =
+    mobile !== undefined || userAgent !== undefined || deviceScaleFactor !== undefined;
+  if (!sized.ok || (!wantsEmulation && !emulatedBrowserIds.has(browserId))) {
+    return sized;
+  }
+  if (!browserHost?.executeAutomationCommand) {
+    return browserAutomationFailure({
+      requestId: request.requestId,
+      code: "browser_unsupported",
+      message: "Device emulation needs the desktop browser host.",
+    });
+  }
+  let emulated: BrowserAutomationResponsePayload;
+  try {
+    emulated = await browserHost.executeAutomationCommand(request);
+  } catch (error) {
+    return normalizeThrownBridgeError(request.requestId, error);
+  }
+  if (!emulated.ok) {
+    return emulated;
+  }
+  if (emulated.result.command !== "resize" || sized.result.command !== "resize") {
+    return sized;
+  }
+  if (emulated.result.emulation) {
+    emulatedBrowserIds.add(browserId);
+  } else {
+    emulatedBrowserIds.delete(browserId);
+  }
+  return {
+    ...sized,
+    result: {
+      ...sized.result,
+      ...(emulated.result.emulation ? { emulation: emulated.result.emulation } : {}),
+    },
+  };
 }
 
 async function settleResidentBrowserResize(input: {

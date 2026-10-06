@@ -220,7 +220,7 @@ function browserNewTabRequest(): BrowserAutomationExecuteRequest {
 
 function browserResizeRequest(
   browserId: string,
-  input: { workspaceId?: string } = {},
+  input: { workspaceId?: string; mobile?: boolean } = {},
 ): BrowserAutomationExecuteRequest {
   return {
     type: "browser.automation.execute.request",
@@ -229,7 +229,12 @@ function browserResizeRequest(
     workspaceId: input.workspaceId ?? "wks_workspace_a",
     command: {
       command: "resize",
-      args: { browserId, width: 1024, height: 768 },
+      args: {
+        browserId,
+        width: 1024,
+        height: 768,
+        ...(input.mobile !== undefined ? { mobile: input.mobile } : {}),
+      },
     },
   };
 }
@@ -482,6 +487,45 @@ describe("mountBrowserAutomationHandler", () => {
       height: 768,
     });
     expect(browser.browser.executedRequests).toHaveLength(1);
+  });
+
+  test("browser_resize sends device emulation to the desktop host and turns it off later", async () => {
+    const browser = new BrowserAutomationHandlerHarness();
+    browser.mount({ serverId: "server-1" });
+    browser.receive(browserNewTabRequest());
+    await flushAsyncWork();
+    const result = newTabResultFrom(browser.client.payloadAt(0));
+    const emulation = { mobile: true, userAgent: "Android UA", deviceScaleFactor: 3 };
+    browser.browser.response = {
+      requestId: "req-resize",
+      ok: true,
+      result: {
+        command: "resize",
+        browserId: result.browserId,
+        width: 1024,
+        height: 768,
+        emulation,
+      },
+    };
+
+    browser.receive(browserResizeRequest(result.browserId, { mobile: true }));
+    await waitForRegistrationTimeout();
+
+    expect(browser.client.payloadAt(1)).toMatchObject({ ok: true, result: { emulation } });
+    expect(browser.browser.executedRequests.at(-1)?.command.command).toBe("resize");
+
+    browser.browser.response = {
+      requestId: "req-resize",
+      ok: true,
+      result: { command: "resize", browserId: result.browserId, width: 1024, height: 768 },
+    };
+    browser.receive(browserResizeRequest(result.browserId));
+    await waitForRegistrationTimeout();
+
+    expect(
+      browser.browser.executedRequests.filter((r) => r.command.command === "resize"),
+    ).toHaveLength(2);
+    expect(browser.client.payloadAt(2)).not.toHaveProperty("result.emulation");
   });
 
   test("browser_resize delegates ephemeral popup viewport changes to Electron", async () => {

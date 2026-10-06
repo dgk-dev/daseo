@@ -58,6 +58,16 @@ fill, type, upload, wait, and evaluate reach the inner elements (the trusted cli
 the frame's border and padding offset); and that `browser_network` captures a same-origin
 `fetch` with its bodies, credentials redacted.
 
+The debugging group (`PASEO_CAPTURE_HARNESS_GROUP=debugging`) serves a page under a
+`script-src` nonce CSP with `require-trusted-types-for 'script'` and checks the delta 35
+tools in real Chromium: `browser_evaluate` runs there; `browser_logs` marks the previous
+page's messages and filters by level; scoped and interactive snapshots; an element
+screenshot sized to the element; `browser_styles` ordering (style attribute, then `#id`, then
+`.class tag`) with the stylesheet URL and line; and `browser_resize` mobile emulation reaching
+the request's User-Agent header, `(pointer: coarse)`, `(hover: none)`, touch, DPR 3, and
+`navigator.userAgentData`, then clearing. CDP lists each declaration of a styled rule twice
+(as written, with a range, and as parsed, without), which only shows against real Chromium.
+
 The automation group uses a real guest webview to verify the page-side ref contract:
 ARIA-like snapshot text includes headings, static text, and controls; refs survive
 `pushState` when the element still matches; same-URL rerenders stale old refs; and a

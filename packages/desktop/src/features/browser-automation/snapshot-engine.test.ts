@@ -70,6 +70,82 @@ class SnapshotFixture implements SnapshotPage {
 }
 
 describe("BrowserSnapshotEngine", () => {
+  function navWithSaveButton(): unknown[] {
+    return [
+      {
+        kind: "role",
+        role: "navigation",
+        name: "Main",
+        tagName: "nav",
+        attributes: [],
+        children: [
+          {
+            kind: "role",
+            role: "generic",
+            tagName: "div",
+            attributes: [],
+            children: [{ kind: "text", text: "Menu" }],
+          },
+          {
+            kind: "role",
+            role: "button",
+            name: "Save changes",
+            tagName: "button",
+            attributes: [],
+            ref: "@e1",
+            fingerprint: {
+              role: "button",
+              name: "Save changes",
+              tagName: "button",
+              type: "",
+              ariaLabel: "",
+            },
+            children: [],
+          },
+        ],
+      },
+      { kind: "text", text: "Footer text" },
+    ];
+  }
+
+  it("renders only the subtree of a scope ref", async () => {
+    const page = new SnapshotFixture();
+    page.snapshotNodes = navWithSaveButton();
+    const engine = new BrowserSnapshotEngine();
+
+    const result = await engine.snapshotScoped({ browserId: "b", page, scopeRef: "@e1" });
+
+    expect("snapshot" in result ? result.snapshot : result).toBe(
+      '- button "Save changes" [ref=@e1]',
+    );
+  });
+
+  it("reports a scope ref that is no longer on the page as stale", async () => {
+    const page = new SnapshotFixture();
+    const engine = new BrowserSnapshotEngine();
+
+    expect(await engine.snapshotScoped({ browserId: "b", page, scopeRef: "@e9" })).toEqual({
+      ok: false,
+      reason: "stale_ref",
+    });
+  });
+
+  it("keeps refs and the named containers around them when interactive", async () => {
+    const page = new SnapshotFixture();
+    page.snapshotNodes = navWithSaveButton();
+    const engine = new BrowserSnapshotEngine();
+
+    const result = await engine.snapshotScoped({ browserId: "b", page, interactiveOnly: true });
+
+    expect("snapshot" in result ? result.snapshot : result).toBe(
+      [
+        '- document "Fixture"',
+        '  - navigation "Main"',
+        '    - button "Save changes" [ref=@e1]',
+      ].join("\n"),
+    );
+  });
+
   it("keeps text from separate block elements on separate lines", async () => {
     const page = new SnapshotFixture();
     page.snapshotNodes = [

@@ -3431,6 +3431,273 @@ async function runTabLifecycleGroup() {
   }
 }
 
+// Real-Chromium checks for the debugging tools (delta 35): evaluate under CSP and
+// Trusted Types, console navigation marks and level, matched CSS with sources,
+// scoped snapshots, element screenshots, and device emulation.
+async function startDebuggingServer() {
+  const server = http.createServer((request, response) => {
+    if (request.url === "/app.css") {
+      response.writeHead(200, { "content-type": "text/css" });
+      response.end(
+        [
+          "body { margin: 0; font-family: sans-serif; }",
+          ".card .title { font-size: 18px; color: blue; }",
+          "@media (max-width: 500px) { .title { letter-spacing: 1px; } }",
+          ".card button { color: blue; }",
+          "#buy { color: green; }",
+        ].join("\n"),
+      );
+      return;
+    }
+    if (request.url === "/ua") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(
+        `<!doctype html><title>UA</title><meta name="viewport" content="width=device-width"><p id="ua">${String(
+          request.headers["user-agent"] ?? "",
+        ).replace(/</g, "&lt;")}</p>`,
+      );
+      return;
+    }
+    response.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy": "script-src 'self' 'nonce-n1'; require-trusted-types-for 'script'",
+    });
+    response.end(`<!doctype html><title>Debug fixture</title>
+      <link rel="stylesheet" href="/app.css">
+      <style>.title { color: red; font-weight: 700; }</style>
+      <nav aria-label="Main"><div><span>Menu</span><button>Open cart</button></div></nav>
+      <div class="card"><h2 class="title" style="color: purple">Card title</h2>
+        <button id="buy" style="width: 120px; height: 40px; color: purple">Buy now</button></div>
+      <p>Long text that interactive snapshots leave out.</p>
+      <script nonce="n1">console.error("fixture loaded " + location.search);</script>`);
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  return { server, origin: `http://127.0.0.1:${server.address().port}` };
+}
+
+async function runDebuggingGroup() {
+  const target = await startDebuggingServer();
+  const handle = createInactiveHarnessWindow({
+    width: 1000,
+    height: 700,
+    backgroundColor: "#202020",
+    webPreferences: { webviewTag: true, contextIsolation: true, nodeIntegration: false },
+  });
+  const { win } = handle;
+  installHarnessWebviewGuards(win);
+  const tracker = trackAttachedGuests(win, { disableGuestBackgroundThrottlingAtAttach: true });
+  try {
+    await withTimeout(
+      win.loadFile(path.join(ROOT, "index.html"), {
+        query: { webviewCount: "0", permanentParkingState: "p1-overflow-1x1" },
+      }),
+      "debugging harness window loadFile",
+    );
+    await waitForInactiveReveal(handle, "debugging harness window");
+    const { guest } = await appendPermanentWebview({
+      win,
+      tracker,
+      state: { id: "p1-overflow-1x1" },
+      sourceUrl: `${target.origin}/?first`,
+    });
+    await waitForGuestLoad(guest);
+    const harness = createFramesAutomation(guest);
+    await verifyDebugEvaluate(harness);
+    await verifyDebugLogs(harness, target.origin);
+    const buyRef = await verifyDebugSnapshots(harness);
+    await verifyDebugElementScreenshot(harness, buyRef);
+    await verifyDebugStyles(harness, buyRef);
+    await verifyDebugEmulation(harness, target.origin);
+    return [
+      "evaluate-csp",
+      "logs",
+      "snapshot-scope",
+      "element-screenshot",
+      "styles",
+      "emulation",
+    ].map((check) => ({ group: "debugging", check, pass: true }));
+  } finally {
+    if (!win.isDestroyed()) win.close();
+    await closeServer(target.server);
+  }
+}
+
+function failedChecks(checks) {
+  return Object.entries(checks)
+    .filter(([, ok]) => !ok)
+    .map(([name]) => name);
+}
+
+async function verifyDebugEvaluate(harness) {
+  const { browserId } = harness;
+  const evaluated = await harness.run("evaluate under CSP", {
+    command: "evaluate",
+    args: { browserId, function: "() => document.title // comment" },
+  });
+  const syntax = await harness.execute({
+    command: "evaluate",
+    args: { browserId, function: "() => { return 1" },
+  });
+  const failed = failedChecks({
+    csp: evaluated.resultJson === '"Debug fixture"',
+    syntax:
+      !syntax.ok && syntax.error.message.startsWith("browser_evaluate function has a syntax error"),
+  });
+  if (failed.length > 0) {
+    fail(`evaluate checks failed (${failed}): ${JSON.stringify({ evaluated, syntax })}`);
+  }
+  pass("evaluate runs on a CSP + Trusted Types page and reports syntax errors");
+}
+
+async function verifyDebugLogs(harness, origin) {
+  const { browserId, guest } = harness;
+  // The console is observed from adaptWebContents on (production adapts at attach);
+  // load the first page again now that it is.
+  for (const query of ["first", "second"]) {
+    await harness.run(`navigate ${query}`, {
+      command: "navigate",
+      args: { browserId, url: `${origin}/?${query}` },
+    });
+    await waitForGuestLoad(guest);
+  }
+  const logs = await harness.run("logs error level", {
+    command: "logs",
+    args: { browserId, maxEntries: 50, level: "error" },
+  });
+  const first = logs.console.find((entry) => entry.message.includes("?first"));
+  const second = logs.console.find((entry) => entry.message.includes("?second"));
+  const failed = failedChecks({
+    firstMarked: first?.previousPage === true,
+    secondCurrent: Boolean(second) && !second.previousPage,
+    levelFiltered: logs.console.every((entry) => entry.level === "error"),
+  });
+  if (failed.length > 0) {
+    fail(`logs checks failed (${failed}): ${JSON.stringify(logs.console)}`);
+  }
+  pass("logs marks the earlier page's messages and filters by level");
+}
+
+async function verifyDebugSnapshots(harness) {
+  const { browserId } = harness;
+  const { snapshot } = await harness.run("snapshot", { command: "snapshot", args: { browserId } });
+  const buyRef = /button "Buy now" \[ref=(@e\d+)\]/.exec(snapshot)?.[1];
+  if (!buyRef) fail(`snapshot has no Buy now ref:\n${snapshot}`);
+  const interactive = await harness.run("interactive snapshot", {
+    command: "snapshot",
+    args: { browserId, interactive: true },
+  });
+  const scoped = await harness.run("scoped snapshot", {
+    command: "snapshot",
+    args: { browserId, ref: buyRef },
+  });
+  const failed = failedChecks({
+    dropsText: !interactive.snapshot.includes("Long text"),
+    keepsLandmark: interactive.snapshot.includes('navigation "Main"'),
+    keepsButton: interactive.snapshot.includes('button "Open cart"'),
+    scoped: scoped.snapshot.trim() === `- button "Buy now" [ref=${buyRef}]`,
+  });
+  if (failed.length > 0) {
+    fail(`snapshot checks failed (${failed}):\n${interactive.snapshot}\n---\n${scoped.snapshot}`);
+  }
+  pass("snapshot scopes to a ref and keeps only interactive elements");
+  return buyRef;
+}
+
+async function verifyDebugElementScreenshot(harness, buyRef) {
+  const shot = await harness.run("element screenshot", {
+    command: "screenshot",
+    args: { browserId: harness.browserId, fullPage: false, ref: buyRef },
+  });
+  const ratio = shot.width / 120;
+  if (ratio < 1 || ratio > 3 || Math.abs(shot.height / ratio - 40) > 2) {
+    fail(`element screenshot size ${shot.width}x${shot.height} does not match the 120x40 button`);
+  }
+  pass(`element screenshot captures the button only (${shot.width}x${shot.height})`);
+}
+
+async function verifyDebugStyles(harness, buyRef) {
+  const styles = await harness.run("styles", {
+    command: "styles",
+    args: { browserId: harness.browserId, ref: buyRef, maxRules: 30 },
+  });
+  const colorRules = styles.rules
+    .filter((rule) => !rule.inheritedFrom && rule.declarations.some((d) => d.name === "color"))
+    .map((rule) => {
+      const color = rule.declarations.find((d) => d.name === "color");
+      return `${rule.selector}${color.overridden ? "!" : ""}`;
+    });
+  const body = styles.rules.find((rule) => rule.selector === "body");
+  const failed = failedChecks({
+    cascade: colorRules.join(" > ") === "element.style > #buy! > .card button!",
+    source: Boolean(body?.source?.endsWith("/app.css")) && body.line === 1,
+    computed: styles.computed.width === "120px",
+    userAgent: styles.userAgentRules > 0,
+  });
+  if (failed.length > 0) {
+    fail(`styles checks failed (${failed}): ${JSON.stringify(styles)}`);
+  }
+  pass("styles orders rules by precedence with sheet URL and line, computed values, UA count");
+}
+
+async function verifyDebugEmulation(harness, origin) {
+  const { browserId, guest } = harness;
+  const emulated = await harness.run("resize mobile", {
+    command: "resize",
+    args: { browserId, width: 390, height: 700, mobile: true },
+  });
+  await harness.run("navigate ua", {
+    command: "navigate",
+    args: { browserId, url: `${origin}/ua` },
+  });
+  await waitForGuestLoad(guest);
+  const phone = await guest.executeJavaScript(
+    `({
+      header: document.getElementById('ua').textContent,
+      agent: navigator.userAgent,
+      coarse: matchMedia('(pointer: coarse)').matches,
+      noHover: matchMedia('(hover: none)').matches,
+      touch: 'ontouchstart' in window,
+      maxTouchPoints: navigator.maxTouchPoints,
+      dpr: devicePixelRatio,
+      chMobile: navigator.userAgentData ? navigator.userAgentData.mobile : null,
+      chPlatform: navigator.userAgentData ? navigator.userAgentData.platform : null,
+    })`,
+    true,
+  );
+  const failed = failedChecks({
+    reported: emulated.emulation?.mobile === true,
+    header: /Android.*Mobile/.test(phone.header),
+    agent: /Android/.test(phone.agent),
+    coarse: phone.coarse,
+    noHover: phone.noHover,
+    touch: phone.touch && phone.maxTouchPoints > 0,
+    dpr: phone.dpr === 3,
+    clientHints: phone.chMobile === true && phone.chPlatform === "Android",
+  });
+  if (failed.length > 0) {
+    fail(`mobile emulation incomplete (${failed}): ${JSON.stringify({ emulated, phone })}`);
+  }
+  await harness.run("resize clear", {
+    command: "resize",
+    args: { browserId, width: 1000, height: 700 },
+  });
+  await harness.run("reload ua", { command: "reload", args: { browserId } });
+  await waitForGuestLoad(guest);
+  const desktop = await guest.executeJavaScript(
+    `({ header: document.getElementById('ua').textContent, coarse: matchMedia('(pointer: coarse)').matches })`,
+    true,
+  );
+  if (/Android/.test(desktop.header) || desktop.coarse) {
+    fail(`mobile emulation did not clear: ${JSON.stringify(desktop)}`);
+  }
+  pass(
+    `mobile emulation reaches the server UA, media queries, touch, DPR, client hints; clears (${JSON.stringify(phone)})`,
+  );
+}
+
 async function main() {
   ensureDirSync(OUT_DIR);
   if (
@@ -3441,6 +3708,7 @@ async function main() {
       "automation",
       "browser-profile",
       "frames-network",
+      "debugging",
       "tab-lifecycle",
     ].includes(HARNESS_GROUP)
   ) {
@@ -3454,6 +3722,16 @@ async function main() {
       `${JSON.stringify({ generatedAt: new Date().toISOString(), tabLifecycleResults }, null, 2)}\n`,
     );
     pass(`capture harness tab-lifecycle complete output=${OUT_DIR}`);
+    return;
+  }
+
+  if (HARNESS_GROUP === "debugging") {
+    const debuggingResults = await runDebuggingGroup();
+    await fsp.writeFile(
+      path.join(OUT_DIR, "results.json"),
+      `${JSON.stringify({ generatedAt: new Date().toISOString(), debuggingResults }, null, 2)}\n`,
+    );
+    pass(`capture harness debugging complete output=${OUT_DIR}`);
     return;
   }
 

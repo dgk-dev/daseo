@@ -3,6 +3,7 @@ import { compileFunction } from "node:vm";
 
 import type {
   BrowserAutomationCommand,
+  BrowserAutomationConsoleLevel,
   BrowserAutomationConsoleLogEntry,
   BrowserAutomationDialogEvent,
   BrowserAutomationErrorCode,
@@ -11,9 +12,13 @@ import type {
   BrowserAutomationFindCommandArgs,
   BrowserAutomationNetworkLogEntry,
   BrowserAutomationReadCommandArgs,
+  BrowserAutomationResizeCommandArgs,
+  BrowserAutomationStylesCommandArgs,
   BrowserAutomationWaitLoadState,
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import { waitForActionableTarget, type ActionabilityResult } from "./actionability.js";
+import { summarizeElementStyles, type RawElementStyles } from "./css-styles.js";
+import type { DeviceEmulation } from "./device-emulation.js";
 import { dispatchFocusIsolatedClick, dispatchFocusIsolatedDrag } from "./focus-isolated-input.js";
 import type { ScreencastFramePayload, ScreencastOptions } from "./screencast.js";
 import { planStreamInputCdpSteps } from "./stream-input.js";
@@ -74,6 +79,17 @@ export interface TabContents {
   ): () => void;
   /** The tab's opt-in request capture; one per tab, idle until started. */
   getNetworkCapture?(): NetworkCaptureControl;
+  /**
+   * Turns device emulation on, changes it, or (all fields absent) clears it; returns what the
+   * tab now emulates, null for none.
+   */
+  setDeviceEmulation?(request: {
+    mobile?: boolean;
+    userAgent?: string;
+    deviceScaleFactor?: number;
+  }): Promise<DeviceEmulation | null>;
+  /** Matched CSS rules and computed style of the element the expression returns. */
+  collectElementStyles?(elementExpression: string): Promise<RawElementStyles | "stale_ref">;
 }
 
 export interface MainFrameNavigationResponse {
@@ -88,6 +104,8 @@ export interface TabImage {
 
 export interface TabCapturePageOptions {
   stayHidden?: boolean;
+  /** CSS-pixel area of the viewport to capture; the whole viewport when absent. */
+  rect?: { x: number; y: number; width: number; height: number };
 }
 
 export interface BrowserRegistry {
@@ -401,6 +419,7 @@ const commandHandlers: Record<BrowserAutomationCommand["command"], CommandHandle
       requestId,
       workspaceId,
       snapshotCommand.args.browserId,
+      { scopeRef: snapshotCommand.args.ref, interactiveOnly: snapshotCommand.args.interactive },
       registry,
       snapshotEngine,
     );
@@ -518,11 +537,21 @@ const commandHandlers: Record<BrowserAutomationCommand["command"], CommandHandle
       snapshotEngine,
     );
   },
-  screenshot: ({ command, requestId, workspaceId, registry }) => {
+  screenshot: ({ command, requestId, workspaceId, registry, snapshotEngine }) => {
     const screenshotCommand = command as Extract<
       BrowserAutomationCommand,
       { command: "screenshot" }
     >;
+    if (screenshotCommand.args.ref) {
+      return executeElementScreenshot(
+        requestId,
+        workspaceId,
+        screenshotCommand.args.browserId,
+        screenshotCommand.args.ref,
+        registry,
+        snapshotEngine,
+      );
+    }
     return executeScreenshot(
       requestId,
       workspaceId,
@@ -585,6 +614,7 @@ const commandHandlers: Record<BrowserAutomationCommand["command"], CommandHandle
       workspaceId,
       logsCommand.args.browserId,
       logsCommand.args.maxEntries,
+      logsCommand.args.level,
       registry,
     );
   },
@@ -613,8 +643,11 @@ const commandHandlers: Record<BrowserAutomationCommand["command"], CommandHandle
       snapshotEngine,
     );
   },
-  resize: ({ requestId }) =>
-    fail(requestId, "browser_unsupported", "browser_resize is handled by the app runtime."),
+  // The app runtime sizes the webview, then sends resize here for the device emulation.
+  resize: ({ command, requestId, workspaceId, registry }) => {
+    const resizeCommand = command as Extract<BrowserAutomationCommand, { command: "resize" }>;
+    return executeResizeEmulation(requestId, workspaceId, resizeCommand.args, registry);
+  },
   close_tab: ({ requestId }) =>
     fail(requestId, "browser_unsupported", "browser_close_tab is handled by the app runtime."),
   stream_start: ({ command, requestId, workspaceId, registry, streamSink }) => {
@@ -641,7 +674,93 @@ const commandHandlers: Record<BrowserAutomationCommand["command"], CommandHandle
     const findCommand = command as Extract<BrowserAutomationCommand, { command: "find" }>;
     return executeFind(requestId, workspaceId, findCommand.args, registry, snapshotEngine);
   },
+  styles: ({ command, requestId, workspaceId, registry, snapshotEngine }) => {
+    const stylesCommand = command as Extract<BrowserAutomationCommand, { command: "styles" }>;
+    return executeStyles(requestId, workspaceId, stylesCommand.args, registry, snapshotEngine);
+  },
 };
+
+async function executeResizeEmulation(
+  requestId: string,
+  workspaceId: string | undefined,
+  args: BrowserAutomationResizeCommandArgs,
+  registry: BrowserRegistry,
+): Promise<AutomationCommandPayload> {
+  const target = resolveTabTarget({ requestId, workspaceId, browserId: args.browserId, registry });
+  if ("ok" in target) {
+    return target;
+  }
+  const requested = {
+    ...(args.mobile !== undefined ? { mobile: args.mobile } : {}),
+    ...(args.userAgent ? { userAgent: args.userAgent } : {}),
+    ...(args.deviceScaleFactor !== undefined ? { deviceScaleFactor: args.deviceScaleFactor } : {}),
+  };
+  if (!target.contents.setDeviceEmulation) {
+    return Object.keys(requested).length > 0
+      ? fail(requestId, "browser_unsupported", "browser_resize device emulation requires CDP")
+      : resizeSuccess(requestId, target.browserId, args, null);
+  }
+  const emulation = await target.contents.setDeviceEmulation(requested);
+  return resizeSuccess(requestId, target.browserId, args, emulation);
+}
+
+function resizeSuccess(
+  requestId: string,
+  browserId: string,
+  args: BrowserAutomationResizeCommandArgs,
+  emulation: DeviceEmulation | null,
+): AutomationCommandPayload {
+  return {
+    requestId,
+    ok: true,
+    result: {
+      command: "resize",
+      browserId,
+      width: args.width,
+      height: args.height,
+      ...(emulation ? { emulation } : {}),
+    },
+  };
+}
+
+async function executeStyles(
+  requestId: string,
+  workspaceId: string | undefined,
+  args: BrowserAutomationStylesCommandArgs,
+  registry: BrowserRegistry,
+  snapshotEngine: BrowserSnapshotEngine,
+): Promise<AutomationCommandPayload> {
+  const target = resolveTabTarget({ requestId, workspaceId, browserId: args.browserId, registry });
+  if ("ok" in target) {
+    return target;
+  }
+  return withDialogCapture(target.contents, async () => {
+    if (!target.contents.collectElementStyles) {
+      return fail(requestId, "browser_unsupported", "browser_styles requires CDP");
+    }
+    const elementExpression = snapshotEngine.runtimeElementExpression({
+      browserId: target.browserId,
+      ref: args.ref,
+    });
+    if (typeof elementExpression !== "string") {
+      return staleRefFailure(requestId, args.ref);
+    }
+    const raw = await target.contents.collectElementStyles(elementExpression);
+    if (raw === "stale_ref") {
+      return staleRefFailure(requestId, args.ref);
+    }
+    return {
+      requestId,
+      ok: true,
+      result: summarizeElementStyles(raw, {
+        browserId: target.browserId,
+        ref: args.ref,
+        ...(args.properties ? { properties: args.properties } : {}),
+        maxRules: args.maxRules,
+      }),
+    };
+  });
+}
 
 async function executeRead(
   requestId: string,
@@ -1074,6 +1193,7 @@ async function executeSnapshot(
   requestId: string,
   workspaceId: string | undefined,
   browserId: string,
+  scope: { scopeRef?: string; interactiveOnly?: boolean },
   registry: BrowserRegistry,
   snapshotEngine: BrowserSnapshotEngine,
 ): Promise<AutomationCommandPayload> {
@@ -1088,10 +1208,15 @@ async function executeSnapshot(
   }
 
   return withDialogCapture(target.contents, async () => {
-    const snapshot = await snapshotEngine.snapshot({
+    const snapshot = await snapshotEngine.snapshotScoped({
       browserId: target.browserId,
       page: target.contents,
+      ...(scope.scopeRef ? { scopeRef: scope.scopeRef } : {}),
+      ...(scope.interactiveOnly ? { interactiveOnly: true } : {}),
     });
+    if ("ok" in snapshot) {
+      return staleRefFailure(requestId, scope.scopeRef ?? "unknown");
+    }
 
     return {
       requestId,
@@ -1402,6 +1527,7 @@ async function executeLogs(
   workspaceId: string | undefined,
   browserId: string,
   maxEntries: number,
+  level: BrowserAutomationConsoleLevel | undefined,
   registry: BrowserRegistry,
 ): Promise<AutomationCommandPayload> {
   const target = resolveTabTarget({ requestId, workspaceId, browserId, registry });
@@ -1409,7 +1535,10 @@ async function executeLogs(
     return target;
   }
   return withDialogCapture(target.contents, async () => {
-    const consoleMessages = target.contents.getConsoleMessages?.() ?? [];
+    const consoleMessages = filterConsoleByLevel(
+      target.contents.getConsoleMessages?.() ?? [],
+      level,
+    );
     const networkEntries = parseNetworkEntries(
       await target.contents.executeJavaScript(NETWORK_PERFORMANCE_SCRIPT),
     );
@@ -1424,6 +1553,29 @@ async function executeLogs(
       },
     };
   });
+}
+
+// Chromium names: verbose/log/info/warning/error; Electron reports log-level
+// messages as info. A level keeps itself and everything more severe.
+const CONSOLE_LEVEL_RANK: Record<string, number> = {
+  verbose: 0,
+  debug: 0,
+  log: 1,
+  info: 1,
+  warning: 2,
+  warn: 2,
+  error: 3,
+};
+
+function filterConsoleByLevel(
+  entries: BrowserAutomationConsoleLogEntry[],
+  level: BrowserAutomationConsoleLevel | undefined,
+): BrowserAutomationConsoleLogEntry[] {
+  if (!level) {
+    return entries;
+  }
+  const minimum = CONSOLE_LEVEL_RANK[level] ?? 0;
+  return entries.filter((entry) => (CONSOLE_LEVEL_RANK[entry.level] ?? 1) >= minimum);
 }
 
 async function executeEvaluate(
@@ -1452,6 +1604,11 @@ async function executeEvaluate(
       elementExpression = expression;
     }
 
+    const syntaxError = evaluateFunctionSyntaxError(functionSource);
+    if (syntaxError) {
+      return fail(requestId, "browser_unknown_error", `browser_evaluate function ${syntaxError}`);
+    }
+
     let settled: EvaluateSettlement;
     try {
       settled = await settleEvaluate(
@@ -1472,7 +1629,7 @@ async function executeEvaluate(
       return fail(
         requestId,
         "browser_timeout",
-        `The page function did not return within ${EVALUATE_RESULT_TIMEOUT_MS / 1000}s and may still be running in the page. Return sooner and poll, or use browser_wait for waits.`,
+        `The page function did not return within ${EVALUATE_RESULT_TIMEOUT_MS / 1000}s and may still be running in the page. To wait for the page, use browser_wait with selector or script (a function polled until it returns truthy) instead of a loop inside browser_evaluate.`,
         true,
       );
     }
@@ -2335,6 +2492,125 @@ async function executeScreenshot(
   });
 }
 
+// The element's box in the top document's viewport, after scrolling it into
+// view. Boxes inside same-origin iframes add each frame's content-box offset.
+function elementViewportRectScript(elementExpression: string): string {
+  return String.raw`(() => {
+    const element = ${elementExpression};
+    if (!element) return { staleRef: true };
+    element.scrollIntoView({ block: 'center', inline: 'center' });
+    let { left, top, width, height } = element.getBoundingClientRect();
+    let view = element.ownerDocument.defaultView;
+    while (view && view !== window && view.frameElement) {
+      const frame = view.frameElement;
+      const frameRect = frame.getBoundingClientRect();
+      left += frameRect.left + frame.clientLeft;
+      top += frameRect.top + frame.clientTop;
+      view = frame.ownerDocument.defaultView;
+    }
+    return { left, top, width, height, viewportWidth: window.innerWidth, viewportHeight: window.innerHeight };
+  })()`;
+}
+
+interface ElementViewportRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  viewportWidth: number;
+  viewportHeight: number;
+}
+
+function readElementViewportRect(value: unknown): ElementViewportRect | "stale_ref" | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.staleRef === true) {
+    return "stale_ref";
+  }
+  const keys = ["left", "top", "width", "height", "viewportWidth", "viewportHeight"] as const;
+  if (!keys.every((key) => typeof record[key] === "number" && Number.isFinite(record[key]))) {
+    return null;
+  }
+  return record as unknown as ElementViewportRect;
+}
+
+/** Clips the element box to the viewport, in whole CSS pixels; null when nothing is visible. */
+export function clipElementRectToViewport(
+  rect: ElementViewportRect,
+): { x: number; y: number; width: number; height: number } | null {
+  const left = Math.max(0, Math.floor(rect.left));
+  const top = Math.max(0, Math.floor(rect.top));
+  const right = Math.min(rect.viewportWidth, Math.ceil(rect.left + rect.width));
+  const bottom = Math.min(rect.viewportHeight, Math.ceil(rect.top + rect.height));
+  if (right - left < 1 || bottom - top < 1) {
+    return null;
+  }
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+async function executeElementScreenshot(
+  requestId: string,
+  workspaceId: string | undefined,
+  browserId: string,
+  ref: string,
+  registry: BrowserRegistry,
+  snapshotEngine: BrowserSnapshotEngine,
+): Promise<AutomationCommandPayload> {
+  const target = resolveTabTarget({ requestId, workspaceId, browserId, registry });
+  if ("ok" in target) {
+    return target;
+  }
+  return withDialogCapture(target.contents, async () => {
+    const elementExpression = snapshotEngine.runtimeElementExpression({
+      browserId: target.browserId,
+      ref,
+    });
+    if (typeof elementExpression !== "string") {
+      return staleRefFailure(requestId, ref);
+    }
+    const rect = readElementViewportRect(
+      await target.contents.executeJavaScript(elementViewportRectScript(elementExpression)),
+    );
+    if (rect === "stale_ref") {
+      return staleRefFailure(requestId, ref);
+    }
+    const clip = rect ? clipElementRectToViewport(rect) : null;
+    if (!clip) {
+      return fail(
+        requestId,
+        "browser_unknown_error",
+        `Browser element ${ref} has no visible area to capture (hidden, zero-sized, or outside the viewport).`,
+      );
+    }
+    let image: TabImage;
+    try {
+      image = await runPaintedPixelCapture(target.contents, () =>
+        target.contents.capturePage({ stayHidden: false, rect: clip }),
+      );
+    } catch (error) {
+      if (isScreenshotNoFrameError(error)) {
+        return screenshotNoFrameFailure(requestId, error);
+      }
+      throw error;
+    }
+    const size = image.getSize();
+    return {
+      requestId,
+      ok: true,
+      result: {
+        command: "screenshot",
+        browserId: target.browserId,
+        mimeType: "image/png",
+        dataBase64: Buffer.from(image.toPNG()).toString("base64"),
+        width: size.width,
+        height: size.height,
+      },
+    };
+  });
+}
+
 interface CdpRuntimeEvaluateResult {
   result?: {
     objectId?: string;
@@ -2694,6 +2970,20 @@ async function settleEvaluate(
   }
 }
 
+function evaluateFunctionSyntaxError(functionSource: string): string | null {
+  try {
+    compileFunction(`return (${functionSource}\n);`);
+    return null;
+  } catch (error) {
+    return `has a syntax error: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+// The function is inlined rather than passed to eval: pages whose CSP forbids
+// unsafe-eval or that require Trusted Types (Meta, Slack, Stripe) rejected the
+// eval, while the script Electron injects is not subject to either. The syntax
+// is checked first, because a syntax error in an inlined script only comes back
+// as a generic injection failure.
 function buildEvaluateScript(
   functionSource: string,
   elementExpression: string | undefined,
@@ -2701,7 +2991,8 @@ function buildEvaluateScript(
   return String.raw`(async () => {
     const __PASEO_BROWSER_EVALUATE__ = true;
     try {
-      const userFunction = (0, eval)(${JSON.stringify(`(${functionSource})`)});
+      const userFunction = (${functionSource}
+      );
       if (typeof userFunction !== 'function') {
         throw new Error('browser_evaluate input must evaluate to a function.');
       }

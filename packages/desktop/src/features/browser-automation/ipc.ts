@@ -7,6 +7,8 @@ import type {
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import type { TabContents, BrowserRegistry } from "./service.js";
 import type { IsolatedKeyboardInputEvent } from "./trusted-input.js";
+import { collectElementStyles } from "./css-styles.js";
+import { applyDeviceEmulation, resolveDeviceEmulation } from "./device-emulation.js";
 import { CdpSessionQueue } from "./cdp-session-queue.js";
 import {
   dialogAcceptValue,
@@ -41,11 +43,19 @@ import {
 } from "../browser-webviews/index.js";
 
 const MAX_CONSOLE_MESSAGES_PER_TAB = 200;
-const consoleMessagesByContentsId = new Map<number, BrowserAutomationConsoleLogEntry[]>();
+interface RecordedConsoleMessage {
+  entry: BrowserAutomationConsoleLogEntry;
+  /** How many main-frame navigations the tab had made when the message was logged. */
+  navigation: number;
+}
+const consoleMessagesByContentsId = new Map<number, RecordedConsoleMessage[]>();
+const mainFrameNavigationsByContentsId = new Map<number, number>();
 const cdpQueuesByContentsId = new Map<number, CdpSessionQueue>();
 const dialogMonitorsByContentsId = new Map<number, DialogMonitor>();
 const networkCapturesByContentsId = new Map<number, TabNetworkCapture>();
 const observedContentsIds = new Set<number>();
+// Tabs with device emulation on; a plain resize of any other tab needs no CDP.
+const emulatedContentsIds = new Set<number>();
 // A phone watching a tab keeps it awake from stream_start until stream_stop or destruction.
 const streamHoldReleasesByContentsId = new Map<number, () => void>();
 
@@ -100,6 +110,10 @@ interface WebContentsDebugger {
     listener: (event: unknown, method: string, params?: Record<string, unknown>) => void,
   ): void;
   on?(event: "detach", listener: () => void): void;
+  removeListener?(
+    event: "message",
+    listener: (event: unknown, method: string, params?: Record<string, unknown>) => void,
+  ): void;
 }
 
 interface ConsoleMessageEmitter {
@@ -121,6 +135,7 @@ interface BrowserAutomationWebContents extends ConsoleMessageEmitter {
   readonly debugger: WebContentsDebugger;
   getURL(): string;
   getTitle(): string;
+  getUserAgent?(): string;
   canGoBack(): boolean;
   canGoForward(): boolean;
   isLoading(): boolean;
@@ -216,7 +231,10 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
       markPaseoBrowserAutomationActivity(contentsId);
       contents.reload();
     },
-    capturePage: (captureOptions) => contents.capturePage(undefined, captureOptions),
+    capturePage: (captureOptions) => {
+      const { rect, ...electronOptions } = captureOptions ?? {};
+      return contents.capturePage(rect, electronOptions);
+    },
     // Upstream #4646 toggled background throttling around each capture. Here the tab lifecycle
     // owns throttling, so a capture holds the tab active instead of flipping it behind the
     // lifecycle's back.
@@ -248,7 +266,14 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
       markPaseoBrowserAutomationActivity(contentsId);
       contents.sendInputEvent(event);
     },
-    getConsoleMessages: () => consoleMessagesByContentsId.get(contentsId) ?? [],
+    getConsoleMessages: () => {
+      const navigation = mainFrameNavigationsByContentsId.get(contentsId) ?? 0;
+      return (consoleMessagesByContentsId.get(contentsId) ?? []).map((recorded) =>
+        recorded.navigation < navigation
+          ? Object.assign({}, recorded.entry, { previousPage: true })
+          : recorded.entry,
+      );
+    },
     onMainFrameNavigated: (listener) => {
       // Electron's did-navigate fires only for main-frame cross-document commits,
       // exactly the navigations that destroy a pending evaluate's context.
@@ -299,6 +324,50 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
     getNetworkCapture: () => {
       markPaseoBrowserAutomationActivity(contentsId);
       return getNetworkCapture(contents, contentsId, cdpQueue);
+    },
+    setDeviceEmulation: async (request) => {
+      markPaseoBrowserAutomationActivity(contentsId);
+      const emulation = resolveDeviceEmulation({
+        ...request,
+        browserUserAgent: contents.getUserAgent?.() ?? "",
+      });
+      if (!emulation && !emulatedContentsIds.has(contentsId)) {
+        return null;
+      }
+      await cdpQueue.run(async () => {
+        if (!contents.debugger.isAttached()) {
+          contents.debugger.attach("1.3");
+        }
+        await applyDeviceEmulation(
+          (command, params) => contents.debugger.sendCommand(command, params ?? {}),
+          emulation,
+        );
+      });
+      if (emulation) {
+        emulatedContentsIds.add(contentsId);
+      } else {
+        emulatedContentsIds.delete(contentsId);
+      }
+      return emulation;
+    },
+    collectElementStyles: (elementExpression) => {
+      markPaseoBrowserAutomationActivity(contentsId);
+      // One queue slot for the whole exchange, so no other command runs while CSS is enabled.
+      return cdpQueue.run(async () => {
+        if (!contents.debugger.isAttached()) {
+          contents.debugger.attach("1.3");
+        }
+        return collectElementStyles({
+          send: (command, params) => contents.debugger.sendCommand(command, params ?? {}),
+          subscribe: (listener) => {
+            const handler = (_event: unknown, method: string, params?: Record<string, unknown>) =>
+              listener(method, params);
+            contents.debugger.on?.("message", handler);
+            return () => contents.debugger.removeListener?.("message", handler);
+          },
+          elementExpression,
+        });
+      });
     },
   };
 }
@@ -353,12 +422,22 @@ function observeConsoleMessages(contents: BrowserAutomationWebContents, contents
       sourceId,
     });
     const messages = consoleMessagesByContentsId.get(contentsId) ?? [];
-    messages.push(entry);
+    messages.push({ entry, navigation: mainFrameNavigationsByContentsId.get(contentsId) ?? 0 });
     consoleMessagesByContentsId.set(contentsId, messages.slice(-MAX_CONSOLE_MESSAGES_PER_TAB));
+  });
+  // Messages outlive navigations (a reload repeats the same errors), so each one
+  // remembers which page logged it; browser_logs marks the earlier pages' messages.
+  contents.addListener?.("did-navigate", () => {
+    mainFrameNavigationsByContentsId.set(
+      contentsId,
+      (mainFrameNavigationsByContentsId.get(contentsId) ?? 0) + 1,
+    );
   });
   contents.once("destroyed", () => {
     observedContentsIds.delete(contentsId);
     consoleMessagesByContentsId.delete(contentsId);
+    mainFrameNavigationsByContentsId.delete(contentsId);
+    emulatedContentsIds.delete(contentsId);
     cdpQueuesByContentsId.delete(contentsId);
     dialogMonitorsByContentsId.delete(contentsId);
     networkCapturesByContentsId.delete(contentsId);

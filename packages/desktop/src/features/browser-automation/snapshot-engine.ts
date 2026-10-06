@@ -89,12 +89,40 @@ export class BrowserSnapshotEngine {
   private readonly statesByBrowserId = new Map<string, BrowserRefState>();
 
   async snapshot(input: { browserId: string; page: SnapshotPage }): Promise<BrowserAriaSnapshot> {
+    const result = await this.snapshotScoped(input);
+    if ("ok" in result) {
+      throw new Error("An unscoped snapshot cannot have a stale scope ref.");
+    }
+    return result;
+  }
+
+  /**
+   * `scopeRef` renders one element's subtree and `interactiveOnly` keeps the
+   * elements that carry refs; either way the whole page is walked, so every ref
+   * on the page stays usable afterwards.
+   */
+  async snapshotScoped(input: {
+    browserId: string;
+    page: SnapshotPage;
+    scopeRef?: string;
+    interactiveOnly?: boolean;
+  }): Promise<BrowserAriaSnapshot | BrowserRefFailure> {
     const rawSnapshot = parseAriaSnapshot(await input.page.executeJavaScript(ARIA_SNAPSHOT_SCRIPT));
-    const rendered = renderSnapshot(rawSnapshot.root);
-    const capped = capRenderedSnapshot(rendered, rawSnapshot.truncated);
     this.statesByBrowserId.set(input.browserId, {
       refs: new Map(rawSnapshot.refs.map((ref) => [ref.ref, ref])),
     });
+    let root: SnapshotNode | null = rawSnapshot.root;
+    if (input.scopeRef) {
+      root = findNodeByRef(rawSnapshot.root, input.scopeRef);
+      if (!root) {
+        return { ok: false, reason: "stale_ref" };
+      }
+    }
+    if (input.interactiveOnly) {
+      root = keepInteractive(root) ?? { kind: "group", children: [] };
+    }
+    const rendered = renderSnapshot(root);
+    const capped = capRenderedSnapshot(rendered, rawSnapshot.truncated);
     return {
       format: "aria-yaml",
       snapshot: capped.snapshot,
@@ -361,6 +389,53 @@ function parseStats(value: unknown): BrowserAriaSnapshotStats {
       ? { maxDepth: readNumber(record.maxDepth) ?? undefined }
       : {}),
   };
+}
+
+function findNodeByRef(node: SnapshotNode, ref: string): SnapshotNode | null {
+  if (node.ref === ref) {
+    return node;
+  }
+  for (const child of node.children ?? []) {
+    const found = findNodeByRef(child, ref);
+    if (found) {
+      return found;
+    }
+  }
+  return null;
+}
+
+// Containers stay only on the way to a ref; unnamed generic ones turn into
+// transparent groups so the result reads as landmarks, dialogs, and lists of
+// controls rather than a column of `- generic` lines.
+function keepInteractive(node: SnapshotNode): SnapshotNode | null {
+  if (node.kind === "text") {
+    return null;
+  }
+  const children = (node.children ?? []).flatMap((child): SnapshotNode[] => {
+    const kept = keepInteractive(child);
+    return kept ? [kept] : [];
+  });
+  if (node.kind === "group") {
+    return children.length > 0 ? { kind: "group", children } : null;
+  }
+  if (node.ref) {
+    return { ...node, children };
+  }
+  if (children.length === 0) {
+    return null;
+  }
+  if (node.role === "document" || (node.name && node.role !== "generic")) {
+    return { ...node, children };
+  }
+  if (
+    !node.role ||
+    node.role === "generic" ||
+    node.role === "none" ||
+    node.role === "presentation"
+  ) {
+    return { kind: "group", children };
+  }
+  return { ...node, children };
 }
 
 function renderSnapshot(root: SnapshotNode): string {

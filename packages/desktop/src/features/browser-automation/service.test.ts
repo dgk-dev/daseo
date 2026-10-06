@@ -10,7 +10,7 @@ import type {
 import { FullPageCaptureUnsupportedError } from "./full-page-capture.js";
 import { BrowserSnapshotEngine } from "./snapshot-engine.js";
 import type { BrowserRegistry, TabContents, TabImage } from "./service.js";
-import { executeAutomationCommand } from "./service.js";
+import { clipElementRectToViewport, executeAutomationCommand } from "./service.js";
 import type { IsolatedKeyboardInputEvent } from "./trusted-input.js";
 
 const BROWSER_A = "11111111-1111-4111-8111-111111111111";
@@ -34,6 +34,7 @@ class FakeImage implements TabImage {
 }
 
 class FakeTab implements TabContents {
+  public setDeviceEmulation?: TabContents["setDeviceEmulation"];
   public frameProductionDepth = 0;
   public withFrameProduction<T>(capture: () => Promise<T>): Promise<T> {
     this.frameProductionDepth += 1;
@@ -1810,11 +1811,34 @@ describe("executeAutomationCommand", () => {
     expect(browser.tab.actions).toEqual([]);
   });
 
+  test("resize applies the requested device emulation and reports it", async () => {
+    const browser = new BrowserAutomationHarness();
+    const requests: unknown[] = [];
+    browser.tab.setDeviceEmulation = async (request) => {
+      requests.push(request);
+      return { mobile: true, userAgent: "Android UA", deviceScaleFactor: 3 };
+    };
+
+    const result = await browser.execute({
+      command: "resize",
+      args: { browserId: BROWSER_A, width: 390, height: 844, mobile: true },
+    });
+
+    expect(requests).toEqual([{ mobile: true }]);
+    expect(result).toEqual({
+      requestId: "req-resize",
+      ok: true,
+      result: {
+        command: "resize",
+        browserId: BROWSER_A,
+        width: 390,
+        height: 844,
+        emulation: { mobile: true, userAgent: "Android UA", deviceScaleFactor: 3 },
+      },
+    });
+  });
+
   test.each([
-    {
-      command: { command: "resize", args: { browserId: BROWSER_A, width: 1024, height: 768 } },
-      message: "browser_resize is handled by the app runtime.",
-    },
     {
       command: { command: "close_tab", args: { browserId: BROWSER_A } },
       message: "browser_close_tab is handled by the app runtime.",
@@ -1880,6 +1904,26 @@ describe("executeAutomationCommand", () => {
         ],
       },
     });
+  });
+
+  test("logs level keeps that severity and above", async () => {
+    const browser = new BrowserAutomationHarness();
+    browser.tab.consoleMessages = [
+      { level: "debug", message: "d", timestamp: 1 },
+      { level: "info", message: "i", timestamp: 2 },
+      { level: "warning", message: "w", timestamp: 3 },
+      { level: "error", message: "e", timestamp: 4, previousPage: true },
+    ];
+
+    const result = await browser.execute({
+      command: "logs",
+      args: { browserId: BROWSER_A, maxEntries: 50, level: "warning" },
+    });
+
+    expect(result.ok && result.result.command === "logs" ? result.result.console : []).toEqual([
+      { level: "warning", message: "w", timestamp: 3 },
+      { level: "error", message: "e", timestamp: 4, previousPage: true },
+    ]);
   });
 
   test("navigate explains an aborted load and reports where the tab ended up", async () => {
@@ -1974,6 +2018,37 @@ describe("executeAutomationCommand", () => {
       },
     });
     expect(containsScript(browser.tab, "__PASEO_BROWSER_EVALUATE__", "() => 42")).toBe(true);
+  });
+
+  test("evaluate inlines the function instead of eval, so CSP and Trusted Types pages run it", async () => {
+    const browser = new BrowserAutomationHarness();
+    browser.tab.evaluateScriptResult = { ok: true, resultJson: '"t"' };
+
+    await browser.execute({
+      command: "evaluate",
+      args: { browserId: BROWSER_A, function: "() => document.title // trailing comment" },
+    });
+
+    const script = browser.tab.scripts.find((code) => code.includes("__PASEO_BROWSER_EVALUATE__"));
+    expect(script).toContain("const userFunction = (() => document.title // trailing comment\n");
+    expect(script).not.toContain("eval)(");
+    // The inlined script must itself parse, comment and all.
+    expect(() => new Function(`return ${script}`)).not.toThrow();
+  });
+
+  test("evaluate reports a syntax error without injecting anything", async () => {
+    const browser = new BrowserAutomationHarness();
+
+    const result = await browser.execute({
+      command: "evaluate",
+      args: { browserId: BROWSER_A, function: "() => { return 1" },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.ok ? "" : result.error.message).toMatch(
+      /^browser_evaluate function has a syntax error: /,
+    );
+    expect(containsScript(browser.tab, "__PASEO_BROWSER_EVALUATE__", "return 1")).toBe(false);
   });
 
   test("evaluate returns object JSON from the page context", async () => {
@@ -2778,5 +2853,30 @@ describe("network capture", () => {
       ok: false,
       error: { code: "browser_unsupported" },
     });
+  });
+});
+
+describe("clipElementRectToViewport", () => {
+  const viewport = { viewportWidth: 1000, viewportHeight: 800 };
+
+  test("rounds outward to whole pixels inside the viewport", () => {
+    expect(
+      clipElementRectToViewport({ left: 10.4, top: 20.6, width: 100.2, height: 50, ...viewport }),
+    ).toEqual({ x: 10, y: 20, width: 101, height: 51 });
+  });
+
+  test("clips an element taller than the viewport", () => {
+    expect(
+      clipElementRectToViewport({ left: 0, top: -300, width: 1200, height: 2000, ...viewport }),
+    ).toEqual({ x: 0, y: 0, width: 1000, height: 800 });
+  });
+
+  test("returns null for a zero-sized or off-screen element", () => {
+    expect(
+      clipElementRectToViewport({ left: 5, top: 5, width: 0, height: 10, ...viewport }),
+    ).toBeNull();
+    expect(
+      clipElementRectToViewport({ left: 1200, top: 5, width: 50, height: 10, ...viewport }),
+    ).toBeNull();
   });
 });

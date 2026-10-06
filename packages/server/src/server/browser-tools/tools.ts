@@ -8,6 +8,7 @@ import {
   BROWSER_AUTOMATION_READ_DEFAULT_MAX_CHARS,
   BROWSER_AUTOMATION_READ_MAX_CHARS,
   BrowserAutomationBrowserIdSchema,
+  BrowserAutomationConsoleLevelSchema,
   BrowserAutomationNetworkActionSchema,
   BrowserAutomationNetworkResourceTypeSchema,
   BrowserAutomationReadScopeSchema,
@@ -16,6 +17,7 @@ import {
   type BrowserAutomationFindResult,
   type BrowserAutomationNetworkResult,
   type BrowserAutomationReadResult,
+  type BrowserAutomationStylesResult,
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import type { BrowserToolsBroker } from "./broker.js";
 import type { BrowserToolsResponsePayload } from "./errors.js";
@@ -78,26 +80,24 @@ const BrowserWaitTimeoutInputSchema = z
   .int()
   .positive()
   .transform((value) => Math.min(value, MAX_BROWSER_WAIT_MS));
-const BrowserWaitInputSchema = z
-  .object({
-    text: z.string().min(1).optional(),
-    url: z.string().min(1).optional(),
-    selector: z.string().min(1).optional(),
-    script: z.string().min(1).optional(),
-    load: BrowserAutomationWaitLoadStateSchema.optional(),
-    timeoutMs: BrowserWaitTimeoutInputSchema.optional(),
-    browserId: BrowserAutomationBrowserIdSchema,
-  })
-  .refine(
-    (input) => {
-      const conditions = countWaitConditions(input);
-      return conditions === 1 || (conditions === 0 && Boolean(input.timeoutMs));
-    },
-    {
-      message:
-        "browser_wait requires one condition (text, url, selector, script, or load), or timeoutMs alone to pause",
-    },
-  );
+const BrowserWaitInputSchema = strictBrowserInput("browser_wait", {
+  text: z.string().min(1).optional(),
+  url: z.string().min(1).optional(),
+  selector: z.string().min(1).optional(),
+  script: z.string().min(1).optional(),
+  load: BrowserAutomationWaitLoadStateSchema.optional(),
+  timeoutMs: BrowserWaitTimeoutInputSchema.optional(),
+  browserId: BrowserAutomationBrowserIdSchema,
+}).refine(
+  (input) => {
+    const conditions = countWaitConditions(input);
+    return conditions === 1 || (conditions === 0 && Boolean(input.timeoutMs));
+  },
+  {
+    message:
+      "browser_wait requires one condition (text, url, selector, script, or load), or timeoutMs alone to pause",
+  },
+);
 const BrowserReadMaxCharsInputSchema = z
   .number()
   .int()
@@ -111,14 +111,13 @@ const BrowserFindLimitInputSchema = z
 // `/pattern/flags` asks for a regular expression, as Lightpanda's findElement and
 // Playwright's getByRole accept one. g and y are dropped: they make test() stateful.
 const BROWSER_FIND_REGEX_NAME_PATTERN = /^\/(.+)\/([a-z]*)$/s;
-const BrowserFindInputSchema = z
-  .object({
-    browserId: BrowserAutomationBrowserIdSchema,
-    role: z.string().trim().min(1).optional(),
-    name: z.string().min(1).optional(),
-    exact: z.boolean().optional(),
-    limit: BrowserFindLimitInputSchema.optional(),
-  })
+const BrowserFindInputSchema = strictBrowserInput("browser_find", {
+  browserId: BrowserAutomationBrowserIdSchema,
+  role: z.string().trim().min(1).optional(),
+  name: z.string().min(1).optional(),
+  exact: z.boolean().optional(),
+  limit: BrowserFindLimitInputSchema.optional(),
+})
   .refine((input) => Boolean(input.role || input.name), {
     message: "browser_find requires role, name, or both",
   })
@@ -128,6 +127,57 @@ const BrowserFindInputSchema = z
       context.addIssue({ code: "custom", path: ["name"], message: pattern.error });
     }
   });
+// Names agents bring from Playwright, Chrome DevTools MCP, and habit. Unknown
+// parameters used to be dropped without a word: a screenshot `path` returned
+// success with no file written (23 times in 30 days) and a wait `timeout` waited
+// the default 5 s instead (35 times).
+const BROWSER_PARAMETER_HINTS: Record<string, string> = {
+  path: "savePath",
+  filename: "savePath",
+  timeout: "timeoutMs",
+  time: "timeoutMs",
+  timeMs: "timeoutMs",
+  fn: "function",
+  expression: "function",
+  code: "function",
+  limit: "maxEntries",
+  tabId: "browserId",
+  pageId: "browserId",
+  paths: "filePaths",
+  selector: "ref (from browser_find) or interactive",
+  filter: "ref or interactive",
+  interactiveOnly: "interactive",
+  element: "ref",
+  target: "ref",
+  uid: "ref",
+};
+
+function unknownBrowserParameterError(toolName: string, allowed: string[]) {
+  return (issue: { code?: string; keys?: PropertyKey[] }): string | undefined => {
+    if (issue.code !== "unrecognized_keys") {
+      return undefined;
+    }
+    const unknown = (issue.keys ?? []).map(String);
+    const hints = unknown
+      .map((key) => {
+        const hint = BROWSER_PARAMETER_HINTS[key];
+        return hint && !allowed.includes(key) ? `${key} → ${hint}` : null;
+      })
+      .filter(Boolean);
+    return [
+      `${toolName} does not take ${unknown.map((key) => JSON.stringify(key)).join(", ")}.`,
+      ...(hints.length > 0 ? [`Use ${hints.join("; ")}.`] : []),
+      `Parameters: ${allowed.join(", ") || "none"}.`,
+    ].join(" ");
+  };
+}
+
+function strictBrowserInput<Shape extends z.ZodRawShape>(toolName: string, shape: Shape) {
+  return z.strictObject(shape, {
+    error: unknownBrowserParameterError(toolName, Object.keys(shape)),
+  });
+}
+
 function countWaitConditions(input: {
   text?: string;
   url?: string;
@@ -164,7 +214,20 @@ const BrowserLogsMaxEntriesInputSchema = z
   .transform((value) => Math.min(value, 200));
 
 export function registerBrowserTools(options: RegisterBrowserToolsOptions): void {
-  options.registerTool(
+  const registerTool: RegisterBrowserToolsOptions["registerTool"] = (name, config, handler) =>
+    options.registerTool(
+      name,
+      {
+        ...config,
+        inputSchema:
+          config.inputSchema && !(config.inputSchema instanceof z.ZodType)
+            ? strictBrowserInput(name, config.inputSchema)
+            : config.inputSchema,
+      },
+      handler,
+    );
+
+  registerTool(
     "browser_list_tabs",
     {
       title: "List browser tabs",
@@ -191,7 +254,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     },
   );
 
-  options.registerTool(
+  registerTool(
     "browser_new_tab",
     {
       title: "Create browser tab",
@@ -220,17 +283,19 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     },
   );
 
-  options.registerTool(
+  registerTool(
     "browser_snapshot",
     {
       title: "Snapshot browser page",
       description:
-        "Return a model-readable snapshot of a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes. Same-origin iframe content appears under its iframe node, and its refs work with every tool; a cross-origin iframe shows only its src.",
+        "Return a model-readable snapshot of a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes. Same-origin iframe content appears under its iframe node, and its refs work with every tool; a cross-origin iframe shows only its src. ref (from an earlier snapshot or browser_find) shows only that element's subtree; interactive true keeps only elements with refs and the named containers around them. Both still refresh every ref on the page.",
       inputSchema: {
         browserId: BrowserAutomationBrowserIdSchema,
+        ref: BrowserRefInputSchema.optional(),
+        interactive: z.boolean().optional(),
       },
     },
-    async ({ browserId }) => {
+    async ({ browserId, ref, interactive }) => {
       const context = resolveBrowserToolContext(options);
       const payload = await options.broker.execute({
         agentId: context.agentId,
@@ -241,6 +306,8 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
           command: "snapshot",
           args: {
             browserId,
+            ...(ref ? { ref } : {}),
+            ...(interactive ? { interactive: true } : {}),
           },
         },
       });
@@ -248,7 +315,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     },
   );
 
-  options.registerTool(
+  registerTool(
     "browser_read",
     {
       title: "Read browser page",
@@ -289,7 +356,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     },
   );
 
-  options.registerTool(
+  registerTool(
     "browser_click",
     {
       title: "Click browser element",
@@ -325,7 +392,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     },
   );
 
-  options.registerTool(
+  registerTool(
     "browser_fill",
     {
       title: "Fill browser element",
@@ -357,7 +424,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     },
   );
 
-  options.registerTool(
+  registerTool(
     "browser_wait",
     {
       title: "Wait for browser condition",
@@ -401,7 +468,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     },
   );
 
-  options.registerTool(
+  registerTool(
     "browser_find",
     {
       title: "Find browser elements",
@@ -435,7 +502,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     },
   );
 
-  options.registerTool(
+  registerTool(
     "browser_type",
     {
       title: "Type into browser",
@@ -467,7 +534,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     },
   );
 
-  options.registerTool(
+  registerTool(
     "browser_keypress",
     {
       title: "Press browser key",
@@ -499,7 +566,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     },
   );
 
-  options.registerTool(
+  registerTool(
     "browser_navigate",
     {
       title: "Navigate browser",
@@ -549,7 +616,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
         "Reload a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs.",
     },
   ] as const) {
-    options.registerTool(
+    registerTool(
       toolConfig.name,
       {
         title: toolConfig.title,
@@ -575,19 +642,34 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     );
   }
 
-  options.registerTool(
+  registerTool(
     "browser_screenshot",
     {
       title: "Capture browser screenshot",
       description:
-        "Capture a PNG screenshot of a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs. Set fullPage to true to capture the full page. Set savePath to also write the PNG to a file (relative paths resolve against the agent's cwd; ~/ is the home directory).",
+        "Capture a PNG screenshot of a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs. Set fullPage to true to capture the full page, or ref (from browser_snapshot or browser_find) to capture one element, scrolled into view and clipped to the viewport. Set savePath to also write the PNG to a file (relative paths resolve against the agent's cwd; ~/ is the home directory).",
       inputSchema: {
         browserId: BrowserAutomationBrowserIdSchema,
         fullPage: z.boolean().default(false),
+        ref: BrowserRefInputSchema.optional(),
         savePath: z.string().trim().min(1).optional(),
       },
     },
-    async ({ browserId, fullPage, savePath }) => {
+    async ({ browserId, fullPage, ref, savePath }) => {
+      if (ref && fullPage) {
+        return browserToolResult({
+          payload: {
+            requestId: "browser-tools-screenshot-args",
+            ok: false,
+            error: {
+              code: "browser_denied",
+              message: "browser_screenshot takes fullPage or ref, not both.",
+              retryable: false,
+            },
+          },
+          context: { browserId },
+        });
+      }
       const context = resolveBrowserToolContext(options);
       const payload = await options.broker.execute({
         agentId: context.agentId,
@@ -599,6 +681,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
           args: {
             browserId,
             fullPage: fullPage ?? false,
+            ...(ref ? { ref } : {}),
           },
         },
       });
@@ -621,7 +704,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     },
   );
 
-  options.registerTool(
+  registerTool(
     "browser_upload",
     {
       title: "Upload files in browser",
@@ -662,7 +745,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
         "Hover an element in a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes.",
     },
   ] as const) {
-    options.registerTool(
+    registerTool(
       toolConfig.name,
       {
         title: toolConfig.title,
@@ -689,7 +772,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     );
   }
 
-  options.registerTool(
+  registerTool(
     "browser_select",
     {
       title: "Select browser option",
@@ -721,7 +804,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     },
   );
 
-  options.registerTool(
+  registerTool(
     "browser_drag",
     {
       title: "Drag browser element",
@@ -753,18 +836,19 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     },
   );
 
-  options.registerTool(
+  registerTool(
     "browser_logs",
     {
       title: "Read browser logs",
       description:
-        "Read recent console messages and browser performance network entries for a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; maxEntries defaults to 50. For request methods, payloads, and response bodies use browser_network.",
+        "Read recent console messages (uncaught errors and unhandled rejections included) and the current page's resource requests with HTTP status for a Paseo browser tab. Messages logged before the tab's latest navigation or reload are marked previousPage. level keeps that severity and above: error, warning, info, or debug (all, the default). Use browserId from browser_new_tab or browser_list_tabs; maxEntries defaults to 50. For request methods, payloads, and response bodies use browser_network.",
       inputSchema: {
         maxEntries: BrowserLogsMaxEntriesInputSchema.optional(),
+        level: BrowserAutomationConsoleLevelSchema.optional(),
         browserId: BrowserAutomationBrowserIdSchema,
       },
     },
-    async ({ maxEntries, browserId }) => {
+    async ({ maxEntries, level, browserId }) => {
       const context = resolveBrowserToolContext(options);
       const payload = await options.broker.execute({
         agentId: context.agentId,
@@ -776,6 +860,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
           args: {
             browserId,
             maxEntries: maxEntries ?? 50,
+            ...(level ? { level } : {}),
           },
         },
       });
@@ -783,7 +868,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     },
   );
 
-  options.registerTool(
+  registerTool(
     "browser_network",
     {
       title: "Capture browser network",
@@ -837,7 +922,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     },
   );
 
-  options.registerTool(
+  registerTool(
     "browser_evaluate",
     {
       title: "Evaluate browser JavaScript",
@@ -869,7 +954,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     },
   );
 
-  options.registerTool(
+  registerTool(
     "browser_scroll",
     {
       title: "Scroll browser",
@@ -903,19 +988,22 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     },
   );
 
-  options.registerTool(
+  registerTool(
     "browser_resize",
     {
       title: "Resize browser viewport",
       description:
-        "Resize a Paseo browser tab or parked popup viewport. A popup currently visible inside the user's pane keeps its pane bounds and reports the actual size. Use browserId from browser_new_tab or browser_list_tabs.",
+        "Resize a Paseo browser tab or parked popup viewport. A popup currently visible inside the user's pane keeps its pane bounds and reports the actual size. mobile true also emulates a phone (touch, mobile viewport rules, DPR 3, an Android Chrome user agent with matching client hints); userAgent sets the user agent the tab reports, such as an in-app browser's; deviceScaleFactor overrides the DPR. Reload or navigate afterwards so the server sees the new user agent. A later resize without these fields turns the emulation off. Use browserId from browser_new_tab or browser_list_tabs.",
       inputSchema: {
         browserId: BrowserAutomationBrowserIdSchema,
         width: z.number().int().positive(),
         height: z.number().int().positive(),
+        mobile: z.boolean().optional(),
+        userAgent: z.string().trim().min(1).max(1024).optional(),
+        deviceScaleFactor: z.number().min(0.5).max(4).optional(),
       },
     },
-    async ({ browserId, width, height }) => {
+    async ({ browserId, width, height, mobile, userAgent, deviceScaleFactor }) => {
       const context = resolveBrowserToolContext(options);
       const payload = await options.broker.execute({
         agentId: context.agentId,
@@ -928,6 +1016,9 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
             browserId,
             width,
             height,
+            ...(mobile !== undefined ? { mobile } : {}),
+            ...(userAgent ? { userAgent } : {}),
+            ...(deviceScaleFactor !== undefined ? { deviceScaleFactor } : {}),
           },
         },
       });
@@ -935,7 +1026,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     },
   );
 
-  options.registerTool(
+  registerTool(
     "browser_close_tab",
     {
       title: "Close browser tab",
@@ -956,6 +1047,45 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
           command: "close_tab",
           args: {
             browserId,
+          },
+        },
+      });
+      return browserToolResult({ payload, context: { ...context, browserId } });
+    },
+  );
+
+  registerTool(
+    "browser_styles",
+    {
+      title: "Inspect element CSS",
+      description:
+        "Show the CSS behind one element in a Paseo browser tab, as the DevTools Styles pane does: matched rules highest precedence first with their selector, stylesheet URL and line, and enclosing @media/@container/@layer conditions; declarations a higher rule beats are marked overridden and unparsable ones invalid; inherited properties from ancestors; then the computed values. Browser-default rules are counted, not listed. properties narrows to those properties (a shorthand also matches its longhands). Use instead of browser_evaluate with getComputedStyle or document.styleSheets, which cannot read cross-origin sheets or tell which rule wins. ref comes from browser_snapshot or browser_find; maxRules defaults to 30.",
+      inputSchema: {
+        browserId: BrowserAutomationBrowserIdSchema,
+        ref: BrowserRefInputSchema,
+        properties: z.array(z.string().trim().min(1)).max(50).optional(),
+        maxRules: z
+          .number()
+          .int()
+          .positive()
+          .transform((value) => Math.min(value, 100))
+          .optional(),
+      },
+    },
+    async ({ browserId, ref, properties, maxRules }) => {
+      const context = resolveBrowserToolContext(options);
+      const payload = await options.broker.execute({
+        agentId: context.agentId,
+        cwd: context.cwd,
+        ...(context.workspaceId ? { workspaceId: context.workspaceId } : {}),
+
+        command: {
+          command: "styles",
+          args: {
+            browserId,
+            ref,
+            ...(properties && properties.length > 0 ? { properties } : {}),
+            maxRules: maxRules ?? 30,
           },
         },
       });
@@ -1158,6 +1288,9 @@ function summarizeBrowserSuccess(
   if (payload.result.command === "find") {
     return withDialogs(summarizeBrowserFind(payload.result, options.findQuery));
   }
+  if (payload.result.command === "styles") {
+    return withDialogs(summarizeBrowserStyles(payload.result));
+  }
   const controlSummary = summarizeBrowserControlSuccess(payload.result);
   if (controlSummary) {
     return withDialogs(controlSummary);
@@ -1266,6 +1399,45 @@ function describeReadSource(
     return "whole page (product page)";
   }
   return requestedScope === "main" ? "whole page (no main content detected)" : "whole page";
+}
+
+function summarizeBrowserStyles(result: BrowserAutomationStylesResult): string {
+  const lines = [`Styles of ${result.element} (${result.ref}), highest precedence first:`];
+  if (result.rules.length === 0) {
+    lines.push("No author rules set any of these properties.");
+  }
+  for (const rule of result.rules) {
+    const where = [
+      rule.source ? `${rule.source}${rule.line ? `:${rule.line}` : ""}` : undefined,
+      ...(rule.conditions ?? []),
+    ].filter(Boolean);
+    const inherited = rule.inheritedFrom ? `inherited from ${rule.inheritedFrom}: ` : "";
+    lines.push(
+      `${inherited}${rule.selector}${where.length > 0 ? `  /* ${where.join(" ")} */` : ""}`,
+    );
+    for (const declaration of rule.declarations) {
+      const flags = [
+        ...(declaration.overridden ? ["overridden"] : []),
+        ...(declaration.invalid ? ["invalid"] : []),
+      ];
+      lines.push(
+        `  ${declaration.name}: ${declaration.value}${declaration.important ? " !important" : ""};${flags.length > 0 ? ` [${flags.join(", ")}]` : ""}`,
+      );
+    }
+  }
+  if (result.truncated) {
+    lines.push("More rules match; raise maxRules or pass properties.");
+  }
+  if (result.userAgentRules > 0) {
+    lines.push(
+      `${result.userAgentRules} browser-default rule${result.userAgentRules === 1 ? "" : "s"} not listed.`,
+    );
+  }
+  const computed = Object.entries(result.computed);
+  if (computed.length > 0) {
+    lines.push("Computed:", ...computed.map(([name, value]) => `  ${name}: ${value}`));
+  }
+  return lines.join("\n");
 }
 
 function describeFindQuery(query: BrowserFindQuery | undefined): string {
@@ -1410,7 +1582,18 @@ function summarizeBrowserDiagnosticsSuccess(
 
   const consoleCount = result.console.length;
   const networkCount = result.network.length;
-  return `Read ${consoleCount} console log${consoleCount === 1 ? "" : "s"} and ${networkCount} network entr${networkCount === 1 ? "y" : "ies"}.`;
+  const errors = result.console.filter((entry) => entry.level === "error").length;
+  const warnings = result.console.filter((entry) => entry.level === "warning").length;
+  const earlier = result.console.filter((entry) => entry.previousPage).length;
+  const failed = result.network.filter(
+    (entry) => entry.status !== undefined && (entry.status === 0 || entry.status >= 400),
+  ).length;
+  const consoleDetails = [
+    ...(errors > 0 ? [`${errors} error${errors === 1 ? "" : "s"}`] : []),
+    ...(warnings > 0 ? [`${warnings} warning${warnings === 1 ? "" : "s"}`] : []),
+    ...(earlier > 0 ? [`${earlier} from before the latest navigation (previousPage)`] : []),
+  ];
+  return `Read ${consoleCount} console log${consoleCount === 1 ? "" : "s"}${consoleDetails.length > 0 ? ` (${consoleDetails.join(", ")})` : ""} and ${networkCount} network entr${networkCount === 1 ? "y" : "ies"}${failed > 0 ? ` (${failed} failed or HTTP 4xx/5xx)` : ""}.`;
 }
 
 function summarizeBrowserNetwork(result: BrowserAutomationNetworkResult): string {
@@ -1504,7 +1687,11 @@ function summarizeBrowserControlSuccess(
   }
 
   if (result.command === "resize") {
-    return `Resized browser viewport to ${result.width}x${result.height}.`;
+    const emulation = result.emulation;
+    if (!emulation) {
+      return `Resized browser viewport to ${result.width}x${result.height}.`;
+    }
+    return `Resized browser viewport to ${result.width}x${result.height}, emulating ${emulation.mobile ? "a touch phone" : "a device"} at DPR ${emulation.deviceScaleFactor} with user agent ${JSON.stringify(emulation.userAgent)}. Reload so the server sees it.`;
   }
 
   if (result.command === "close_tab") {

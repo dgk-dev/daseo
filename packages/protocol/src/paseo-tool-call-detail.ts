@@ -100,6 +100,13 @@ const BROWSER_FIELDS = [
   "name",
   "exact",
   "limit",
+  "interactive",
+  "level",
+  "mobile",
+  "userAgent",
+  "deviceScaleFactor",
+  "properties",
+  "maxRules",
 ] as const;
 
 const TOOL_SPECS: Readonly<Record<string, ToolDetailSpec>> = {
@@ -189,6 +196,7 @@ const TOOL_SPECS: Readonly<Record<string, ToolDetailSpec>> = {
   browser_network: { inputOrder: BROWSER_FIELDS },
   browser_read: { inputOrder: BROWSER_FIELDS },
   browser_find: { inputOrder: BROWSER_FIELDS },
+  browser_styles: { inputOrder: BROWSER_FIELDS },
 };
 
 const FIELD_LABELS: Readonly<Record<string, string>> = {

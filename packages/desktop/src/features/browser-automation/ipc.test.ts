@@ -316,6 +316,22 @@ describe("browser automation IPC adapter", () => {
     expect(tab.getConsoleMessages?.().map((entry) => entry.level)).toEqual(["error", "warning"]);
   });
 
+  test("marks console messages logged before the latest main-frame navigation", () => {
+    const contents = new FakeWebContents(91);
+    const tab = adaptWebContents(contents);
+
+    contents.emitConsoleMessage({ level: 3, message: "old page", line: 1, sourceId: "" });
+    contents.emit("did-navigate", {}, "https://example.com/next", 200, "OK");
+    contents.emitConsoleMessage({ level: 3, message: "new page", line: 1, sourceId: "" });
+
+    expect(
+      tab.getConsoleMessages?.().map((entry) => [entry.message, entry.previousPage ?? false]),
+    ).toEqual([
+      ["old page", true],
+      ["new page", false],
+    ]);
+  });
+
   test("collects console messages until the guest is destroyed", () => {
     const contents = new FakeWebContents(21);
     const tab = adaptWebContents(contents);

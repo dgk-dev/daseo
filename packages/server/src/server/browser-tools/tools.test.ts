@@ -674,7 +674,130 @@ describe("registerBrowserTools", () => {
       "browser_scroll",
       "browser_resize",
       "browser_close_tab",
+      "browser_styles",
     ]);
+  });
+
+  test("rejects unknown parameters and names the right one", () => {
+    const harness = new BrowserToolHarness();
+
+    const screenshot = harness.validate("browser_screenshot", {
+      browserId: BROWSER_ID,
+      path: "/tmp/shot.png",
+    });
+    const wait = harness.validate("browser_wait", {
+      browserId: BROWSER_ID,
+      text: "Ready",
+      timeout: 1000,
+    });
+
+    expect(screenshot.success).toBe(false);
+    expect(screenshot.error?.issues[0]?.message).toBe(
+      'browser_screenshot does not take "path". Use path → savePath. Parameters: browserId, fullPage, ref, savePath.',
+    );
+    expect(wait.success).toBe(false);
+    expect(wait.error?.issues[0]?.message).toContain("timeout → timeoutMs");
+  });
+
+  test("logs passes level and summarizes errors, earlier pages, and failed requests", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-logs",
+      ok: true,
+      result: {
+        command: "logs",
+        browserId: BROWSER_ID,
+        console: [
+          { level: "error", message: "boom", timestamp: 1, previousPage: true },
+          { level: "error", message: "boom", timestamp: 2 },
+        ],
+        network: [{ url: "https://a.test/x", status: 404, startTime: 0, duration: 1 }],
+      },
+    });
+
+    const response = await harness.execute("browser_logs", {
+      browserId: BROWSER_ID,
+      level: "error",
+    });
+
+    expect(harness.broker.calls.at(-1)?.command).toEqual({
+      command: "logs",
+      args: { browserId: BROWSER_ID, maxEntries: 50, level: "error" },
+    });
+    expect(response.content[0]).toEqual({
+      type: "text",
+      text: "Read 2 console logs (2 errors, 1 from before the latest navigation (previousPage)) and 1 network entry (1 failed or HTTP 4xx/5xx).",
+    });
+  });
+
+  test("styles renders rules with sources, flags, and computed values", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-styles",
+      ok: true,
+      result: {
+        command: "styles",
+        browserId: BROWSER_ID,
+        ref: "@e3",
+        element: "h2.title",
+        rules: [
+          {
+            selector: ".card .title",
+            source: "https://cdn.test/app.css",
+            line: 12,
+            conditions: ["@media (max-width: 768px)"],
+            declarations: [{ name: "font-size", value: "18px", overridden: true }],
+          },
+          {
+            selector: "h2",
+            inheritedFrom: "div.card",
+            declarations: [{ name: "color", value: "gray", important: true }],
+          },
+        ],
+        computed: { "font-size": "16px" },
+        userAgentRules: 2,
+        truncated: false,
+      },
+    });
+
+    const response = await harness.execute("browser_styles", {
+      browserId: BROWSER_ID,
+      ref: "@e3",
+      properties: ["font-size"],
+    });
+
+    expect(harness.broker.calls.at(-1)?.command).toEqual({
+      command: "styles",
+      args: { browserId: BROWSER_ID, ref: "@e3", properties: ["font-size"], maxRules: 30 },
+    });
+    expect(response.content[0]).toEqual({
+      type: "text",
+      text: [
+        "Styles of h2.title (@e3), highest precedence first:",
+        ".card .title  /* https://cdn.test/app.css:12 @media (max-width: 768px) */",
+        "  font-size: 18px; [overridden]",
+        "inherited from div.card: h2",
+        "  color: gray !important;",
+        "2 browser-default rules not listed.",
+        "Computed:",
+        "  font-size: 16px",
+      ].join("\n"),
+    });
+  });
+
+  test("screenshot rejects fullPage together with ref", async () => {
+    const harness = new BrowserToolHarness();
+
+    const response = await harness.execute("browser_screenshot", {
+      browserId: BROWSER_ID,
+      fullPage: true,
+      ref: "@e1",
+    });
+
+    expect(response.content[0]).toMatchObject({
+      text: "browser_screenshot takes fullPage or ref, not both.",
+    });
+    expect(harness.broker.calls).toEqual([]);
   });
 
   test("list tabs sends workspace in the request envelope", async () => {
