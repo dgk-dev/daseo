@@ -23,6 +23,8 @@ export interface StructuredGenerationProviderIdentifier {
 
 export const DEFAULT_STRUCTURED_GENERATION_PROVIDERS: readonly StructuredGenerationProviderIdentifier[] =
   [
+    // Daseo: Pi exposes only the roster models; GPT-6 Luna is the cheap one there.
+    { modelSubstring: "gpt-6-luna", thinkingOptionId: "low" },
     { modelSubstring: "haiku" },
     { modelSubstring: "gpt-5.4-mini", thinkingOptionId: "low" },
     { modelSubstring: "minimax-m3" },

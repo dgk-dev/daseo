@@ -11,6 +11,7 @@ import {
 } from "./paseo-worktree-service.js";
 import { createNoopWorkspaceGitService } from "./test-utils/workspace-git-service-stub.js";
 import { generateBranchNameFromFirstAgentContext } from "./worktree-branch-name-generator.js";
+import { resolveMetadataAgentCwd } from "./workspace-title-generator.js";
 import {
   writePaseoWorktreeFirstAgentBranchAutoNameMetadata,
   writePaseoWorktreeMetadata,
@@ -27,6 +28,7 @@ Title style:
 An actionable task label: requested operation + concrete target + strongest distinguishing anchor (sentence case, max 80 characters).
 Preserve explicit identifiers such as PR or issue numbers, file paths, packages, components, commands, and quoted names when they distinguish the task.
 Aim for about 4 words, but never drop a part needed to understand or distinguish the task.
+Write the title in the same language as the user prompt.
 Example: "Refactor PR #2638 Playwright specs".
 
 Branch style:
@@ -109,7 +111,8 @@ describe("generateBranchNameFromFirstAgentContext", () => {
       throw new Error("expected structured generation call");
     }
     expect(firstCall).toMatchObject({
-      cwd: "/tmp/repo",
+      // Daseo: the metadata agent runs in a neutral directory, not the repository.
+      cwd: resolveMetadataAgentCwd(),
       schemaName: "BranchName",
       maxRetries: 2,
       agentConfigOverrides: {

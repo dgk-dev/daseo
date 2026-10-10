@@ -13,18 +13,39 @@ import type { GitMutationService } from "./session/git-mutation/git-mutation-ser
 import type { WorkspaceGitService } from "./workspace-git-service.js";
 import type { PersistedWorkspaceRecord, WorkspaceRegistry } from "./workspace-registry.js";
 import {
+  generateWorkspaceTitle,
+  type GeneratedWorkspaceTitle,
+  type GenerateWorkspaceTitleOptions,
+} from "./workspace-title-generator.js";
+import {
   generateBranchNameFromFirstAgentContext,
   type GeneratedWorkspaceName,
   type GenerateBranchNameFromFirstAgentContextOptions,
 } from "./worktree-branch-name-generator.js";
 
 type WorkspaceNameGenerator = typeof generateBranchNameFromFirstAgentContext;
+type WorkspaceTitleGenerator = (
+  options: GenerateWorkspaceTitleOptions,
+) => Promise<GeneratedWorkspaceTitle | null>;
+
+// Daseo: follow-up prompts re-evaluate an auto title. Short replies such as
+// approvals never move the topic, and a minimum interval bounds the cost of
+// spawning a metadata agent while the user is actively chatting.
+const RETITLE_MIN_PROMPT_CHARS = 12;
+const RETITLE_MIN_INTERVAL_MS = 3 * 60 * 1000;
+const RETITLE_RECENT_PROMPTS = 4;
+
+interface PromptTitleState {
+  recentPrompts: string[];
+  lastEvaluatedAt: number;
+  running: boolean;
+}
 
 type CurrentSelection = GenerateBranchNameFromFirstAgentContextOptions["currentSelection"] | null;
 
 interface WorkspaceAutoNameOptions {
   agentManager: AgentManager;
-  workspaceRegistry: Pick<WorkspaceRegistry, "update">;
+  workspaceRegistry: Pick<WorkspaceRegistry, "update" | "get">;
   workspaceGitService: WorkspaceGitService;
   providerSnapshotManager: ProviderSnapshotManager;
   readDaemonConfig: () => StructuredGenerationDaemonConfig;
@@ -33,6 +54,8 @@ interface WorkspaceAutoNameOptions {
   emitWorkspaceUpdateForWorkspaceId: (workspaceId: string) => Promise<void>;
   logger: pino.Logger;
   generateWorkspaceName?: WorkspaceNameGenerator;
+  generateWorkspaceTitle?: WorkspaceTitleGenerator;
+  now?: () => number;
 }
 
 interface ScheduleContext {
@@ -41,7 +64,7 @@ interface ScheduleContext {
 
 export class WorkspaceAutoName {
   private readonly agentManager: AgentManager;
-  private readonly workspaceRegistry: Pick<WorkspaceRegistry, "update">;
+  private readonly workspaceRegistry: Pick<WorkspaceRegistry, "update" | "get">;
   private readonly workspaceGitService: WorkspaceGitService;
   private readonly providerSnapshotManager: ProviderSnapshotManager;
   private readonly readDaemonConfig: () => StructuredGenerationDaemonConfig;
@@ -50,6 +73,9 @@ export class WorkspaceAutoName {
   private readonly emitWorkspaceUpdateForWorkspaceId: (workspaceId: string) => Promise<void>;
   private readonly logger: pino.Logger;
   private readonly generateWorkspaceName: WorkspaceNameGenerator;
+  private readonly generateWorkspaceTitle: WorkspaceTitleGenerator;
+  private readonly now: () => number;
+  private readonly promptStates = new Map<string, PromptTitleState>();
 
   constructor(options: WorkspaceAutoNameOptions) {
     this.agentManager = options.agentManager;
@@ -63,6 +89,106 @@ export class WorkspaceAutoName {
     this.logger = options.logger;
     this.generateWorkspaceName =
       options.generateWorkspaceName ?? generateBranchNameFromFirstAgentContext;
+    this.generateWorkspaceTitle = options.generateWorkspaceTitle ?? generateWorkspaceTitle;
+    this.now = options.now ?? Date.now;
+  }
+
+  /**
+   * Daseo: name or rename a workspace from a user prompt sent to an agent that
+   * already lives in it. Covers the empty-workspace launch (the first agent is
+   * created inside an existing untitled workspace) and topic changes later in
+   * the session. Manual and legacy titles are never touched.
+   */
+  scheduleForPrompt(input: { workspaceId: string; prompt: string }): void {
+    const prompt = input.prompt.trim();
+    if (!prompt) {
+      return;
+    }
+    const state = this.rememberPrompt(input.workspaceId, prompt);
+    if (state.running) {
+      return;
+    }
+    state.running = true;
+    this.schedule(
+      () =>
+        this.maybeRetitleFromPrompts(input.workspaceId, state).finally(() => {
+          state.running = false;
+        }),
+      { workspaceId: input.workspaceId, message: "Failed to auto-name workspace from prompt" },
+    );
+  }
+
+  private rememberPrompt(workspaceId: string, prompt: string): PromptTitleState {
+    let state = this.promptStates.get(workspaceId);
+    if (!state) {
+      state = { recentPrompts: [], lastEvaluatedAt: 0, running: false };
+      this.promptStates.set(workspaceId, state);
+    }
+    state.recentPrompts.push(prompt);
+    if (state.recentPrompts.length > RETITLE_RECENT_PROMPTS) {
+      state.recentPrompts.splice(0, state.recentPrompts.length - RETITLE_RECENT_PROMPTS);
+    }
+    return state;
+  }
+
+  private async maybeRetitleFromPrompts(
+    workspaceId: string,
+    state: PromptTitleState,
+  ): Promise<void> {
+    const workspace = await this.workspaceRegistry.get(workspaceId);
+    if (!workspace || workspace.archivedAt) {
+      this.promptStates.delete(workspaceId);
+      return;
+    }
+    const currentTitle = workspace.title;
+    if (currentTitle !== null && workspace.titleSource !== "auto") {
+      return;
+    }
+    const latest = state.recentPrompts.at(-1) ?? "";
+    const now = this.now();
+    if (currentTitle !== null) {
+      if (latest.length < RETITLE_MIN_PROMPT_CHARS) {
+        return;
+      }
+      if (now - state.lastEvaluatedAt < RETITLE_MIN_INTERVAL_MS) {
+        return;
+      }
+    }
+    state.lastEvaluatedAt = now;
+    const generated = await this.generateWorkspaceTitle({
+      agentManager: this.agentManager,
+      cwd: workspace.cwd,
+      providerSnapshotManager: this.providerSnapshotManager,
+      daemonConfig: this.readDaemonConfig(),
+      currentTitle,
+      recentPrompts: [...state.recentPrompts],
+      logger: this.logger,
+    });
+    const nextTitle = generated && !generated.keep ? generated.title : null;
+    if (!nextTitle || nextTitle === currentTitle) {
+      return;
+    }
+    let applied = false;
+    await this.workspaceRegistry.update(workspaceId, (current) => {
+      // A rename or another auto-name that landed while generating wins.
+      if (current.title !== currentTitle || current.titleSource !== workspace.titleSource) {
+        return current;
+      }
+      applied = true;
+      return {
+        ...current,
+        title: nextTitle,
+        titleSource: "auto",
+        updatedAt: new Date().toISOString(),
+      };
+    });
+    if (applied) {
+      this.logger.info(
+        { workspaceId, previousTitle: currentTitle, title: nextTitle },
+        "Workspace auto-titled from prompt",
+      );
+      await this.emitWorkspaceUpdateForWorkspaceId(workspaceId);
+    }
   }
 
   scheduleForWorktree(
@@ -72,6 +198,7 @@ export class WorkspaceAutoName {
     },
     context: ScheduleContext = {},
   ): void {
+    this.rememberFirstAgentPrompt(input.workspace.workspaceId, input.firstAgentContext);
     this.schedule(
       () =>
         this.maybeAutoNameWorkspaceBranchForFirstAgent({
@@ -93,6 +220,7 @@ export class WorkspaceAutoName {
     },
     context: ScheduleContext = {},
   ): void {
+    this.rememberFirstAgentPrompt(input.workspaceId, input.firstAgentContext);
     this.schedule(
       () =>
         this.maybeAutoNameDirectoryWorkspaceTitle({
@@ -101,6 +229,14 @@ export class WorkspaceAutoName {
         }),
       { cwd: input.cwd, message: "Failed to auto-name directory workspace title" },
     );
+  }
+
+  private rememberFirstAgentPrompt(workspaceId: string, context: FirstAgentContext): void {
+    const prompt = context.prompt?.trim();
+    if (prompt) {
+      const state = this.rememberPrompt(workspaceId, prompt);
+      state.lastEvaluatedAt = this.now();
+    }
   }
 
   private async maybeAutoNameWorkspaceBranchForFirstAgent(input: {
@@ -182,12 +318,18 @@ export class WorkspaceAutoName {
   ): Promise<void> {
     await this.workspaceRegistry.update(workspaceId, (current) => {
       let title = current.title;
-      if (!title || (input.promptTitle && title === input.promptTitle)) {
+      let titleSource = current.titleSource;
+      if (
+        current.titleSource !== "manual" &&
+        (!title || (input.promptTitle && title === input.promptTitle))
+      ) {
         title = input.title;
+        titleSource = "auto";
       }
       return {
         ...current,
         title,
+        titleSource,
         ...(input.branch ? { branch: input.branch } : {}),
         updatedAt: new Date().toISOString(),
       };
@@ -211,10 +353,14 @@ export class WorkspaceAutoName {
     });
   }
 
-  private schedule(run: () => Promise<void>, context: { cwd: string; message: string }): void {
+  private schedule(
+    run: () => Promise<void>,
+    context: { cwd?: string; workspaceId?: string; message: string },
+  ): void {
     setTimeout(() => {
       void run().catch((error) => {
-        this.logger.warn({ err: error, cwd: context.cwd }, context.message);
+        const { message, ...fields } = context;
+        this.logger.warn({ err: error, ...fields }, message);
       });
     }, 0);
   }

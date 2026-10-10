@@ -14,6 +14,7 @@ import { buildAgentBranchNameSeed } from "./agent/prompt-attachments.js";
 import { buildMetadataPrompt } from "../utils/build-metadata-prompt.js";
 import type { WorkspaceGitService } from "./workspace-git-service.js";
 import type { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
+import { resolveMetadataAgentCwd } from "./workspace-title-generator.js";
 
 interface BranchNameGeneratorLogger {
   info: (obj: object, msg?: string) => void;
@@ -69,6 +70,7 @@ async function buildPrompt(
           "An actionable task label: requested operation + concrete target + strongest distinguishing anchor (sentence case, max 80 characters).",
           "Preserve explicit identifiers such as PR or issue numbers, file paths, packages, components, commands, and quoted names when they distinguish the task.",
           "Aim for about 4 words, but never drop a part needed to understand or distinguish the task.",
+          "Write the title in the same language as the user prompt.",
           'Example: "Refactor PR #2638 Playwright specs".',
         ].join("\n"),
       },
@@ -112,7 +114,7 @@ export async function generateBranchNameFromFirstAgentContext(
       : [];
     const result = await generator({
       manager: options.agentManager,
-      cwd: options.cwd,
+      cwd: resolveMetadataAgentCwd(),
       prompt: await buildPrompt(seed, {
         cwd: options.cwd,
         workspaceGitService: options.workspaceGitService,

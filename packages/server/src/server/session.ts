@@ -3224,6 +3224,8 @@ export class Session {
       const updated = await this.workspaceRegistry.update(workspaceId, (existing) => ({
         ...existing,
         title: nextTitle,
+        // Daseo: a user rename locks the title; clearing it re-enables auto-naming.
+        titleSource: nextTitle === null ? null : "manual",
         updatedAt,
       }));
       if (!updated) {
@@ -3513,15 +3515,16 @@ export class Session {
       );
       createdAgentId = snapshot.id;
       await this.agentUpdates.forwardLiveAgent(snapshot);
-      if (resolvedIntent.createdDirectoryWorkspace && trimmedPrompt) {
-        this.workspaceAutoName.scheduleForDirectory(
-          {
-            workspaceId: resolvedIntent.intent.workspaceId,
-            cwd: resolvedIntent.config.cwd,
-            firstAgentContext,
-          },
-          { currentSelection: this.getFocusedAgentSelectionForCwd(resolvedIntent.config.cwd) },
-        );
+      if (trimmedPrompt) {
+        this.scheduleWorkspaceTitleForCreatedAgent({
+          workspaceId: resolvedIntent.intent.workspaceId,
+          cwd: resolvedIntent.config.cwd,
+          createdDirectoryWorkspace: resolvedIntent.createdDirectoryWorkspace,
+          createdWorktree: Boolean(createdWorktree),
+          fromAgent: Boolean(msg.callerAgentId),
+          prompt: trimmedPrompt,
+          firstAgentContext,
+        });
       }
       this.createAgentLifecycleDispatch.registerAutoArchiveIfRequested({
         autoArchive,
@@ -7122,6 +7125,50 @@ export class Session {
     }
   }
 
+  private scheduleWorkspaceTitleForCreatedAgent(input: {
+    workspaceId: string;
+    cwd: string;
+    createdDirectoryWorkspace: boolean;
+    createdWorktree: boolean;
+    fromAgent: boolean;
+    prompt: string;
+    firstAgentContext: FirstAgentContext;
+  }): void {
+    if (input.createdDirectoryWorkspace) {
+      this.workspaceAutoName.scheduleForDirectory(
+        {
+          workspaceId: input.workspaceId,
+          cwd: input.cwd,
+          firstAgentContext: input.firstAgentContext,
+        },
+        { currentSelection: this.getFocusedAgentSelectionForCwd(input.cwd) },
+      );
+      return;
+    }
+    // Daseo: the first agent of an empty workspace (or a new tab in an existing
+    // one) names the workspace through the prompt path. Worktree launches are
+    // named by the worktree flow and agent-created subagents never rename.
+    if (!input.createdWorktree && !input.fromAgent) {
+      this.workspaceAutoName.scheduleForPrompt({
+        workspaceId: input.workspaceId,
+        prompt: input.prompt,
+      });
+    }
+  }
+
+  // Daseo: user prompts to a top-level agent can rename its workspace when the
+  // session moves to a different task. Subagent and internal traffic never do.
+  private scheduleWorkspaceTitleForUserPrompt(agentId: string, text: string): void {
+    const agent = this.agentManager.getAgent(agentId);
+    if (!agent || agent.internal || !agent.workspaceId) {
+      return;
+    }
+    if (getParentAgentIdFromLabels(agent.labels)) {
+      return;
+    }
+    this.workspaceAutoName.scheduleForPrompt({ workspaceId: agent.workspaceId, prompt: text });
+  }
+
   private async handleSendAgentMessageRequest(
     msg: Extract<SessionInboundMessage, { type: "send_agent_message_request" }>,
   ): Promise<void> {
@@ -7263,6 +7310,8 @@ export class Session {
             return;
           }
         }
+
+        this.scheduleWorkspaceTitleForUserPrompt(agentId, msg.text);
 
         if (commandId) {
           await this.agentCommandReceiptStore.settle({ commandId, status: "accepted" });

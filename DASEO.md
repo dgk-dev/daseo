@@ -631,6 +631,22 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     Google search, as Chrome's omnibox does. `host:port` is no longer mistaken for a scheme.
     Agent navigation is unchanged. Key file: `packages/app/src/desktop/browser/store/state.ts`.
 
+37. **Workspaces name themselves from what the session is doing** — upstream names a workspace
+    only when it is created together with its first agent, and only with Haiku, GPT-5.4 mini,
+    MiniMax, or Nemotron. Daseo's empty-workspace launch (`7fe3cbba4`, 2026-08-16) creates the
+    workspace first, so from then on almost every sidebar row showed the folder or branch name,
+    and Pi exposes none of those models, so scheduled runs failed with zero candidates.
+    GPT-6 Luna at `low` now leads the metadata model list. A user prompt to a top-level agent
+    (its create prompt or a later message) names an untitled workspace, and re-evaluates an
+    auto title: prompts under 12 characters and prompts within 3 minutes of the last check are
+    skipped, the model is told to keep the title unless the task clearly changed, and it sees
+    the last 4 prompts. The persisted `titleSource` marks `auto` and `manual` titles; a rename
+    sets `manual` and locks the title, clearing it unlocks, and legacy or prompt-derived titles
+    (null source) are never touched. Metadata agents run in `$TMPDIR/daseo-metadata`, so they
+    skip repository instructions and never feed the home-directory personal-memory extension.
+    Key files: `packages/server/src/server/workspace-title-generator.ts`,
+    `packages/server/src/server/workspace-auto-name.ts`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

@@ -99,6 +99,7 @@ function seedFixture(siblingCount = SIBLING_COUNT): {
       kind: "worktree",
       displayName: branch,
       title: null,
+      titleSource: null,
       branch,
       worktreeRoot: cwd,
       baseBranch: "main",
