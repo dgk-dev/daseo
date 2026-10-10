@@ -233,4 +233,48 @@ describe("resolveStructuredGenerationProviders", () => {
     ]);
     expect(snapshots.calls).toEqual([{ cwd: "/tmp/repo", wait: true }]);
   });
+
+  test("picks the newest Luna in the Pi roster at low effort", async () => {
+    const lunaModel = (id: string, label: string) => ({
+      provider: "pi",
+      id,
+      label,
+      thinkingOptions: [
+        { id: "low", label: "Low" },
+        { id: "high", label: "High" },
+      ],
+      defaultThinkingOptionId: "high",
+    });
+    const roster = (models: ReturnType<typeof lunaModel>[]) =>
+      new ProviderSnapshots([
+        { provider: "pi", status: READY, enabled: true, models },
+      ] as ProviderSnapshotEntry[]);
+
+    const current = await resolveStructuredGenerationProviders({
+      cwd: "/tmp/repo",
+      providerSnapshotManager: roster([
+        lunaModel("pi-claude/claude-opus-5-5", "Claude Opus 5.5"),
+        lunaModel("pi-codex/gpt-6-luna", "GPT-6 Luna"),
+      ]),
+    });
+    expect(current[0]).toEqual({
+      provider: "pi",
+      model: "pi-codex/gpt-6-luna",
+      thinkingOptionId: "low",
+    });
+
+    const upgraded = await resolveStructuredGenerationProviders({
+      cwd: "/tmp/repo",
+      providerSnapshotManager: roster([
+        lunaModel("pi-codex/gpt-6-luna", "GPT-6 Luna"),
+        lunaModel("pi-codex/gpt-6.1-luna", "GPT-6.1 Luna"),
+        lunaModel("pi-codex/gpt-6.1-sol", "GPT-6.1 Sol"),
+      ]),
+    });
+    expect(upgraded[0]).toEqual({
+      provider: "pi",
+      model: "pi-codex/gpt-6.1-luna",
+      thinkingOptionId: "low",
+    });
+  });
 });

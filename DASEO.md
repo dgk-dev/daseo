@@ -636,7 +636,9 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     MiniMax, or Nemotron. Daseo's empty-workspace launch (`7fe3cbba4`, 2026-08-16) creates the
     workspace first, so from then on almost every sidebar row showed the folder or branch name,
     and Pi exposes none of those models, so scheduled runs failed with zero candidates.
-    GPT-6 Luna at `low` now leads the metadata model list. A user prompt to a top-level agent
+    The newest Luna in the roster (matched by family name, highest version wins, so
+    `gpt-6.1-luna` or `gpt-7-luna` is picked up without a code change) at `low` now leads the
+    metadata model list. A user prompt to a top-level agent
     (its create prompt or a later message) names an untitled workspace, and re-evaluates an
     auto title: prompts under 12 characters and prompts within 3 minutes of the last check are
     skipped, the model is told to keep the title unless the task clearly changed, and it sees

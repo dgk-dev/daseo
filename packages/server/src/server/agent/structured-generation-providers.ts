@@ -19,12 +19,16 @@ export interface StructuredGenerationDaemonConfig {
 export interface StructuredGenerationProviderIdentifier {
   modelSubstring: string;
   thinkingOptionId?: string;
+  /** Daseo: among several matches, pick the highest model version, not the first listed. */
+  preferNewest?: boolean;
 }
 
 export const DEFAULT_STRUCTURED_GENERATION_PROVIDERS: readonly StructuredGenerationProviderIdentifier[] =
   [
-    // Daseo: Pi exposes only the roster models; GPT-6 Luna is the cheap one there.
-    { modelSubstring: "gpt-6-luna", thinkingOptionId: "low" },
+    // Daseo: Pi exposes only the roster models; Luna is the cheap one there. Match
+    // the family, not a version, so a roster upgrade (gpt-6.1-luna, gpt-7-luna)
+    // is picked up without a code change.
+    { modelSubstring: "luna", thinkingOptionId: "low", preferNewest: true },
     { modelSubstring: "haiku" },
     { modelSubstring: "gpt-5.4-mini", thinkingOptionId: "low" },
     { modelSubstring: "minimax-m3" },
@@ -226,22 +230,46 @@ function resolveByModelSubstring(
     return null;
   }
 
+  const matches: Array<{ provider: AgentProvider; model: AgentModelDefinition }> = [];
   for (const entry of entries) {
     for (const model of entry.models ?? []) {
       const haystacks = [model.id, model.label].map((value) => value.toLowerCase());
-      if (!haystacks.some((value) => value.includes(needle))) {
-        continue;
+      if (haystacks.some((value) => value.includes(needle))) {
+        matches.push({ provider: entry.provider, model });
       }
-      const thinkingOptionId = resolveThinkingOptionId(model, identifier.thinkingOptionId);
-      return {
-        provider: entry.provider,
-        model: model.id,
-        ...(thinkingOptionId ? { thinkingOptionId } : {}),
-      };
     }
   }
+  const chosen = identifier.preferNewest
+    ? matches.reduce<(typeof matches)[number] | undefined>(
+        (best, candidate) =>
+          !best || compareModelVersions(candidate.model.id, best.model.id) > 0 ? candidate : best,
+        undefined,
+      )
+    : matches[0];
+  if (!chosen) {
+    return null;
+  }
+  const thinkingOptionId = resolveThinkingOptionId(chosen.model, identifier.thinkingOptionId);
+  return {
+    provider: chosen.provider,
+    model: chosen.model.id,
+    ...(thinkingOptionId ? { thinkingOptionId } : {}),
+  };
+}
 
-  return null;
+// Compares the first dotted number in two model ids: gpt-6.1-luna > gpt-6-luna.
+function compareModelVersions(left: string, right: string): number {
+  const parse = (id: string) =>
+    (id.match(/\d+(?:\.\d+)*/)?.[0] ?? "0").split(".").map((part) => Number(part));
+  const a = parse(left);
+  const b = parse(right);
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const diff = (a[index] ?? 0) - (b[index] ?? 0);
+    if (diff !== 0) {
+      return diff;
+    }
+  }
+  return 0;
 }
 
 function readConfiguredProviders(
