@@ -26,6 +26,9 @@ import {
   readPiWaitEnvelope,
   transformPiModels,
 } from "./agent.js";
+import { AgentManager } from "../../agent-manager.js";
+import { startAgentRun } from "../../agent-prompt.js";
+import { AgentStorage } from "../../agent-storage.js";
 import { FakePi } from "./test-utils/fake-pi.js";
 
 const ONE_BY_ONE_PNG_BASE64 =
@@ -3354,5 +3357,153 @@ describe("background waits (local fork)", () => {
         "<paseo-system>\nwait_for: command w_a exited pending=0\n</paseo-system> tail",
       ),
     ).toBeNull();
+  });
+});
+
+describe("Pi runtime exit between turns (local fork)", () => {
+  const waitResult = (details: Record<string, unknown>) => ({
+    content: [{ type: "text", text: "Wait registered" }],
+    details,
+  });
+
+  async function createIdleSession(waitDescriptions: string[]) {
+    const created = await createSession();
+    const fakeSession = created.pi.latestSession();
+    await created.session.startTurn("start the background work");
+    fakeSession.emit({ type: "turn_start" });
+    for (const [index, description] of waitDescriptions.entries()) {
+      fakeSession.emit({
+        type: "tool_execution_end",
+        toolCallId: `wait-${index}`,
+        toolName: "wait_for",
+        result: waitResult({
+          wait: true,
+          wait_id: `w_${index}`,
+          pending: index + 1,
+          kind: "command",
+          description,
+        }),
+      });
+    }
+    fakeSession.finishTurn();
+    await created.events.nextTurnCompletion();
+    return { ...created, fakeSession };
+  }
+
+  function turnFailures(events: SessionEvents) {
+    return events.eventTypes().filter((type) => type === "turn_failed");
+  }
+
+  test("reports the death and the lost waits when Pi exits while idle", async () => {
+    const { session, events, fakeSession } = await createIdleSession(["web build", "deploy log"]);
+    expect(session.backgroundWaits.pending).toBe(2);
+
+    fakeSession.emit({
+      type: "process_exit",
+      error: "Pi RPC process exited with code 137 and signal null\nKilled: out of memory",
+    });
+
+    const failure = await events.nextTurnFailure();
+    expect(failure.turnId).toBeUndefined();
+    expect(failure).toMatchObject({
+      provider: "pi",
+      code: "137",
+      diagnostic: "Killed: out of memory",
+    });
+    expect(failure.error).toBe(
+      "Pi stopped unexpectedly (exit code 137). 2 background wait(s) it was holding were lost (web build, deploy log); nothing will wake this agent until you prompt it again.",
+    );
+    expect(turnFailures(events)).toHaveLength(1);
+    expect(session.backgroundWaits).toEqual({ pending: 0, raisedAt: null, labels: [] });
+  });
+
+  test("omits the wait sentence when no background waits were pending", async () => {
+    const { events, fakeSession } = await createIdleSession([]);
+
+    fakeSession.emit({
+      type: "process_exit",
+      error: "Pi RPC process exited with code null and signal SIGTERM",
+    });
+
+    const failure = await events.nextTurnFailure();
+    expect(failure.turnId).toBeUndefined();
+    expect(failure.error).toBe("Pi stopped unexpectedly (signal SIGTERM).");
+    expect(failure.code).toBeUndefined();
+    expect(failure.diagnostic).toBeUndefined();
+  });
+
+  test("a deliberate close never reports a failure", async () => {
+    const { session, events, fakeSession } = await createIdleSession(["web build"]);
+
+    await session.close();
+    fakeSession.emit({ type: "process_exit", error: "Pi RPC process exited with code 143" });
+    await flushTurnScheduling();
+
+    expect(turnFailures(events)).toEqual([]);
+    expect(events.eventTypes()).not.toContain("error");
+    expect(session.backgroundWaits.pending).toBe(0);
+  });
+
+  test("the next prompt relaunches Pi on the same session file", async () => {
+    const { pi, session, events, fakeSession } = await createIdleSession(["web build"]);
+    fakeSession.emit({ type: "process_exit", error: "Pi RPC process exited with code 143" });
+    await events.nextTurnFailure();
+
+    const { turnId } = await session.startTurn("continue");
+
+    expect(pi.recordedLaunches).toHaveLength(2);
+    expect(pi.recordedLaunches[1]?.session).toBe(fakeSession.state.sessionFile);
+    const relaunched = pi.latestSession();
+    expect(relaunched).not.toBe(fakeSession);
+    expect(relaunched.prompts.map((prompt) => prompt.message)).toEqual(["continue"]);
+    expect(fakeSession.prompts.map((prompt) => prompt.message)).toEqual([
+      "start the background work",
+    ]);
+
+    // A late frame from the dead process must not drive the session.
+    fakeSession.emit({ type: "turn_start" });
+    relaunched.emit({ type: "turn_start" });
+    relaunched.finishTurn();
+    const completedTurnIds = () => events.turnCompletedEvents().map(({ turnId: id }) => id);
+    await vi.waitFor(() => expect(completedTurnIds()).toContain(turnId));
+    expect(turnFailures(events)).toHaveLength(1);
+  });
+
+  test("the agent leaves the error state and prompts again after an idle death", async () => {
+    const workdir = mkdtempSync(path.join(tmpdir(), "pi-idle-death-"));
+    onTestFinished(() => rmSync(workdir, { recursive: true, force: true }));
+    const logger = pino({ level: "silent" });
+    const pi = new FakePi();
+    const manager = new AgentManager({
+      clients: { pi: createClient(pi) },
+      registry: new AgentStorage(path.join(workdir, "agents"), logger),
+      logger,
+    });
+    const snapshot = await manager.createAgent({ provider: "pi", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    const closeAgent = () => manager.closeAgent(snapshot.id).catch(() => undefined);
+    onTestFinished(closeAgent);
+    const dead = pi.latestSession();
+
+    dead.emit({ type: "process_exit", error: "Pi RPC process exited with code 143" });
+    await vi.waitFor(() => {
+      expect(manager.getAgent(snapshot.id)).toMatchObject({
+        lifecycle: "error",
+        lastError: "Pi stopped unexpectedly (exit code 143).",
+      });
+    });
+
+    await startAgentRun(manager, snapshot.id, "pick it back up", logger);
+    await manager.waitForAgentRunStart(snapshot.id);
+    const relaunched = pi.latestSession();
+    expect(relaunched).not.toBe(dead);
+    expect(relaunched.prompts.map((prompt) => prompt.message)).toEqual(["pick it back up"]);
+    relaunched.emit({ type: "agent_start" });
+    relaunched.emit({ type: "turn_start" });
+    relaunched.finishTurn();
+    await vi.waitFor(() => {
+      expect(manager.getAgent(snapshot.id)?.lifecycle).toBe("idle");
+    });
   });
 });

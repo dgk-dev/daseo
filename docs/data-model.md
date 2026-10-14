@@ -70,7 +70,7 @@ $PASEO_HOME/
 └── updates/current.json                 # Exact-version daemon update trial state
 ```
 
-The `agents/{sanitized-cwd}/` directory name is derived from the agent's `cwd` by stripping the filesystem root and replacing path separators with `-` (Windows drive letters become a `C-` style prefix). Persistent server stores write atomically by writing a temp file in the target directory and then renaming it into place.
+The `agents/{sanitized-cwd}/` directory name is derived from the agent's `cwd` by stripping the filesystem root and replacing path separators with `-` (Windows drive letters become a `C-` style prefix). Persistent server stores write atomically by writing a temp file in the target directory and then renaming it into place. A store that falls back to empty state because its file is unreadable first copies that file to `<file>.corrupt-<timestamp>` next to it (`preserveUnreadableFile` in `atomic-file.ts`), keeping the 3 newest; the next write would otherwise replace the only copy. Backups are never restored automatically.
 
 ---
 

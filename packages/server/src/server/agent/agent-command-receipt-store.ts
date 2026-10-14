@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Logger } from "pino";
 import { z } from "zod";
-import { writeJsonFileAtomic } from "../atomic-file.js";
+import { preserveUnreadableFile, writeJsonFileAtomic } from "../atomic-file.js";
 
 const RECEIPT_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 const MAX_RECEIPTS = 4_096;
@@ -207,7 +207,11 @@ export class AgentCommandReceiptStore {
     }
     const parsed = AgentCommandReceiptFileSchema.safeParse(JSON.parse(raw) as unknown);
     if (!parsed.success) {
-      this.logger.warn({ issues: parsed.error.issues }, "Ignoring invalid command receipt file");
+      const backupPath = await preserveUnreadableFile(this.filePath);
+      this.logger.warn(
+        { issues: parsed.error.issues, filePath: this.filePath, backupPath },
+        "Ignoring invalid command receipt file",
+      );
       return;
     }
     const now = new Date();

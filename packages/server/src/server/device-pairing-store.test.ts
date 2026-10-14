@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
@@ -12,13 +12,36 @@ afterEach(() => {
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
 
-function createStore(): DevicePairingStore {
+function createHome(): string {
   const home = mkdtempSync(join(tmpdir(), "paseo-device-pairing-"));
   homes.push(home);
-  return new DevicePairingStore(home, logger);
+  return home;
+}
+
+function createStore(): DevicePairingStore {
+  return new DevicePairingStore(createHome(), logger);
 }
 
 describe("DevicePairingStore", () => {
+  test("keeps a schema-invalid store file as a backup and starts empty", async () => {
+    const home = createHome();
+    const invalid = JSON.stringify({ version: 2, grants: "lost", devices: [] });
+    writeFileSync(join(home, "device-pairings.json"), invalid);
+    const store = new DevicePairingStore(home, logger);
+
+    await store.createGrant({ now: new Date("2026-08-18T00:00:00.000Z"), ttlMs: 60_000 });
+
+    const backups = readdirSync(home).filter((entry) =>
+      entry.startsWith("device-pairings.json.corrupt-"),
+    );
+    expect(backups).toHaveLength(1);
+    expect(readFileSync(join(home, backups[0]!), "utf8")).toBe(invalid);
+    expect(JSON.parse(readFileSync(join(home, "device-pairings.json"), "utf8"))).toMatchObject({
+      version: 1,
+      grants: [expect.objectContaining({ offerId: expect.any(String) })],
+    });
+  });
+
   test("consumes one grant, then authenticates the same device without the grant", async () => {
     const store = createStore();
     const grant = await store.createGrant({

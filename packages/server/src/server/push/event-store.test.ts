@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
@@ -21,6 +21,24 @@ function createStore(): PushNotificationEventStore {
 }
 
 describe("PushNotificationEventStore", () => {
+  test("keeps an unreadable event file as a backup and starts a fresh sequence", () => {
+    const directory = mkdtempSync(join(tmpdir(), "paseo-push-corrupt-"));
+    directories.push(directory);
+    const path = join(directory, "push-events.json");
+    writeFileSync(path, '{"version": 1, "epoch": "e", "nextSeq": ');
+
+    const store = new PushNotificationEventStore(path, pino({ level: "silent" }));
+    expect(store.append({ title: "One", body: "first" }).event.seq).toBe(1);
+
+    const backups = readdirSync(directory).filter((entry) =>
+      entry.startsWith("push-events.json.corrupt-"),
+    );
+    expect(backups).toHaveLength(1);
+    expect(readFileSync(join(directory, backups[0]!), "utf8")).toBe(
+      '{"version": 1, "epoch": "e", "nextSeq": ',
+    );
+  });
+
   test("does not replay history to a first-time device and catches up a returning cursor", () => {
     const store = createStore();
     const first = store.append({ title: "One", body: "first" });

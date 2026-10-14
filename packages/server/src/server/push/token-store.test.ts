@@ -1,4 +1,12 @@
-import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type pino from "pino";
@@ -68,6 +76,33 @@ describe.skipIf(process.platform === "win32")("PushTokenStore file permissions",
 });
 
 describe("PushTokenStore persistence", () => {
+  test("keeps an unreadable token file as a backup and still accepts new tokens", () => {
+    const home = mkdtempSync(path.join(tmpdir(), "paseo-push-tokens-corrupt-"));
+    const tokenPath = path.join(home, "push-tokens.json");
+    try {
+      writeFileSync(tokenPath, '{"subscriptions": [{"token": "ExponentPushToken[old]"');
+      const store = new PushTokenStore(
+        createLogger(),
+        tokenPath,
+        () => Date.parse("2026-08-10T00:00:00.000Z"),
+        48 * 60 * 60 * 1000,
+      );
+
+      store.renewToken("ExponentPushToken[new]");
+
+      const backups = readdirSync(home).filter((entry) =>
+        entry.startsWith("push-tokens.json.corrupt-"),
+      );
+      expect(backups).toHaveLength(1);
+      expect(readFileSync(path.join(home, backups[0]!), "utf8")).toBe(
+        '{"subscriptions": [{"token": "ExponentPushToken[old]"',
+      );
+      expect(store.getActiveTokens()).toEqual(["ExponentPushToken[new]"]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test("revokes every token for one device without affecting another device", () => {
     let persisted = "";
     const store = new PushTokenStore(

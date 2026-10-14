@@ -1,6 +1,7 @@
 import type pino from "pino";
 import { existsSync, readFileSync } from "node:fs";
 
+import { preserveUnreadableFileSync } from "../atomic-file.js";
 import { ensurePrivateFile, writePrivateFileAtomicSync } from "../private-files.js";
 
 /**
@@ -140,13 +141,25 @@ export class PushTokenStore {
   }
 
   private loadFromDisk(): void {
+    if (!existsSync(this.filePath)) {
+      return;
+    }
+    let parsed: { subscriptions?: unknown; tokens?: unknown };
     try {
-      if (!existsSync(this.filePath)) {
-        return;
-      }
       ensurePrivateFile(this.filePath);
-      const raw = readFileSync(this.filePath, "utf-8");
-      const parsed = JSON.parse(raw) as { subscriptions?: unknown; tokens?: unknown };
+      const value: unknown = JSON.parse(readFileSync(this.filePath, "utf-8"));
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("Push token file is not a JSON object");
+      }
+      parsed = value as { subscriptions?: unknown; tokens?: unknown };
+    } catch (error) {
+      // Start with no tokens, but keep the unreadable original: the next renew would replace it.
+      const backupPath = preserveUnreadableFileSync(this.filePath);
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.logger.warn({ err, filePath: this.filePath, backupPath }, "Failed to load push tokens");
+      return;
+    }
+    try {
       const loaded = new Map<string, PushTokenSubscription>();
       const subscriptions = Array.isArray(parsed.subscriptions) ? parsed.subscriptions : [];
       for (const value of subscriptions) {

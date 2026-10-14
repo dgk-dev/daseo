@@ -2,6 +2,26 @@ const NOTIFICATION_PREVIEW_LIMIT = 220;
 
 export type AgentAttentionReason = "finished" | "error" | "permission";
 
+// Android notification channels. A channel's sound and importance are frozen once it exists on a
+// device, so a different alert needs a new channel id; never change an existing channel's settings.
+export const AGENT_UPDATES_CHANNEL_ID = "agent-updates";
+export const AGENT_NEEDS_YOU_CHANNEL_ID = "agent-needs-you";
+
+export type AgentAttentionChannelId =
+  | typeof AGENT_UPDATES_CHANNEL_ID
+  | typeof AGENT_NEEDS_YOU_CHANNEL_ID;
+
+/** "Finished" is informational; a permission request or an error is waiting on the user. */
+export function resolveAgentAttentionChannel(
+  reason: AgentAttentionReason,
+): AgentAttentionChannelId {
+  return reason === "finished" ? AGENT_UPDATES_CHANNEL_ID : AGENT_NEEDS_YOU_CHANNEL_ID;
+}
+
+export function isAgentAttentionReason(value: unknown): value is AgentAttentionReason {
+  return value === "finished" || value === "error" || value === "permission";
+}
+
 export interface AgentAttentionNotificationData {
   [key: string]: unknown;
   serverId: string;

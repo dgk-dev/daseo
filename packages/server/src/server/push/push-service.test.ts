@@ -21,3 +21,30 @@ for (const error of ["InvalidCredentials", "DeviceNotRegistered"]) {
     expect(revoke).toHaveBeenCalledTimes(error === "DeviceNotRegistered" ? 1 : 0);
   });
 }
+
+test("Expo pushes carry the Android channel for their attention reason", async () => {
+  const fetchMock = vi
+    .fn()
+    .mockImplementation(
+      async () => new Response(JSON.stringify({ data: [{ status: "ok", id: "ticket" }] })),
+    );
+  vi.stubGlobal("fetch", fetchMock);
+  const service = new PushService(createTestLogger(), vi.fn());
+
+  for (const data of [
+    { reason: "permission" },
+    { reason: "error" },
+    { reason: "finished" },
+    undefined,
+  ]) {
+    await service.sendPush(["ExponentPushToken[test]"], { title: "Agent", body: "Body", data });
+  }
+
+  const messages = fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body))[0]);
+  expect(messages.map((message) => [message.sound, message.channelId])).toEqual([
+    ["default", "agent-needs-you"],
+    ["default", "agent-needs-you"],
+    ["default", "agent-updates"],
+    ["default", "agent-updates"],
+  ]);
+});

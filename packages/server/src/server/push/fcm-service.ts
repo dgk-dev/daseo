@@ -3,8 +3,25 @@ import { readFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type pino from "pino";
+import {
+  AGENT_UPDATES_CHANNEL_ID,
+  type AgentAttentionChannelId,
+  isAgentAttentionReason,
+  resolveAgentAttentionChannel,
+} from "@getpaseo/protocol/agent-attention-notification";
 
 import type { PushPayload } from "./index.js";
+
+/**
+ * Android channel for a push. Agent attention pushes carry their reason in `data.reason`; any
+ * other payload stays on the original channel.
+ */
+export function resolvePushChannelId(payload: PushPayload): AgentAttentionChannelId {
+  const reason = payload.data?.reason;
+  return isAgentAttentionReason(reason)
+    ? resolveAgentAttentionChannel(reason)
+    : AGENT_UPDATES_CHANNEL_ID;
+}
 
 const FCM_SCOPE = "https://www.googleapis.com/auth/firebase.messaging";
 const DEFAULT_TOKEN_URI = "https://oauth2.googleapis.com/token";
@@ -212,7 +229,7 @@ export class FcmService {
               data: stringifyData(payload.data),
               android: {
                 priority: "HIGH",
-                notification: { sound: "default", channel_id: "agent-updates" },
+                notification: { sound: "default", channel_id: resolvePushChannelId(payload) },
               },
             },
           }),

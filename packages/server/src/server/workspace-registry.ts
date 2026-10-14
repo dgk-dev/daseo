@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import type { Logger } from "pino";
 import { z } from "zod";
 
-import { writeJsonFileAtomic } from "./atomic-file.js";
+import { preserveUnreadableFile, writeJsonFileAtomic } from "./atomic-file.js";
 import { areEquivalentPaths } from "../utils/path.js";
 import {
   generateProjectId,
@@ -301,7 +301,13 @@ class FileBackedRegistry<TRecord extends RegistryRecord> {
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT") {
-        this.logger.error({ err: error, filePath: this.filePath }, "Failed to load registry file");
+        // The cache stays empty so the daemon still starts; the next persist() would replace the
+        // unreadable file, so copy it aside first.
+        const backupPath = await preserveUnreadableFile(this.filePath);
+        this.logger.error(
+          { err: error, filePath: this.filePath, backupPath },
+          "Failed to load registry file",
+        );
       }
     }
     this.loaded = true;

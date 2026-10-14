@@ -30,8 +30,10 @@ workflows all live in the CLI process, and the completion notification that woul
 agent never arrives. A runtime that dies mid-turn is reported by whatever is draining its stream, but
 between turns nothing is watching, so the agent sits at `idle` looking healthy while its background
 work is gone. Report that exit as a turn failure so the agent lands in `error` with a timeline entry.
-Only the Claude provider does this today; the others still report a death only when a turn happens to
-be in flight.
+Claude and Pi do this today; OpenCode, Codex, and Copilot still report a death only when a turn
+happens to be in flight. Ignore an exit that follows the session's own `close()`: idle unload,
+archive, reload, and shutdown end the process on purpose. Then let the next prompt start a new
+process on the same provider session instead of failing against the dead one.
 
 ### Cancellation
 

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import type pino from "pino";
 import { z } from "zod";
+import { preserveUnreadableFileSync } from "../atomic-file.js";
 import { ensurePrivateFile, writePrivateFileAtomicSync } from "../private-files.js";
 import type { PushPayload } from "./push-service.js";
 
@@ -88,7 +89,11 @@ export class PushNotificationEventStore {
       this.nextSeq = parsed.nextSeq;
       this.events = parsed.events;
     } catch (error) {
-      this.logger.warn({ err: error }, "Failed to load push notification events");
+      const backupPath = preserveUnreadableFileSync(this.filePath);
+      this.logger.warn(
+        { err: error, filePath: this.filePath, backupPath },
+        "Failed to load push notification events",
+      );
     }
   }
 

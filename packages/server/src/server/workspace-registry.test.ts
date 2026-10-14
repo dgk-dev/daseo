@@ -1,6 +1,14 @@
 import os from "node:os";
 import path from "node:path";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 
 import { beforeEach, afterEach, describe, expect, test } from "vitest";
 
@@ -395,6 +403,37 @@ describe("workspace registries", () => {
     await workspaceRegistry.remove("/tmp/repo");
     expect(await workspaceRegistry.get("/tmp/repo")).toBeNull();
     expect(await workspaceRegistry.list()).toEqual([]);
+  });
+
+  test("copies an unreadable registry file aside before the next write replaces it", async () => {
+    const projectsDir = path.join(tmpDir, "projects");
+    const filePath = path.join(projectsDir, "workspaces.json");
+    const garbage = '[{"workspaceId": "/tmp/repo", "cwd": ';
+    mkdirSync(projectsDir, { recursive: true });
+    writeFileSync(filePath, garbage);
+
+    await workspaceRegistry.initialize();
+    expect(await workspaceRegistry.list()).toEqual([]);
+    const backups = readdirSync(projectsDir).filter((entry) =>
+      entry.startsWith("workspaces.json.corrupt-"),
+    );
+    expect(backups).toHaveLength(1);
+    const backupPath = path.join(projectsDir, backups[0]!);
+    expect(readFileSync(backupPath, "utf8")).toBe(garbage);
+
+    const record = createPersistedWorkspaceRecord({
+      workspaceId: "/tmp/other",
+      projectId: "remote:github.com/acme/other",
+      cwd: "/tmp/other",
+      kind: "local_checkout",
+      displayName: "main",
+      createdAt: "2026-03-01T00:00:00.000Z",
+      updatedAt: "2026-03-01T00:00:00.000Z",
+    });
+    await workspaceRegistry.upsert(record);
+
+    expect(JSON.parse(readFileSync(filePath, "utf8"))).toEqual([record]);
+    expect(readFileSync(backupPath, "utf8")).toBe(garbage);
   });
 
   test("refreshes workspace archive timestamps when an archive is repeated", async () => {

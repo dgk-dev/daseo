@@ -649,6 +649,52 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     Key files: `packages/server/src/server/workspace-title-generator.ts`,
     `packages/server/src/server/workspace-auto-name.ts`.
 
+38. **A Pi process that dies between turns puts the agent in `error` and relaunches on the next
+    prompt** — from the 2026-10-15 Herdr comparison. Upstream drops a Pi `process_exit` when no
+    turn is active: the agent stays `idle`, its `wait_for` waits (deltas 29/30) are cleared
+    without a word, and the wake that would have continued its work never arrives. Pi now emits a
+    turn failure with no turn id, as the Claude provider already does, worded "Pi stopped
+    unexpectedly (exit code N). K background wait(s) it was holding were lost (labels); nothing
+    will wake this agent until you prompt it again." with the exit code and Pi's stderr tail as
+    `code`/`diagnostic`. An exit that follows `close()` (archive, reload, idle unload from delta
+    33, daemon shutdown) reports nothing. Upstream also never replaced a dead Pi process, idle or
+    mid-turn, so every later prompt failed with "Pi RPC process is closed" until a reload; the
+    session now starts a new Pi process on the same session file before the next turn, with the
+    current model, thinking level, and feature values. Internal `--no-session` agents have nothing
+    to resume and keep the old behavior. Key file:
+    `packages/server/src/server/agent/providers/pi/agent.ts`. Takes effect with the next release
+    and daemon restart.
+
+39. **An unreadable store file is copied aside before it can be overwritten** — upstream logs a
+    corrupt store, starts empty, and the next write replaces the only copy. The workspace and
+    project registries, device pairings, command receipts, push tokens, and push events now copy
+    the original bytes to `<file>.corrupt-<YYYYMMDDTHHmmss-mmmZ>` (same mode, newest 3 kept,
+    pruned only after the new copy exists) and log `backupPath`. The daemon still starts with
+    empty state; nothing restores automatically. Device pairings and receipts back up only on a
+    schema failure, because a JSON syntax error there already stops the daemon. Key files:
+    `packages/server/src/server/atomic-file.ts`, `workspace-registry.ts`,
+    `device-pairing-store.ts`, `agent/agent-command-receipt-store.ts`,
+    `push/{token-store,event-store}.ts`. Takes effect with the next release and daemon restart.
+
+40. **Android "needs you" notification channel** — upstream sends every push on
+    `agent-updates`. Permission requests and errors now go to `agent-needs-you` (importance MAX,
+    bundled two-tone `agent_needs_you.wav`, longer vibration); "finished" stays on
+    `agent-updates`, whose settings are untouched because Android freezes a channel's sound and
+    importance once it exists. One mapping in the protocol package drives the FCM `channel_id`,
+    the Expo `channelId`, and the app's channel creation. The daemon side takes effect with the
+    next release and daemon restart; the channel and sound arrive with the next Android build.
+    Key files: `packages/protocol/src/agent-attention-notification.ts`,
+    `packages/server/src/server/push/{fcm-service,push-service}.ts`,
+    `packages/app/src/push-notifications/internal/subscriptions.ts`, `packages/app/app.config.js`.
+
+41. **The phone stays awake while a remote browser stream is on screen** — the native viewer
+    (delta 1) holds an `expo-keep-awake` lock tagged `browser-remote-stream` only while it is
+    receiving: pane visible, app foregrounded, host connected and streaming-capable, stream not
+    stopped. Hiding, backgrounding, disconnecting, a stopped stream, or unmount releases it.
+    Electron and web viewers are unchanged. Key files:
+    `packages/app/src/hooks/use-keep-awake-while.ts`,
+    `packages/app/src/desktop/browser/pane/index.tsx`. Takes effect with the next Android build.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/text-input";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { useAppVisible } from "@/hooks/use-app-visible";
+import { useKeepAwakeWhile } from "@/hooks/use-keep-awake-while";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import { mapTouchToGuest } from "./remote-viewport";
@@ -281,6 +282,11 @@ export function BrowserPane({
     lastSentAt: 0,
   });
   const shouldWatch = retainedPanelActive && appVisible && isConnected;
+  // The screen stays on only while this pane is actually receiving the stream the user opened.
+  useKeepAwakeWhile(
+    Boolean(client) && supportsStream && shouldWatch && status !== "stopped",
+    "browser-remote-stream",
+  );
 
   const sendInput = useCallback(
     (input: Parameters<NonNullable<typeof client>["sendBrowserRemoteInput"]>[0]["input"]) => {

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  AGENT_NEEDS_YOU_CHANNEL_ID,
+  AGENT_UPDATES_CHANNEL_ID,
   buildAgentAttentionNotificationPayload,
+  isAgentAttentionReason,
+  resolveAgentAttentionChannel,
   findLatestAssistantMessageFromTimeline,
   findLatestPermissionRequest,
 } from "./agent-attention-notification.js";
@@ -115,5 +119,22 @@ describe("findLatestPermissionRequest", () => {
     ]);
 
     expect(findLatestPermissionRequest(pending)?.id).toBe("second");
+  });
+});
+
+describe("resolveAgentAttentionChannel", () => {
+  it("keeps finished on the existing channel and sends what needs the user to its own", () => {
+    expect(resolveAgentAttentionChannel("finished")).toBe(AGENT_UPDATES_CHANNEL_ID);
+    expect(resolveAgentAttentionChannel("permission")).toBe(AGENT_NEEDS_YOU_CHANNEL_ID);
+    expect(resolveAgentAttentionChannel("error")).toBe(AGENT_NEEDS_YOU_CHANNEL_ID);
+    expect([AGENT_UPDATES_CHANNEL_ID, AGENT_NEEDS_YOU_CHANNEL_ID]).toEqual([
+      "agent-updates",
+      "agent-needs-you",
+    ]);
+  });
+
+  it("recognizes only the three attention reasons", () => {
+    expect(["finished", "error", "permission"].every(isAgentAttentionReason)).toBe(true);
+    expect([undefined, null, "", "idle", 1].some(isAgentAttentionReason)).toBe(false);
   });
 });

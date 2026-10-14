@@ -83,6 +83,42 @@ describe("FcmService", () => {
     });
   });
 
+  test("routes what needs the user to the needs-you channel and finished to agent-updates", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "daseo-fcm-"));
+    directories.push(directory);
+    const credentialPath = createCredentialsFile(directory);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ access_token: "access", expires_in: 3600 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValue(new Response(JSON.stringify({ name: "message-id" }), { status: 200 }));
+    const service = new FcmService(createLogger(), vi.fn(), {
+      credentialPath,
+      fetch: fetchMock as typeof fetch,
+    });
+
+    for (const reason of ["permission", "error", "finished"]) {
+      await service.sendPush(["fcm:device-token"], {
+        title: "Agent",
+        body: reason,
+        data: { serverId: "s1", agentId: "a1", reason },
+      });
+    }
+
+    const androidNotifications = fetchMock.mock.calls
+      .slice(1)
+      .map(([, init]) => JSON.parse(String(init?.body)).message.android.notification);
+    expect(androidNotifications).toEqual([
+      { sound: "default", channel_id: "agent-needs-you" },
+      { sound: "default", channel_id: "agent-needs-you" },
+      { sound: "default", channel_id: "agent-updates" },
+    ]);
+  });
+
   test("coalesces OAuth exchange across a notification fan-out", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "daseo-fcm-"));
     directories.push(directory);

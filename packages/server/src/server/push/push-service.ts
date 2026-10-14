@@ -1,6 +1,8 @@
 import type pino from "pino";
 
-import { FcmService } from "./fcm-service.js";
+import type { AgentAttentionChannelId } from "@getpaseo/protocol/agent-attention-notification";
+
+import { FcmService, resolvePushChannelId } from "./fcm-service.js";
 
 export interface PushPayload {
   title: string;
@@ -14,6 +16,7 @@ interface ExpoPushMessage {
   body: string;
   data?: Record<string, unknown>;
   sound?: "default";
+  channelId?: AgentAttentionChannelId;
 }
 
 interface ExpoPushTicket {
@@ -59,6 +62,7 @@ export class PushService {
       body: payload.body,
       data: payload.data,
       sound: "default",
+      channelId: resolvePushChannelId(payload),
     }));
 
     // Batch tokens (max 100 per request per Expo limits)

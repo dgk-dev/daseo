@@ -34,7 +34,7 @@ vi.mock("react-native", () => ({ Platform: { OS: "android" } }));
 
 vi.mock("expo-notifications", () => ({
   PermissionStatus: { GRANTED: "granted" },
-  AndroidImportance: { HIGH: 4 },
+  AndroidImportance: { HIGH: 4, MAX: 5 },
   getPermissionsAsync: mocks.getPermissionsAsync,
   requestPermissionsAsync: mocks.requestPermissionsAsync,
   getDevicePushTokenAsync: mocks.getDevicePushTokenAsync,
@@ -95,10 +95,19 @@ describe("direct FCM subscriptions", () => {
         expect.objectContaining({ deviceId: expect.any(String), platform: "android" }),
       ),
     );
-    expect(mocks.setNotificationChannelAsync).toHaveBeenCalledWith(
-      "agent-updates",
-      expect.objectContaining({ importance: 4, sound: "default" }),
-    );
+    expect(mocks.setNotificationChannelAsync).toHaveBeenCalledWith("agent-updates", {
+      name: "Agent updates",
+      importance: 4,
+      sound: "default",
+      vibrationPattern: [0, 250, 250, 250],
+    });
+    expect(mocks.setNotificationChannelAsync).toHaveBeenCalledWith("agent-needs-you", {
+      name: "Agent needs you",
+      importance: 5,
+      sound: "agent_needs_you.wav",
+      vibrationPattern: [0, 400, 200, 400, 200, 400],
+      lightColor: "#20744A",
+    });
     expect(mocks.getExpoPushTokenAsync).not.toHaveBeenCalled();
     stop();
   });

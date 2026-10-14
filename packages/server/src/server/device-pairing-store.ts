@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Logger } from "pino";
 import { z } from "zod";
-import { writeJsonFileAtomic } from "./atomic-file.js";
+import { preserveUnreadableFile, writeJsonFileAtomic } from "./atomic-file.js";
 
 const PairingGrantSchema = z.object({
   offerId: z.string().min(1),
@@ -190,7 +190,11 @@ export class DevicePairingStore {
     }
     const parsed = DevicePairingFileSchema.safeParse(JSON.parse(raw) as unknown);
     if (!parsed.success) {
-      this.logger?.warn({ issues: parsed.error.issues }, "Ignoring invalid device pairing store");
+      const backupPath = await preserveUnreadableFile(this.filePath);
+      this.logger?.warn(
+        { issues: parsed.error.issues, filePath: this.filePath, backupPath },
+        "Ignoring invalid device pairing store",
+      );
       return;
     }
     this.grants = new Map(parsed.data.grants.map((grant) => [grant.offerId, grant]));

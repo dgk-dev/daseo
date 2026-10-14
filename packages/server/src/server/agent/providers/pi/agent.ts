@@ -355,6 +355,12 @@ interface StartTurnResult {
   turnId: string;
 }
 
+interface PiRuntimeRelaunchInput {
+  sessionFile: string;
+  model?: string;
+  thinkingOptionId?: string;
+}
+
 interface PiRpcAgentSessionOptions {
   runtimeSession: PiRuntimeSession;
   config: AgentSessionConfig;
@@ -364,6 +370,13 @@ interface PiRpcAgentSessionOptions {
   cleanup?: () => void;
   extensionTimeoutMs?: number;
   selectionPolicy?: AgentProviderSelectionPolicy;
+  logger?: Logger;
+  agentId?: string;
+  /**
+   * Starts a new Pi process on this session's file after the previous one died. Absent for
+   * sessions with nothing to resume: internal `--no-session` agents and feature probes.
+   */
+  relaunchRuntime?: (input: PiRuntimeRelaunchInput) => Promise<PiRuntimeSession>;
 }
 
 interface PiResumeConfig {
@@ -1443,6 +1456,17 @@ function isExtensionUiRequestEvent(
   return event.type === "extension_ui_request" && typeof event.id === "string";
 }
 
+// "Pi RPC process exited with code 143 and signal null" -> "exit code 143"; a signal wins, as in
+// the Claude provider's wording.
+function describePiExit(summary: string): string {
+  const match = summary.match(/exited with code (\S+)(?: and signal (\S+))?/);
+  if (!match) {
+    return summary || "unknown cause";
+  }
+  const [, code, signal] = match;
+  return signal && signal !== "null" ? `signal ${signal}` : `exit code ${code}`;
+}
+
 function isProcessExitEvent(
   event: PiRuntimeEvent,
 ): event is Extract<PiRuntimeEvent, { type: "process_exit" }> {
@@ -1767,6 +1791,11 @@ export class PiRpcAgentSession implements AgentSession {
   private state: PiSessionState;
   private readonly currentModeId: string | null;
   private closed = false;
+  // Set when the Pi process exits without close(): every request on it now fails, so the next
+  // turn starts a new process on the same session file first.
+  private runtimeExited = false;
+  private runtimeRelaunch: Promise<void> | null = null;
+  private detachRuntimeEvents: (() => void) | null = null;
   // Pi reports an aborted OpenAI Responses stream before the abort RPC resolves.
   // Keep the turn active until that RPC acknowledges the user-requested cancellation.
   private interruptingTurnId: string | null = null;
@@ -1775,6 +1804,9 @@ export class PiRpcAgentSession implements AgentSession {
 
   constructor(options: PiRpcAgentSessionOptions) {
     this.runtimeSession = options.runtimeSession;
+    this.logger = options.logger;
+    this.agentId = options.agentId;
+    this.relaunchRuntime = options.relaunchRuntime;
     this.config = options.config;
     this.state = options.initialState;
     this.capabilities = options.capabilities;
@@ -1788,12 +1820,13 @@ export class PiRpcAgentSession implements AgentSession {
       null;
     this.extensionTimeoutMs = options.extensionTimeoutMs ?? DEFAULT_PI_EXTENSION_RESULT_TIMEOUT_MS;
 
-    this.runtimeSession.onEvent((event) => {
-      this.handleRuntimeEvent(event);
-    });
+    this.attachRuntime(options.runtimeSession);
   }
 
-  private readonly runtimeSession: PiRuntimeSession;
+  private runtimeSession: PiRuntimeSession;
+  private readonly logger?: Logger;
+  private readonly agentId?: string;
+  private readonly relaunchRuntime?: (input: PiRuntimeRelaunchInput) => Promise<PiRuntimeSession>;
   private readonly config: AgentSessionConfig;
   private readonly cleanup?: () => void;
   private readonly extensionTimeoutMs: number;
@@ -1902,6 +1935,7 @@ export class PiRpcAgentSession implements AgentSession {
   }
 
   async startTurn(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<StartTurnResult> {
+    await this.relaunchExitedRuntime();
     if (this.activeTurnId) {
       throw new Error("A Pi turn is already active");
     }
@@ -3004,13 +3038,73 @@ export class PiRpcAgentSession implements AgentSession {
     }
   }
 
-  private handleProcessExit(error: string): void {
-    this.rejectAllExtensionResults(new Error(error));
-    // wait_for waits die with the Pi process, so nothing will wake the agent.
-    this.clearBackgroundWaits();
-    if (!this.activeTurnId) {
+  private attachRuntime(runtime: PiRuntimeSession): void {
+    this.detachRuntimeEvents?.();
+    this.runtimeSession = runtime;
+    this.detachRuntimeEvents = runtime.onEvent((event) => {
+      // A replaced process can still flush a last frame; only the current one drives the session.
+      if (this.runtimeSession !== runtime) return;
+      this.handleRuntimeEvent(event);
+    });
+  }
+
+  private async relaunchExitedRuntime(): Promise<void> {
+    const relaunch = this.relaunchRuntime;
+    if (!this.runtimeExited || !relaunch || this.closed) {
       return;
     }
+    this.runtimeRelaunch ??= this.performRuntimeRelaunch(relaunch).finally(() => {
+      this.runtimeRelaunch = null;
+    });
+    await this.runtimeRelaunch;
+  }
+
+  private async performRuntimeRelaunch(
+    relaunch: (input: PiRuntimeRelaunchInput) => Promise<PiRuntimeSession>,
+  ): Promise<void> {
+    const sessionFile = this.state.sessionFile;
+    if (!sessionFile) {
+      return;
+    }
+    const runtime = await relaunch({
+      sessionFile,
+      ...(this.config.model ? { model: this.config.model } : {}),
+      ...(this.lastKnownThinkingOptionId
+        ? { thinkingOptionId: this.lastKnownThinkingOptionId }
+        : {}),
+    });
+    if (this.closed) {
+      await runtime.close().catch(() => undefined);
+      throw new Error("Pi session closed");
+    }
+    const exited = this.runtimeSession;
+    this.attachRuntime(runtime);
+    this.runtimeExited = false;
+    void exited.close().catch(() => undefined);
+    this.state = await runtime.getState();
+    // Feature toggles such as fast mode live in the Pi process; reapply the configured values.
+    await this.initializeFeatures();
+    this.logger?.info(
+      { agentId: this.agentId, sessionId: this.state.sessionId },
+      "Pi runtime relaunched after an unexpected exit",
+    );
+  }
+
+  private handleProcessExit(error: string): void {
+    this.rejectAllExtensionResults(new Error(error));
+    if (this.closed) {
+      // close() ends the process on purpose (archive, reload, idle unload, daemon shutdown).
+      this.clearBackgroundWaits();
+      this.logger?.debug({ agentId: this.agentId }, "Pi runtime exited after close");
+      return;
+    }
+    this.runtimeExited = true;
+    if (!this.activeTurnId) {
+      this.reportRuntimeExitBetweenTurns(error);
+      return;
+    }
+    // wait_for waits die with the Pi process, so nothing will wake the agent.
+    this.clearBackgroundWaits();
     const turnId = this.activeTurnId;
     this.terminalizeOpenCompaction("failed", error);
     this.activeTurnId = null;
@@ -3024,6 +3118,40 @@ export class PiRpcAgentSession implements AgentSession {
       provider: this.provider,
       turnId,
       error,
+    });
+  }
+
+  // Nothing else observes a death between turns: the agent would stay idle, and the wait_for
+  // wakes that were going to continue its work died with the process.
+  private reportRuntimeExitBetweenTurns(error: string): void {
+    const pending = this.backgroundWaitState.pending;
+    const labels = [...this.pendingWaitDescriptions.values()].filter((label) => label.length > 0);
+    this.clearBackgroundWaits();
+    this.logger?.warn(
+      {
+        agentId: this.agentId,
+        sessionId: this.state.sessionId,
+        pendingBackgroundWaits: pending,
+        error,
+      },
+      "Pi runtime exited between turns",
+    );
+    const [summary = "", ...stderr] = error.trim().split("\n");
+    const diagnostic = stderr.join("\n").trim();
+    const code = summary.match(/\bcode\s+(\d+)\b/i)?.[1];
+    const sentences = [`Pi stopped unexpectedly (${describePiExit(summary)}).`];
+    if (pending > 0) {
+      const labelList = labels.length > 0 ? ` (${labels.join(", ")})` : "";
+      sentences.push(
+        `${pending} background wait(s) it was holding were lost${labelList}; nothing will wake this agent until you prompt it again.`,
+      );
+    }
+    this.emit({
+      type: "turn_failed",
+      provider: this.provider,
+      error: sentences.join(" "),
+      ...(code ? { code } : {}),
+      ...(diagnostic ? { diagnostic } : {}),
     });
   }
 
@@ -3444,6 +3572,20 @@ export class PiRpcAgentClient implements AgentClient {
       options.catalogScopeProjectionFactory ?? createPiCatalogScopeProjection;
   }
 
+  // The original launch (cwd, env, MCP config, Paseo extension) resumed on the session file with
+  // the model and thinking level the session holds now.
+  private relaunchRuntime(
+    startInput: PiStartSessionInput,
+    relaunch: PiRuntimeRelaunchInput,
+  ): Promise<PiRuntimeSession> {
+    return this.runtime.startSession({
+      ...startInput,
+      session: relaunch.sessionFile,
+      model: relaunch.model ?? startInput.model,
+      thinkingOptionId: relaunch.thinkingOptionId ?? startInput.thinkingOptionId,
+    });
+  }
+
   async createSession(
     config: AgentSessionConfig,
     launchContext?: AgentLaunchContext,
@@ -3456,19 +3598,20 @@ export class PiRpcAgentClient implements AgentClient {
     const paseoExtension = createPiPaseoExtensionFile(
       composeSystemPromptParts(config.systemPrompt, config.daemonAppendSystemPrompt),
     );
+    const startInput: PiStartSessionInput = {
+      cwd: config.cwd,
+      model: config.model,
+      thinkingOptionId:
+        normalizePiThinkingOption(config.thinkingOptionId) ??
+        resolvePiDefaultThinkingLevel(config.model, this.selectionPolicy),
+      noSession: config.internal === true,
+      env: launchContext?.env,
+      mcpConfigPath: mcpConfig?.path,
+      extensionPaths: paseoExtension ? [paseoExtension.path] : undefined,
+    };
     let runtimeSession: PiRuntimeSession;
     try {
-      runtimeSession = await this.runtime.startSession({
-        cwd: config.cwd,
-        model: config.model,
-        thinkingOptionId:
-          normalizePiThinkingOption(config.thinkingOptionId) ??
-          resolvePiDefaultThinkingLevel(config.model, this.selectionPolicy),
-        noSession: config.internal === true,
-        env: launchContext?.env,
-        mcpConfigPath: mcpConfig?.path,
-        extensionPaths: paseoExtension ? [paseoExtension.path] : undefined,
-      });
+      runtimeSession = await this.runtime.startSession(startInput);
     } catch (error) {
       mcpConfig?.cleanup();
       paseoExtension?.cleanup();
@@ -3483,6 +3626,11 @@ export class PiRpcAgentClient implements AgentClient {
         cleanup: combineCleanup([mcpConfig?.cleanup, paseoExtension?.cleanup]),
         extensionTimeoutMs: this.providerParams.extensionTimeoutMs,
         selectionPolicy: this.selectionPolicy,
+        logger: this.logger,
+        agentId: launchContext?.agentId,
+        ...(config.internal === true
+          ? {}
+          : { relaunchRuntime: (relaunch) => this.relaunchRuntime(startInput, relaunch) }),
       });
       await session.initializeFeatures();
       return session;
@@ -3522,17 +3670,16 @@ export class PiRpcAgentClient implements AgentClient {
         resumeConfig.config.daemonAppendSystemPrompt,
       ),
     );
+    const startInput = buildResumeStartInput({
+      resumeConfig,
+      sessionFile,
+      launchContext,
+      mcpConfig,
+      paseoExtension,
+    });
     let runtimeSession: PiRuntimeSession;
     try {
-      runtimeSession = await this.runtime.startSession(
-        buildResumeStartInput({
-          resumeConfig,
-          sessionFile,
-          launchContext,
-          mcpConfig,
-          paseoExtension,
-        }),
-      );
+      runtimeSession = await this.runtime.startSession(startInput);
     } catch (error) {
       mcpConfig?.cleanup();
       paseoExtension?.cleanup();
@@ -3547,6 +3694,9 @@ export class PiRpcAgentClient implements AgentClient {
         cleanup: combineCleanup([mcpConfig?.cleanup, paseoExtension?.cleanup]),
         extensionTimeoutMs: this.providerParams.extensionTimeoutMs,
         selectionPolicy: this.selectionPolicy,
+        logger: this.logger,
+        agentId: launchContext?.agentId,
+        relaunchRuntime: (relaunch) => this.relaunchRuntime(startInput, relaunch),
       });
       await session.initializeFeatures();
       return session;

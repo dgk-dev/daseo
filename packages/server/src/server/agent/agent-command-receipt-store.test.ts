@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
@@ -11,6 +11,27 @@ import {
 const logger = pino({ level: "silent" });
 
 describe("AgentCommandReceiptStore", () => {
+  test("keeps a schema-invalid receipt file as a backup and stays usable", async () => {
+    const paseoHome = await mkdtemp(join(tmpdir(), "paseo-command-receipt-corrupt-"));
+    const filePath = join(paseoHome, "agent-command-receipts.json");
+    const invalid = JSON.stringify({ version: 1, receipts: [{ commandId: "" }] });
+    await writeFile(filePath, invalid);
+    const store = new AgentCommandReceiptStore(paseoHome, logger);
+
+    await expect(
+      store.admit({ commandId: "command-1", agentId: "agent-1", payloadHash: "hash" }),
+    ).resolves.toMatchObject({ kind: "new" });
+
+    const backups = (await readdir(paseoHome)).filter((entry) =>
+      entry.startsWith("agent-command-receipts.json.corrupt-"),
+    );
+    expect(backups).toHaveLength(1);
+    expect(await readFile(join(paseoHome, backups[0]!), "utf8")).toBe(invalid);
+    expect(JSON.parse(await readFile(filePath, "utf8"))).toMatchObject({
+      receipts: [{ commandId: "command-1" }],
+    });
+  });
+
   test("persists admission before returning and replays the accepted receipt", async () => {
     const paseoHome = await mkdtemp(join(tmpdir(), "paseo-command-receipts-"));
     const store = new AgentCommandReceiptStore(paseoHome, logger);

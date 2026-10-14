@@ -3,6 +3,10 @@ import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
 import { z } from "zod";
+import {
+  AGENT_NEEDS_YOU_CHANNEL_ID,
+  AGENT_UPDATES_CHANNEL_ID,
+} from "@getpaseo/protocol/agent-attention-notification";
 import { readValidatedJson, readValidatedString } from "@/storage/validated-storage";
 import type { RevokePushNotificationsInput, StartPushNotificationsInput } from "./types";
 import { getOrCreateDeviceSigningIdentity } from "@/security/device-identity";
@@ -55,11 +59,20 @@ async function resolveToken(serverId: string): Promise<string | null> {
   }
 
   if (Platform.OS === "android") {
-    await Notifications.setNotificationChannelAsync("agent-updates", {
+    await Notifications.setNotificationChannelAsync(AGENT_UPDATES_CHANNEL_ID, {
       name: "Agent updates",
       importance: Notifications.AndroidImportance.HIGH,
       sound: "default",
       vibrationPattern: [0, 250, 250, 250],
+    });
+    // Permission requests and errors. Its own channel so Android settings can tune it apart from
+    // "finished"; the sound is bundled through the expo-notifications plugin in app.config.js.
+    await Notifications.setNotificationChannelAsync(AGENT_NEEDS_YOU_CHANNEL_ID, {
+      name: "Agent needs you",
+      importance: Notifications.AndroidImportance.MAX,
+      sound: "agent_needs_you.wav",
+      vibrationPattern: [0, 400, 200, 400, 200, 400],
+      lightColor: "#20744A",
     });
   }
 

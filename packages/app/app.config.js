@@ -46,6 +46,14 @@ const buildProfile = isFdroidBuild
           {
             icon: "./assets/images/notification-icon.png",
             color: "#20744A",
+            // Copied to res/raw, so names are [a-z0-9_] only. agent_needs_you.wav is generated:
+            // ffmpeg -f lavfi -i "sine=frequency=880:duration=0.16:sample_rate=44100" \
+            //   -f lavfi -i "anullsrc=r=44100:cl=mono" \
+            //   -f lavfi -i "sine=frequency=1318.5:duration=0.26:sample_rate=44100" \
+            //   -filter_complex "[0]afade=t=in:d=0.01,afade=t=out:st=0.13:d=0.03,volume=0.6[a];[1]atrim=duration=0.06[g];[2]afade=t=in:d=0.01,afade=t=out:st=0.18:d=0.08,volume=0.6[b];[a][g][b]concat=n=3:v=0:a=1,aformat=sample_fmts=s16:channel_layouts=mono" \
+            //   -ar 44100 -c:a pcm_s16le -map_metadata -1 -fflags +bitexact -flags:a +bitexact \
+            //   assets/audio/agent_needs_you.wav
+            sounds: ["./assets/audio/agent_needs_you.wav"],
           },
         ],
       ],
