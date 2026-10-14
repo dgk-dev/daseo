@@ -22,7 +22,7 @@ for (const error of ["InvalidCredentials", "DeviceNotRegistered"]) {
   });
 }
 
-test("Expo pushes carry the Android channel for their attention reason", async () => {
+test("Expo pushes never name an Android channel, whatever the attention reason", async () => {
   const fetchMock = vi
     .fn()
     .mockImplementation(
@@ -31,20 +31,14 @@ test("Expo pushes carry the Android channel for their attention reason", async (
   vi.stubGlobal("fetch", fetchMock);
   const service = new PushService(createTestLogger(), vi.fn());
 
-  for (const data of [
-    { reason: "permission" },
-    { reason: "error" },
-    { reason: "finished" },
-    undefined,
-  ]) {
+  for (const data of [{ reason: "permission" }, { reason: "error" }, { reason: "finished" }]) {
     await service.sendPush(["ExponentPushToken[test]"], { title: "Agent", body: "Body", data });
   }
 
   const messages = fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body))[0]);
-  expect(messages.map((message) => [message.sound, message.channelId])).toEqual([
-    ["default", "agent-needs-you"],
-    ["default", "agent-needs-you"],
-    ["default", "agent-updates"],
-    ["default", "agent-updates"],
-  ]);
+  expect(messages).toHaveLength(3);
+  for (const message of messages) {
+    expect(message.sound).toBe("default");
+    expect(message).not.toHaveProperty("channelId");
+  }
 });

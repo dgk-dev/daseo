@@ -1,5 +1,5 @@
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { isNative } from "@/constants/platform";
 
 /**
@@ -8,14 +8,21 @@ import { isNative } from "@/constants/platform";
  * worst outcome.
  */
 export function useKeepAwakeWhile(active: boolean, tag: string): void {
+  // Every activate and release of this hook runs in order on one chain. expo-keep-awake keeps one
+  // entry per tag, so a release that ran after a later activate would drop the lock while
+  // `active` is true (a quick disconnect/reconnect flips it false and back).
+  const queueRef = useRef<Promise<void>>(Promise.resolve());
   useEffect(() => {
     if (!isNative || !active) {
       return;
     }
-    const activation = activateKeepAwakeAsync(tag).catch(() => undefined);
+    queueRef.current = queueRef.current
+      .then(() => activateKeepAwakeAsync(tag))
+      .catch(() => undefined);
     return () => {
-      // Release after the activation settles so a quick toggle cannot leave the lock held.
-      void activation.then(() => deactivateKeepAwake(tag)).catch(() => undefined);
+      queueRef.current = queueRef.current
+        .then(() => deactivateKeepAwake(tag))
+        .catch(() => undefined);
     };
   }, [active, tag]);
 }

@@ -10,6 +10,12 @@ import {
 
 const logger = pino({ level: "silent" });
 
+// Reloading a store prunes settled receipts older than 30 days by the real clock, so fixtures that
+// reload must stay recent; a fixed calendar date would rot.
+function secondsAgo(seconds: number): Date {
+  return new Date(Date.now() - seconds * 1_000);
+}
+
 describe("AgentCommandReceiptStore", () => {
   test("keeps a schema-invalid receipt file as a backup and stays usable", async () => {
     const paseoHome = await mkdtemp(join(tmpdir(), "paseo-command-receipt-corrupt-"));
@@ -47,7 +53,7 @@ describe("AgentCommandReceiptStore", () => {
         commandId: "command-1",
         agentId: "agent-1",
         payloadHash,
-        now: new Date("2026-08-18T00:00:00.000Z"),
+        now: secondsAgo(60),
       }),
     ).resolves.toMatchObject({ kind: "new", receipt: { status: "in_flight" } });
 
@@ -59,7 +65,7 @@ describe("AgentCommandReceiptStore", () => {
     await store.settle({
       commandId: "command-1",
       status: "accepted",
-      now: new Date("2026-08-18T00:00:01.000Z"),
+      now: secondsAgo(59),
     });
     const reloaded = new AgentCommandReceiptStore(paseoHome, logger);
     await expect(
@@ -75,7 +81,7 @@ describe("AgentCommandReceiptStore", () => {
       commandId: "interrupted-command",
       agentId: "agent-1",
       payloadHash,
-      now: new Date("2026-08-30T00:00:00.000Z"),
+      now: secondsAgo(60),
     });
 
     const reloaded = new AgentCommandReceiptStore(paseoHome, logger);

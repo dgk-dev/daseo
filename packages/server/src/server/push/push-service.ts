@@ -1,8 +1,6 @@
 import type pino from "pino";
 
-import type { AgentAttentionChannelId } from "@getpaseo/protocol/agent-attention-notification";
-
-import { FcmService, resolvePushChannelId } from "./fcm-service.js";
+import { FcmService } from "./fcm-service.js";
 
 export interface PushPayload {
   title: string;
@@ -16,7 +14,6 @@ interface ExpoPushMessage {
   body: string;
   data?: Record<string, unknown>;
   sound?: "default";
-  channelId?: AgentAttentionChannelId;
 }
 
 interface ExpoPushTicket {
@@ -61,8 +58,10 @@ export class PushService {
       title: payload.title,
       body: payload.body,
       data: payload.data,
+      // No channelId on purpose: Expo drops a push whose channel the installed app has not
+      // created, and an older Android build would silently lose permission and error alerts.
+      // Without it Expo uses its "Default" channel. Direct FCM picks the channel by reason.
       sound: "default",
-      channelId: resolvePushChannelId(payload),
     }));
 
     // Batch tokens (max 100 per request per Expo limits)

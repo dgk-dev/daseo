@@ -677,13 +677,17 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     `push/{token-store,event-store}.ts`. Takes effect with the next release and daemon restart.
 
 40. **Android "needs you" notification channel** — upstream sends every push on
-    `agent-updates`. Permission requests and errors now go to `agent-needs-you` (importance MAX,
-    bundled two-tone `agent_needs_you.wav`, longer vibration); "finished" stays on
-    `agent-updates`, whose settings are untouched because Android freezes a channel's sound and
-    importance once it exists. One mapping in the protocol package drives the FCM `channel_id`,
-    the Expo `channelId`, and the app's channel creation. The daemon side takes effect with the
-    next release and daemon restart; the channel and sound arrive with the next Android build.
-    Key files: `packages/protocol/src/agent-attention-notification.ts`,
+    `agent-updates`. Permission requests and errors sent through direct FCM (the personal
+    variant) now go to `agent-needs-you` (importance MAX, bundled two-tone
+    `agent_needs_you.wav`, longer vibration); "finished" stays on `agent-updates`, whose settings
+    are untouched because Android freezes a channel's sound and importance once it exists. One
+    mapping in the protocol package drives the FCM `channel_id` and the app's channel creation.
+    An app that has not created the channel yet gets FCM's manifest default, so the push still
+    shows. The Expo path intentionally stays channel-less: Expo drops a push whose channel the
+    app has not created, so an older production or development build would silently lose
+    permission and error alerts. The daemon side takes effect with the next release and daemon
+    restart; the channel and sound arrive with the next Android build. Key files:
+    `packages/protocol/src/agent-attention-notification.ts`,
     `packages/server/src/server/push/{fcm-service,push-service}.ts`,
     `packages/app/src/push-notifications/internal/subscriptions.ts`, `packages/app/app.config.js`.
 

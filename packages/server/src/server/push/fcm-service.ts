@@ -13,8 +13,9 @@ import {
 import type { PushPayload } from "./index.js";
 
 /**
- * Android channel for a push. Agent attention pushes carry their reason in `data.reason`; any
- * other payload stays on the original channel.
+ * Android channel for a direct FCM push. Agent attention pushes carry their reason in
+ * `data.reason`; any other payload stays on the original channel. An app that has not created the
+ * channel gets FCM's manifest default instead, so the push still shows.
  */
 export function resolvePushChannelId(payload: PushPayload): AgentAttentionChannelId {
   const reason = payload.data?.reason;

@@ -52,6 +52,36 @@ describe("useKeepAwakeWhile", () => {
     );
   });
 
+  it("keeps the lock after a quick toggle while the first activation is still pending", async () => {
+    let resolveFirstActivation: () => void = () => undefined;
+    mocks.activateKeepAwakeAsync.mockImplementationOnce(
+      (tag: string) =>
+        new Promise<void>((resolve) => {
+          resolveFirstActivation = () => {
+            mocks.calls.push(`activate:${tag}`);
+            resolve();
+          };
+        }),
+    );
+    const { rerender } = renderHook(({ active }) => useKeepAwakeWhile(active, "stream"), {
+      initialProps: { active: true },
+    });
+    await vi.waitFor(() => expect(mocks.activateKeepAwakeAsync).toHaveBeenCalledTimes(1));
+
+    rerender({ active: false });
+    rerender({ active: true });
+    await Promise.resolve();
+    expect(mocks.deactivateKeepAwake).not.toHaveBeenCalled();
+    expect(mocks.activateKeepAwakeAsync).toHaveBeenCalledTimes(1);
+
+    resolveFirstActivation();
+    await vi.waitFor(() =>
+      expect(mocks.calls).toEqual(["activate:stream", "deactivate:stream", "activate:stream"]),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mocks.calls.at(-1)).toBe("activate:stream");
+  });
+
   it("releases the lock on unmount", async () => {
     const { unmount } = renderHook(() => useKeepAwakeWhile(true, "stream"));
     unmount();
