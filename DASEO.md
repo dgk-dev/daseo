@@ -699,6 +699,14 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     `packages/app/src/hooks/use-keep-awake-while.ts`,
     `packages/app/src/desktop/browser/pane/index.tsx`. Takes effect with the next Android build.
 
+42. **A project whose workspaces are all pinned keeps its sidebar header** — upstream's pin
+    split (#1981) dropped a project once every workspace of it sat in the Pinned section, to
+    avoid a duplicate header. Archiving the last unpinned workspace then made the project vanish
+    from the sidebar along with its "new workspace" row, while a project with no workspaces at
+    all stayed. The project now stays as an empty header with the "new workspace" row, the same
+    as an empty project. Key file: `packages/app/src/hooks/use-sidebar-pins.ts`. Takes effect
+    with the next Mac release and Android build.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including
