@@ -1,7 +1,22 @@
 export const MAX_IMAGE_SOURCE_BYTES = 32 * 1024 * 1024;
-export const MAX_IMAGE_PIXELS = 40_000_000;
+// 52M covers 50MP phone photos (8160x6120 = 49.9M); 200MP shots stay out and go through
+// the file-upload path instead (delta 45).
+export const MAX_IMAGE_PIXELS = 52_000_000;
 export const IMAGE_REENCODE_THRESHOLD_BYTES = 8 * 1024 * 1024;
 export const IMAGE_REENCODE_MAX_DIMENSION = 4_096;
+
+export function exceedsImageSourceBudget(input: {
+  byteSize?: number | null;
+  width?: number | null;
+  height?: number | null;
+}): boolean {
+  try {
+    assertImageSourceBudget(input);
+    return false;
+  } catch {
+    return true;
+  }
+}
 
 export function assertImageSourceBudget(input: {
   byteSize?: number | null;

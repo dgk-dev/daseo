@@ -1,0 +1,14 @@
+diff --git a/node_modules/expo-image-picker/android/src/main/java/expo/modules/imagepicker/ImagePickerModule.kt b/node_modules/expo-image-picker/android/src/main/java/expo/modules/imagepicker/ImagePickerModule.kt
+index 03dee49..ac35f32 100644
+--- a/node_modules/expo-image-picker/android/src/main/java/expo/modules/imagepicker/ImagePickerModule.kt
++++ b/node_modules/expo-image-picker/android/src/main/java/expo/modules/imagepicker/ImagePickerModule.kt
+@@ -229,6 +229,9 @@ class ImagePickerModule : Module() {
+    * destroy the launching application that is backgrounded.
+    */
+   private fun handleResultUponActivityDestruction(result: ImagePickerContractResult, options: ImagePickerOptions) {
++    // Daseo: the launching coroutine is orphaned once its Activity is gone and never reaches
++    // its `finally`, so release the guard here or every later launch returns canceled.
++    isPickerOpen = false
+     if (result is ImagePickerContractResult.Success) {
+       pendingMediaPickingResult = PendingMediaPickingResult(result.data, options)
+     }

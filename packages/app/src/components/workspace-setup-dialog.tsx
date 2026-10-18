@@ -16,7 +16,7 @@ import { normalizeWorkspaceDescriptor, useSessionStore } from "@/stores/session-
 import { useWorkspaceSetupStore } from "@/stores/workspace-setup-store";
 import { normalizeAgentSnapshot } from "@/utils/agent-snapshots";
 import { applyLegacyDaemonWorkspaceOwnership } from "@/workspace/legacy-daemon-workspaces";
-import { encodeImages } from "@/utils/encode-images";
+import { encodeImagesForHost } from "@/utils/encode-images";
 import { toErrorMessage } from "@/utils/error-messages";
 import {
   resolveComposerAttachmentSubmitFormat,
@@ -118,6 +118,7 @@ function buildCreateAgentOptions({
   text,
   attachments,
   encodedImages,
+  imageUploads,
   workspaceDirectory,
   workspaceId,
   provider,
@@ -131,6 +132,7 @@ function buildCreateAgentOptions({
   text: string;
   attachments: NonNullable<CreateAgentRequestOptions["attachments"]>;
   encodedImages: NonNullable<CreateAgentRequestOptions["images"]> | null;
+  imageUploads?: CreateAgentRequestOptions["imageUploads"];
   workspaceDirectory: string;
   workspaceId: string;
   provider: CreateAgentRequestOptions["provider"];
@@ -155,6 +157,7 @@ function buildCreateAgentOptions({
       : {}),
     ...(text.trim() ? { initialPrompt: text.trim() } : {}),
     ...(encodedImages && encodedImages.length > 0 ? { images: encodedImages } : {}),
+    ...(imageUploads && imageUploads.length > 0 ? { imageUploads } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
   };
 }
@@ -320,7 +323,10 @@ export function WorkspaceSetupDialog() {
             supportsForgeAttachments: supportsForgeSearch,
           }),
         });
-        const encodedImages = await encodeImages(wirePayload.images);
+        const wireImages = await encodeImagesForHost({
+          client: connectedClient,
+          images: wirePayload.images,
+        });
         const workspaceDirectory = requireWorkspaceDirectory({
           workspaceId: ensuredWorkspace.id,
           workspaceDirectory: ensuredWorkspace.workspaceDirectory,
@@ -330,7 +336,8 @@ export function WorkspaceSetupDialog() {
             composerState,
             text,
             attachments: wirePayload.attachments,
-            encodedImages: encodedImages ?? null,
+            encodedImages: wireImages.images ?? null,
+            imageUploads: wireImages.imageUploads,
             workspaceDirectory,
             workspaceId: ensuredWorkspace.id,
             provider: composerState.selectedProvider,

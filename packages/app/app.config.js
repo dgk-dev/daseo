@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const pkg = require("./package.json");
 const withAndroidAsyncStorageSize = require("./plugins/with-android-async-storage-size");
+const withAndroidFoldConfigChanges = require("./plugins/with-android-fold-config-changes");
 const withAndroidProfileable = require("./plugins/with-android-profileable");
 const withAndroidTextMetrics = require("./plugins/with-android-text-metrics");
 const withFdroidAutolinking = require("./plugins/with-fdroid-autolinking");
@@ -163,6 +164,7 @@ export default {
       withPasteInput,
       [withAndroidAsyncStorageSize, 64],
       withAndroidTextMetrics,
+      withAndroidFoldConfigChanges,
       ...buildProfile.cameraPlugins,
       [
         "expo-splash-screen",

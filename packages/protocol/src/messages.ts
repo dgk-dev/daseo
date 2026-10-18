@@ -1076,6 +1076,14 @@ const ImageAttachmentSchema = z.object({
   mimeType: z.string(), // e.g., "image/jpeg", "image/png"
 });
 
+// Local fork (delta 46): an image the client already sent through the chunked
+// file upload (`file.upload.request`). The daemon reads the bytes and adds them to
+// `images`, so a large photo never rides inline in one relay frame.
+const ImageUploadReferenceSchema = z.object({
+  uploadId: z.string(),
+  mimeType: z.string(),
+});
+
 export const SendAgentMessageSchema = z.object({
   type: z.literal("send_agent_message"),
   agentId: z.string(),
@@ -1236,6 +1244,7 @@ export const SendAgentMessageRequestSchema = z.object({
   // COMPAT(durableCommandReceipts): added in v0.5.0, remove after 2027-02-18.
   commandId: z.string().min(1).optional(),
   images: z.array(ImageAttachmentSchema).optional(),
+  imageUploads: z.array(ImageUploadReferenceSchema).optional(),
   attachments: AgentAttachmentsSchema,
 });
 
@@ -1499,6 +1508,7 @@ export const CreateAgentRequestMessageSchema = z.object({
   clientMessageId: z.string().optional(),
   outputSchema: z.record(z.string(), z.unknown()).optional(),
   images: z.array(ImageAttachmentSchema).optional(),
+  imageUploads: z.array(ImageUploadReferenceSchema).optional(),
   attachments: AgentAttachmentsSchema,
   git: GitSetupOptionsSchema.optional(),
   worktree: CreateAgentWorktreeTargetSchema.optional(),
@@ -3235,6 +3245,8 @@ export const ServerInfoStatusPayloadSchema = z
         browserRemoteStream: z.boolean().optional(),
         // Local fork: `/btw` side questions (agent.side_question.request).
         sideQuestion: z.boolean().optional(),
+        // Local fork (delta 46): send/create requests accept `imageUploads`.
+        imageUploads: z.boolean().optional(),
         // COMPAT(directorySync): added in v0.3.x, remove gate after 2027-02-12.
         directorySync: z.boolean().optional(),
         // COMPAT(checkoutForgeSetAutoMerge): added in v0.1.106, remove old

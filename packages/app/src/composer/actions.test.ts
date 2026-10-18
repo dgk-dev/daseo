@@ -184,6 +184,7 @@ interface FakeSendCall {
     messageId: string;
     commandId: string;
     images: Array<{ data: string; mimeType: string }>;
+    imageUploads?: Array<{ uploadId: string; mimeType: string }>;
     attachments: AgentAttachment[];
   };
 }
@@ -738,6 +739,46 @@ describe("dispatchComposerAgentMessage", () => {
         submission,
       }),
     ).rejects.toBe(transportError);
+  });
+
+  it("sends images through the chunked upload when the host supports imageUploads", async () => {
+    const client = createFakeSendClient();
+    const uploads: Array<{ fileName: string; mimeType: string; bytes: Uint8Array }> = [];
+    client.getLastServerInfoMessage = () => ({ features: { imageUploads: true } });
+    client.uploadFile = async (file) => {
+      uploads.push(file);
+      return {
+        requestId: "upload-request",
+        file: {
+          type: "uploaded_file",
+          id: `upload_${uploads.length}`,
+          fileName: file.fileName,
+          mimeType: file.mimeType,
+          size: file.bytes.byteLength,
+          path: `/uploads/upload_${uploads.length}/${file.fileName}`,
+        },
+        error: null,
+      };
+    };
+
+    await dispatchComposerAgentMessage({
+      serverId: "server",
+      outbox: createFakeOutbox(),
+      client,
+      agentId: "agent",
+      text: "photo",
+      attachments: [{ kind: "image", metadata: imageWithId("img-upload") }],
+      encodeImages: async () => [{ data: "aGVsbG8=", mimeType: "image/jpeg" }],
+      submission: createFakeStream(),
+    });
+
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0]?.fileName).toBe("image-1.jpg");
+    expect(new TextDecoder().decode(uploads[0]?.bytes)).toBe("hello");
+    expect(client.calls[0]?.options.images).toEqual([]);
+    expect(client.calls[0]?.options.imageUploads).toEqual([
+      { uploadId: "upload_1", mimeType: "image/jpeg" },
+    ]);
   });
 
   it("sends text + image data + structured attachments and appends user_message to the tail when head is empty", async () => {

@@ -25,7 +25,7 @@ import type { Agent } from "@/stores/session-store";
 import { useWorkspaceFields } from "@/stores/session-store-hooks";
 import { useWorkspaceDraftSubmissionStore } from "@/stores/workspace-draft-submission-store";
 import { useAgentControlCommandCenterActions } from "@/command-center/agent-control-registration";
-import { encodeImages } from "@/utils/encode-images";
+import { encodeImagesForHost } from "@/utils/encode-images";
 import type { WorkspaceFileOpenRequest } from "@/workspace/file-open";
 import { shouldAutoFocusWorkspaceDraftComposer } from "@/screens/workspace/workspace-draft-pane-focus";
 import {
@@ -191,14 +191,14 @@ async function submitDraftCreateRequest(input: {
     featureValues: autoSubmitConfig?.featureValues ?? composerState.featureValues,
   });
 
-  const imagesData = await encodeImages(images);
+  const wireImages = await encodeImagesForHost({ client, images });
   const attachmentsArray = Array.isArray(attachments) ? attachments : undefined;
   const result = await client.createAgent({
     config,
     workspaceId,
     ...(text ? { initialPrompt: text } : {}),
     clientMessageId: attempt.clientMessageId,
-    ...(imagesData && imagesData.length > 0 ? { images: imagesData } : {}),
+    ...wireImages,
     ...(attachmentsArray && attachmentsArray.length > 0 ? { attachments: attachmentsArray } : {}),
   });
 

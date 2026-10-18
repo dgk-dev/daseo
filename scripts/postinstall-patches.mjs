@@ -30,6 +30,18 @@ const patchedPackages = [
     nodeModulesPath: "node_modules/@mattermost/react-native-paste-input",
     patchPrefix: "@mattermost+react-native-paste-input+",
   },
+  // Daseo: backport of expo/expo#49634 (in expo-modules-core 58 only). Without it every
+  // image-picker launch throws "unregistered ActivityResultLauncher" after the Android
+  // Activity is recreated (fold/unfold, font scale) until the process restarts.
+  {
+    nodeModulesPath: "node_modules/expo-modules-core",
+    patchPrefix: "expo-modules-core+",
+  },
+  // Daseo: release expo-image-picker's open-picker guard when its Activity died mid-pick.
+  {
+    nodeModulesPath: "node_modules/expo-image-picker",
+    patchPrefix: "expo-image-picker+",
+  },
   {
     nodeModulesPath: "packages/server/node_modules/@opencode-ai/sdk",
     patchPrefix: "@opencode-ai+sdk+",

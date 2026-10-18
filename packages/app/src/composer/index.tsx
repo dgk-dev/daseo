@@ -1377,7 +1377,13 @@ export function Composer({
     setCursorIndex((current) => Math.min(current, userInput.length));
   }, [userInput.length]);
 
-  const { pickImages } = useImageAttachmentPicker();
+  // Delta 45: photos over the image budget arrive here as files and upload like "Upload file".
+  const uploadPickedFilesRef = useRef<((files: PickedFile[]) => Promise<void>) | null>(null);
+  const { pickImages } = useImageAttachmentPicker({
+    onOversizedFiles: (files) => {
+      void uploadPickedFilesRef.current?.(files);
+    },
+  });
   const { pickFiles } = useFilePicker();
   const sendAgentMessageRef = useRef<
     | ((
@@ -1637,13 +1643,20 @@ export function Composer({
   );
 
   const handlePickImage = useCallback(async () => {
-    const newImages = await pickAndPersistImages({
-      pickImages,
-      persister: composerImageAttachmentPersister,
-    });
-    if (newImages.length === 0) return;
-    addImages(newImages);
-  }, [addImages, pickImages]);
+    try {
+      const newImages = await pickAndPersistImages({
+        pickImages,
+        persister: composerImageAttachmentPersister,
+      });
+      if (newImages.length === 0) return;
+      addImages(newImages);
+    } catch (error) {
+      console.error("[Composer] Failed to attach picked image:", error);
+      toastErrorRef.current(
+        error instanceof Error ? error.message : t("imageAttachmentPicker.failedToSelect"),
+      );
+    }
+  }, [addImages, pickImages, t]);
 
   const handleImagePastePendingChange = useCallback((delta: 1 | -1) => {
     setPendingImagePastes((pending) => Math.max(0, pending + delta));
@@ -1727,6 +1740,8 @@ export function Composer({
     },
     [addFiles, client, t],
   );
+
+  uploadPickedFilesRef.current = uploadPickedFiles;
 
   const handlePickFile = useCallback(async () => {
     if (!client) {

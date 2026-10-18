@@ -1627,6 +1627,8 @@ export class VoiceAssistantWebSocketServer {
         // Local fork: live desktop browser streaming to mobile watchers.
         browserRemoteStream: this.browserStreamHub !== null,
         sideQuestion: true,
+        // Local fork (delta 46): send/create requests accept chunk-uploaded images.
+        imageUploads: true,
         // COMPAT(checkoutForgeSetAutoMerge): added in v0.1.106, remove old
         // checkoutGithubSetAutoMerge fallback after 2026-12-28.
         checkoutForgeSetAutoMerge: true,

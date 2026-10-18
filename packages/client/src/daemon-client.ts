@@ -374,6 +374,9 @@ export interface SendMessageOptions {
   messageId?: string;
   commandId?: string;
   images?: Array<{ data: string; mimeType: string }>;
+  // Local fork (delta 46): images already sent with uploadFile; gate on
+  // server_info.features.imageUploads.
+  imageUploads?: SendAgentMessageRequest["imageUploads"];
   attachments?: SendAgentMessageRequest["attachments"];
 }
 
@@ -398,6 +401,7 @@ export interface CreateAgentRequestOptions extends AgentConfigOverrides {
   clientMessageId?: string;
   outputSchema?: Record<string, unknown>;
   images?: CreateAgentRequestMessage["images"];
+  imageUploads?: CreateAgentRequestMessage["imageUploads"];
   attachments?: CreateAgentRequestMessage["attachments"];
   git?: GitSetupOptions;
   worktree?: CreateAgentRequestMessage["worktree"];
@@ -1070,6 +1074,12 @@ interface PingProbe {
   drivesLivenessFailure: boolean;
 }
 
+function imageUploadsField(
+  imageUploads: SendAgentMessageRequest["imageUploads"],
+): Pick<SendAgentMessageRequest, "imageUploads"> {
+  return imageUploads && imageUploads.length > 0 ? { imageUploads } : {};
+}
+
 export class DaemonClient {
   private transport: DaemonTransport | null = null;
   private transportCleanup: Array<() => void> = [];
@@ -1425,6 +1435,39 @@ export class DaemonClient {
 
   getConnectionState(): ConnectionState {
     return this.connectionState;
+  }
+
+  /**
+   * Daseo (delta 45): resolves once the transport is connected, starting a reconnect when
+   * the client sits disconnected. Returning from an Android picker often finds the socket
+   * dropped (Samsung freezes backgrounded apps), and an upload must not fail on that.
+   */
+  waitForConnection(timeoutMs = DEFAULT_SEND_QUEUE_TIMEOUT_MS): Promise<void> {
+    if (this.connectionState.status === "connected" && this.transport) {
+      return Promise.resolve();
+    }
+    if (this.connectionState.status === "disposed") {
+      return Promise.reject(new Error("Daemon client is disposed"));
+    }
+    this.ensureConnected();
+    return new Promise((resolve, reject) => {
+      let unsubscribe: (() => void) | null = null;
+      const timeoutHandle = setTimeout(() => {
+        unsubscribe?.();
+        reject(new Error("Timed out waiting for the host connection"));
+      }, timeoutMs);
+      unsubscribe = this.subscribeConnectionStatus((state) => {
+        if (state.status === "connected") {
+          clearTimeout(timeoutHandle);
+          queueMicrotask(() => unsubscribe?.());
+          resolve();
+        } else if (state.status === "disposed") {
+          clearTimeout(timeoutHandle);
+          queueMicrotask(() => unsubscribe?.());
+          reject(new Error("Daemon client is disposed"));
+        }
+      });
+    });
   }
 
   subscribeConnectionStatus(listener: (status: ConnectionState) => void): () => void {
@@ -2453,6 +2496,7 @@ export class DaemonClient {
       ...(options.clientMessageId ? { clientMessageId: options.clientMessageId } : {}),
       ...(options.outputSchema ? { outputSchema: options.outputSchema } : {}),
       ...(options.images && options.images.length > 0 ? { images: options.images } : {}),
+      ...imageUploadsField(options.imageUploads),
       ...(options.attachments && options.attachments.length > 0
         ? { attachments: options.attachments }
         : {}),
@@ -3049,6 +3093,7 @@ export class DaemonClient {
       ...(messageId ? { messageId } : {}),
       commandId,
       ...(options?.images ? { images: options.images } : {}),
+      ...imageUploadsField(options?.imageUploads),
       ...(options?.attachments ? { attachments: options.attachments } : {}),
     });
     let sent = false;
@@ -4519,6 +4564,10 @@ export class DaemonClient {
     const bytes = asUint8Array(input.bytes);
     if (!bytes) {
       throw new Error("File bytes are required.");
+    }
+    // The file frames bypass the send queue, so start only on an open connection.
+    if (!this.transport || this.connectionState.status !== "connected") {
+      await this.waitForConnection();
     }
     const resolvedRequestId = this.createRequestId(input.requestId);
     const modifiedAt = input.modifiedAt ?? new Date().toISOString();

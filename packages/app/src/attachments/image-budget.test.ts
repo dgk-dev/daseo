@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   assertImageSourceBudget,
   estimateDataUrlBytes,
+  exceedsImageSourceBudget,
   MAX_IMAGE_PIXELS,
   MAX_IMAGE_SOURCE_BYTES,
 } from "./image-budget";
@@ -20,6 +21,15 @@ describe("image resource budget", () => {
     expect(() =>
       assertImageSourceBudget({ byteSize: 1024, width: MAX_IMAGE_PIXELS + 1, height: 1 }),
     ).toThrow("decoded-pixel safety limit");
+  });
+
+  test("admits 50MP phone photos and flags 200MP ones for the file path", () => {
+    expect(exceedsImageSourceBudget({ byteSize: 18_000_000, width: 8160, height: 6120 })).toBe(
+      false,
+    );
+    expect(exceedsImageSourceBudget({ byteSize: 30_000_000, width: 16320, height: 12240 })).toBe(
+      true,
+    );
   });
 
   test("estimates base64 data URL bytes without decoding it", () => {

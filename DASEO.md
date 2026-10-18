@@ -760,6 +760,47 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     `packages/server/src/server/bootstrap.ts`, `packages/server/src/server/schedule/service.ts`,
     `packages/desktop/scripts/daseo-activation-gate.mjs`.
 
+45. **"Add image" keeps working after Android recreates the Activity** — reproduced on the
+    Galaxy Z Fold 7 on 2026-10-18: once MainActivity was destroyed and recreated in a live process
+    (folding or unfolding, font scale, locale, display size), every "Add image" showed "Failed to
+    select image" until the process restarted. The native cause was `IllegalStateException:
+Attempting to launch an unregistered ActivityResultLauncher`, which is expo/expo#50386. "Upload
+    file" kept working because expo-document-picker uses plain `startActivityForResult`. Fixes:
+    (1) `patches/expo-modules-core+3.0.29.patch` backports expo/expo#49634 (shipped only in
+    expo-modules-core 58). `launch()` registers a dropped launcher again against the live
+    Activity. (2) `patches/expo-image-picker+17.0.10.patch` releases the native open-picker guard
+    when the Activity dies mid-pick. Otherwise every later launch silently returns canceled.
+    (3) `plugins/with-android-fold-config-changes.js` adds `smallestScreenSize` to MainActivity
+    `configChanges` (React Native's own template has it; Expo's omits it). Folding no longer
+    recreates the Activity. Both screens use density 420/360, so `density` is not needed.
+    (4) The picker hook releases a guard whose launch never settled once the app has been active
+    for 1.5 s. Its alert now carries the error reason, and the composer catches persist failures
+    with a toast. (5) Photos over the image budget (raised to 52M pixels so 50MP shots are
+    images) upload as files instead of failing the pick; 200MP shots fall in this group.
+    (6) `DaemonClient.uploadFile` waits for the connection (`waitForConnection`, which starts a
+    reconnect) before sending frames. Samsung's Freecess froze Daseo about 13 s into a picker,
+    and the upload failed with "Transport not connected" on return. Upstream #5585 covers only
+    the `connecting` case. Key files: `packages/app/src/hooks/use-image-attachment-picker.ts`,
+    `packages/app/src/attachments/image-budget.ts`, `packages/client/src/daemon-client.ts`,
+    `scripts/postinstall-patches.mjs`. Takes effect with the next Android build (5 also on
+    desktop).
+
+46. **Images travel through the chunked upload, not inline in the message** — upstream
+    getpaseo/paseo#2668 (open). An image sent inline as base64 in the message JSON is encrypted
+    and base64'd again for the relay (about 1.78x on the wire), so a few photos overflow the
+    32 MiB relay frame and the relay drops the connection. When `server_info.features.imageUploads`
+    is true, the app sends each encoded image through `file.upload.request` (1 MiB binary frames)
+    and puts `imageUploads: [{ uploadId, mimeType }]` on `send_agent_message_request` /
+    `create_agent_request` with `images: []`. The daemon reads
+    `$PASEO_HOME/uploads/<uploadId>/` (id pattern-checked, image MIME only) and merges the bytes
+    into `images` before the command-receipt hash, so a retried command with fresh uploads of the
+    same bytes hashes the same. Providers see the same inline images as before. An older daemon
+    strips the field, and the app then sends inline as before. Key files:
+    `packages/server/src/server/file-upload/image-uploads.ts`,
+    `packages/server/src/server/session.ts`, `packages/app/src/composer/actions.ts`,
+    `packages/app/src/utils/encode-images.ts`, `packages/protocol/src/messages.ts`. Takes effect
+    with the next release, daemon restart, and app build.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

@@ -59,7 +59,7 @@ import {
   resolveInitDeferred,
   rejectInitDeferred,
 } from "@/utils/agent-initialization";
-import { encodeImages } from "@/utils/encode-images";
+import { encodeImagesForHost } from "@/utils/encode-images";
 import { derivePendingPermissionKey } from "@/utils/agent-snapshots";
 import { getSendingClientMessageIds } from "@/composer/submission/model";
 import type { AttachmentMetadata } from "@/attachments/types";
@@ -1103,11 +1103,11 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
         return;
       }
       const trimmedPrompt = initialPrompt.trim();
-      const imagesData = await encodeImages(images);
+      const wireImages = await encodeImagesForHost({ client, images });
       await client.createAgent({
         config,
         ...(trimmedPrompt ? { initialPrompt: trimmedPrompt } : {}),
-        ...(imagesData && imagesData.length > 0 ? { images: imagesData } : {}),
+        ...wireImages,
         ...(attachments && attachments.length > 0 ? { attachments } : {}),
         ...(git ? { git } : {}),
         ...(worktreeName ? { worktreeName } : {}),

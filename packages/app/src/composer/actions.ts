@@ -70,9 +70,11 @@ export interface ComposerSendClient {
       messageId: string;
       commandId: string;
       images: Array<{ data: string; mimeType: string }>;
+      imageUploads?: Array<{ uploadId: string; mimeType: string }>;
       attachments: ReturnType<typeof splitComposerAttachmentsForSubmit>["attachments"];
     },
   ) => Promise<{ receiptStatus?: "in_flight" | "accepted" | "rejected" } | void>;
+  getLastServerInfoMessage?: () => { features?: { imageUploads?: boolean } } | null;
   getAgentCommandReceipt?: (commandId: string) => Promise<{
     status: "missing" | "in_flight" | "accepted" | "rejected" | "retry_ready";
     error: string | null;
@@ -180,6 +182,47 @@ export async function pickAndPersistImages(input: {
   return attachments;
 }
 
+function base64ToBytes(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+const IMAGE_EXTENSION_BY_MIME: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/gif": "gif",
+  "image/webp": "webp",
+};
+
+/**
+ * Delta 46: sends encoded images through the chunked file upload (1 MiB binary frames)
+ * and returns references for `imageUploads`. Inline base64 in the message JSON is encrypted
+ * and base64'd again for the relay, so a few photos overflow its 32 MiB frame limit.
+ */
+export async function uploadEncodedImages(input: {
+  client: Pick<ComposerSendClient, "uploadFile">;
+  images: ReadonlyArray<{ data: string; mimeType: string }>;
+}): Promise<Array<{ uploadId: string; mimeType: string }>> {
+  const uploads: Array<{ uploadId: string; mimeType: string }> = [];
+  for (const [index, image] of input.images.entries()) {
+    const extension = IMAGE_EXTENSION_BY_MIME[image.mimeType] ?? "img";
+    const response = await input.client.uploadFile({
+      fileName: `image-${index + 1}.${extension}`,
+      mimeType: image.mimeType,
+      bytes: base64ToBytes(image.data),
+    });
+    if (response.error || !response.file) {
+      throw new Error(response.error ?? "Image upload failed.");
+    }
+    uploads.push({ uploadId: response.file.id, mimeType: image.mimeType });
+  }
+  return uploads;
+}
+
 export async function uploadFileAttachments(input: {
   client: ComposerSendClient;
   files: Array<{ fileName: string; mimeType: string; bytes: Uint8Array }>;
@@ -242,6 +285,8 @@ export interface DispatchComposerAgentMessageInput {
   clientMessageId?: string;
   outbox?: ComposerOutboxWriter;
   preserveRejectedOutbox?: boolean;
+  /** Host advertises `features.imageUploads` (delta 46). */
+  supportsImageUploads?: boolean;
 }
 
 interface ReconcileInFlightComposerMessageInput {
@@ -304,6 +349,17 @@ async function preserveDeliveryUnknownComposerMessage(input: {
   }
 }
 
+async function uploadImagesIfSupported(
+  input: Pick<DispatchComposerAgentMessageInput, "client" | "supportsImageUploads">,
+  imagesData: Array<{ data: string; mimeType: string }> | undefined,
+): Promise<Array<{ uploadId: string; mimeType: string }> | null> {
+  const supported =
+    input.supportsImageUploads ??
+    input.client.getLastServerInfoMessage?.()?.features?.imageUploads === true;
+  if (!supported || !imagesData || imagesData.length === 0) return null;
+  return await uploadEncodedImages({ client: input.client, images: imagesData });
+}
+
 export async function dispatchComposerAgentMessage(
   input: DispatchComposerAgentMessageInput,
 ): Promise<void> {
@@ -344,6 +400,7 @@ export async function dispatchComposerAgentMessage(
   input.submission.begin(input.agentId, userMessage);
   try {
     const imagesData = await input.encodeImages(wirePayload.images);
+    const imageUploads = await uploadImagesIfSupported(input, imagesData);
     await outbox.mark({
       serverId: input.serverId,
       id: clientMessageId,
@@ -353,7 +410,8 @@ export async function dispatchComposerAgentMessage(
     const result = await input.client.sendAgentMessage(input.agentId, input.text, {
       messageId: clientMessageId,
       commandId: clientMessageId,
-      images: imagesData ?? [],
+      images: imageUploads ? [] : (imagesData ?? []),
+      ...(imageUploads ? { imageUploads } : {}),
       attachments: wirePayload.attachments,
     });
     if (result?.receiptStatus === "in_flight") {

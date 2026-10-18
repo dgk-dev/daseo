@@ -117,6 +117,7 @@ import {
 } from "./agent/timeline-projection.js";
 import { buildAgentForkContextAttachment } from "./agent/activity-curator.js";
 import { buildAgentPrompt } from "./agent/prompt-attachments.js";
+import { mergeInlineImages, readImageUploads } from "./file-upload/image-uploads.js";
 import type { StructuredGenerationDaemonConfig } from "./agent/structured-generation-providers.js";
 import {
   getAgentStreamEventTurnId,
@@ -3457,6 +3458,12 @@ export class Session {
       if (needsRequestedDirectory && !(await this.filesystem.isDirectory(requestedCwd))) {
         throw new Error(`Working directory does not exist or is not a directory: ${requestedCwd}`);
       }
+      // Delta 46: images sent through the chunked upload join the inline ones here,
+      // before any worktree exists, so a missing upload fails cleanly.
+      const resolvedImages = mergeInlineImages(
+        images,
+        await readImageUploads({ paseoHome: this.paseoHome, uploads: msg.imageUploads }),
+      );
       const trimmedPrompt = initialPrompt?.trim();
       const { provisionalTitle } = resolveCreateAgentTitles({
         configTitle: config.title,
@@ -3502,7 +3509,7 @@ export class Session {
           initialPrompt,
           clientMessageId,
           outputSchema,
-          images,
+          images: resolvedImages,
           attachments,
           git,
           labels: resolvedIntent.intent.labels,
@@ -7189,6 +7196,32 @@ export class Session {
       return;
     }
 
+    // Delta 46: images sent through the chunked upload join the inline ones before the
+    // receipt hash, so a retried command with the same uploads hashes the same.
+    let images = msg.images;
+    if (msg.imageUploads && msg.imageUploads.length > 0) {
+      try {
+        images = mergeInlineImages(
+          msg.images,
+          await readImageUploads({ paseoHome: this.paseoHome, uploads: msg.imageUploads }),
+        );
+      } catch (error) {
+        this.emit({
+          type: "send_agent_message_response",
+          payload: {
+            requestId: msg.requestId,
+            agentId: resolved.agentId,
+            accepted: false,
+            error: error instanceof Error ? error.message : String(error),
+            ...(msg.commandId
+              ? { commandId: msg.commandId, receiptStatus: "rejected" as const }
+              : {}),
+          },
+        });
+        return;
+      }
+    }
+
     const agentId = resolved.agentId;
     const commandId = msg.commandId;
     let responseEmitted = false;
@@ -7235,7 +7268,7 @@ export class Session {
       const payloadHash = hashAgentCommandPayload({
         agentId,
         text: msg.text,
-        images: msg.images,
+        images,
         attachments: msg.attachments,
       });
       const admission = await this.agentCommandReceiptStore.admit({
@@ -7274,7 +7307,7 @@ export class Session {
 
     const dispatch = async (): Promise<void> => {
       try {
-        const prompt = buildAgentPrompt(msg.text, msg.images, msg.attachments);
+        const prompt = buildAgentPrompt(msg.text, images, msg.attachments);
         this.sessionLogger.trace(
           {
             agentId,

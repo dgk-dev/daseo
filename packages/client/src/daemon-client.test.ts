@@ -2292,6 +2292,40 @@ test("readFile resolves from binary file frames when the daemon supports them", 
   expect(new TextDecoder().decode(result.bytes)).toBe("hello");
 });
 
+test("uploadFile waits for a connection that is still opening before sending frames", async () => {
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  const responsePromise = client.uploadFile({
+    fileName: "photo.jpg",
+    mimeType: "image/jpeg",
+    bytes: new TextEncoder().encode("jpeg"),
+    requestId: "req-wait",
+  });
+  responsePromise.catch(() => undefined);
+  await Promise.resolve();
+  expect(mock.sent).toHaveLength(0);
+
+  mock.triggerOpen();
+  await connectPromise;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(JSON.parse(assertStr(mock.sent[0]))).toMatchObject({
+    type: "session",
+    message: { type: "file.upload.request", requestId: "req-wait" },
+  });
+});
+
 test("uploadFile sends metadata request and file bytes as binary chunks", async () => {
   const logger = createMockLogger();
   const mock = createMockTransport();
