@@ -438,6 +438,8 @@ export type AgentStreamEvent =
       code?: string;
       diagnostic?: string;
       turnId?: string;
+      /** Local fork (delta 44): background waits the provider process took down with it. */
+      lostBackgroundWaits?: { pending: number; labels: string[] };
     }
   | { type: "turn_canceled"; provider: AgentProvider; reason: string; turnId?: string }
   | {

@@ -73,6 +73,7 @@ import { withSystemPromptOrigin } from "./agent-prompt.js";
 import { stripInternalPaseoMcpServer, withRuntimePaseoMcpServer } from "./runtime-mcp-config.js";
 import { resolveCreateAgentTitles } from "./create-agent-title.js";
 import type { PaseoToolCatalogFactory } from "./tools/types.js";
+import type { RecoveryNotice } from "./restart-recovery.js";
 import {
   ProviderSubagentStore,
   type ProviderSubagentDescriptor,
@@ -715,6 +716,8 @@ export class AgentManager {
   private logger: Logger;
   private readonly rescueTimeouts: Required<AgentManagerRescueTimeouts>;
   private acceptingAgentRegistrations = true;
+  /** Local fork (delta 44): told when an agent loses its background waits without a wake. */
+  private recoveryNoticeHandler: ((notice: RecoveryNotice) => void) | null = null;
 
   constructor(options: AgentManagerOptions) {
     this.idFactory = options?.idFactory ?? (() => randomUUID());
@@ -795,6 +798,18 @@ export class AgentManager {
 
   prepareForShutdown(): void {
     this.acceptingAgentRegistrations = false;
+  }
+
+  setRecoveryNoticeHandler(handler: ((notice: RecoveryNotice) => void) | null): void {
+    this.recoveryNoticeHandler = handler;
+  }
+
+  private reportLostBackgroundWaits(
+    agentId: string,
+    lostWaits: { pending: number; labels: string[] } | undefined,
+  ): void {
+    if (!lostWaits || lostWaits.pending <= 0) return;
+    this.recoveryNoticeHandler?.({ agentId, cause: "pi_exit", lostWaits, at: new Date() });
   }
 
   setPaseoToolsEnabled(enabled: boolean): void {
@@ -1367,6 +1382,9 @@ export class AgentManager {
       existing = this.requireSessionAgent(agentId);
     }
     const rehydrateFromDisk = options?.rehydrateFromDisk ?? false;
+    // The reload replaces the provider process; wait_for waits in the old one die with it.
+    const lostWaitCount = existing.pendingBackgroundWaits ?? 0;
+    const lostWaitLabels = [...(existing.backgroundWaitLabels ?? [])];
     const preservedHistoryPrimed = existing.historyPrimed;
     const preservedLastUsage = existing.lastUsage;
     const preservedLastError = existing.lastError;
@@ -1413,7 +1431,7 @@ export class AgentManager {
 
       // Preserve existing labels and timeline during reload.
       handedToRegistration = true;
-      return this.registerSession(session, storedConfig, agentId, {
+      const reloaded = await this.registerSession(session, storedConfig, agentId, {
         labels: existing.labels,
         workspaceId: existing.workspaceId,
         owner: existing.owner,
@@ -1425,6 +1443,15 @@ export class AgentManager {
         lastError: preservedLastError,
         attention: preservedAttention,
       });
+      if (lostWaitCount > 0) {
+        this.recoveryNoticeHandler?.({
+          agentId,
+          cause: "reload",
+          lostWaits: { pending: lostWaitCount, labels: lostWaitLabels },
+          at: new Date(),
+        });
+      }
+      return reloaded;
     } finally {
       if (!handedToRegistration) {
         await this.closeUnregisteredSession(session);
@@ -3967,6 +3994,7 @@ export class AgentManager {
         });
         return undefined;
       case "turn_failed":
+        this.reportLostBackgroundWaits(agent.id, event.lostBackgroundWaits);
         return this.onStreamTurnFailed({
           agent,
           event,

@@ -26,6 +26,8 @@ export function launchDaseoActivationOnce({
   }
 
   const env = { ...inheritedEnv };
+  // The activation script runs the repository's activation gate with this Node (delta 44).
+  env.DASEO_NODE ??= process.execPath;
   if (forceNow) {
     env.FORCE_NOW = "1";
   } else {

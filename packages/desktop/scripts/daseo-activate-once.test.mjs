@@ -36,7 +36,7 @@ describe("Daseo one-shot activation", () => {
     expect(spawnProcess).toHaveBeenCalledWith("/bin/zsh", [scriptPath], {
       detached: true,
       stdio: "ignore",
-      env: { PATH: "/usr/bin" },
+      env: { PATH: "/usr/bin", DASEO_NODE: process.execPath },
     });
     expect(unref).toHaveBeenCalledOnce();
   });
@@ -58,7 +58,7 @@ describe("Daseo one-shot activation", () => {
     expect(spawnProcess).toHaveBeenCalledWith("/bin/zsh", [scriptPath], {
       detached: true,
       stdio: "ignore",
-      env: { PATH: "/usr/bin", FORCE_NOW: "1" },
+      env: { PATH: "/usr/bin", DASEO_NODE: process.execPath, FORCE_NOW: "1" },
     });
   });
 });

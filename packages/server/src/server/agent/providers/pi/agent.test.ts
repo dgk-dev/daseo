@@ -3411,8 +3411,12 @@ describe("Pi runtime exit between turns (local fork)", () => {
       diagnostic: "Killed: out of memory",
     });
     expect(failure.error).toBe(
-      "Pi stopped unexpectedly (exit code 137). 2 background wait(s) it was holding were lost (web build, deploy log); nothing will wake this agent until you prompt it again.",
+      "Pi stopped unexpectedly (exit code 137). 2 background wait(s) it was holding were lost (web build, deploy log); Daseo is prompting the agent to re-check and continue.",
     );
+    expect(failure.lostBackgroundWaits).toEqual({
+      pending: 2,
+      labels: ["web build", "deploy log"],
+    });
     expect(turnFailures(events)).toHaveLength(1);
     expect(session.backgroundWaits).toEqual({ pending: 0, raisedAt: null, labels: [] });
   });

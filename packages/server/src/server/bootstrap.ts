@@ -152,6 +152,13 @@ import {
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { ScheduleService } from "./schedule/service.js";
 import { DEFAULT_IDLE_UNLOAD_MINUTES, IdleAgentUnloader } from "./agent/idle-agent-unloader.js";
+import { setFinishWatcherJournal } from "./agent/agent-prompt.js";
+import { RestartRecoveryJournal } from "./agent/restart-recovery.js";
+import {
+  deliverRecoveryNotice,
+  runRestartRecovery,
+  toAgentWaitState,
+} from "./agent/restart-recovery-runner.js";
 import { DaemonConfigStore, type MutableDaemonConfig } from "./daemon-config-store.js";
 import { resolveConfigFromPersisted, type CliConfigOverrides } from "./config.js";
 import { BrowserToolsBroker } from "./browser-tools/broker.js";
@@ -922,6 +929,24 @@ export async function createPaseoDaemon(
   );
   await agentStorage.initialize();
   logger.info({ elapsed: elapsed() }, "Agent storage initialized");
+  // Local fork (DASEO.md delta 44): journal what a restart would silently drop.
+  const recoveryJournal = new RestartRecoveryJournal({ paseoHome: config.paseoHome, logger });
+  const previousRecoveryJournal = await recoveryJournal.takePrevious();
+  setFinishWatcherJournal(recoveryJournal);
+  const recoveryDeps = { journal: recoveryJournal, agentManager, agentStorage, logger };
+  const detachRecoveryJournal = agentManager.subscribe(
+    (event) => {
+      if (event.type !== "agent_state" || event.agent.internal) return;
+      recoveryJournal.noteAgentState(toAgentWaitState(event.agent));
+    },
+    { replayState: false },
+  );
+  agentManager.setRecoveryNoticeHandler((notice) => {
+    // Let the failure or reload settle before the prompt relaunches the provider.
+    setTimeout(() => {
+      void deliverRecoveryNotice(recoveryDeps, notice);
+    }, 1_000).unref?.();
+  });
   await bootstrapWorkspaceRegistries({
     serverId,
     paseoHome: config.paseoHome,
@@ -1752,6 +1777,14 @@ export async function createPaseoDaemon(
       // model loading doesn't block the server from accepting connections.
       speechService.start();
       scriptHealthMonitor.start();
+      if (previousRecoveryJournal) {
+        // Providers finish discovery after listen; give them a moment before relaunching agents.
+        setTimeout(() => {
+          void runRestartRecovery({ ...recoveryDeps, previous: previousRecoveryJournal }).catch(
+            (error) => logger.error({ err: error }, "restart_recovery.failed"),
+          );
+        }, 5_000).unref?.();
+      }
     } catch (error) {
       await pluginRuntime.stopAllPlugins().catch(() => undefined);
       await serviceProxy.stopStandalone().catch(() => undefined);
@@ -1771,6 +1804,15 @@ export async function createPaseoDaemon(
     // Freeze both ingress and registration before taking the agent closure snapshot.
     wsServer?.prepareForShutdown();
     agentManager.prepareForShutdown();
+    // Record the waits and turns this shutdown is about to kill before closing agents clears them.
+    agentManager.setRecoveryNoticeHandler(null);
+    recoveryJournal.freeze(
+      agentManager
+        .listAgents()
+        .filter((agent) => !agent.internal)
+        .map(toAgentWaitState),
+    );
+    detachRecoveryJournal();
     await closeAllAgents(logger, agentManager);
     idleAgentUnloader.stop();
     await agentManager.flushForShutdown().catch(() => undefined);

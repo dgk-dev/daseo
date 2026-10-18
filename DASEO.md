@@ -654,8 +654,8 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     turn is active: the agent stays `idle`, its `wait_for` waits (deltas 29/30) are cleared
     without a word, and the wake that would have continued its work never arrives. Pi now emits a
     turn failure with no turn id, as the Claude provider already does, worded "Pi stopped
-    unexpectedly (exit code N). K background wait(s) it was holding were lost (labels); nothing
-    will wake this agent until you prompt it again." with the exit code and Pi's stderr tail as
+    unexpectedly (exit code N). K background wait(s) it was holding were lost (labels); Daseo is
+    prompting the agent to re-check and continue." (delta 44 sends that prompt) with the exit code and Pi's stderr tail as
     `code`/`diagnostic`. An exit that follows `close()` (archive, reload, idle unload from delta
     33, daemon shutdown) reports nothing. Upstream also never replaced a dead Pi process, idle or
     mid-turn, so every later prompt failed with "Pi RPC process is closed" until a reload; the
@@ -734,6 +734,31 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     0.05 s with its title and watcher back. Off together with `browser.suspendIdleTabs`. Key files:
     `packages/desktop/src/features/browser-webviews/{discard,lifecycle,index}.ts`,
     `packages/desktop/src/features/browser-automation/ipc.ts`, `packages/desktop/src/main.ts`.
+
+44. **Nothing an agent waits on is lost silently** — from the 2026-10-18 audit of 1,661
+    `wait_for` waits: every recorded wake was answered (p50 7 s), but 14 waits died on Daseo
+    activations, 2 inside new-agent schedule runs, and 2 child finish notifications with them, and
+    each agent sat idle "waiting" until a human prompted it. Upstream has the same gaps (its
+    finish observer is in memory too and its schedule runs archive at the first idle). Now:
+    (1) `restart-recovery.ts` journals to `$PASEO_HOME/restart-recovery.json`, debounced on every
+    state change and synchronously at shutdown before agents close, which agents hold background
+    waits or are mid-turn and which notify-on-finish watchers exist; the next start (5 s after
+    listen, journal at most 12 h old) re-arms the watchers, delivers a finish notification the
+    shutdown cut off, and prompts each affected agent with a recovery notice that tells it to
+    check what took effect before re-running anything (a wait's command dies mid-run) and to
+    answer `[wait noted]` when nothing is left. The same notice goes out after a session reload
+    and after a Pi death between turns (delta 38, via `turn_failed.lostBackgroundWaits`). One
+    automatic notice per agent per 10 minutes, so a crash loop cannot become a prompt loop.
+    (2) A finish watcher reports `errored` once per run and keeps watching, so a child that
+    recovers later still reports its finish. (3) A new-agent or agent-target schedule run follows
+    the agent's wake turns until no wait is pending (at most `BACKGROUND_WAIT_HOLD_MAX_MS`) before
+    it records the result and archives. (4) Activation scripts gate on
+    `packages/desktop/scripts/daseo-activation-gate.mjs`: one snapshot with no running agent and no
+    pending wait, clean again after a 20 s settle window, and a second call with no settle window
+    right before the app quits; waits are honored for 90 minutes, then the restart recovery covers
+    them. Key files: `packages/server/src/server/agent/{restart-recovery,restart-recovery-runner,agent-prompt,agent-manager}.ts`,
+    `packages/server/src/server/bootstrap.ts`, `packages/server/src/server/schedule/service.ts`,
+    `packages/desktop/scripts/daseo-activation-gate.mjs`.
 
 ## Local reliability contracts
 
@@ -952,7 +977,9 @@ Adopted for 0.5.43 (reviewed 2026-10-04):
   signing or activation.
   The signer requires the stable `Daseo Local Code Signing` identity and intentionally refuses an
   ad-hoc fallback. Stage the signed bundle to `~/Applications/Paseo Local Patch.app`, rename only
-  the outer installed directory to `/Applications/Daseo.app`. Run the idle-gated activation script
+  the outer installed directory to `/Applications/Daseo.app`. Run the idle-gated activation script (its waits call
+  `"${DASEO_NODE:-node}" packages/desktop/scripts/daseo-activation-gate.mjs --cli "$NEW_CLI"`, once
+  before the smoke test and once with `--settle-seconds 0` right before quitting; delta 44)
   through
   `node packages/desktop/scripts/daseo-activate-once.mjs /absolute/path/to/activate-daseo-<version>.sh`.
   The launcher removes any ambient `FORCE_NOW` inherited through an older Daseo process; pass the

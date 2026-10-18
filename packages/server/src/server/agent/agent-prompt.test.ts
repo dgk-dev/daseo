@@ -1,4 +1,4 @@
-import { expect, it, test, vi } from "vitest";
+import { describe, expect, it, test, vi } from "vitest";
 import pino, { type Logger } from "pino";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
@@ -8,6 +8,7 @@ import {
   formatSystemNotificationPrompt,
   isSystemInjectedEnvelope,
   sendPromptToAgent,
+  setFinishWatcherJournal,
   setupFinishNotification,
 } from "./agent-prompt.js";
 import type { AgentManagerEvent, ManagedAgent } from "./agent-manager.js";
@@ -53,6 +54,7 @@ interface FinishNotificationScenario {
   finishChild(pendingBackgroundWaits?: number): void;
   finishChildAndReadParentPrompt(): Promise<string>;
   closeChildAndReadParentPrompt(): Promise<string>;
+  failChild(): void;
   parentPrompts(): string[];
   wasParentPrompted(): boolean;
 }
@@ -191,6 +193,10 @@ function createFinishNotificationScenario(
           resolution: { behavior: "allow" },
         },
       });
+    },
+    failChild() {
+      childAgent.lifecycle = "error";
+      subscriber?.({ type: "agent_state", agent: childAgent });
     },
     finishChild(pendingBackgroundWaits = 0) {
       childAgent.lifecycle = "running";
@@ -611,4 +617,60 @@ it("does not notify archived callers", async () => {
 
   expect(streamAgentSpy).not.toHaveBeenCalled();
   expect(replaceAgentRunSpy).not.toHaveBeenCalled();
+});
+
+describe("finish watcher journal (delta 44)", () => {
+  function recordingJournal(frozen = false) {
+    const calls: string[] = [];
+    const journal = {
+      frozen,
+      addWatcher: (child: string, caller: string) => calls.push(`add ${child}->${caller}`),
+      removeWatcher: (child: string, caller: string) => calls.push(`remove ${child}->${caller}`),
+      isFrozen: () => journal.frozen,
+    };
+    return { journal, calls };
+  }
+
+  test("journals the watcher and drops it once the finish is delivered", async () => {
+    const { journal, calls } = recordingJournal();
+    setFinishWatcherJournal(journal);
+    try {
+      const scenario = createFinishNotificationScenario();
+      scenario.startWatchingChild();
+      expect(calls).toEqual(["add child-agent->caller-agent"]);
+      await scenario.finishChildAndReadParentPrompt();
+      await vi.waitFor(() => expect(calls).toContain("remove child-agent->caller-agent"));
+    } finally {
+      setFinishWatcherJournal(null);
+    }
+  });
+
+  test("a child closed by the daemon shutting down keeps its watcher and prompts nobody", async () => {
+    const { journal, calls } = recordingJournal();
+    setFinishWatcherJournal(journal);
+    try {
+      const scenario = createFinishNotificationScenario();
+      scenario.startWatchingChild();
+      journal.frozen = true;
+      void scenario.closeChildAndReadParentPrompt();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(scenario.wasParentPrompted()).toBe(false);
+      expect(calls).toEqual(["add child-agent->caller-agent"]);
+    } finally {
+      setFinishWatcherJournal(null);
+    }
+  });
+});
+
+test("an errored child is reported once and its later finish is reported too", async () => {
+  const scenario = createFinishNotificationScenario({ childLastAssistantMessage: "recovered" });
+  scenario.startWatchingChild();
+  scenario.failChild();
+  await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(1));
+  scenario.failChild();
+  expect(scenario.parentPrompts()[0]).toContain("errored.");
+  expect(scenario.parentPrompts()[0]).toContain("Daseo keeps watching this agent");
+  scenario.finishChild();
+  await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(2));
+  expect(scenario.parentPrompts()[1]).toContain("finished.");
 });

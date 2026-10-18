@@ -3143,7 +3143,7 @@ export class PiRpcAgentSession implements AgentSession {
     if (pending > 0) {
       const labelList = labels.length > 0 ? ` (${labels.join(", ")})` : "";
       sentences.push(
-        `${pending} background wait(s) it was holding were lost${labelList}; nothing will wake this agent until you prompt it again.`,
+        `${pending} background wait(s) it was holding were lost${labelList}; Daseo is prompting the agent to re-check and continue.`,
       );
     }
     this.emit({
@@ -3152,6 +3152,7 @@ export class PiRpcAgentSession implements AgentSession {
       error: sentences.join(" "),
       ...(code ? { code } : {}),
       ...(diagnostic ? { diagnostic } : {}),
+      ...(pending > 0 ? { lostBackgroundWaits: { pending, labels } } : {}),
     });
   }
 

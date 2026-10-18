@@ -306,6 +306,11 @@ interface FinishNotificationBodyInput {
 function formatFinishNotificationBody(params: FinishNotificationBodyInput): string {
   const statusLine = `Agent ${params.childAgentId} (${params.title}) ${params.reason}.`;
   const sections = [statusLine];
+  if (params.reason === "errored") {
+    sections.push(
+      "Daseo keeps watching this agent: if it recovers and finishes, you will be notified again.",
+    );
+  }
   if (params.reason === "needs permission" && params.permissionRequest) {
     sections.push(
       "Respond with `respond_to_permission` using the `agentId` and `requestId` below.",
@@ -336,6 +341,77 @@ interface NotifySafelyOptions {
   permissionRequest?: AgentPermissionRequest;
 }
 
+/**
+ * Local fork (DASEO.md delta 44): a watcher lives in daemon memory, so it is journaled to survive a
+ * restart. Entries leave the journal only once the terminal notification is delivered (or can never
+ * be); while the daemon shuts down nothing is delivered and the entry stays for the next start.
+ */
+export interface FinishWatcherJournal {
+  addWatcher(childAgentId: string, callerAgentId: string, requireParentOwnership: boolean): void;
+  removeWatcher(childAgentId: string, callerAgentId: string): void;
+  isFrozen(): boolean;
+}
+
+let finishWatcherJournal: FinishWatcherJournal | null = null;
+
+export function setFinishWatcherJournal(journal: FinishWatcherJournal | null): void {
+  finishWatcherJournal = journal;
+}
+
+export type FinishNotificationDelivery =
+  | "delivered"
+  | "caller-gone"
+  | "not-owned"
+  | "shutting-down";
+
+/** Send one finish notification for `childAgentId` to `callerAgentId`. */
+export async function deliverFinishNotification(params: {
+  agentManager: AgentManager;
+  agentStorage: AgentStorage;
+  childAgentId: string;
+  callerAgentId: string;
+  requireParentOwnership: boolean;
+  reason: FinishNotificationReason;
+  permissionRequest?: AgentPermissionRequest;
+  logger: Logger;
+}): Promise<FinishNotificationDelivery> {
+  const { agentManager, agentStorage, childAgentId, callerAgentId } = params;
+  if (finishWatcherJournal?.isFrozen()) {
+    return "shutting-down";
+  }
+  const callerRecord = await agentStorage.get(callerAgentId);
+  if (callerRecord?.archivedAt) {
+    return "caller-gone";
+  }
+
+  const record = await agentStorage.get(childAgentId);
+  if (
+    params.requireParentOwnership &&
+    getParentAgentIdFromLabels(record?.labels) !== callerAgentId
+  ) {
+    return "not-owned";
+  }
+  const title = record?.title ?? childAgentId;
+  const lastAssistantMessage = await agentManager.getLastAssistantMessage(childAgentId);
+  const body = formatFinishNotificationBody({
+    childAgentId,
+    title,
+    reason: params.reason,
+    lastAssistantMessage,
+    permissionRequest: params.permissionRequest,
+  });
+
+  await sendPromptToAgent({
+    agentManager,
+    agentStorage,
+    agentId: callerAgentId,
+    prompt: formatSystemNotificationPrompt(body),
+    unarchive: false,
+    logger: params.logger,
+  });
+  return "delivered";
+}
+
 export function setupFinishNotification(params: SetupFinishNotificationParams): void {
   const {
     agentManager,
@@ -359,42 +435,41 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
 
   async function notify(
     reason: FinishNotificationReason,
+    terminal: boolean,
     permissionRequest?: AgentPermissionRequest,
   ): Promise<void> {
-    const callerRecord = await agentStorage.get(callerAgentId);
-    if (callerRecord?.archivedAt) {
-      return;
-    }
-
-    const record = await agentStorage.get(childAgentId);
-    if (requireParentOwnership && getParentAgentIdFromLabels(record?.labels) !== callerAgentId) {
-      return;
-    }
-    const title = record?.title ?? childAgentId;
-    const lastAssistantMessage = await agentManager.getLastAssistantMessage(childAgentId);
-    const body = formatFinishNotificationBody({
-      childAgentId,
-      title,
-      reason,
-      lastAssistantMessage,
-      permissionRequest,
-    });
-
-    await sendPromptToAgent({
+    const delivery = await deliverFinishNotification({
       agentManager,
       agentStorage,
-      agentId: callerAgentId,
-      prompt: formatSystemNotificationPrompt(body),
-      unarchive: false,
+      childAgentId,
+      callerAgentId,
+      requireParentOwnership,
+      reason,
+      permissionRequest,
       logger,
     });
+    if (terminal && delivery !== "shutting-down") {
+      finishWatcherJournal?.removeWatcher(childAgentId, callerAgentId);
+    }
+  }
+
+  let notifiedErrorSinceRun = false;
+  // Local fork (delta 44): an errored child can still recover (restart recovery, quota resume, a
+  // human prompt), so the error is reported once per run and the watch continues; the caller
+  // hears about the later finish too.
+  function notifyErrored(): void {
+    if (notifiedErrorSinceRun) return;
+    notifiedErrorSinceRun = true;
+    hasSeenRunning = false;
+    notifySafely("errored", { terminal: false });
   }
 
   function notifySafely(reason: FinishNotificationReason, options: NotifySafelyOptions = {}): void {
     if (stopped) return;
-    if (options.terminal ?? true) stop();
+    const terminal = options.terminal ?? true;
+    if (terminal) stop();
     notificationQueue = notificationQueue
-      .then(() => notify(reason, options.permissionRequest))
+      .then(() => notify(reason, terminal, options.permissionRequest))
       .catch((error) => {
         logger.error(
           { err: error, childAgentId, callerAgentId, reason },
@@ -418,11 +493,12 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
         if (event.agent.lifecycle === "running") {
           if (event.agent.pendingPermissions.size === 0) {
             hasSeenRunning = true;
+            notifiedErrorSinceRun = false;
           }
           return;
         }
         if (event.agent.lifecycle === "error") {
-          notifySafely("errored");
+          notifyErrored();
           return;
         }
         if (event.agent.lifecycle === "idle" && hasSeenRunning) {
@@ -475,9 +551,10 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
     stop();
     return;
   }
+  finishWatcherJournal?.addWatcher(childAgentId, callerAgentId, requireParentOwnership);
   if (childSnapshot.lifecycle === "running") {
     hasSeenRunning = true;
   } else if (childSnapshot.lifecycle === "error") {
-    notifySafely("errored");
+    notifyErrored();
   }
 }

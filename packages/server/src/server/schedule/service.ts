@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Logger } from "pino";
-import type { AgentManager } from "../agent/agent-manager.js";
+import {
+  type AgentManager,
+  BACKGROUND_WAIT_HOLD_MAX_MS,
+  type WaitForAgentResult,
+} from "../agent/agent-manager.js";
 import type { AgentSessionConfig } from "../agent/agent-sdk-types.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
 import { curateAgentActivity } from "../agent/activity-curator.js";
@@ -232,9 +236,12 @@ export interface ScheduleServiceOptions {
   archiveWorkspace: (workspaceId: string) => Promise<void>;
   now?: () => Date;
   runner?: (schedule: StoredSchedule, runId: string) => Promise<ScheduleExecutionResult>;
+  /** How often a run held on background waits re-checks them (tests shorten it). */
+  backgroundWaitPollMs?: number;
 }
 
 export class ScheduleService {
+  private readonly backgroundWaitPollMs: number;
   private readonly store: ScheduleStore;
   private readonly paseoHome: string;
   private readonly logger: Logger;
@@ -268,6 +275,7 @@ export class ScheduleService {
     this.archiveWorkspace = options.archiveWorkspace;
     this.now = options.now ?? (() => new Date());
     this.runner = options.runner ?? ((schedule, runId) => this.executeSchedule(schedule, runId));
+    this.backgroundWaitPollMs = options.backgroundWaitPollMs ?? 5_000;
   }
 
   async start(): Promise<void> {
@@ -863,9 +871,12 @@ export class ScheduleService {
       await startAgentRun(this.agentManager, agent.id, wrappedPrompt, this.logger, {
         replaceRunning: true,
       });
-      const waitResult = await this.agentManager.waitForAgentEvent(agent.id, {
-        waitForActive: true,
-      });
+      const waitResult = await this.waitForBackgroundWaitsToSettle(
+        agent.id,
+        await this.agentManager.waitForAgentEvent(agent.id, {
+          waitForActive: true,
+        }),
+      );
       if (waitResult.permission) {
         throw new Error(`Scheduled agent ${agent.id} is waiting for permission`);
       }
@@ -929,9 +940,14 @@ export class ScheduleService {
         throw created.initialPromptError;
       }
       const result = await this.agentManager.runAgent(agent.id, schedule.prompt);
-      const waitResult = await this.agentManager.waitForAgentEvent(agent.id, {
-        waitForActive: true,
-      });
+      // Archiving below kills the run's Pi process; a wait_for wait it registered would die with
+      // it and the work after the wait would never happen (2026-10-07, 2026-10-18).
+      const waitResult = await this.waitForBackgroundWaitsToSettle(
+        agent.id,
+        await this.agentManager.waitForAgentEvent(agent.id, {
+          waitForActive: true,
+        }),
+      );
       if (result.canceled) {
         throw new Error(`Scheduled agent ${agent.id} was canceled`);
       }
@@ -971,6 +987,43 @@ export class ScheduleService {
         }
       }
     }
+  }
+
+  /**
+   * Local fork (DASEO.md delta 44): an agent that ended its turn on wait_for waits is not done.
+   * Follow its wake turns until no wait is pending, at most BACKGROUND_WAIT_HOLD_MAX_MS (the same
+   * bound after which Daseo stops holding "finished"). Returns the last turn's result.
+   */
+  private async waitForBackgroundWaitsToSettle(
+    agentId: string,
+    firstResult: WaitForAgentResult,
+  ): Promise<WaitForAgentResult> {
+    const deadline = Date.now() + BACKGROUND_WAIT_HOLD_MAX_MS;
+    let result = firstResult;
+    let held = false;
+    while (Date.now() < deadline) {
+      if (result.permission || result.status === "error") return result;
+      const agent = this.agentManager.getAgent(agentId);
+      if (!agent || agent.lifecycle === "closed" || agent.lifecycle === "error") return result;
+      const busy =
+        agent.lifecycle === "running" ||
+        agent.lifecycle === "initializing" ||
+        this.agentManager.hasInFlightRun(agentId);
+      if (busy) {
+        result = await this.agentManager.waitForAgentEvent(agentId, { waitForActive: true });
+        continue;
+      }
+      if ((agent.pendingBackgroundWaits ?? 0) === 0) {
+        // Re-read so the run reports the wake turn's answer, not the turn that registered the wait.
+        return held ? await this.agentManager.waitForAgentEvent(agentId) : result;
+      }
+      held = true;
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(this.backgroundWaitPollMs, deadline - Date.now())),
+      );
+    }
+    this.logger.warn({ agentId }, "Scheduled run still had background waits at the hold limit");
+    return result;
   }
 
   private async createScheduleRunWorkspace(

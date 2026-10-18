@@ -3884,6 +3884,25 @@ test("an agent that ends its turn with pending background waits is not finished 
   expect(attentionReasons).toEqual(["finished"]);
 });
 
+test("reloading an agent that holds background waits reports them as lost (delta 44)", async () => {
+  const { manager, client, agentId } = await createBackgroundWaitScenario("05");
+  const notices: unknown[] = [];
+  manager.setRecoveryNoticeHandler((notice) => notices.push(notice));
+  client.session!.backgroundWaits = { pending: 1, raisedAt: Date.now(), labels: ["deploy"] };
+  await manager.runAgent(agentId, "deploy and wait");
+  await manager.flush();
+
+  await manager.reloadAgentSession(agentId);
+
+  expect(notices).toEqual([
+    expect.objectContaining({
+      agentId,
+      cause: "reload",
+      lostWaits: { pending: 1, labels: ["deploy"] },
+    }),
+  ]);
+});
+
 test("a background-wait hold older than the maximum expires and the idle counts as finished", async () => {
   const { manager, client, attentionReasons, agentId } = await createBackgroundWaitScenario("02");
   client.session!.backgroundWaits = {

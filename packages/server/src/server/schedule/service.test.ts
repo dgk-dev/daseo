@@ -971,6 +971,80 @@ describe("ScheduleService", () => {
     });
   });
 
+  test("a scheduled new-agent run that waits on wait_for is archived only after its wake turn", async () => {
+    const agentId = "00000000-0000-0000-0000-000000000323";
+    const events: string[] = [];
+    let pending = 1;
+    let lastMessage = "registered the deploy wait";
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    manager.runAgent = async () => ({
+      sessionId: "scheduled-wait-run",
+      finalText: "registered the deploy wait",
+      timeline: [],
+    });
+    manager.waitForAgentEvent = async () => ({ status: "idle", permission: null, lastMessage });
+    manager.getAgent = ((id: string) =>
+      id === agentId
+        ? ({ id, lifecycle: "idle", pendingBackgroundWaits: pending } as never)
+        : undefined) as AgentManager["getAgent"];
+    manager.hasInFlightRun = () => false;
+    setTimeout(() => {
+      // The wait fired and the wake turn reported.
+      events.push("wake");
+      pending = 0;
+      lastMessage = "deploy is Ready";
+    }, 30);
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      backgroundWaitPollMs: 10,
+      archiveWorkspace: async () => {
+        events.push("archive");
+      },
+      createAgent: async (input) => {
+        const snapshot = {
+          id: agentId,
+          provider: "claude",
+          cwd: input.cwd ?? tempDir,
+          workspaceId: input.workspaceId,
+          status: "idle",
+          lifecycle: "idle",
+        };
+        return {
+          snapshot: snapshot as Awaited<
+            ReturnType<ScheduleServiceOptions["createAgent"]>
+          >["snapshot"],
+          liveSnapshot: snapshot as Awaited<
+            ReturnType<ScheduleServiceOptions["createAgent"]>
+          >["liveSnapshot"],
+          background: true,
+          initialPromptStarted: false,
+          initialPromptError: null,
+        };
+      },
+      now: () => now,
+    });
+
+    const created = await service.create({
+      prompt: "check the deploy",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
+      maxRuns: 1,
+    });
+    await service.tick();
+
+    expect(events).toEqual(["wake", "archive"]);
+    const inspected = await service.inspect(created.id);
+    expect(inspected.runs[0]).toMatchObject({ status: "succeeded", output: "deploy is Ready" });
+  });
+
   test("scheduled new-agent run output falls back to final text and curated timeline", async () => {
     let runCount = 0;
     const manager = new AgentManager({
