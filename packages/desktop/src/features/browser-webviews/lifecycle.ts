@@ -1,4 +1,4 @@
-export type BrowserTabLifecycleState = "active" | "throttled" | "frozen";
+export type BrowserTabLifecycleState = "active" | "throttled" | "frozen" | "discarded";
 
 /** The parts of a browser guest's WebContents the lifecycle drives. */
 export interface BrowserTabLifecycleTarget {
@@ -9,6 +9,19 @@ export interface BrowserTabLifecycleTarget {
   setBackgroundThrottling(allowed: boolean): void;
   /** CDP `Page.setWebLifecycleState`. */
   setWebLifecycleState(state: "active" | "frozen"): Promise<void>;
+  /**
+   * Ends the tab's renderer process to give its memory back. The WebContents, its URL, title, and
+   * back/forward history stay in the main process.
+   */
+  discard?(): void;
+  /** Reloads a discarded tab in a new renderer and resolves once the page has loaded. */
+  restore?(): Promise<void>;
+}
+
+/** A tab the memory-pressure discarder may consider, least recently used first. */
+export interface BrowserTabDiscardCandidate {
+  readonly webContentsId: number;
+  readonly lastUsedAt: number;
 }
 
 type TimerHandle = ReturnType<typeof setTimeout>;
@@ -52,6 +65,9 @@ const BROWSER_TAB_FREEZE_RETRY_MS = 60_000;
  * - throttled: two minutes unused. Chromium background throttling on (timers ~1 Hz, no rAF).
  * - frozen: fifteen minutes unused. CDP `Page.setWebLifecycleState frozen` stops script and
  *   rendering entirely; memory stays, so page state survives and macOS compresses it.
+ *
+ * - discarded: only under macOS memory pressure, a frozen tab unused for a long time has its
+ *   renderer process ended (see discard.ts); waking it reloads the page with its history kept.
  *
  * `wake` returns a tab to active in one CDP round trip: `active` first, then throttling off —
  * an active page left throttled stays at 1 Hz timers. A loading, audible, or downloading tab is
@@ -131,6 +147,51 @@ export class BrowserTabLifecycle {
     return this.tabs.get(webContentsId)?.state ?? null;
   }
 
+  /** Frozen, unheld tabs unused for at least `minIdleMs`, least recently used first. */
+  public listDiscardCandidates(minIdleMs: number): BrowserTabDiscardCandidate[] {
+    if (!this.enabled) {
+      return [];
+    }
+    const now = this.now();
+    return [...this.tabs.values()]
+      .filter(
+        (tab) =>
+          tab.state === "frozen" &&
+          tab.holds === 0 &&
+          now - tab.lastUsedAt >= minIdleMs &&
+          typeof tab.target.discard === "function" &&
+          typeof tab.target.restore === "function",
+      )
+      .sort((left, right) => left.lastUsedAt - right.lastUsedAt)
+      .map((tab) => ({ webContentsId: tab.target.id, lastUsedAt: tab.lastUsedAt }));
+  }
+
+  /**
+   * Discards a frozen tab that is still unused for `minIdleMs`. Resolves true when it was
+   * discarded; a tab woken, held, or used in the meantime is left alone.
+   */
+  public discard(webContentsId: number, minIdleMs: number): Promise<boolean> {
+    const tab = this.tabs.get(webContentsId);
+    if (!tab) {
+      return Promise.resolve(false);
+    }
+    let discarded = false;
+    return this.enqueue(tab, "discard", () => {
+      if (
+        !this.enabled ||
+        tab.state !== "frozen" ||
+        tab.holds > 0 ||
+        this.now() - tab.lastUsedAt < minIdleMs ||
+        !tab.target.discard
+      ) {
+        return;
+      }
+      tab.target.discard();
+      this.setState(tab, "discarded");
+      discarded = true;
+    }).then(() => discarded);
+  }
+
   /** Marks the tab used and resolves once it runs at full speed. */
   public wake(webContentsId: number): Promise<void> {
     const tab = this.tabs.get(webContentsId);
@@ -176,6 +237,13 @@ export class BrowserTabLifecycle {
   }
 
   private async activate(tab: TrackedTab): Promise<void> {
+    if (tab.state === "discarded") {
+      // A reloaded page starts active; there is no frozen document left to thaw.
+      await tab.target.restore?.();
+      tab.target.setBackgroundThrottling(false);
+      this.setState(tab, "active");
+      return;
+    }
     if (tab.state === "frozen") {
       await tab.target.setWebLifecycleState("active");
     }

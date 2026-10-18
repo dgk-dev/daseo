@@ -13,6 +13,7 @@ class FakeTab implements BrowserTabLifecycleTarget {
   public destroyed = false;
   public pendingFreeze: (() => void) | null = null;
   public holdFreezes = false;
+  public discardable = false;
 
   public constructor(public readonly id: number) {}
 
@@ -30,6 +31,19 @@ class FakeTab implements BrowserTabLifecycleTarget {
 
   public setBackgroundThrottling(allowed: boolean): void {
     this.calls.push(`throttling:${allowed}`);
+  }
+
+  public discard?: () => void;
+  public restore?: () => Promise<void>;
+
+  public enableDiscard(): this {
+    this.discard = () => {
+      this.calls.push("discard");
+    };
+    this.restore = async () => {
+      this.calls.push("restore");
+    };
+    return this;
   }
 
   public async setWebLifecycleState(state: "active" | "frozen"): Promise<void> {
@@ -243,5 +257,67 @@ describe("BrowserTabLifecycle", () => {
     lifecycle.untrack(1);
     await expect(lifecycle.wake(1)).resolves.toBeUndefined();
     expect(lifecycle.getState(1)).toBeNull();
+  });
+
+  test("lists frozen, unheld tabs unused long enough as discard candidates, oldest first", async () => {
+    const { clock, lifecycle } = createLifecycle();
+    lifecycle.track(new FakeTab(1).enableDiscard());
+    await clock.advance(1_000);
+    lifecycle.track(new FakeTab(2).enableDiscard());
+    lifecycle.track(new FakeTab(3));
+    await clock.advance(BROWSER_TAB_FREEZE_AFTER_MS);
+    const held = new FakeTab(4).enableDiscard();
+    lifecycle.track(held);
+    lifecycle.hold(4);
+    await clock.advance(BROWSER_TAB_FREEZE_AFTER_MS);
+
+    expect(
+      lifecycle.listDiscardCandidates(BROWSER_TAB_FREEZE_AFTER_MS).map((c) => c.webContentsId),
+    ).toEqual([1, 2]);
+    expect(lifecycle.listDiscardCandidates(BROWSER_TAB_FREEZE_AFTER_MS * 10)).toEqual([]);
+  });
+
+  test("discards a frozen tab and reloads it before the next wake answers", async () => {
+    const { clock, lifecycle } = createLifecycle();
+    const tab = new FakeTab(1).enableDiscard();
+    lifecycle.track(tab);
+    await clock.advance(BROWSER_TAB_FREEZE_AFTER_MS);
+    tab.calls.length = 0;
+
+    await expect(lifecycle.discard(1, BROWSER_TAB_FREEZE_AFTER_MS)).resolves.toBe(true);
+    expect(lifecycle.getState(1)).toBe("discarded");
+    expect(tab.calls).toEqual(["discard"]);
+
+    await lifecycle.runAwake(1, async () => {
+      tab.calls.push("task");
+    });
+    expect(tab.calls).toEqual(["discard", "restore", "throttling:false", "task"]);
+    expect(lifecycle.getState(1)).toBe("active");
+  });
+
+  test("never discards a tab that was used, held, or woken since it was picked", async () => {
+    const { clock, lifecycle } = createLifecycle();
+    const tab = new FakeTab(1).enableDiscard();
+    lifecycle.track(tab);
+    await clock.advance(BROWSER_TAB_FREEZE_AFTER_MS);
+
+    const release = lifecycle.hold(1);
+    await expect(lifecycle.discard(1, 0)).resolves.toBe(false);
+    release();
+    await expect(lifecycle.discard(1, BROWSER_TAB_FREEZE_AFTER_MS)).resolves.toBe(false);
+    expect(tab.calls).not.toContain("discard");
+    expect(lifecycle.getState(1)).toBe("active");
+  });
+
+  test("a tab without discard support or with the lifecycle off is never a candidate", async () => {
+    const { clock, lifecycle } = createLifecycle();
+    lifecycle.track(new FakeTab(1));
+    await clock.advance(BROWSER_TAB_FREEZE_AFTER_MS);
+    expect(lifecycle.listDiscardCandidates(0)).toEqual([]);
+    await expect(lifecycle.discard(1, 0)).resolves.toBe(false);
+
+    lifecycle.track(new FakeTab(2).enableDiscard());
+    lifecycle.setEnabled(false);
+    expect(lifecycle.listDiscardCandidates(0)).toEqual([]);
   });
 });

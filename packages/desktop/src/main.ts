@@ -65,6 +65,7 @@ import {
   isPaseoBrowserWebviewAttach,
   PendingBrowserWindowOpenRequests,
   preparePaseoBrowserWebContents,
+  startPaseoBrowserTabDiscarder,
   registerBrowserWebviewNavigationGuards,
   registerManagedPaseoBrowserTarget,
   unregisterPaseoBrowser,
@@ -1249,7 +1250,7 @@ async function createWindow(
     webPreferences.preload = getBrowserKeyboardPreloadPath();
   });
   mainWindow.webContents.on("did-attach-webview", (_event, contents) => {
-    preparePaseoBrowserWebContents(contents);
+    preparePaseoBrowserWebContents(contents, { discardable: true });
     adaptWebContents(contents);
     contents.once("destroyed", () => {
       pendingBrowserWindowOpenRequests.delete(contents.id);
@@ -1421,6 +1422,9 @@ async function configureBrowserTabLifecycle(): Promise<void> {
   } catch (error) {
     log.warn("[browser-lifecycle] settings unavailable; idle tab suspension stays on", error);
   }
+  // Delta 43: under macOS memory pressure, tabs frozen and unused for an hour (30 minutes when
+  // critical) give their renderer memory back and reload when next used. Off with the lifecycle.
+  startPaseoBrowserTabDiscarder();
   session
     .fromPartition(PASEO_BROWSER_PROFILE_PARTITION)
     .on("will-download", (_event, item, contents) => {

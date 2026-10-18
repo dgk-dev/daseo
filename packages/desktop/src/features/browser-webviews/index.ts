@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { webContents as allWebContents, type WebContents } from "electron";
 import { PASEO_BROWSER_PROFILE_PARTITION } from "../browser-profile.js";
 import {
@@ -8,6 +9,7 @@ import {
 } from "./window-open.js";
 import { PaseoBrowserWebviewRegistry, type BrowserTargetMetadata } from "./registry.js";
 import { BrowserTabLifecycle, type BrowserTabLifecycleTarget } from "./lifecycle.js";
+import { BrowserTabDiscarder, isEditingKeyInput } from "./discard.js";
 
 export {
   BROWSER_NEW_TAB_REQUEST_EVENT,
@@ -33,6 +35,24 @@ const browserTabLifecycle = new BrowserTabLifecycle({
     });
   },
 });
+// Tabs typed into (by the user or an agent) since their last document load keep their page under
+// memory pressure; a cross-document navigation clears the mark.
+const editedWebContentsIds = new Set<number>();
+const browserTabDiscarder = new BrowserTabDiscarder({
+  lifecycle: browserTabLifecycle,
+  readPressureLevel: readMacMemoryPressureLevel,
+  isDiscardBlocked: isBrowserTabDiscardBlocked,
+  onDiscard: (webContentsId, pressureLevel) => {
+    console.info("[browser-lifecycle] discarded under memory pressure", {
+      webContentsId,
+      browserId: browserRegistry.getBrowserIdForWebContents(webContentsId),
+      pressureLevel,
+    });
+  },
+  onError: (error) => {
+    console.warn("[browser-lifecycle] discard check failed", { error });
+  },
+});
 // Renderer-reported pane presentation, keyed by host window and browser id: a pane can present a
 // browser before its guest registers, so the hold is taken whenever both sides are known.
 const presentedBrowserKeys = new Set<string>();
@@ -56,6 +76,20 @@ interface RegisteredBrowserWebContents extends BrowserWebContentsIdentity {
   setBackgroundThrottling(allowed: boolean): void;
   once(event: "destroyed", listener: () => void): void;
 }
+
+/** What discarding needs beyond the lifecycle basics; only plain browser tabs provide it. */
+interface DiscardableBrowserWebContents extends RegisteredBrowserWebContents {
+  forcefullyCrashRenderer(): void;
+  reload(): void;
+  on(event: "did-stop-loading" | "did-navigate", listener: () => void): unknown;
+  on(
+    event: "before-input-event",
+    listener: (event: unknown, input: { type: string; key: string }) => void,
+  ): unknown;
+  removeListener(event: "did-stop-loading" | "destroyed", listener: () => void): unknown;
+}
+
+const BROWSER_TAB_RESTORE_TIMEOUT_MS = 30_000;
 
 interface AttachedBrowserRegistration {
   browserId: string;
@@ -102,6 +136,52 @@ export function getPaseoBrowserTabLifecycle(): BrowserTabLifecycle {
   return browserTabLifecycle;
 }
 
+/** Starts the memory-pressure discard checks (macOS only; elsewhere the sysctl is absent). */
+export function startPaseoBrowserTabDiscarder(): void {
+  if (process.platform === "darwin") {
+    browserTabDiscarder.start();
+  }
+}
+
+/** An agent command that may leave unsaved input behind marks the tab like typing does. */
+export function markPaseoBrowserEdited(webContentsId: number): void {
+  editedWebContentsIds.add(webContentsId);
+}
+
+function readMacMemoryPressureLevel(): Promise<number | undefined> {
+  return new Promise((resolve) => {
+    execFile("sysctl", ["-n", "kern.memorystatus_vm_pressure_level"], (error, stdout) => {
+      const level = Number(String(stdout).trim());
+      resolve(error || !Number.isInteger(level) ? undefined : level);
+    });
+  });
+}
+
+function isBrowserTabDiscardBlocked(webContentsId: number): boolean {
+  if (
+    editedWebContentsIds.has(webContentsId) ||
+    (downloadsByWebContentsId.get(webContentsId) ?? 0) > 0 ||
+    freezeExemptions.some((isExempt) => isExempt(webContentsId))
+  ) {
+    return true;
+  }
+  const contents = allWebContents.fromId(webContentsId);
+  if (!contents || contents.isDestroyed()) {
+    return true;
+  }
+  // Ending a renderer shared with another page would take that page down too.
+  const pid = contents.getOSProcessId();
+  if (!pid) {
+    return true;
+  }
+  return allWebContents
+    .getAllWebContents()
+    .some(
+      (other) =>
+        other.id !== webContentsId && !other.isDestroyed() && other.getOSProcessId() === pid,
+    );
+}
+
 /** Freeze exemptions owned by other modules, such as a running network capture. */
 export function addPaseoBrowserFreezeExemption(isExempt: (webContentsId: number) => boolean): void {
   freezeExemptions.push(isExempt);
@@ -123,8 +203,12 @@ export function trackPaseoBrowserDownload(webContentsId: number): () => void {
   };
 }
 
-function toLifecycleTarget(contents: RegisteredBrowserWebContents): BrowserTabLifecycleTarget {
+function toLifecycleTarget(
+  contents: RegisteredBrowserWebContents,
+  discardable: DiscardableBrowserWebContents | null,
+): BrowserTabLifecycleTarget {
   return {
+    ...(discardable ? discardTarget(discardable) : {}),
     id: contents.id,
     isDestroyed: () => contents.isDestroyed(),
     isLoading: () => contents.isLoading(),
@@ -141,14 +225,69 @@ function toLifecycleTarget(contents: RegisteredBrowserWebContents): BrowserTabLi
   };
 }
 
-export function preparePaseoBrowserWebContents(contents: RegisteredBrowserWebContents): void {
+function discardTarget(
+  contents: DiscardableBrowserWebContents,
+): Pick<BrowserTabLifecycleTarget, "discard" | "restore"> {
+  return {
+    discard: () => {
+      if (!contents.isDestroyed()) contents.forcefullyCrashRenderer();
+    },
+    restore: async () => {
+      if (contents.isDestroyed()) {
+        return;
+      }
+      // Settles on the first of: the reload finished, the tab closed, or the timeout.
+      let onStop = () => {};
+      let onDestroyed = () => {};
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const stopped = new Promise<void>((resolve) => {
+        onStop = resolve;
+      });
+      const destroyed = new Promise<void>((resolve) => {
+        onDestroyed = resolve;
+      });
+      const timedOut = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, BROWSER_TAB_RESTORE_TIMEOUT_MS);
+      });
+      contents.on("did-stop-loading", onStop);
+      contents.once("destroyed", onDestroyed);
+      try {
+        contents.reload();
+        await Promise.race([stopped, destroyed, timedOut]);
+      } finally {
+        clearTimeout(timer);
+        contents.removeListener("did-stop-loading", onStop);
+        contents.removeListener("destroyed", onDestroyed);
+      }
+    },
+  };
+}
+
+/**
+ * `discardable` is true for plain browser tabs (webview guests). Popup windows are never discarded:
+ * reloading one can break the opener relationship an OAuth or payment flow depends on.
+ */
+export function preparePaseoBrowserWebContents(
+  contents: RegisteredBrowserWebContents,
+  options: { discardable?: boolean } = {},
+): void {
   const webContentsId = contents.id;
-  browserTabLifecycle.track(toLifecycleTarget(contents));
+  const discardable = options.discardable ? (contents as DiscardableBrowserWebContents) : null;
+  browserTabLifecycle.track(toLifecycleTarget(contents, discardable));
+  if (discardable) {
+    discardable.on("before-input-event", (_event, input) => {
+      if (isEditingKeyInput(input)) editedWebContentsIds.add(webContentsId);
+    });
+    discardable.on("did-navigate", () => {
+      editedWebContentsIds.delete(webContentsId);
+    });
+  }
   contents.once("destroyed", () => {
     browserRegistry.unregisterWebContents(webContentsId);
     browserTabLifecycle.untrack(webContentsId);
     presentationReleasesByWebContentsId.delete(webContentsId);
     downloadsByWebContentsId.delete(webContentsId);
+    editedWebContentsIds.delete(webContentsId);
   });
 }
 

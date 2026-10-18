@@ -707,6 +707,27 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     as an empty project. Key file: `packages/app/src/hooks/use-sidebar-pins.ts`. Takes effect
     with the next Mac release and Android build.
 
+43. **Frozen tabs give their memory back under macOS memory pressure** — delta 33 freezes a
+    parked tab but keeps its memory, and a Cafe24 workspace opens dozens of tabs at once; on
+    2026-10-18 the Mac ran out of memory. Measured on Electron 41.10.6: a frozen 1.1 GB page stayed
+    1.1 GB, and navigating it to `about:blank` in place kept the same renderer and grew it on
+    return, while `webContents.forcefullyCrashRenderer()` released all 2.2 GB, kept the URL,
+    title, back/forward history, and the attached debugger, and `reload()` restored the page in a
+    new renderer in about 3 s without touching other tabs. So, Chrome-style, only while
+    `sysctl kern.memorystatus_vm_pressure_level` reports 2 (warning: at most 2 tabs per 30 s
+    check, unused 60 minutes) or 4 (critical: every eligible tab unused 30 minutes), a frozen,
+    unheld plain tab (webview guest; never a popup, whose reload can break an OAuth or payment
+    opener) has its renderer ended and becomes `discarded`; the next wake (pane presentation,
+    automation command, capture, phone stream) reloads it before answering. Never discarded, like
+    Chrome's "user entered text in a form" rule: a tab typed into by the user (any editing
+    `before-input-event` key, IME composition included) or an agent (`fill`, `type`, `keypress`,
+    `select`, `upload`, `evaluate`, `drag`, `stream_input`) since its last cross-document
+    navigation; a tab downloading or exempt from freezing; a tab sharing its renderer process
+    with any other page. Off together with `browser.suspendIdleTabs`. Key files:
+    `packages/desktop/src/features/browser-webviews/{discard,lifecycle,index}.ts`,
+    `packages/desktop/src/features/browser-automation/ipc.ts`, `packages/desktop/src/main.ts`.
+    Takes effect with the next Mac release.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

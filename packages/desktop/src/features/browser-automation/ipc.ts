@@ -33,14 +33,16 @@ import { observeTabLoading, tabLoadingInfo } from "./load-tracker.js";
 import { TabNetworkCapture } from "./network-capture.js";
 import {
   addPaseoBrowserFreezeExemption,
+  getPaseoBrowserTabLifecycle,
+  getPaseoBrowserTargetMetadata,
+  getPaseoBrowserWebContentsForHostWindow,
+  getPaseoBrowserWorkspaceId,
+  getWorkspaceActivePaseoBrowserIdForHostWindow,
   listRegisteredPaseoBrowserIds,
   listRegisteredPaseoBrowserIdsForWorkspace,
-  getPaseoBrowserTabLifecycle,
-  getPaseoBrowserWebContentsForHostWindow,
-  getWorkspaceActivePaseoBrowserIdForHostWindow,
-  getPaseoBrowserWorkspaceId,
-  getPaseoBrowserTargetMetadata,
+  markPaseoBrowserEdited,
 } from "../browser-webviews/index.js";
+import { BROWSER_AUTOMATION_EDITING_COMMANDS } from "../browser-webviews/discard.js";
 
 const MAX_CONSOLE_MESSAGES_PER_TAB = 200;
 interface RecordedConsoleMessage {
@@ -766,6 +768,9 @@ export function registerBrowserAutomationIpc(options?: { ipc?: IpcHandlerRegistr
         }),
       );
     const target = resolveCommandTargetContents(parsed.data, hostWebContentsId);
+    if (target !== null && BROWSER_AUTOMATION_EDITING_COMMANDS.has(parsed.data.command.command)) {
+      markPaseoBrowserEdited(target);
+    }
     // An idle tab may be throttled or frozen. Every command that touches one wakes it first and
     // holds it awake until the command answers.
     return target === null ? execute() : getPaseoBrowserTabLifecycle().runAwake(target, execute);
