@@ -1,5 +1,13 @@
 import { execSync } from "child_process";
-import { existsSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
 import { join, resolve as resolvePath } from "path";
 import pino from "pino";
@@ -511,6 +519,77 @@ describe("durable agent command receipts", () => {
     await expect(send("request-3", "different payload")).resolves.toMatchObject({
       payload: { accepted: false, commandId: "command-1", receiptStatus: "rejected" },
     });
+    expect(streamAgent).toHaveBeenCalledTimes(1);
+  });
+
+  test("reads chunk-uploaded images into the provider prompt (delta 46)", async () => {
+    const paseoHome = mkdtempSync(join(tmpdir(), "paseo-image-upload-session-"));
+    tempDirs.push(paseoHome);
+    mkdirSync(join(paseoHome, "uploads", "upload_photo"), { recursive: true });
+    writeFileSync(join(paseoHome, "uploads", "upload_photo", "image-1.jpg"), "hello");
+    const messages: SessionOutboundMessage[] = [];
+    const streamAgent = vi.fn(emptyAgentStream);
+    const snapshot = {
+      id: "agent-1",
+      provider: "codex",
+      lifecycle: "idle",
+      activeForegroundTurnId: null,
+      persistence: null,
+    };
+    const manager = {
+      listAgents: vi.fn(() => [snapshot]),
+      listProviderSubagentActivity: vi.fn(() => []),
+      subscribe: vi.fn(() => () => {}),
+      getAgent: vi.fn(() => snapshot),
+      waitForAgentClose: vi.fn().mockResolvedValue(undefined),
+      tryRunOutOfBand: vi.fn(() => false),
+      hasInFlightRun: vi.fn(() => false),
+      streamAgent,
+      waitForAgentRunStart: vi.fn().mockResolvedValue(undefined),
+      hasCanonicalSubmittedPrompt: vi.fn().mockResolvedValue(false),
+    };
+    const session = createSessionForTest({
+      paseoHome,
+      messages,
+      agentManager: manager,
+      agentStorage: {
+        get: vi.fn().mockResolvedValue(undefined),
+        list: vi.fn().mockResolvedValue([]),
+      },
+      agentCommandReceiptStore: new AgentCommandReceiptStore(paseoHome, pino({ level: "silent" })),
+    });
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "request-image",
+      agentId: "agent-1",
+      text: "look",
+      messageId: "message-image",
+      commandId: "command-image",
+      images: [],
+      imageUploads: [{ uploadId: "upload_photo", mimeType: "image/jpeg" }],
+      attachments: [],
+    });
+
+    expect(JSON.stringify(streamAgent.mock.calls[0])).toContain('"data":"aGVsbG8="');
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "request-missing",
+      agentId: "agent-1",
+      text: "look again",
+      messageId: "message-missing",
+      commandId: "command-missing",
+      imageUploads: [{ uploadId: "upload_gone", mimeType: "image/jpeg" }],
+      attachments: [],
+    });
+    expect(
+      messages.find(
+        (message) =>
+          message.type === "send_agent_message_response" &&
+          message.payload.requestId === "request-missing",
+      ),
+    ).toMatchObject({ payload: { accepted: false, receiptStatus: "rejected" } });
     expect(streamAgent).toHaveBeenCalledTimes(1);
   });
 
