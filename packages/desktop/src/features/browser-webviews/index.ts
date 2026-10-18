@@ -35,13 +35,13 @@ const browserTabLifecycle = new BrowserTabLifecycle({
     });
   },
 });
-// Tabs typed into (by the user or an agent) since their last document load keep their page under
+// Tabs edited (by the user or an agent) since their last document load keep their page under
 // memory pressure; a cross-document navigation clears the mark.
 const editedWebContentsIds = new Set<number>();
 const browserTabDiscarder = new BrowserTabDiscarder({
   lifecycle: browserTabLifecycle,
   readPressureLevel: readMacMemoryPressureLevel,
-  isDiscardBlocked: isBrowserTabDiscardBlocked,
+  isDiscardBlocked: isPaseoBrowserTabDiscardBlocked,
   onDiscard: (webContentsId, pressureLevel) => {
     console.info("[browser-lifecycle] discarded under memory pressure", {
       webContentsId,
@@ -81,15 +81,42 @@ interface RegisteredBrowserWebContents extends BrowserWebContentsIdentity {
 interface DiscardableBrowserWebContents extends RegisteredBrowserWebContents {
   forcefullyCrashRenderer(): void;
   reload(): void;
-  on(event: "did-stop-loading" | "did-navigate", listener: () => void): unknown;
+  isCrashed(): boolean;
+  executeJavaScriptInIsolatedWorld(
+    worldId: number,
+    scripts: Array<{ code: string }>,
+  ): Promise<unknown>;
+  on(event: "did-stop-loading" | "did-navigate" | "dom-ready", listener: () => void): unknown;
   on(
     event: "before-input-event",
     listener: (event: unknown, input: { type: string; key: string }) => void,
+  ): unknown;
+  on(
+    event: "context-menu",
+    listener: (event: unknown, params: { isEditable: boolean }) => void,
   ): unknown;
   removeListener(event: "did-stop-loading" | "destroyed", listener: () => void): unknown;
 }
 
 const BROWSER_TAB_RESTORE_TIMEOUT_MS = 30_000;
+const BROWSER_TAB_RESTORE_ATTEMPTS = 2;
+// An isolated world of our own, so page scripts can neither see nor reset the mark.
+const BROWSER_EDIT_WATCH_WORLD_ID = 1043;
+const BROWSER_EDIT_CHECK_TIMEOUT_MS = 1_000;
+// `input` and `change` fire only for edits a person makes (typing, paste from a menu, drag and
+// drop, autofill, ticking a box, picking an option), never for a script setting a value. Both are
+// composed, so edits inside shadow roots reach the document too.
+const BROWSER_EDIT_WATCH_SCRIPT = `(() => {
+  if (globalThis.__daseoEditWatch) return;
+  globalThis.__daseoEditWatch = true;
+  const mark = () => { globalThis.__daseoEdited = true; };
+  document.addEventListener("input", mark, true);
+  document.addEventListener("change", mark, true);
+})()`;
+// null when the watcher never ran in this document (it loaded before this build): unknown counts
+// as edited.
+const BROWSER_EDIT_READ_SCRIPT =
+  "globalThis.__daseoEditWatch ? globalThis.__daseoEdited === true : null";
 
 interface AttachedBrowserRegistration {
   browserId: string;
@@ -157,7 +184,8 @@ function readMacMemoryPressureLevel(): Promise<number | undefined> {
   });
 }
 
-function isBrowserTabDiscardBlocked(webContentsId: number): boolean {
+/** Whether memory pressure must leave this tab's page alone (edited, downloading, shared). */
+export function isPaseoBrowserTabDiscardBlocked(webContentsId: number): boolean {
   if (
     editedWebContentsIds.has(webContentsId) ||
     (downloadsByWebContentsId.get(webContentsId) ?? 0) > 0 ||
@@ -218,6 +246,8 @@ function toLifecycleTarget(
     },
     setWebLifecycleState: async (state) => {
       if (contents.isDestroyed()) return;
+      // Checked while the page still runs: a frozen page could not answer.
+      if (state === "frozen" && discardable) await markIfPageWasEdited(discardable);
       // Automation attaches the same debugger on demand; nothing in the app detaches it.
       if (!contents.debugger.isAttached()) contents.debugger.attach("1.3");
       await contents.debugger.sendCommand("Page.setWebLifecycleState", { state });
@@ -233,34 +263,69 @@ function discardTarget(
       if (!contents.isDestroyed()) contents.forcefullyCrashRenderer();
     },
     restore: async () => {
-      if (contents.isDestroyed()) {
-        return;
+      for (let attempt = 0; attempt < BROWSER_TAB_RESTORE_ATTEMPTS; attempt += 1) {
+        if (contents.isDestroyed()) {
+          return;
+        }
+        await reloadAndWait(contents);
+        // A page still loading after the wait has a live renderer, like any slow page; only a
+        // renderer that never came back is tried again.
+        if (contents.isDestroyed() || !contents.isCrashed()) {
+          return;
+        }
       }
-      // Settles on the first of: the reload finished, the tab closed, or the timeout.
-      let onStop = () => {};
-      let onDestroyed = () => {};
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const stopped = new Promise<void>((resolve) => {
-        onStop = resolve;
-      });
-      const destroyed = new Promise<void>((resolve) => {
-        onDestroyed = resolve;
-      });
-      const timedOut = new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, BROWSER_TAB_RESTORE_TIMEOUT_MS);
-      });
-      contents.on("did-stop-loading", onStop);
-      contents.once("destroyed", onDestroyed);
-      try {
-        contents.reload();
-        await Promise.race([stopped, destroyed, timedOut]);
-      } finally {
-        clearTimeout(timer);
-        contents.removeListener("did-stop-loading", onStop);
-        contents.removeListener("destroyed", onDestroyed);
-      }
+      // Leaves the tab discarded, so the next wake tries again.
+      throw new Error("browser tab renderer did not come back after reload");
     },
   };
+}
+
+async function reloadAndWait(contents: DiscardableBrowserWebContents): Promise<void> {
+  // Settles on the first of: the reload finished, the tab closed, or the timeout.
+  let onStop = () => {};
+  let onDestroyed = () => {};
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const stopped = new Promise<void>((resolve) => {
+    onStop = resolve;
+  });
+  const destroyed = new Promise<void>((resolve) => {
+    onDestroyed = resolve;
+  });
+  const timedOut = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, BROWSER_TAB_RESTORE_TIMEOUT_MS);
+  });
+  contents.on("did-stop-loading", onStop);
+  contents.once("destroyed", onDestroyed);
+  try {
+    contents.reload();
+    await Promise.race([stopped, destroyed, timedOut]);
+  } finally {
+    clearTimeout(timer);
+    contents.removeListener("did-stop-loading", onStop);
+    contents.removeListener("destroyed", onDestroyed);
+  }
+}
+
+async function markIfPageWasEdited(contents: DiscardableBrowserWebContents): Promise<void> {
+  if (editedWebContentsIds.has(contents.id)) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), BROWSER_EDIT_CHECK_TIMEOUT_MS);
+  });
+  try {
+    const edited = await Promise.race([
+      contents.executeJavaScriptInIsolatedWorld(BROWSER_EDIT_WATCH_WORLD_ID, [
+        { code: BROWSER_EDIT_READ_SCRIPT },
+      ]),
+      timedOut,
+    ]);
+    // A page that cannot answer is kept, not risked.
+    if (edited !== false) editedWebContentsIds.add(contents.id);
+  } catch {
+    editedWebContentsIds.add(contents.id);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -277,6 +342,18 @@ export function preparePaseoBrowserWebContents(
   if (discardable) {
     discardable.on("before-input-event", (_event, input) => {
       if (isEditingKeyInput(input)) editedWebContentsIds.add(webContentsId);
+    });
+    // The context menu's Cut and Paste edit a field without a key press.
+    discardable.on("context-menu", (_event, params) => {
+      if (params.isEditable) editedWebContentsIds.add(webContentsId);
+    });
+    // Mouse-only edits (a ticked box, a picked option, a dropped file) are read from the page.
+    discardable.on("dom-ready", () => {
+      discardable
+        .executeJavaScriptInIsolatedWorld(BROWSER_EDIT_WATCH_WORLD_ID, [
+          { code: BROWSER_EDIT_WATCH_SCRIPT },
+        ])
+        .catch(() => {});
     });
     discardable.on("did-navigate", () => {
       editedWebContentsIds.delete(webContentsId);

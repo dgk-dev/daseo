@@ -722,11 +722,18 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     Chrome's "user entered text in a form" rule: a tab typed into by the user (any editing
     `before-input-event` key, IME composition included) or an agent (`fill`, `type`, `keypress`,
     `select`, `upload`, `evaluate`, `drag`, `stream_input`) since its last cross-document
-    navigation; a tab downloading or exempt from freezing; a tab sharing its renderer process
-    with any other page. Off together with `browser.suspendIdleTabs`. Key files:
+    navigation; a tab edited without a key (the context menu's Cut/Paste in an editable field, or
+    any `input`/`change` event: a ticked box, a picked option, a dropped file, autofill), read
+    from an isolated world (1043) just before the tab freezes, with a page that cannot answer in
+    1 s or that loaded before the watcher counted as edited; a tab downloading or exempt from
+    freezing; a tab sharing its renderer process with any other page. A restore whose renderer
+    is still crashed after the 30 s wait reloads once more and otherwise leaves the tab discarded
+    so the next wake retries; a page still loading has a live renderer and counts as restored.
+    Real Electron check (0.5.53): a mouse-only checkbox tab, a right-clicked text field, and a
+    tab loaded before the watcher were all kept; an untouched tab was discarded and restored in
+    0.05 s with its title and watcher back. Off together with `browser.suspendIdleTabs`. Key files:
     `packages/desktop/src/features/browser-webviews/{discard,lifecycle,index}.ts`,
     `packages/desktop/src/features/browser-automation/ipc.ts`, `packages/desktop/src/main.ts`.
-    Takes effect with the next Mac release.
 
 ## Local reliability contracts
 
