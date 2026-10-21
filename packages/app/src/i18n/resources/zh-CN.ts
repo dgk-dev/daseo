@@ -300,6 +300,11 @@ export const zhCN: TranslationResources = {
     },
   },
   message: {
+    attention: {
+      finished: "已完成",
+      permission: "需要权限",
+      open: "打开代理",
+    },
     steering: "已向当前任务追加指令",
     diagram: {
       diagram: "图表",
@@ -312,6 +317,9 @@ export const zhCN: TranslationResources = {
     },
     actions: {
       copyCode: "复制代码",
+      showAllLines: "显示全部 {{count}} 行",
+      showLess: "收起",
+      showFullMessage: "显示完整消息",
       copyTurn: "复制回合",
       copyMessage: "复制消息",
       forkMenu: "分叉消息",

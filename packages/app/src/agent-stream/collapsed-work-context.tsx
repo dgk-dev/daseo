@@ -1,4 +1,5 @@
 import { createContext, useContext } from "react";
+import type { WorkActivityCounts } from "./collapsed-work";
 
 /**
  * Lets the completed-turn footer reach the collapsed-work state owned by the
@@ -7,6 +8,7 @@ import { createContext, useContext } from "react";
  */
 export interface CollapsedWorkController {
   getWorkCount: (turnKey: string) => number;
+  getWorkActivity: (turnKey: string) => WorkActivityCounts | undefined;
   getDurationMs: (turnKey: string) => number | undefined;
   isExpanded: (turnKey: string) => boolean;
   toggle: (turnKey: string) => void;

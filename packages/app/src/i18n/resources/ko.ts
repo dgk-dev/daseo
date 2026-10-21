@@ -302,6 +302,11 @@ export const ko: TranslationResources = {
     },
   },
   message: {
+    attention: {
+      finished: "완료",
+      permission: "권한 필요",
+      open: "에이전트 열기",
+    },
     steering: "현재 작업에 지시 추가됨",
     diagram: {
       diagram: "다이어그램",
@@ -314,6 +319,9 @@ export const ko: TranslationResources = {
     },
     actions: {
       copyCode: "코드 복사",
+      showAllLines: "전체 {{count}}줄 보기",
+      showLess: "접기",
+      showFullMessage: "전체 메시지 보기",
       copyTurn: "턴 복사",
       copyMessage: "메시지 복사",
       forkMenu: "여기에서 채팅 분기",

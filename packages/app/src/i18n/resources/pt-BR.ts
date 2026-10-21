@@ -305,6 +305,11 @@ export const ptBR: TranslationResources = {
     },
   },
   message: {
+    attention: {
+      finished: "Concluído",
+      permission: "Precisa de permissão",
+      open: "Abrir agente",
+    },
     steering: "Orientando a tarefa atual",
     diagram: {
       diagram: "Diagrama",
@@ -317,6 +322,9 @@ export const ptBR: TranslationResources = {
     },
     actions: {
       copyCode: "Copiar código",
+      showAllLines: "Mostrar todas as {{count}} linhas",
+      showLess: "Mostrar menos",
+      showFullMessage: "Mostrar mensagem completa",
       copyTurn: "Copiar turno",
       copyMessage: "Copiar mensagem",
       forkMenu: "Bifurcar mensagem",

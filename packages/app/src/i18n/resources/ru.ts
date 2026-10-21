@@ -304,6 +304,11 @@ export const ru: TranslationResources = {
     },
   },
   message: {
+    attention: {
+      finished: "Готово",
+      permission: "Нужно разрешение",
+      open: "Открыть агента",
+    },
     steering: "Уточнение текущей задачи",
     diagram: {
       diagram: "Диаграмма",
@@ -316,6 +321,9 @@ export const ru: TranslationResources = {
     },
     actions: {
       copyCode: "Скопировать код",
+      showAllLines: "Показать все строки ({{count}})",
+      showLess: "Свернуть",
+      showFullMessage: "Показать сообщение полностью",
       copyTurn: "Копировать ход",
       copyMessage: "Копировать сообщение",
       forkMenu: "Форкнуть сообщение",

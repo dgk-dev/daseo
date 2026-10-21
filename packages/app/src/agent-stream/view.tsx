@@ -594,6 +594,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         collapsedStream.turnKeyByTurnEndAssistantId.get(key) ?? key;
       return {
         getWorkCount: (key) => collapsedStream.workCountByTurnKey.get(resolveTurnKey(key)) ?? 0,
+        getWorkActivity: (key) => collapsedStream.workActivityByTurnKey.get(resolveTurnKey(key)),
         getDurationMs: (key) => {
           const turnKey = resolveTurnKey(key);
           const turnEndAssistantId =
@@ -623,6 +624,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       collapsedStream.turnEndAssistantIdByTurnKey,
       collapsedStream.turnKeyByTurnEndAssistantId,
       collapsedStream.workCountByTurnKey,
+      collapsedStream.workActivityByTurnKey,
       expandedWorkTurnKeys,
     ]);
     const streamLayout = useMemo(

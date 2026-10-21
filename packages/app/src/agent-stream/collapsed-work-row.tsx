@@ -5,6 +5,7 @@ import { ChevronDown, ChevronRight } from "lucide-react-native";
 import type { Theme } from "@/styles/theme";
 import { formatDuration } from "@/utils/time";
 import { useCollapsedWork } from "./collapsed-work-context";
+import { formatWorkActivity } from "./collapsed-work";
 
 const chevronColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 const ThemedChevronRight = withUnistyles(ChevronRight, chevronColorMapping);
@@ -22,6 +23,7 @@ export const CollapsedWorkRow = memo(function CollapsedWorkRow({ turnKey }: { tu
   const workCount = controller?.getWorkCount(turnKey) ?? 0;
   const expanded = controller?.isExpanded(turnKey) ?? false;
   const durationMs = controller?.getDurationMs(turnKey);
+  const activity = controller?.getWorkActivity(turnKey);
   const handlePress = useCallback(() => {
     controller?.toggle(turnKey);
   }, [controller, turnKey]);
@@ -31,10 +33,14 @@ export const CollapsedWorkRow = memo(function CollapsedWorkRow({ turnKey }: { tu
     return null;
   }
 
-  const label =
+  const title =
     durationMs !== undefined
       ? `Worked for ${formatDuration(durationMs)}`
       : `${workCount} ${workCount === 1 ? "step" : "steps"}`;
+  // What the folded work was, after the time: `Worked for 7s · 2 edits · 1 command`. The
+  // counts end in an ellipsis on a narrow screen; the title is never cut.
+  const activityParts = activity ? formatWorkActivity(activity) : [];
+  const label = [title, ...activityParts].join(" · ");
 
   return (
     <View style={stylesheet.row}>
@@ -50,7 +56,12 @@ export const CollapsedWorkRow = memo(function CollapsedWorkRow({ turnKey }: { tu
         hitSlop={HIT_SLOP}
       >
         {expanded ? <ThemedChevronDown size={14} /> : <ThemedChevronRight size={14} />}
-        <Text style={stylesheet.label}>{label}</Text>
+        <Text style={stylesheet.label}>{title}</Text>
+        {activityParts.length > 0 ? (
+          <Text style={stylesheet.activity} numberOfLines={1}>
+            {`· ${activityParts.join(" · ")}`}
+          </Text>
+        ) : null}
       </Pressable>
     </View>
   );
@@ -61,6 +72,7 @@ const stylesheet = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     alignSelf: "flex-start",
+    maxWidth: "100%",
     marginBottom: theme.spacing[3],
   },
   pressable: {
@@ -68,8 +80,16 @@ const stylesheet = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[1],
     paddingVertical: theme.spacing[1],
+    minWidth: 0,
   },
   label: {
+    flexShrink: 0,
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
+  },
+  activity: {
+    flexShrink: 1,
+    minWidth: 0,
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
   },

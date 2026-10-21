@@ -19,10 +19,70 @@ const WORK_KINDS = new Set<StreamItem["kind"]>([
 ]);
 const ERROR_ASSISTANT_PREFIX = /^\[(?:system )?error\]/i;
 
+/**
+ * What a folded turn did, by kind of tool call, for the summary row: `Worked for 7s · 2 edits ·
+ * 1 command` (the Ovis/herdr web UI work-block header). Thoughts, todo updates, and activity
+ * rows are not counted; a tool call whose detail is not one of the named kinds counts as other.
+ */
+export interface WorkActivityCounts {
+  edits: number;
+  reads: number;
+  commands: number;
+  searches: number;
+  other: number;
+}
+
+export function summarizeWorkActivity(items: readonly StreamItem[]): WorkActivityCounts {
+  const counts: WorkActivityCounts = { edits: 0, reads: 0, commands: 0, searches: 0, other: 0 };
+  for (const item of items) {
+    if (item.kind !== "tool_call") continue;
+    if (item.payload.source !== "agent") {
+      counts.other += 1;
+      continue;
+    }
+    switch (item.payload.data.detail.type) {
+      case "edit":
+      case "write":
+        counts.edits += 1;
+        break;
+      case "read":
+        counts.reads += 1;
+        break;
+      case "shell":
+        counts.commands += 1;
+        break;
+      case "search":
+      case "fetch":
+        counts.searches += 1;
+        break;
+      default:
+        counts.other += 1;
+    }
+  }
+  return counts;
+}
+
+function plural(count: number, singular: string, pluralForm: string): string {
+  return `${count} ${count === 1 ? singular : pluralForm}`;
+}
+
+/** The counts as summary parts, most consequential first; empty kinds are left out. */
+export function formatWorkActivity(counts: WorkActivityCounts): string[] {
+  const parts: string[] = [];
+  if (counts.edits > 0) parts.push(plural(counts.edits, "edit", "edits"));
+  if (counts.commands > 0) parts.push(plural(counts.commands, "command", "commands"));
+  if (counts.reads > 0) parts.push(plural(counts.reads, "file read", "file reads"));
+  if (counts.searches > 0) parts.push(plural(counts.searches, "search", "searches"));
+  if (counts.other > 0) parts.push(plural(counts.other, "other tool", "other tools"));
+  return parts;
+}
+
 export interface CollapsedWorkResult {
   items: StreamItem[];
   /** Folded-detail count per stable completed-turn key, including expanded turns. */
   workCountByTurnKey: Map<string, number>;
+  /** Folded tool calls by kind per stable completed-turn key, including expanded turns. */
+  workActivityByTurnKey: Map<string, WorkActivityCounts>;
   /** Final-answer anchor item id -> stable completed-turn key. */
   summaryTurnKeyByAssistantId: Map<string, string>;
   /** Stable completed-turn key -> final rendered assistant item id. */
@@ -348,6 +408,7 @@ export interface CollapsedStreamResult {
   tail: StreamItem[];
   head: StreamItem[];
   workCountByTurnKey: Map<string, number>;
+  workActivityByTurnKey: Map<string, WorkActivityCounts>;
   summaryTurnKeyByAssistantId: Map<string, string>;
   turnEndAssistantIdByTurnKey: Map<string, string>;
   turnKeyByTurnEndAssistantId: Map<string, string>;
@@ -377,6 +438,7 @@ export function collapseCompletedWorkStream(input: {
       tail: collapsedTail.items,
       head,
       workCountByTurnKey: collapsedTail.workCountByTurnKey,
+      workActivityByTurnKey: collapsedTail.workActivityByTurnKey,
       summaryTurnKeyByAssistantId: collapsedTail.summaryTurnKeyByAssistantId,
       turnEndAssistantIdByTurnKey: collapsedTail.turnEndAssistantIdByTurnKey,
       turnKeyByTurnEndAssistantId: collapsedTail.turnKeyByTurnEndAssistantId,
@@ -392,6 +454,7 @@ export function collapseCompletedWorkStream(input: {
       tail: collapsedTail.items,
       head,
       workCountByTurnKey: collapsedTail.workCountByTurnKey,
+      workActivityByTurnKey: collapsedTail.workActivityByTurnKey,
       summaryTurnKeyByAssistantId: collapsedTail.summaryTurnKeyByAssistantId,
       turnEndAssistantIdByTurnKey: collapsedTail.turnEndAssistantIdByTurnKey,
       turnKeyByTurnEndAssistantId: collapsedTail.turnKeyByTurnEndAssistantId,
@@ -412,6 +475,7 @@ export function collapseCompletedWorkStream(input: {
     tail: tailOut,
     head: headOut,
     workCountByTurnKey: combined.workCountByTurnKey,
+    workActivityByTurnKey: combined.workActivityByTurnKey,
     summaryTurnKeyByAssistantId: combined.summaryTurnKeyByAssistantId,
     turnEndAssistantIdByTurnKey: combined.turnEndAssistantIdByTurnKey,
     turnKeyByTurnEndAssistantId: combined.turnKeyByTurnEndAssistantId,
@@ -426,6 +490,7 @@ export function collapseCompletedWork(input: {
 }): CollapsedWorkResult {
   const { items, expandedTurnKeys, keepLastTurnExpanded } = input;
   const workCountByTurnKey = new Map<string, number>();
+  const workActivityByTurnKey = new Map<string, WorkActivityCounts>();
   const summaryTurnKeyByAssistantId = new Map<string, string>();
   const turnEndAssistantIdByTurnKey = new Map<string, string>();
   const turnKeyByTurnEndAssistantId = new Map<string, string>();
@@ -433,6 +498,7 @@ export function collapseCompletedWork(input: {
     return {
       items,
       workCountByTurnKey,
+      workActivityByTurnKey,
       summaryTurnKeyByAssistantId,
       turnEndAssistantIdByTurnKey,
       turnKeyByTurnEndAssistantId,
@@ -447,6 +513,10 @@ export function collapseCompletedWork(input: {
     if (!projection) continue;
 
     workCountByTurnKey.set(projection.turnKey, projection.hideableDetails.length);
+    workActivityByTurnKey.set(
+      projection.turnKey,
+      summarizeWorkActivity(projection.hideableDetails),
+    );
     summaryTurnKeyByAssistantId.set(projection.summaryAnchorId, projection.turnKey);
     turnEndAssistantIdByTurnKey.set(projection.turnKey, projection.turnEndAssistantId);
     turnKeyByTurnEndAssistantId.set(projection.turnEndAssistantId, projection.turnKey);
@@ -458,6 +528,7 @@ export function collapseCompletedWork(input: {
     return {
       items,
       workCountByTurnKey,
+      workActivityByTurnKey,
       summaryTurnKeyByAssistantId,
       turnEndAssistantIdByTurnKey,
       turnKeyByTurnEndAssistantId,
@@ -466,6 +537,7 @@ export function collapseCompletedWork(input: {
   return {
     items: items.filter((item) => !hidden.has(item)),
     workCountByTurnKey,
+    workActivityByTurnKey,
     summaryTurnKeyByAssistantId,
     turnEndAssistantIdByTurnKey,
     turnKeyByTurnEndAssistantId,

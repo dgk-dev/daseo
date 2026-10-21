@@ -60,6 +60,7 @@ import { HorizontalScrollProvider } from "@/contexts/horizontal-scroll-context";
 import { SessionProvider } from "@/contexts/session-context";
 import { SidebarCalloutProvider } from "@/contexts/sidebar-callout-context";
 import { ToastProvider } from "@/contexts/toast-context";
+import { AttentionDroplet } from "@/components/attention-droplet";
 import { VoiceProvider } from "@/contexts/voice-context";
 import {
   resolveStartupBlocker,
@@ -967,6 +968,7 @@ function RuntimeProviders({ children }: { children: ReactNode }) {
       <SidebarCalloutProvider>
         <ProvidersWrapper>{children}</ProvidersWrapper>
       </SidebarCalloutProvider>
+      {isNative ? <AttentionDroplet /> : null}
     </HostRuntimeBootstrapProvider>
   );
 }

@@ -1,6 +1,11 @@
 import { describe, expect, test } from "vitest";
 import type { AssistantMessageItem, StreamItem } from "@/types/stream";
-import { collapseCompletedWork, collapseCompletedWorkStream } from "./collapsed-work";
+import {
+  collapseCompletedWork,
+  collapseCompletedWorkStream,
+  formatWorkActivity,
+  summarizeWorkActivity,
+} from "./collapsed-work";
 
 let sequence = 0;
 function nextBase(kind: StreamItem["kind"], id?: string) {
@@ -113,6 +118,13 @@ describe("collapseCompletedWork", () => {
     ]);
     expect(result.workCountByTurnKey.get("a1")).toBe(2);
     expect(result.workCountByTurnKey.get("a2")).toBe(1);
+    expect(result.workActivityByTurnKey.get("a1")).toEqual({
+      edits: 0,
+      reads: 0,
+      commands: 0,
+      searches: 0,
+      other: 1,
+    });
     expect([...result.summaryTurnKeyByAssistantId]).toEqual([
       ["a1", "a1"],
       ["a2", "a2"],
@@ -908,5 +920,39 @@ describe("collapseCompletedWorkStream", () => {
     expect(result.head).toEqual([headWork, finalAssistant]);
     expect(result.tail[1]).toBe(settledWork);
     expect(result.head[0]).toBe(headWork);
+  });
+});
+
+function toolWithDetail(detail: Record<string, unknown>): StreamItem {
+  const tool = item("tool_call");
+  if (tool.kind !== "tool_call" || tool.payload.source !== "agent") throw new Error("invalid tool");
+  return {
+    ...tool,
+    payload: {
+      ...tool.payload,
+      data: { ...tool.payload.data, detail: detail as typeof tool.payload.data.detail },
+    },
+  };
+}
+
+describe("summarizeWorkActivity", () => {
+  test("counts tool calls by kind and leaves thoughts and todos out", () => {
+    const counts = summarizeWorkActivity([
+      toolWithDetail({ type: "edit", filePath: "a.ts" }),
+      toolWithDetail({ type: "write", filePath: "b.ts" }),
+      toolWithDetail({ type: "read", filePath: "a.ts" }),
+      toolWithDetail({ type: "shell", command: "npm test" }),
+      toolWithDetail({ type: "search", query: "x" }),
+      toolWithDetail({ type: "fetch", url: "https://example.com" }),
+      item("thought"),
+      item("todo_list"),
+    ]);
+    expect(counts).toEqual({ edits: 2, reads: 1, commands: 1, searches: 2, other: 0 });
+    expect(formatWorkActivity(counts)).toEqual([
+      "2 edits",
+      "1 command",
+      "1 file read",
+      "2 searches",
+    ]);
   });
 });

@@ -300,6 +300,11 @@ export const en = {
     },
   },
   message: {
+    attention: {
+      finished: "Finished",
+      permission: "Needs permission",
+      open: "Open agent",
+    },
     steering: "Steering current task",
     diagram: {
       diagram: "Diagram",
@@ -312,6 +317,9 @@ export const en = {
     },
     actions: {
       copyCode: "Copy code",
+      showAllLines: "Show all {{count}} lines",
+      showLess: "Show less",
+      showFullMessage: "Show full message",
       copyTurn: "Copy turn",
       copyMessage: "Copy message",
       forkMenu: "Fork chat from here",

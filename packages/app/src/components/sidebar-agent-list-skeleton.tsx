@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 import { Animated, View, type StyleProp, type ViewStyle } from "react-native";
+import { useReducedMotion } from "react-native-reanimated";
 import { StyleSheet } from "react-native-unistyles";
 import { projectIconRadius } from "@/components/project-icon-view";
 
@@ -58,8 +59,13 @@ function SkeletonSection({
 
 export function SidebarAgentListSkeleton() {
   const pulse = useRef(new Animated.Value(0)).current;
+  const reduceMotion = useReducedMotion();
 
   useEffect(() => {
+    // Reduce motion holds the placeholder still at its resting opacity.
+    if (reduceMotion) {
+      return;
+    }
     const animation = Animated.loop(
       Animated.sequence([
         Animated.timing(pulse, {
@@ -77,7 +83,7 @@ export function SidebarAgentListSkeleton() {
 
     animation.start();
     return () => animation.stop();
-  }, [pulse]);
+  }, [pulse, reduceMotion]);
 
   return (
     <View style={styles.container}>

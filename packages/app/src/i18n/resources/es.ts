@@ -305,6 +305,11 @@ export const es: TranslationResources = {
     },
   },
   message: {
+    attention: {
+      finished: "Terminado",
+      permission: "Necesita permiso",
+      open: "Abrir agente",
+    },
     steering: "Guiando la tarea actual",
     diagram: {
       diagram: "Diagrama",
@@ -317,6 +322,9 @@ export const es: TranslationResources = {
     },
     actions: {
       copyCode: "Copiar código",
+      showAllLines: "Mostrar las {{count}} líneas",
+      showLess: "Mostrar menos",
+      showFullMessage: "Mostrar el mensaje completo",
       copyTurn: "Copiar turno",
       copyMessage: "Copiar mensaje",
       forkMenu: "Bifurcar mensaje",

@@ -1,4 +1,6 @@
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { Button } from "@/components/ui/button";
+import { shouldFoldUserMessage, USER_MESSAGE_FOLD_LINES } from "@/components/user-message-fold";
 import { TaskListRow } from "@/components/task-list-row";
 import {
   View,
@@ -37,6 +39,7 @@ import {
   FileText,
   ChevronRight,
   ChevronDown,
+  ChevronUp,
   Check,
   CheckSquare,
   CircleDot,
@@ -54,6 +57,7 @@ import Animated, {
   Easing,
   cancelAnimation,
   useAnimatedStyle,
+  useReducedMotion,
   useSharedValue,
   withRepeat,
   withTiming,
@@ -365,6 +369,15 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.base,
     ...(isWeb ? { lineHeight: 22, overflowWrap: "anywhere" as const } : {}),
   },
+  foldRow: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    marginTop: theme.spacing[2],
+  },
+  foldButton: {
+    // The label's last glyph stays on the bubble's text rail; the xs padding grows outward.
+    marginRight: -theme.spacing[3],
+  },
   imagePreviewContainer: {
     flexDirection: "row",
     gap: theme.spacing[2],
@@ -485,6 +498,45 @@ function useUserMessageTrailingRow(input: { isPending: boolean; hasText: boolean
   return { showTrailingRow, trailingRowStyle };
 }
 
+const FOLDED_STATE = { expanded: false } as const;
+const UNFOLDED_STATE = { expanded: true } as const;
+
+/** The prompt's text, folded to its first lines when it is long (see `user-message-fold`). */
+const UserMessageText = memo(function UserMessageText({ message }: { message: string }) {
+  const { t } = useTranslation();
+  const isFoldable = useMemo(() => shouldFoldUserMessage(message), [message]);
+  const [isUnfolded, setIsUnfolded] = useState(false);
+  const isFolded = isFoldable && !isUnfolded;
+  const toggleFold = useCallback(() => setIsUnfolded((previous) => !previous), []);
+
+  return (
+    <>
+      <Text
+        selectable
+        style={userMessageStylesheet.text}
+        numberOfLines={isFolded ? USER_MESSAGE_FOLD_LINES : undefined}
+      >
+        {message}
+      </Text>
+      {isFoldable ? (
+        <View style={userMessageStylesheet.foldRow}>
+          <Button
+            variant="ghost"
+            size="xs"
+            leftIcon={isFolded ? ChevronDown : ChevronUp}
+            onPress={toggleFold}
+            accessibilityState={isFolded ? FOLDED_STATE : UNFOLDED_STATE}
+            testID="user-message-fold-toggle"
+            style={userMessageStylesheet.foldButton}
+          >
+            {isFolded ? t("message.actions.showFullMessage") : t("message.actions.showLess")}
+          </Button>
+        </View>
+      ) : null}
+    </>
+  );
+});
+
 export const UserMessage = memo(function UserMessage({
   serverId,
   agentId,
@@ -599,11 +651,7 @@ export const UserMessage = memo(function UserMessage({
               })}
             </View>
           ) : null}
-          {hasText ? (
-            <Text selectable style={userMessageStylesheet.text}>
-              {message}
-            </Text>
-          ) : null}
+          {hasText ? <UserMessageText message={message} /> : null}
           <UserMessageDeliveryLabel isPending={isPending} isSteering={isSteering} />
         </View>
         {hasText ? (
@@ -2859,6 +2907,7 @@ export const ExpandableBadge = memo(function ExpandableBadge({
   const handleOpenFileHoverIn = useCallback(() => setIsOpenFileHovered(true), []);
   const handleOpenFileHoverOut = useCallback(() => setIsOpenFileHovered(false), []);
 
+  const reduceMotion = useReducedMotion();
   const nativeGradientIdRef = useRef(
     `shimmer-gradient-${Math.random().toString(36).substring(2, 9)}`,
   );
@@ -2882,7 +2931,8 @@ export const ExpandableBadge = memo(function ExpandableBadge({
   } = computeShimmerMetrics({
     label,
     secondaryLabel,
-    isLoading,
+    // Reduce motion stills the running tool's shimmer; the row still reads as running.
+    isLoading: isLoading && !reduceMotion,
     labelRowWidth,
     labelRowHeight,
     labelOffsetX,

@@ -828,6 +828,28 @@ Attempting to launch an unregistered ActivityResultLauncher`, which is expo/expo
     `structuredContent`. The MCP spec asks servers to serialize structured results into the text,
     and the official Python SDK names the text the model's copy. Key file:
     `packages/server/src/server/browser-tools/tools.ts` (`summarizeBrowserDiagnosticsSuccess`).
+49. **Interface details from Ovis (herdr web UI)** — from the 2026-10-22 read of devswha/herdr-web-ui
+    (`ee2daec`, its DESIGN.md and client). Most of its chat surface already matches Daseo; these are
+    the parts Daseo lacked. (a) While the phone app is on screen it suppresses OS banners, so an
+    agent elsewhere that finished or asked for permission changed only a dot in the closed
+    sidebar. It now drops an in-app alert: a black drop falls under the header, spreads into a
+    card (one 44pt line as wide as its text on compact screens, a two-line card with the answer's
+    first words on wider ones), a tap opens the agent, a drag or flick up puts it away, and it
+    leaves 3.6 s after its text shows, waiting while touched; a newer alert folds the current one
+    away first, and reduce motion fades it in place. Native only: desktop keeps its OS
+    notification. (b) The folded "Worked for …" row says what the work was: `Worked for 7s · 2
+edits · 1 command · 2 file reads`; the counts end in an ellipsis before the time is cut.
+    Failed tools stay visible (delta 5), so there is no failed count. (c) A prompt longer than 12
+    lines of the widest bubble (a CJK character counts two columns) folds behind "Show full
+    message"; a shorter one never shows the toggle. (d) A code block longer than 30 lines opens
+    at its first 20 behind "Show all N lines"; copy still takes the whole block. (e) Reduce motion
+    now stills the running tool's shimmer, the sidebar and PR skeleton pulses, and the startup
+    logo shimmer, as the synced loader already did. Not taken: hover-only message metadata (delta
+    32 keeps it always on), Ovis's amber palette and Pretendard font (a rebrand, not a fix), its
+    PWA, SSH bridge, and terminal-scraped dialogs (Daseo talks to Pi over RPC). Key files:
+    `packages/app/src/components/attention-droplet.tsx`, `stores/attention-droplet-store.ts`,
+    `utils/attention-droplet.ts`, `agent-stream/collapsed-work.ts`, `components/user-message-fold.ts`,
+    and `components/highlighted-code-block.tsx`.
 
 ## Local reliability contracts
 

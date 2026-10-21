@@ -306,6 +306,11 @@ export const fr: TranslationResources = {
     },
   },
   message: {
+    attention: {
+      finished: "Terminé",
+      permission: "Autorisation requise",
+      open: "Ouvrir l’agent",
+    },
     steering: "Orientation de la tâche en cours",
     diagram: {
       diagram: "Diagramme",
@@ -318,6 +323,9 @@ export const fr: TranslationResources = {
     },
     actions: {
       copyCode: "Copier le code",
+      showAllLines: "Afficher les {{count}} lignes",
+      showLess: "Afficher moins",
+      showFullMessage: "Afficher le message complet",
       copyTurn: "Copier le tour",
       copyMessage: "Copier le message",
       forkMenu: "Dupliquer le message",

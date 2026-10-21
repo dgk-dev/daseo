@@ -304,6 +304,11 @@ export const ja: TranslationResources = {
     },
   },
   message: {
+    attention: {
+      finished: "完了",
+      permission: "許可が必要",
+      open: "エージェントを開く",
+    },
     steering: "現在のタスクに指示を追加",
     diagram: {
       diagram: "図",
@@ -316,6 +321,9 @@ export const ja: TranslationResources = {
     },
     actions: {
       copyCode: "コードをコピー",
+      showAllLines: "全{{count}}行を表示",
+      showLess: "折りたたむ",
+      showFullMessage: "メッセージ全体を表示",
       copyTurn: "ターンをコピー",
       copyMessage: "メッセージをコピー",
       forkMenu: "メッセージをフォーク",

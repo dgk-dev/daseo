@@ -55,6 +55,8 @@ import {
 } from "@/stores/session-store";
 import { useWorkspaceSetupStore } from "@/stores/workspace-setup-store";
 import { sendOsNotification } from "@/utils/os-notifications";
+import { isNative } from "@/constants/platform";
+import { showAttentionDroplet } from "@/utils/attention-droplet";
 import { getIsAppActivelyVisible, getIsAppVisible } from "@/utils/app-visibility";
 import {
   getInitKey,
@@ -458,6 +460,20 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
         permissionRequest,
       });
       if (!notification) {
+        return;
+      }
+
+      if (
+        isNative &&
+        isActivelyVisible &&
+        showAttentionDroplet({
+          session,
+          serverId,
+          agentId: params.agentId,
+          reason: params.reason,
+          notification,
+        })
+      ) {
         return;
       }
 

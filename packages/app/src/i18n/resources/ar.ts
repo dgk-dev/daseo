@@ -301,6 +301,11 @@ export const ar: TranslationResources = {
     },
   },
   message: {
+    attention: {
+      finished: "انتهى",
+      permission: "يحتاج إلى إذن",
+      open: "فتح الوكيل",
+    },
     steering: "توجيه المهمة الحالية",
     diagram: {
       diagram: "مخطط",
@@ -313,6 +318,9 @@ export const ar: TranslationResources = {
     },
     actions: {
       copyCode: "نسخ الرمز",
+      showAllLines: "عرض كل الأسطر ({{count}})",
+      showLess: "عرض أقل",
+      showFullMessage: "عرض الرسالة كاملة",
       copyTurn: "نسخ بدوره",
       copyMessage: "انسخ الرسالة",
       forkMenu: "تفريع الرسالة",

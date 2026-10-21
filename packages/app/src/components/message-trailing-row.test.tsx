@@ -70,6 +70,25 @@ vi.mock("@/components/assistant-fork-menu", () => ({
 }));
 
 vi.mock("@/components/attachment-lightbox", () => ({ AttachmentLightbox: () => null }));
+vi.mock("@/components/ui/button", async () => {
+  const ReactModule = await import("react");
+  return {
+    Button: ({
+      children,
+      onPress,
+      testID,
+    }: {
+      children?: React.ReactNode;
+      onPress?: () => void;
+      testID?: string;
+    }) =>
+      ReactModule.createElement(
+        "button",
+        { type: "button", "data-testid": testID, onClick: () => onPress?.() },
+        children,
+      ),
+  };
+});
 vi.mock("@/components/tool-call-sheet", () => ({ useToolCallSheet: () => ({}) }));
 vi.mock("@/components/tool-call-details", () => ({ ToolCallDetailsContent: () => null }));
 vi.mock("@/components/plan-card", () => ({ PlanCard: () => null }));
@@ -147,13 +166,13 @@ const rewindCapabilities: AgentCapabilityFlags = {
 const getAnswer = () => "answer";
 const forkTurn = () => undefined;
 
-function renderUserMessage(isPending = false): HTMLDivElement {
+function renderUserMessage(isPending = false, message = "Ship the release"): HTMLDivElement {
   return mount(
     <UserMessage
       serverId="server-1"
       agentId="agent-1"
       messageId="message-1"
-      message="Ship the release"
+      message={message}
       timestamp={sentAt.getTime()}
       capabilities={rewindCapabilities}
       client={null}
@@ -180,6 +199,23 @@ describe("user prompt trailing row", () => {
 
     expect(getComputedStyle(row).opacity).toBe("0");
     expect(getComputedStyle(row).pointerEvents).toBe("none");
+  });
+});
+
+describe("long user prompt", () => {
+  it("folds behind Show full message and unfolds on press", () => {
+    const longPrompt = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join("\n");
+    const view = within(renderUserMessage(false, longPrompt));
+    const toggle = view.getByTestId("user-message-fold-toggle");
+
+    expect(toggle.textContent).toBe("Show full message");
+    act(() => toggle.click());
+    expect(view.getByTestId("user-message-fold-toggle").textContent).toBe("Show less");
+  });
+
+  it("leaves a short prompt without a fold", () => {
+    const view = within(renderUserMessage());
+    expect(view.queryByTestId("user-message-fold-toggle")).toBeNull();
   });
 });
 

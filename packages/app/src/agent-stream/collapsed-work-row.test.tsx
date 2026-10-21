@@ -90,6 +90,7 @@ describe("CollapsedWorkRow", () => {
     const toggle = vi.fn();
     renderController({
       getWorkCount: () => 3,
+      getWorkActivity: () => undefined,
       getDurationMs: () => 62_000,
       isExpanded: () => false,
       toggle,
@@ -108,6 +109,7 @@ describe("CollapsedWorkRow", () => {
 
     renderController({
       getWorkCount: () => 3,
+      getWorkActivity: () => undefined,
       getDurationMs: () => 62_000,
       isExpanded: () => true,
       toggle,
@@ -120,10 +122,28 @@ describe("CollapsedWorkRow", () => {
     expect(container?.querySelector('[data-testid="chevron-down"]')).not.toBeNull();
   });
 
+  it("says what the folded work did after the time", () => {
+    renderController({
+      getWorkCount: () => 6,
+      getWorkActivity: () => ({ edits: 2, reads: 2, commands: 1, searches: 0, other: 1 }),
+      getDurationMs: () => 156_000,
+      isExpanded: () => false,
+      toggle: vi.fn(),
+    });
+    const row = container?.querySelector('[data-testid="collapsed-work-row"]');
+    expect(row?.textContent).toBe(
+      "Worked for 2m 36s· 2 edits · 1 command · 2 file reads · 1 other tool",
+    );
+    expect(row?.getAttribute("aria-label")).toBe(
+      "Worked for 2m 36s · 2 edits · 1 command · 2 file reads · 1 other tool, show work details",
+    );
+  });
+
   it("uses the hidden-step count when duration is unavailable and omits empty rows", () => {
     const toggle = vi.fn();
     renderController({
       getWorkCount: () => 1,
+      getWorkActivity: () => undefined,
       getDurationMs: () => undefined,
       isExpanded: () => false,
       toggle,
@@ -132,6 +152,7 @@ describe("CollapsedWorkRow", () => {
 
     renderController({
       getWorkCount: () => 0,
+      getWorkActivity: () => undefined,
       getDurationMs: () => undefined,
       isExpanded: () => false,
       toggle,

@@ -4,6 +4,7 @@ import Animated, {
   cancelAnimation,
   Easing,
   useAnimatedStyle,
+  useReducedMotion,
   useSharedValue,
   withRepeat,
   withTiming,
@@ -81,6 +82,12 @@ function ensureWebSplashShimmerKeyframes() {
 
 function LogoShimmer() {
   const { theme } = useUnistyles();
+  const reduceMotion = useReducedMotion();
+
+  // Reduce motion shows the logo still; the splash is short and needs no motion to read.
+  if (reduceMotion) {
+    return <PaseoLogo size={LOGO_SIZE} color={theme.colors.foreground} />;
+  }
 
   if (isWeb) {
     return <WebLogoShimmer color={theme.colors.foreground} />;
