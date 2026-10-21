@@ -11,6 +11,7 @@ interface TimelinePageResult {
 
 interface ViewedTimelineSyncPorts {
   initialDeliveryMode: TimelineDeliveryMode;
+  initialConnected: boolean;
   setSubscription(agentIds: string[]): Promise<void>;
   readCursor(agentId: string): { epoch: string; endSeq: number } | undefined;
   fetchPage(
@@ -117,7 +118,7 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
   const manualRetries = new Set<string>();
   const listeners = new Set<() => void>();
   let active = true;
-  let connected = false;
+  let connected = ports.initialConnected;
   let deliveryMode = ports.initialDeliveryMode;
   let disposed = false;
   let desired: string[] = [];

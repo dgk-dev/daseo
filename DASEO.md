@@ -801,6 +801,22 @@ Attempting to launch an unregistered ActivityResultLauncher`, which is expo/expo
     `packages/app/src/utils/encode-images.ts`, `packages/protocol/src/messages.ts`. Takes effect
     with the next release, daemon restart, and app build.
 
+47. **A chat left open across a connection switch keeps receiving live updates** — from the
+    2026-10-21 phone incident (agent `ceef0f04`): a sent message stayed on "Sending..." while the
+    daemon persisted it and the reply. The host runtime's `switchToConnection` (probe found the
+    active connection unavailable, or three faster probes in a row) replaces `snapshot.client`
+    while `connectionStatus` stays `"online"`. `session-context.tsx` recreates the viewed-timeline
+    sync for the new client, and a new sync started disconnected; the only thing that connected it
+    was the `[isConnected]` effect, which does not run on `true → true`. The new sync never sent
+    `agent.timeline.set_subscription.request` or the catch-up fetch for the open chats, so the
+    daemon's selective delivery dropped every `agent_stream` for them on the new socket. RPCs
+    still worked, which is why the send succeeded. Now `createViewedTimelineSync` takes
+    `initialConnected` beside `initialDeliveryMode`, and the context seeds it from the host
+    runtime snapshot when it creates the sync. The `[isConnected]` effect still handles later
+    transitions. Upstream has the same wiring (`origin/main` session-context.tsx) and is a
+    candidate for an upstream PR. Key files: `packages/app/src/contexts/session-context.tsx`,
+    `packages/app/src/timeline/viewed-timeline-sync.ts`. Takes effect with the next app build.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

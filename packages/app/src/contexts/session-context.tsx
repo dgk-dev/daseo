@@ -41,7 +41,11 @@ import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { AgentSessionConfig } from "@getpaseo/protocol/agent-types";
 import type { GitSetupOptions } from "@getpaseo/protocol/messages";
 import type { AgentPermissionResponse } from "@getpaseo/protocol/agent-types";
-import { getHostRuntimeStore, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
+import {
+  getHostRuntimeStore,
+  isHostRuntimeConnected,
+  useHostRuntimeIsConnected,
+} from "@/runtime/host-runtime";
 import { useVoiceAudioEngineOptional, useVoiceRuntimeOptional } from "@/contexts/voice-context";
 import type { AudioPlaybackSource } from "@/voice/audio-engine-types";
 import {
@@ -660,6 +664,9 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     );
     const sync = createViewedTimelineSync({
       initialDeliveryMode,
+      // A connection switch replaces the client while the host stays online, so the
+      // isConnected effect below never fires for this sync. Seed it from the runtime.
+      initialConnected: isHostRuntimeConnected(getHostRuntimeStore().getSnapshot(serverId)),
       setSubscription: (agentIds) => client.setAgentTimelineSubscription(agentIds),
       readCursor: (agentId) => {
         const timeline = selectAgentTimelineState(

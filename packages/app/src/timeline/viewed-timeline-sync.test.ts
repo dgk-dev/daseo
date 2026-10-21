@@ -1,6 +1,6 @@
 import { expect, test, vi } from "vitest";
 import type { ProjectedTimelineForwardFetchPlan } from "./timeline-sync-plan";
-import { createViewedTimelineSync } from "./viewed-timeline-sync";
+import { createViewedTimelineSync, type ViewedTimelineSync } from "./viewed-timeline-sync";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -34,63 +34,68 @@ interface TimelineFetch {
 class TimelineWorld {
   readonly errors: string[] = [];
   readonly cursors = new Map<string, { epoch: string; endSeq: number }>();
-  readonly sync = createViewedTimelineSync({
-    initialDeliveryMode: "selective",
-    setSubscription: async (agentIds) => {
-      const result = deferred<void>();
-      this.memberships.push({
-        agentIds,
-        succeed: () => result.resolve(),
-        fail: (message) => result.reject(new Error(message)),
-      });
-      this.releaseMembershipWaiter();
-      return result.promise;
-    },
-    readCursor: (agentId) => this.cursors.get(agentId),
-    fetchPage: async (agentId, request) => {
-      const result = deferred<{
-        hasNewer: boolean;
-        endCursor: { epoch: string; seq: number } | null;
-      }>();
-      this.fetches.push({
-        agentId,
-        request,
-        respond: ({ hasNewer, seq = 1 }) =>
-          result.resolve({
-            hasNewer,
-            endCursor: { epoch: `epoch-${agentId}`, seq },
-          }),
-        fail: (message) => result.reject(new Error(message)),
-      });
-      this.releaseFetchWaiters();
-      return result.promise;
-    },
-    fetchLatestTail: (agentId) =>
-      this.fetchTimeline(agentId, {
-        direction: "tail",
-        limit: 40,
-        projection: "projected",
-      }),
-    reportError: (error) => {
-      this.errors.push(error instanceof Error ? error.message : String(error));
-      const waiter = this.errorWaiters.shift();
-      if (waiter) waiter(this.errors.at(-1) ?? "");
-    },
-    schedule: (task, delayMs) => {
-      const scheduled = { task, delayMs };
-      this.scheduled.push(scheduled);
-      const waiterIndex = this.retryWaiters.findIndex((waiter) => waiter.delayMs === delayMs);
-      if (waiterIndex >= 0) {
-        const [waiter] = this.retryWaiters.splice(waiterIndex, 1);
-        this.scheduled.splice(this.scheduled.indexOf(scheduled), 1);
-        waiter.resolve(task);
-      }
-      return () => {
-        const index = this.scheduled.indexOf(scheduled);
-        if (index >= 0) this.scheduled.splice(index, 1);
-      };
-    },
-  });
+  readonly sync: ViewedTimelineSync;
+
+  constructor(options: { initialConnected?: boolean } = {}) {
+    this.sync = createViewedTimelineSync({
+      initialDeliveryMode: "selective",
+      initialConnected: options.initialConnected ?? false,
+      setSubscription: async (agentIds) => {
+        const result = deferred<void>();
+        this.memberships.push({
+          agentIds,
+          succeed: () => result.resolve(),
+          fail: (message) => result.reject(new Error(message)),
+        });
+        this.releaseMembershipWaiter();
+        return result.promise;
+      },
+      readCursor: (agentId) => this.cursors.get(agentId),
+      fetchPage: async (agentId, request) => {
+        const result = deferred<{
+          hasNewer: boolean;
+          endCursor: { epoch: string; seq: number } | null;
+        }>();
+        this.fetches.push({
+          agentId,
+          request,
+          respond: ({ hasNewer, seq = 1 }) =>
+            result.resolve({
+              hasNewer,
+              endCursor: { epoch: `epoch-${agentId}`, seq },
+            }),
+          fail: (message) => result.reject(new Error(message)),
+        });
+        this.releaseFetchWaiters();
+        return result.promise;
+      },
+      fetchLatestTail: (agentId) =>
+        this.fetchTimeline(agentId, {
+          direction: "tail",
+          limit: 40,
+          projection: "projected",
+        }),
+      reportError: (error) => {
+        this.errors.push(error instanceof Error ? error.message : String(error));
+        const waiter = this.errorWaiters.shift();
+        if (waiter) waiter(this.errors.at(-1) ?? "");
+      },
+      schedule: (task, delayMs) => {
+        const scheduled = { task, delayMs };
+        this.scheduled.push(scheduled);
+        const waiterIndex = this.retryWaiters.findIndex((waiter) => waiter.delayMs === delayMs);
+        if (waiterIndex >= 0) {
+          const [waiter] = this.retryWaiters.splice(waiterIndex, 1);
+          this.scheduled.splice(this.scheduled.indexOf(scheduled), 1);
+          waiter.resolve(task);
+        }
+        return () => {
+          const index = this.scheduled.indexOf(scheduled);
+          if (index >= 0) this.scheduled.splice(index, 1);
+        };
+      },
+    });
+  }
 
   private readonly memberships: MembershipRequest[] = [];
   private readonly membershipWaiters: Array<(request: MembershipRequest) => void> = [];
@@ -135,6 +140,12 @@ class TimelineWorld {
     const index = this.fetches.findIndex((fetch) => fetch.agentId === agentId);
     if (index >= 0) return Promise.resolve(this.fetches.splice(index, 1)[0]);
     return new Promise((resolve) => this.fetchWaiters.push({ agentId, resolve }));
+  }
+
+  takePendingMembership(): MembershipRequest {
+    const request = this.memberships.shift();
+    if (!request) throw new Error("expected a pending timeline subscription request");
+    return request;
   }
 
   expectNoPendingMembership(): void {
@@ -869,4 +880,33 @@ test("switching from legacy to selective delivery publishes membership and catch
   expect(membership.agentIds).toEqual(["agent-a"]);
   world.expectNoPendingMembership();
   world.expectNoPendingFetch();
+});
+
+test("a sync created for a replacement client while the host stays online resubscribes and catches up the open chat", async () => {
+  const previous = new TimelineWorld();
+  previous.sync.setConnected(true);
+  previous.sync.replaceVisibleAgentIds("workspace", ["agent-a"]);
+  (await previous.nextMembership()).succeed();
+  (await previous.nextFetch("agent-a")).respond({ hasNewer: false, seq: 69 });
+  previous.sync.dispose();
+
+  // A connection switch replaces the client without the host leaving "online", so the new sync
+  // never sees a connectivity transition.
+  const next = new TimelineWorld({ initialConnected: true });
+  next.cursors.set("agent-a", { epoch: "epoch-agent-a", endSeq: 69 });
+  next.sync.replaceVisibleAgentIds("workspace", ["agent-a"]);
+
+  const membership = next.takePendingMembership();
+  expect(membership.agentIds).toEqual(["agent-a"]);
+  membership.succeed();
+
+  const catchUp = await next.nextFetch("agent-a");
+  expect(catchUp.request).toEqual({
+    direction: "after",
+    cursor: { epoch: "epoch-agent-a", seq: 69 },
+    limit: 40,
+    projection: "projected",
+  });
+  catchUp.respond({ hasNewer: false, seq: 71 });
+  await vi.waitFor(() => expect(next.sync.getAgentTimelineStatus("agent-a")).toBe("ready"));
 });
