@@ -298,7 +298,18 @@ const routedToolCases = [
         ],
       },
     },
-    content: [{ type: "text", text: "Read 1 console log and 1 network entry." }],
+    content: [
+      {
+        type: "text",
+        text: [
+          "Read 1 console log and 1 network entry.",
+          "Console:",
+          "- 1970-01-01T00:00:00.010Z info: ready",
+          "Network:",
+          "- - https://example.com/app.js (script, 2ms) start=1",
+        ].join("\n"),
+      },
+    ],
   },
   {
     name: "full page screenshot",
@@ -726,7 +737,59 @@ describe("registerBrowserTools", () => {
     });
     expect(response.content[0]).toEqual({
       type: "text",
-      text: "Read 2 console logs (2 errors, 1 from before the latest navigation (previousPage)) and 1 network entry (1 failed or HTTP 4xx/5xx).",
+      text: [
+        "Read 2 console logs (2 errors, 1 from before the latest navigation (previousPage)) and 1 network entry (1 failed or HTTP 4xx/5xx).",
+        "Console:",
+        "- 1970-01-01T00:00:00.001Z error previousPage: boom",
+        "- 1970-01-01T00:00:00.002Z error: boom",
+        "Network:",
+        "- 404 https://a.test/x (1ms) start=0",
+      ].join("\n"),
+    });
+  });
+
+  test("logs lists every console and network entry in the text for the model", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-logs-entries",
+      ok: true,
+      result: {
+        command: "logs",
+        browserId: BROWSER_ID,
+        console: [
+          {
+            level: "warning",
+            message: "deprecated API",
+            source: "https://a.test/app.js",
+            line: 12,
+            timestamp: Date.UTC(2026, 9, 21, 12, 0, 0),
+          },
+        ],
+        network: [
+          {
+            url: "https://a.test/api",
+            method: "POST",
+            status: 500,
+            type: "fetch",
+            startTime: 1234.4,
+            duration: 56.6,
+            transferSize: 789,
+          },
+        ],
+      },
+    });
+
+    const response = await harness.execute("browser_logs", { browserId: BROWSER_ID });
+
+    expect(response.content[0]).toEqual({
+      type: "text",
+      text: [
+        "Read 1 console log (1 warning) and 1 network entry (1 failed or HTTP 4xx/5xx).",
+        "Console:",
+        "- 2026-10-21T12:00:00.000Z warning: deprecated API (https://a.test/app.js:12)",
+        "Network:",
+        "- 500 POST https://a.test/api (fetch, 57ms, 789B) start=1234",
+      ].join("\n"),
     });
   });
 

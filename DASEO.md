@@ -816,6 +816,18 @@ Attempting to launch an unregistered ActivityResultLauncher`, which is expo/expo
     transitions. Upstream has the same wiring (`origin/main` session-context.tsx) and is a
     candidate for an upstream PR. Key files: `packages/app/src/contexts/session-context.tsx`,
     `packages/app/src/timeline/viewed-timeline-sync.ts`. Takes effect with the next app build.
+48. **Browser logs reach the model in the text, so the structured copy can stay out of context** —
+    from the 2026-10-21 environment audit: pi-mcp-adapter appended every MCP result's
+    `structuredContent` after its text, which was 70% of all Paseo tool-result characters in 14
+    days (4.19M of 5.97M). Agent tools already print their JSON in the text, and every browser tool
+    but one prints what an agent needs; `browser_logs` printed only counts, with the entries in the
+    structured copy alone (1.6M characters). Its text now lists each console entry (ISO time, level,
+    `previousPage`, message, source:line) and each resource request (status, method, URL, type,
+    duration, size, start). With that, pi-local's launcher sets `appendStructuredContent: false` on
+    the Paseo server (adapter 5.4.0), so Pi sees the text only; scripts still read
+    `structuredContent`. The MCP spec asks servers to serialize structured results into the text,
+    and the official Python SDK names the text the model's copy. Key file:
+    `packages/server/src/server/browser-tools/tools.ts` (`summarizeBrowserDiagnosticsSuccess`).
 
 ## Local reliability contracts
 
@@ -1002,6 +1014,23 @@ Reviewed for 0.5.32 and deliberately not adopted:
   items (#5200 #5285 #5289 #5240 #5206 #5326 #5273 #5239 #5274 #5296 #5338 #3628 #3258 #5243
   #5248 #5253 #5231 #5298 #5302 #5219 #5297 #5258 #5358 #5310 #5335 #5305 #5347 #5174 #5249
   #5221 #5238 #5229 #5374 e3c853df5): paths Daseo does not use.
+
+Adopted for 0.5.57 (reviewed 2026-10-21, 395 upstream commits since 2026-10-04):
+
+- #6334 (`0fc6bf0c9`) and #6532 (`ee0d901ef`), hand-ported around Daseo's retry-policy skip and
+  delta 44: a scheduled slot is claimed and its cursor advanced in one serialized store update,
+  and the in-memory running mark is cleared even when the run record cannot be written. On
+  2026-10-17 two overlapping ticks after a 4-hour daemon stall ran the weekly memory curator's
+  slot twice (22:13:56Z and 22:13:57Z) and each finish advanced `nextRunAt`, so the 2026-10-25
+  run was skipped (repaired by hand the same night). Upstream's tests came along; five of them
+  fail on 0.5.56.
+
+Reviewed for 0.5.57 and deliberately not adopted: #7528 (detached-creation finish notice; Daseo
+agents are created parented), #7535 (CLI archive past 200 agents; about 17 live), #7546 (already
+delta 45), #7561 (in-memory batched delivery that an abrupt crash can lose, overlaps delta 5),
+#7573 (stale running status after restart; delta 44 recovers turns, no incident recorded),
+#7532 and #7369 (no Daseo symptom reproduced), #7256 and #6316 (timeline paths Daseo replaced),
+#6379 and #6373 (creation and agent-message projection overlap deltas 9 and 5).
 
 Adopted for 0.5.43 (reviewed 2026-10-04):
 

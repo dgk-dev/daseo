@@ -14,7 +14,9 @@ import {
   BrowserAutomationReadScopeSchema,
   BrowserAutomationWaitLoadStateSchema,
   type BrowserAutomationCapturedRequest,
+  type BrowserAutomationConsoleLogEntry,
   type BrowserAutomationFindResult,
+  type BrowserAutomationNetworkLogEntry,
   type BrowserAutomationNetworkResult,
   type BrowserAutomationReadResult,
   type BrowserAutomationStylesResult,
@@ -1593,7 +1595,36 @@ function summarizeBrowserDiagnosticsSuccess(
     ...(warnings > 0 ? [`${warnings} warning${warnings === 1 ? "" : "s"}`] : []),
     ...(earlier > 0 ? [`${earlier} from before the latest navigation (previousPage)`] : []),
   ];
-  return `Read ${consoleCount} console log${consoleCount === 1 ? "" : "s"}${consoleDetails.length > 0 ? ` (${consoleDetails.join(", ")})` : ""} and ${networkCount} network entr${networkCount === 1 ? "y" : "ies"}${failed > 0 ? ` (${failed} failed or HTTP 4xx/5xx)` : ""}.`;
+  const summary = `Read ${consoleCount} console log${consoleCount === 1 ? "" : "s"}${consoleDetails.length > 0 ? ` (${consoleDetails.join(", ")})` : ""} and ${networkCount} network entr${networkCount === 1 ? "y" : "ies"}${failed > 0 ? ` (${failed} failed or HTTP 4xx/5xx)` : ""}.`;
+  // The entries go in the text too: MCP clients show the model the text, and the
+  // structured copy is for code (Daseo hides it from Pi to save context).
+  return [
+    summary,
+    ...(consoleCount > 0 ? ["Console:", ...result.console.map(formatConsoleLogEntry)] : []),
+    ...(networkCount > 0 ? ["Network:", ...result.network.map(formatNetworkLogEntry)] : []),
+  ].join("\n");
+}
+
+function formatConsoleLogEntry(entry: BrowserAutomationConsoleLogEntry): string {
+  const where = entry.source
+    ? ` (${entry.source}${entry.line !== undefined ? `:${entry.line}` : ""})`
+    : "";
+  const earlier = entry.previousPage ? " previousPage" : "";
+  return `- ${formatLogTime(entry.timestamp)} ${entry.level}${earlier}: ${entry.message}${where}`;
+}
+
+function formatNetworkLogEntry(entry: BrowserAutomationNetworkLogEntry): string {
+  const details = [
+    entry.type,
+    `${Math.round(entry.duration)}ms`,
+    entry.transferSize !== undefined ? `${entry.transferSize}B` : undefined,
+  ].filter(Boolean);
+  return `- ${entry.status ?? "-"}${entry.method ? ` ${entry.method}` : ""} ${entry.url} (${details.join(", ")}) start=${Math.round(entry.startTime)}`;
+}
+
+function formatLogTime(timestamp: number): string {
+  const date = new Date(timestamp);
+  return Number.isNaN(date.getTime()) ? String(timestamp) : date.toISOString();
 }
 
 function summarizeBrowserNetwork(result: BrowserAutomationNetworkResult): string {
