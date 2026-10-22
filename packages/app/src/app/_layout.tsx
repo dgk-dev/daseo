@@ -113,6 +113,7 @@ import { flushDraftPersistStorage } from "@/stores/draft-store";
 import { getNextThemePreference, THEME_TO_UNISTYLES } from "@/styles/theme";
 import { useSessionStore } from "@/stores/session-store";
 import { installWebScrollbarStyles } from "@/styles/install-web-scrollbar-styles";
+import { installBundledFonts } from "@/styles/bundled-fonts";
 import type { HostProfile } from "@/types/host-connection";
 import { toggleDesktopSidebarsWithCheckoutIntent } from "@/utils/desktop-sidebar-toggle";
 import {
@@ -137,6 +138,8 @@ import {
 
 polyfillNavigator();
 polyfillCrypto();
+// Start the bundled font downloads before the first paint (web/Electron; no-op on native).
+installBundledFonts();
 
 export interface HostRuntimeBootstrapState {
   splashError: string | null;

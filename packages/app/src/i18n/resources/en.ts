@@ -439,6 +439,9 @@ export const en = {
     },
   },
   workspace: {
+    statusLine: {
+      running: "{{count}} running",
+    },
     route: {
       loading: "Loading workspace",
       connecting: "Connecting",

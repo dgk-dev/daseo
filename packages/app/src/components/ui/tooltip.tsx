@@ -1,3 +1,4 @@
+import { MOTION_DURATION_MS } from "@/styles/motion";
 import {
   Children,
   cloneElement,
@@ -519,8 +520,8 @@ export function TooltipContent({
       <View pointerEvents="none" style={styles.portalOverlay}>
         <FloatingSurface
           pointerEvents="none"
-          entering={FadeIn.duration(80)}
-          exiting={FadeOut.duration(80)}
+          entering={FadeIn.duration(MOTION_DURATION_MS.fast)}
+          exiting={FadeOut.duration(MOTION_DURATION_MS.exit)}
           collapsable={false}
           testID={testID}
           onLayout={handleLayout}
@@ -545,8 +546,8 @@ export function TooltipContent({
       <Pressable style={styles.overlay} onPress={handleDismiss}>
         <FloatingSurface
           pointerEvents="none"
-          entering={FadeIn.duration(80)}
-          exiting={FadeOut.duration(80)}
+          entering={FadeIn.duration(MOTION_DURATION_MS.fast)}
+          exiting={FadeOut.duration(MOTION_DURATION_MS.exit)}
           collapsable={false}
           testID={testID}
           onLayout={handleLayout}

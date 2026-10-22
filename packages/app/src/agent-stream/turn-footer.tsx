@@ -321,6 +321,7 @@ const stylesheet = StyleSheet.create((theme) => ({
   },
   workingElapsed: {
     color: theme.colors.foregroundMuted,
+    fontFamily: theme.fontFamily.mono,
     fontSize: STREAM_METADATA_FONT_SIZE,
     fontVariant: ["tabular-nums"],
   },

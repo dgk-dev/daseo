@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useState, type ReactElement } from "react";
+import { MOTION_DURATION_MS } from "@/styles/motion";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import {
@@ -32,7 +33,7 @@ import {
 } from "./menu-anchor";
 
 const SCROLL_CONTENT_STYLE = { flexGrow: 1 } as const;
-const CONTENT_ENTERING_DURATION_MS = 150;
+const CONTENT_ENTERING_DURATION_MS = MOTION_DURATION_MS.fast;
 
 const contentEntering = new Keyframe({
   0: { opacity: 0, transform: [{ scale: 0.97 }] },
@@ -42,7 +43,7 @@ const contentEntering = new Keyframe({
 const contentExiting = new Keyframe({
   0: { opacity: 1, transform: [{ scale: 1 }] },
   100: { opacity: 0, transform: [{ scale: 0.97 }] },
-}).duration(100);
+}).duration(MOTION_DURATION_MS.exit);
 
 function releaseFixedMenuHeight(surfaceNativeID: string): void {
   if (!isWeb) return;

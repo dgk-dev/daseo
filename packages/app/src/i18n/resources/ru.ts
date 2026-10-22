@@ -443,6 +443,9 @@ export const ru: TranslationResources = {
     },
   },
   workspace: {
+    statusLine: {
+      running: "Выполняется: {{count}}",
+    },
     route: {
       loading: "Загрузка рабочей области",
       connecting: "Подключение",

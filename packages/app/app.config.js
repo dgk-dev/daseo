@@ -165,6 +165,25 @@ export default {
       [withAndroidAsyncStorageSize, 64],
       withAndroidTextMetrics,
       withAndroidFoldConfigChanges,
+      // Daseo delta 51: NAVER's D2Coding, a monospace whose Hangul sits on the same grid as
+      // its Latin, for code and machine-shaped text. Android here; web loads the same files
+      // through src/styles/bundled-fonts.web.ts.
+      [
+        "expo-font",
+        {
+          android: {
+            fonts: [
+              {
+                fontFamily: "D2Coding",
+                fontDefinitions: [
+                  { path: "./assets/fonts/D2Coding-Regular.ttf", weight: 400 },
+                  { path: "./assets/fonts/D2Coding-Bold.ttf", weight: 700 },
+                ],
+              },
+            ],
+          },
+        },
+      ],
       ...buildProfile.cameraPlugins,
       [
         "expo-splash-screen",

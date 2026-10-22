@@ -66,6 +66,7 @@ import Svg, { Defs, LinearGradient as SvgLinearGradient, Rect, Stop } from "reac
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 import { MarkdownRenderer, type MarkdownStyles } from "@/components/markdown/renderer";
+import { usePacedStreamText } from "@/agent-stream/use-paced-stream-text";
 import { resolveMarkdownTextStyle } from "@/components/markdown/heading-style";
 import type { TaskActivity, TodoEntry, UserMessageImageAttachment } from "@/types/stream";
 import type { AgentAttachment } from "@getpaseo/protocol/messages";
@@ -420,6 +421,7 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
   timestampText: {
     color: theme.colors.foregroundMuted,
     fontSize: STREAM_METADATA_FONT_SIZE,
+    fontFamily: theme.fontFamily.mono,
   },
   steeringLabel: {
     alignSelf: "flex-end",
@@ -660,7 +662,11 @@ export const UserMessage = memo(function UserMessage({
             pointerEvents={showTrailingRow ? "auto" : "none"}
             testID="user-message-trailing-row"
           >
-            <Text style={userMessageStylesheet.timestampText} testID="user-message-timestamp">
+            <Text
+              style={userMessageStylesheet.timestampText}
+              dataSet={CODE_SURFACE_DATASET}
+              testID="user-message-timestamp"
+            >
               {formattedTimestamp}
             </Text>
             <View
@@ -712,6 +718,7 @@ const assistantTurnFooterStylesheet = StyleSheet.create((theme) => ({
   label: {
     color: theme.colors.foregroundMuted,
     fontSize: STREAM_METADATA_FONT_SIZE,
+    fontFamily: theme.fontFamily.mono,
   },
 }));
 
@@ -756,7 +763,11 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
       />
       {canFork ? <AssistantForkMenu onFork={handleFork} /> : null}
       {label ? (
-        <Text style={assistantTurnFooterStylesheet.label} testID="assistant-turn-footer-label">
+        <Text
+          style={assistantTurnFooterStylesheet.label}
+          dataSet={CODE_SURFACE_DATASET}
+          testID="assistant-turn-footer-label"
+        >
           {label}
         </Text>
       ) : null}
@@ -779,6 +790,7 @@ const assistantResponseFooterStylesheet = StyleSheet.create((theme) => ({
   time: {
     color: theme.colors.foregroundMuted,
     fontSize: STREAM_METADATA_FONT_SIZE,
+    fontFamily: theme.fontFamily.mono,
   },
 }));
 
@@ -818,7 +830,11 @@ export const AssistantResponseBlock = memo(function AssistantResponseBlock({
             accessibilityLabel={t("message.actions.copyMessage")}
           />
         </View>
-        <Text style={assistantResponseFooterStylesheet.time} testID="assistant-response-timestamp">
+        <Text
+          style={assistantResponseFooterStylesheet.time}
+          dataSet={CODE_SURFACE_DATASET}
+          testID="assistant-response-timestamp"
+        >
           {timeLabel}
         </Text>
       </View>
@@ -859,7 +875,7 @@ export const LiveElapsed = memo(function LiveElapsed({
   }, [active, startedAtMs]);
 
   return (
-    <Text style={style} testID={testID}>
+    <Text style={style} dataSet={CODE_SURFACE_DATASET} testID={testID}>
       {formatDuration(visibleElapsedMs)}
     </Text>
   );
@@ -1267,7 +1283,9 @@ const expandableBadgeStylesheet = StyleSheet.create((theme) => ({
     flexShrink: 1,
     minWidth: 0,
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.base,
+    // Daseo delta 51: the tool's object (a path, a command, a query) is machine text.
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.normal,
     marginLeft: theme.spacing[2],
   },
@@ -2055,7 +2073,9 @@ export const AssistantMessage = memo(function AssistantMessage({
     };
   }, [client, fileLinkActions, markdownParser, occurrenceKey, phase, serverId, workspaceRoot]);
 
-  const blocks = useMemo(() => splitMarkdownBlocks(message), [message]);
+  // Daseo delta 51: a streaming reply is revealed at the Codex pace, not burst by burst.
+  const visibleMessage = usePacedStreamText(message, phase === "streaming");
+  const blocks = useMemo(() => splitMarkdownBlocks(visibleMessage), [visibleMessage]);
   const keyedBlocks = useMemo(
     () => blocks.map((block, index) => ({ key: `block:${index}`, block })),
     [blocks],
@@ -2534,6 +2554,7 @@ function ExpandableBadgeSecondaryLabel({
     <Text
       style={secondaryLabelStyle}
       numberOfLines={1}
+      dataSet={CODE_SURFACE_DATASET}
       onLayout={shouldMeasureWebShimmer ? onSecondaryLayout : undefined}
     >
       {secondaryLabel}
@@ -2562,7 +2583,7 @@ function ExpandableBadgeWebShimmerOverlay({
         {label}
       </Text>
       {secondaryLabel ? (
-        <Text style={shimmerSecondaryTextStyle} numberOfLines={1}>
+        <Text style={shimmerSecondaryTextStyle} numberOfLines={1} dataSet={CODE_SURFACE_DATASET}>
           {secondaryLabel}
         </Text>
       ) : null}

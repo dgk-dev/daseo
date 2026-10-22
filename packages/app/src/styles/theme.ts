@@ -578,16 +578,21 @@ export const OPACITY = {
 // Platform default font stacks — copied verbatim from constants/theme.ts `Fonts`
 // (sans -> ui, mono -> mono). These seed the dynamic `fontFamily` theme token and
 // are the fallback an empty user-supplied family resolves to at apply time.
+// Daseo delta 51: web/Electron draw the interface in the bundled Pretendard and code and
+// machine-shaped text in the bundled D2Coding (src/styles/bundled-fonts.web.ts); Android
+// embeds D2Coding only (app.config.js) and keeps the system face for prose, which its
+// Korean line metrics were tuned against (delta 8).
 export const DEFAULT_UI_FONT_STACK: string = Platform.select({
   ios: "system-ui",
   default: "normal",
-  web: "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+  web: "'Pretendard Variable', Pretendard, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
 });
 
 export const DEFAULT_MONO_FONT_STACK: string = Platform.select({
   ios: "ui-monospace",
+  android: "D2Coding",
   default: "monospace",
-  web: "SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+  web: "D2Coding, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
 });
 
 // `fontSize`, `fontFamily`, and `lineHeight` are deliberately widened to plain
@@ -601,7 +606,7 @@ interface CommonTheme {
   lineHeight: Record<keyof typeof LINE_HEIGHT, number>;
   iconSize: typeof ICON_SIZE;
   fontWeight: typeof FONT_WEIGHT;
-  borderRadius: typeof BORDER_RADIUS;
+  borderRadius: Record<keyof typeof BORDER_RADIUS, number>;
   borderWidth: typeof BORDER_WIDTH;
   opacity: typeof OPACITY;
 }
@@ -705,7 +710,24 @@ const daseoDarkColors = buildDarkSemanticColors({
   terminalBrightBlack: "#85858d",
 });
 
-export const darkDaseoTheme = buildDarkTheme(daseoDarkColors);
+// Daseo delta 51: the Daseo theme draws its structural chrome with tighter corners
+// (controls and rows 4 px instead of 8), closer to a terminal tool's square geometry;
+// the user prompt panel and composer stay square, and full-radius dots stay round.
+const DASEO_BORDER_RADIUS: Record<keyof typeof BORDER_RADIUS, number> = {
+  none: 0,
+  sm: 2,
+  base: 2,
+  md: 3,
+  lg: 4,
+  xl: 6,
+  "2xl": 8,
+  full: 9999,
+};
+
+export const darkDaseoTheme = {
+  ...buildDarkTheme(daseoDarkColors),
+  borderRadius: DASEO_BORDER_RADIUS,
+} as const;
 
 export const lightTheme = {
   colorScheme: "light" as const,

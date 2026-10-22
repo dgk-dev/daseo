@@ -440,6 +440,9 @@ export const ar: TranslationResources = {
     },
   },
   workspace: {
+    statusLine: {
+      running: "{{count}} قيد التشغيل",
+    },
     route: {
       loading: "جارٍ تحميل مساحة العمل",
       connecting: "الاتصال",

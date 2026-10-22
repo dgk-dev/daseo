@@ -441,6 +441,9 @@ export const ko: TranslationResources = {
     },
   },
   workspace: {
+    statusLine: {
+      running: "{{count}}개 실행 중",
+    },
     route: {
       loading: "워크스페이스 불러오는 중",
       connecting: "연결 중",

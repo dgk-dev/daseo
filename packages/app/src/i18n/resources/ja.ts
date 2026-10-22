@@ -443,6 +443,9 @@ export const ja: TranslationResources = {
     },
   },
   workspace: {
+    statusLine: {
+      running: "{{count}} 件実行中",
+    },
     route: {
       loading: "ワークスペースを読み込み中",
       connecting: "接続中",

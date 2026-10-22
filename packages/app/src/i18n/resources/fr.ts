@@ -445,6 +445,9 @@ export const fr: TranslationResources = {
     },
   },
   workspace: {
+    statusLine: {
+      running: "{{count}} en cours",
+    },
     route: {
       loading: "Chargement de l'espace de travail",
       connecting: "De liaison",

@@ -1,4 +1,5 @@
 import { useCallback, useMemo } from "react";
+import { MOTION_DURATION_MS, MOTION_EASING_BEZIER } from "@/styles/motion";
 import {
   Pressable,
   type GestureResponderEvent,
@@ -25,7 +26,10 @@ interface SwitchProps {
   style?: StyleProp<ViewStyle>;
 }
 
-const TIMING = { duration: 180, easing: Easing.inOut(Easing.ease) };
+const TIMING = {
+  duration: MOTION_DURATION_MS.base,
+  easing: Easing.bezier(...MOTION_EASING_BEZIER),
+};
 
 interface SwitchTrackProps {
   value: boolean;

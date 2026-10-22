@@ -13,6 +13,7 @@ import {
   type ReactNode,
 } from "react";
 import { useStoreWithEqualityFn } from "zustand/traditional";
+import { WorkspaceStatusLine } from "@/screens/workspace/workspace-status-line";
 import { useIsFocused } from "@react-navigation/native";
 import { BackHandler, Keyboard, Pressable, Text, View } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
@@ -4053,6 +4054,14 @@ function WorkspaceScreenContent({
           <View style={styles.content}>{desktopContent}</View>
         )}
       </View>
+      <WorkspaceStatusLine
+        visible={!isMobile}
+        serverId={normalizedServerId}
+        workspaceId={normalizedWorkspaceId}
+        workspaceTitle={workspaceHeaderTitle}
+        branchName={currentBranchName}
+        activeTab={activeTabDescriptor}
+      />
     </View>
   );
 

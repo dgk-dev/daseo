@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { MOTION_DURATION_MS, MOTION_EASING_CSS } from "@/styles/motion";
 import { Pressable, Text, View, type PointerEvent as RNPointerEvent } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useReducedMotion } from "react-native-reanimated";
@@ -224,8 +225,8 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.full,
     backgroundColor: theme.colors.borderAccent,
     transitionProperty: "width, height, background-color",
-    transitionDuration: "140ms",
-    transitionTimingFunction: "ease-out",
+    transitionDuration: `${MOTION_DURATION_MS.fast}ms`,
+    transitionTimingFunction: MOTION_EASING_CSS,
   },
   pillActive: {
     backgroundColor: theme.colors.foregroundExtraMuted,

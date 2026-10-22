@@ -863,6 +863,30 @@ edits · 1 command · 2 file reads`; the counts end in an ellipsis before the ti
     daemon, and with it the Kotlin daemon, when Gradle exits: release builds are hours apart, so
     the warm daemons were never reused but held about 7 GB for up to 3 hours. Key files:
     `packages/protocol/scripts/generate-validation-aot.mjs`, `scripts/build-daseo-android.mjs`.
+51. **A terminal tool's look and a steadier stream** — from the 2026-10-22 CLI-look and smoothness
+    research. The owner's screen is seen by colleagues, so Daseo should read as a developer tool
+    without copying Codex or Claude Code. (a) Fonts ship with the app: Pretendard 1.3.9 for the
+    desktop UI, and NAVER D2Coding 1.4.0 (Regular, Bold; OFL, shipped unmodified) as the monospace
+    on desktop and Android, so Hangul in code matches the body. Android prose keeps the system face
+    that delta 8 tuned. (b) Machine facts use the monospace: timestamps, elapsed time, the
+    "Worked for" row, diff counts, and keycaps. Korean prose never does. (c) A one-line status bar
+    under the desktop workspace: host · workspace · branch · active agent's model, and how many
+    agents run in the workspace. (d) The Daseo theme's corners drop from 8 to 4 px (radius scale
+    0/2/2/3/4/6/8); the selected sidebar row also gets a 2 px rail on its left, reserved on every
+    row so text never shifts. (e) Shortcuts are keycaps: mono text in a hairline-bordered key, and
+    the composer's focus hint draws its shortcut as one. (f) A streaming reply is revealed at the
+    Codex TUI pace (`codex-rs/tui/src/streaming/chunking.rs`, same thresholds): one line per frame,
+    the whole backlog when it is 8 lines deep or 120 ms old, back to one line after 250 ms at ≤2
+    lines and ≤40 ms, re-entry held 250 ms unless 64 lines or 300 ms behind. A "line" is source
+    text up to a newline or 80 characters. Reduce motion and replies mounted mid-stream show text
+    whole. (g) On desktop, following output glides to the new bottom (40% of the gap per frame,
+    about 130 ms for 200 px) instead of jumping; reading above the bottom still stops following,
+    and a jump taller than the viewport snaps. (h) App-authored motion uses one scale: 120 ms for
+    tooltips, menus, and rails, 180 ms for switches and row fades, 100 ms exits, one easing
+    curve (0.2, 0, 0, 1). Not taken: monospace for Korean body text, neon, gradients, scanlines,
+    or tighter spacing (2026-08-17 rules). Key files: `packages/app/src/styles/bundled-fonts.web.ts`,
+    `styles/motion.ts`, `agent-stream/stream-pacing.ts`, `agent-stream/use-paced-stream-text.ts`,
+    `agent-stream/strategy-web.tsx`, and `screens/workspace/workspace-status-line.tsx`.
 
 ## Local reliability contracts
 

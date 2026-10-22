@@ -25,6 +25,11 @@ const defaultResolveRequest = config.resolver.resolveRequest ?? resolve;
 // node crawler is the path used when Watchman is absent.
 config.resolver.useWatchman = false;
 
+// Daseo delta 51: the web/Electron build bundles woff2 fonts (src/styles/bundled-fonts.web.ts).
+if (!config.resolver.assetExts.includes("woff2")) {
+  config.resolver.assetExts.push("woff2");
+}
+
 const escapedAppSrcRoot = appSrcRoot
   .split(path.sep)
   .map((segment) => segment.replace(/[|\\{}()[\]^$+*?.]/g, "\\$&"))

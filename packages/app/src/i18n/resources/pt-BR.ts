@@ -444,6 +444,9 @@ export const ptBR: TranslationResources = {
     },
   },
   workspace: {
+    statusLine: {
+      running: "{{count}} em execução",
+    },
     route: {
       loading: "Carregando workspace",
       connecting: "Conectando",

@@ -439,6 +439,9 @@ export const zhCN: TranslationResources = {
     },
   },
   workspace: {
+    statusLine: {
+      running: "{{count}} 个运行中",
+    },
     route: {
       loading: "正在加载 workspace",
       connecting: "正在连接",

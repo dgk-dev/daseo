@@ -41,7 +41,8 @@ vi.mock("react-native-unistyles", () => ({
       factory({
         spacing: { 1: 4, 3: 12 },
         colors: { foregroundMuted: "#888" },
-        fontSize: { sm: 14 },
+        fontSize: { xs: 12, sm: 14 },
+        fontFamily: { mono: "D2Coding" },
       }),
   },
   withUnistyles: <T,>(component: T) => component,

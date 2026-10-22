@@ -51,6 +51,20 @@ const USER_SCROLL_DELTA_EPSILON = 1;
 const BOTTOM_OVERSCROLL_TOLERANCE_PX = 2;
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 64;
 const AUTO_SCROLL_RESUME_THRESHOLD_PX = 1;
+// Daseo delta 51: while following streamed output, the view glides to the new bottom
+// instead of jumping a line at a time (the Codex TUI interpolates its follow offset the
+// same way). Each frame closes this fraction of the remaining distance, so a 200 px
+// chunk settles in about 8 frames (~130 ms at 60 Hz); the last few pixels, a jump
+// taller than the viewport, and reduced motion snap.
+const FOLLOW_GLIDE_FRACTION = 0.4;
+const FOLLOW_GLIDE_SNAP_PX = 4;
+
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+}
 const HISTORY_START_SETTLE_FRAMES = 2;
 const HISTORY_START_SLOT_HEIGHT_PX = 32;
 const CONTENT_PADDING_TOP_PX = 16;
@@ -268,6 +282,9 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
   const upwardInputEvidenceUntilRef = useRef(0);
   const lastTouchClientYRef = useRef<number | null>(null);
   const pendingAutoScrollFrameRef = useRef<number | null>(null);
+  // True while a follow glide is between frames: the view is following, only not at
+  // the bottom yet, so it must not report itself as scrolled away.
+  const followGlideActiveRef = useRef(false);
   const pendingAutoScrollTimeoutRef = useRef<number | null>(null);
   const pendingVirtualRowMeasureFramesRef = useRef(new Map<Element, number>());
   const historyStartReadyRef = useRef(false);
@@ -516,6 +533,7 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
   }, []);
 
   const cancelPendingStickToBottom = useCallback(() => {
+    followGlideActiveRef.current = false;
     const pendingFrame = pendingAutoScrollFrameRef.current;
     if (pendingFrame !== null) {
       pendingAutoScrollFrameRef.current = null;
@@ -582,6 +600,42 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     [evaluateHistoryStart, onNearBottomChange],
   );
 
+  // One frame of the follow glide; schedules the next frame until the bottom is reached.
+  // New output arriving mid-glide only moves the target, which the next frame reads.
+  const glideFollowFrame = useStableEvent(() => {
+    pendingAutoScrollFrameRef.current = null;
+    if (!isActiveRef.current || !followOutputRef.current) {
+      followGlideActiveRef.current = false;
+      return;
+    }
+    const scrollContainer = scrollContainerRef.current;
+    if (
+      !scrollContainer ||
+      !isScrollContainerMeasurable(scrollContainer) ||
+      isScrollContainerOverscrolledPastBottom(scrollContainer)
+    ) {
+      followGlideActiveRef.current = false;
+      return;
+    }
+    const distance = getScrollContainerDistanceFromBottom(scrollContainer);
+    if (
+      distance <= FOLLOW_GLIDE_SNAP_PX ||
+      distance > scrollContainer.clientHeight ||
+      prefersReducedMotion()
+    ) {
+      followGlideActiveRef.current = false;
+      scrollMessagesToBottom("auto");
+      return;
+    }
+    followGlideActiveRef.current = true;
+    scrollContainer.scrollTop += Math.max(
+      FOLLOW_GLIDE_SNAP_PX,
+      Math.ceil(distance * FOLLOW_GLIDE_FRACTION),
+    );
+    lastKnownScrollTopRef.current = scrollContainer.scrollTop;
+    pendingAutoScrollFrameRef.current = window.requestAnimationFrame(glideFollowFrame);
+  });
+
   const scheduleStickToBottom = useCallback(() => {
     if (!isActiveRef.current) {
       return;
@@ -593,14 +647,8 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     if (pendingAutoScrollFrameRef.current !== null) {
       return;
     }
-    pendingAutoScrollFrameRef.current = window.requestAnimationFrame(() => {
-      pendingAutoScrollFrameRef.current = null;
-      if (!isActiveRef.current || !followOutputRef.current) {
-        return;
-      }
-      scrollMessagesToBottom("auto");
-    });
-  }, [scrollMessagesToBottom]);
+    pendingAutoScrollFrameRef.current = window.requestAnimationFrame(glideFollowFrame);
+  }, [glideFollowFrame]);
 
   const forceStickToBottom = useCallback(() => {
     cancelPendingStickToBottom();
@@ -647,7 +695,11 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
       onNearBottomChange(true);
       return;
     }
-    syncNearBottom(scrollContainer, onNearBottomChange);
+    if (followGlideActiveRef.current && followOutputRef.current) {
+      onNearBottomChange(true);
+    } else {
+      syncNearBottom(scrollContainer, onNearBottomChange);
+    }
     reportReadingPosition();
   }, [onNearBottomChange, reportReadingPosition]);
 

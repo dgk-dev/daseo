@@ -395,6 +395,8 @@ function getProjectWorkspaceRowStyle({
   ];
 }
 
+const SELECTION_RAIL_WIDTH = 2;
+
 function noop() {}
 
 const prBadgeStyles = StyleSheet.create((theme) => ({
@@ -2586,7 +2588,12 @@ const styles = StyleSheet.create((theme) => ({
     position: "relative",
     minHeight: 36,
     paddingVertical: theme.spacing[2],
-    paddingHorizontal: theme.spacing[2],
+    // The selection rail (sidebarRowSelected) is always reserved, so selecting a row
+    // never moves its text.
+    paddingLeft: theme.spacing[2] - SELECTION_RAIL_WIDTH,
+    paddingRight: theme.spacing[2],
+    borderLeftWidth: SELECTION_RAIL_WIDTH,
+    borderLeftColor: "transparent",
     borderRadius: theme.borderRadius.lg,
     marginBottom: theme.spacing[1],
     flexDirection: "row",
@@ -2709,8 +2716,10 @@ const styles = StyleSheet.create((theme) => ({
     minHeight: 36,
     marginBottom: theme.spacing[0.5],
     paddingVertical: theme.spacing[2],
-    paddingLeft: theme.spacing[2],
+    paddingLeft: theme.spacing[2] - SELECTION_RAIL_WIDTH,
     paddingRight: theme.spacing[3],
+    borderLeftWidth: SELECTION_RAIL_WIDTH,
+    borderLeftColor: "transparent",
     borderRadius: theme.borderRadius.lg,
     flexDirection: "column",
     alignItems: "stretch",
@@ -2752,8 +2761,13 @@ const styles = StyleSheet.create((theme) => ({
     zIndex: 3,
     ...theme.shadow.md,
   },
+  // Daseo delta 51: the selected row also carries a rail on its left edge, as a
+  // terminal UI marks its focused row (Charm Crush), with a square left side.
   sidebarRowSelected: {
     backgroundColor: theme.colors.surfaceSidebarHover,
+    borderLeftColor: theme.colors.foreground,
+    borderTopLeftRadius: 0,
+    borderBottomLeftRadius: 0,
   },
   workspaceRowContainer: {
     position: "relative",

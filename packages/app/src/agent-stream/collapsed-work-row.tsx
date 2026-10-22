@@ -4,6 +4,7 @@ import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { ChevronDown, ChevronRight } from "lucide-react-native";
 import type { Theme } from "@/styles/theme";
 import { formatDuration } from "@/utils/time";
+import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
 import { useCollapsedWork } from "./collapsed-work-context";
 import { formatWorkActivity } from "./collapsed-work";
 
@@ -56,9 +57,11 @@ export const CollapsedWorkRow = memo(function CollapsedWorkRow({ turnKey }: { tu
         hitSlop={HIT_SLOP}
       >
         {expanded ? <ThemedChevronDown size={14} /> : <ThemedChevronRight size={14} />}
-        <Text style={stylesheet.label}>{title}</Text>
+        <Text style={stylesheet.label} dataSet={CODE_SURFACE_DATASET}>
+          {title}
+        </Text>
         {activityParts.length > 0 ? (
-          <Text style={stylesheet.activity} numberOfLines={1}>
+          <Text style={stylesheet.activity} numberOfLines={1} dataSet={CODE_SURFACE_DATASET}>
             {`· ${activityParts.join(" · ")}`}
           </Text>
         ) : null}
@@ -82,15 +85,18 @@ const stylesheet = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing[1],
     minWidth: 0,
   },
+  // Daseo delta 51: the work summary is machine text, so it is set in the mono face.
   label: {
     flexShrink: 0,
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.xs,
   },
   activity: {
     flexShrink: 1,
     minWidth: 0,
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.xs,
   },
 }));

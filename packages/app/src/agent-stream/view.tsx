@@ -1,4 +1,5 @@
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { MOTION_DURATION_MS } from "@/styles/motion";
 import { collapseCompletedWorkStream } from "./collapsed-work";
 import { projectCompactionPresentation } from "./compaction-presentation";
 import { CollapsedWorkRow } from "./collapsed-work-row";
@@ -407,10 +408,10 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const shouldDisableEntryExitAnimations = Platform.OS === "android";
     const scrollIndicatorFadeIn = shouldDisableEntryExitAnimations
       ? undefined
-      : FadeIn.duration(200);
+      : FadeIn.duration(MOTION_DURATION_MS.base);
     const scrollIndicatorFadeOut = shouldDisableEntryExitAnimations
       ? undefined
-      : FadeOut.duration(200);
+      : FadeOut.duration(MOTION_DURATION_MS.exit);
 
     useEffect(() => {
       setIsNearBottom(true);

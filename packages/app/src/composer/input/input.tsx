@@ -50,8 +50,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
 import { useIosHardwareKeyboardSubmit } from "@/hooks/use-ios-hardware-keyboard-submit";
-import { formatShortcut, type ShortcutKey } from "@/utils/format-shortcut";
-import { getShortcutOs } from "@/utils/shortcut-platform";
+import { type ShortcutKey } from "@/utils/format-shortcut";
+import { MOTION_DURATION_MS, MOTION_EASING_CSS } from "@/styles/motion";
 import type { MessageInputKeyboardActionKind } from "@/keyboard/actions";
 import { isImeComposingKeyboardEvent } from "@/utils/keyboard-ime";
 import { isWeb } from "@/constants/platform";
@@ -606,6 +606,10 @@ function MessageInputOverlay({
   return null;
 }
 
+// Stands in for the shortcut in the translated hint, so the keycap lands where the
+// language puts the shortcut.
+const FOCUS_HINT_SHORTCUT_SLOT = "\u0000";
+
 function FocusHint({
   visible,
   focusInputKeys,
@@ -616,10 +620,15 @@ function FocusHint({
   label: string;
 }) {
   if (!visible || !focusInputKeys || !label.trim()) return null;
+  // Daseo delta 51: the shortcut is drawn as a keycap inside the sentence, in the
+  // sentence's own word order ("⌘L to focus", "⌘L로 포커스").
+  const [before = "", after = ""] = label.split(FOCUS_HINT_SHORTCUT_SLOT);
   return (
-    <Text style={styles.focusHintText} pointerEvents="none">
-      {label}
-    </Text>
+    <View style={styles.focusHint} pointerEvents="none">
+      {before.trim() ? <Text style={styles.focusHintText}>{before.trim()}</Text> : null}
+      <Shortcut chord={focusInputKeys} />
+      {after.trim() ? <Text style={styles.focusHintText}>{after.trim()}</Text> : null}
+    </View>
   );
 }
 
@@ -1918,7 +1927,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
             focusHintVisible={isWeb && isPaneFocused && !isInputFocused && !value}
             focusInputKeys={focusInputKeys}
             focusHintLabel={t("composer.input.focusHint", {
-              shortcut: focusInputKeys ? formatShortcut(focusInputKeys[0], getShortcutOs()) : "",
+              shortcut: FOCUS_HINT_SHORTCUT_SLOT,
             })}
           />
 
@@ -2026,8 +2035,8 @@ const styles = StyleSheet.create((theme: Theme) => ({
     ...(isWeb
       ? {
           transitionProperty: "border-color",
-          transitionDuration: "200ms",
-          transitionTimingFunction: "ease-in-out",
+          transitionDuration: `${MOTION_DURATION_MS.base}ms`,
+          transitionTimingFunction: MOTION_EASING_CSS,
         }
       : {}),
   },
@@ -2039,13 +2048,18 @@ const styles = StyleSheet.create((theme: Theme) => ({
   textInputScrollWrapper: {
     position: "relative",
   },
-  focusHintText: {
+  focusHint: {
     position: "absolute",
     top: 0,
     right: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+    opacity: 0.6,
+  },
+  focusHintText: {
     fontSize: theme.fontSize.xs,
     color: theme.colors.foregroundMuted,
-    opacity: 0.5,
   },
   textInput: {
     width: "100%",

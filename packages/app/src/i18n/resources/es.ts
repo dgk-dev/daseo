@@ -444,6 +444,9 @@ export const es: TranslationResources = {
     },
   },
   workspace: {
+    statusLine: {
+      running: "{{count}} en ejecución",
+    },
     route: {
       loading: "Cargando espacio de trabajo",
       connecting: "Conectando",
