@@ -52,11 +52,22 @@ export function buildAndroid() {
     env,
     stdio: "inherit",
   });
-  execFileSync("./gradlew", ["assembleRelease", "-PreactNativeArchitectures=arm64-v8a"], {
-    cwd: path.join(app, "android"),
-    env,
-    stdio: "inherit",
-  });
+  // Release builds are hours apart, so a warm Gradle daemon is never reused, yet it and the
+  // Kotlin daemon it owns kept about 7 GB resident for up to 3 hours after each build on the
+  // 24 GB Mac mini. Stopping Gradle's daemons also stops the Kotlin daemon.
+  try {
+    execFileSync("./gradlew", ["assembleRelease", "-PreactNativeArchitectures=arm64-v8a"], {
+      cwd: path.join(app, "android"),
+      env,
+      stdio: "inherit",
+    });
+  } finally {
+    execFileSync("./gradlew", ["--stop"], {
+      cwd: path.join(app, "android"),
+      env,
+      stdio: "inherit",
+    });
+  }
   const apk = path.join(app, "android/app/build/outputs/apk/release/app-release.apk");
   const tools = readdirSync(path.join(sdk, "build-tools"))
     .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))

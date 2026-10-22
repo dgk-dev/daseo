@@ -850,6 +850,19 @@ edits · 1 command · 2 file reads`; the counts end in an ellipsis before the ti
     `packages/app/src/components/attention-droplet.tsx`, `stores/attention-droplet-store.ts`,
     `utils/attention-droplet.ts`, `agent-stream/collapsed-work.ts`, `components/user-message-fold.ts`,
     and `components/highlighted-code-block.tsx`.
+50. **The Android release build fits the 24 GB Mac mini** — from the 2026-10-22 memory audit.
+    zod-aot's inline mode wrote every discriminated-union branch of the WebSocket envelope into
+    one function (9.8 MB of the 10 MB generated validator, 99 functions in all), and hermesc's
+    register allocation grows faster than linearly with function size: compiling the release
+    bundle peaked at 16.3 GB footprint and pushed the Mac into swap. The protocol generator now
+    patches the emitter so each branch body runs in its own closure (872 functions, largest
+    270 KB). Measured on the same bundle: hermesc peak 16.3 GB → 2.3 GB, 45 s → 10 s, bytecode
+    27.3 MB → 24.2 MB; old and new validators returned identical results (data and issues) on
+    10,044 messages (324 captured from the live daemon plus 9,720 mutations); validation on
+    Hermes 79 ms → 68 ms for 1,020 messages. `npm run build:daseo:android` also stops the Gradle
+    daemon, and with it the Kotlin daemon, when Gradle exits: release builds are hours apart, so
+    the warm daemons were never reused but held about 7 GB for up to 3 hours. Key files:
+    `packages/protocol/scripts/generate-validation-aot.mjs`, `scripts/build-daseo-android.mjs`.
 
 ## Local reliability contracts
 

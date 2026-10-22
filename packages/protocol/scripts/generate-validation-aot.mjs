@@ -67,9 +67,32 @@ async function ensureZodAotDiscriminatedUnionOutputPatch() {
   await writeFile(discriminatedUnionPath, discriminatedUnionEmitter);
 }
 
+// Inline mode emits every discriminated-union branch into one function, so the WebSocket
+// envelope became a single ~10 MB function. hermesc's register allocator grows faster than
+// linearly with function size and peaked at ~15 GB compiling it for the Android release.
+// Each branch body runs in its own closure instead; it reads and writes the enclosing
+// temporaries exactly as before, and the slow path has no return/continue/this to rebind.
+async function ensureZodAotDiscriminatedUnionBranchFunctionPatch() {
+  const discriminatedUnionEmitter = await readFile(discriminatedUnionPath, "utf8");
+  const after = "        (function(){${g.visit(option, { input: objVar, output: objVar })}})();\n";
+  if (discriminatedUnionEmitter.includes(after)) {
+    return;
+  }
+
+  const before = "        ${g.visit(option, { input: objVar, output: objVar })}\n";
+  if (discriminatedUnionEmitter.split(before).length !== 2) {
+    throw new Error(
+      "zod-aot discriminated-union emitter shape changed; update the branch function patch",
+    );
+  }
+  await writeFile(discriminatedUnionPath, discriminatedUnionEmitter.replace(before, after));
+}
+
 await Promise.all([
   ensureZodAotRuntimeImportExtensionPatch(),
-  ensureZodAotDiscriminatedUnionOutputPatch(),
+  ensureZodAotDiscriminatedUnionOutputPatch().then(
+    ensureZodAotDiscriminatedUnionBranchFunctionPatch,
+  ),
 ]);
 
 const [{ discoverSchemas }, { compileSchemas }, { generateCompiledFileContent }] =
