@@ -1926,7 +1926,53 @@ describe("executeAutomationCommand", () => {
     ]);
   });
 
-  test("navigate explains an aborted load and reports where the tab ended up", async () => {
+  test("navigate reports success when a later navigation superseded a committed load", async () => {
+    const browser = new BrowserAutomationHarness();
+    browser.tab.navigationCommit = {
+      url: "https://example.com/files/F1/",
+      response: { httpStatus: 200, httpStatusText: "OK" },
+    };
+    browser.tab.loadUrlError = new Error(
+      "ERR_ABORTED (-3) loading 'https://example.com/files/F1/'",
+    );
+
+    const result = await browser.execute({
+      command: "navigate",
+      args: { browserId: BROWSER_A, url: "https://example.com/files/F1/" },
+    });
+
+    expect(result).toEqual({
+      requestId: "req-navigate",
+      ok: true,
+      result: {
+        command: "navigate",
+        browserId: BROWSER_A,
+        url: "https://example.com/files/F1/",
+        httpStatus: 200,
+        httpStatusText: "OK",
+      },
+    });
+  });
+
+  test("navigate keeps a non-abort load error a failure even after a commit", async () => {
+    const browser = new BrowserAutomationHarness();
+    browser.tab.navigationCommit = { url: "https://example.com/a" };
+    browser.tab.loadUrlError = new Error(
+      "ERR_CONNECTION_RESET (-101) loading 'https://example.com/a'",
+    );
+
+    const result = await browser.execute({
+      command: "navigate",
+      args: { browserId: BROWSER_A, url: "https://example.com/a" },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { message: expect.stringContaining("ERR_CONNECTION_RESET") },
+    });
+  });
+
+  test("navigate explains an aborted load with no commit and reports where the tab ended up", async () => {
     const browser = new BrowserAutomationHarness();
     browser.tab.loadUrlError = new Error(
       "ERR_ABORTED (-3) loading 'https://example.com/login?token=abc'",

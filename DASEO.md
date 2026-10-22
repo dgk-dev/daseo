@@ -890,6 +890,15 @@ edits · 1 command · 2 file reads`; the counts end in an ellipsis before the ti
     or tighter spacing (2026-08-17 rules). Key files: `packages/app/src/styles/bundled-fonts.web.ts`,
     `styles/motion.ts`, `agent-stream/stream-pacing.ts`, `agent-stream/use-paced-stream-text.ts`,
     `agent-stream/strategy-web.tsx`, and `screens/workspace/workspace-status-line.tsx`.
+52. **A navigation that lands is not reported as a failure** — from the 2026-10-22 Ego Lite
+    review. When a redirect or a page script takes over after the requested document committed,
+    `loadURL` rejects with ERR_ABORTED although the tab holds a loaded page; `browser_navigate`
+    returned `browser_unknown_error` and agents spent a turn re-checking (17 tool results in 12
+    sessions over 60 days, e.g. Scout adding query parameters, Slack file links). With a
+    main-frame commit the result is now ok, at the URL the tab is on, with the commit's HTTP
+    status when that URL is the committed one. ERR_ABORTED without a commit (a download, or
+    nothing loaded) and every other net error stay failures. Key file:
+    `packages/desktop/src/features/browser-automation/service.ts` (`supersededNavigationResult`).
 
 ## Local reliability contracts
 

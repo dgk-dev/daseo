@@ -2329,6 +2329,14 @@ async function executeNavigate(
     try {
       await target.contents.loadURL(url);
     } catch (error) {
+      const superseded = supersededNavigationResult(target.contents, error, commits.latest());
+      if (superseded) {
+        return {
+          requestId,
+          ok: true,
+          result: { command: "navigate", browserId: target.browserId, ...superseded },
+        };
+      }
       return navigationFailure(requestId, url, target.contents, error, commits.latest());
     } finally {
       commits.stop();
@@ -2884,6 +2892,27 @@ function fileInputTargetExpression(elementExpression: string): string {
     const inLabel = label ? label.querySelectorAll('input[type="file"]') : [];
     return inLabel.length === 1 ? inLabel[0] : element;
   })()`;
+}
+
+// A redirect or a script navigation that takes over after the requested document committed
+// makes loadURL reject with ERR_ABORTED even though the tab holds a loaded page; agents read
+// that as a failed load and spent a turn re-checking (17 times in 60 days of sessions).
+// Report it as the success it is, at the URL the tab is on now. Without a main-frame commit
+// (a download, or nothing loaded) it stays a failure.
+function supersededNavigationResult(
+  contents: TabContents,
+  error: unknown,
+  commit: MainFrameCommit | null,
+): { url: string; httpStatus?: number; httpStatusText?: string } | null {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!commit || !/\bERR_ABORTED \(-3\)/.test(message) || contents.isDestroyed()) {
+    return null;
+  }
+  const current = contents.getURL() || commit.url;
+  return {
+    url: current,
+    ...(current === commit.url ? navigationStatusFields(commit) : {}),
+  };
 }
 
 // loadURL rejects with Chromium's net error; unhandled, it reached the agent
