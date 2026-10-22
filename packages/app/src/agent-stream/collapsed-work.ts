@@ -316,6 +316,12 @@ const SUBSTANTIVE_ANSWER_CHARS = 500;
  * Revealing only those keeps one-line narration folded, which is the point of
  * the collapse; adopting codex's polarity wholesale — treat untagged as final
  * — would un-fold roughly 70% of turns for this provider.
+ *
+ * Answers are weighed as a whole, not row by row: while a turn streams, each
+ * completed markdown block is promoted to its own row, so a 1000-character
+ * answer arrives as paragraphs that are each under the threshold. Hydrated
+ * history merges them back into one row, which is why the 1278-turn measurement
+ * never saw this; live turns do.
  */
 function revealOverweightHiddenAnswers(
   items: readonly StreamItem[],
@@ -325,10 +331,25 @@ function revealOverweightHiddenAnswers(
   for (;;) {
     const hidden = assistantIndices.filter((index) => !visibleIndices.has(index));
     if (hidden.length === 0) return;
-    const largest = hidden.reduce((best, index) =>
-      assistantTextLength(items[index]) > assistantTextLength(items[best]) ? index : best,
-    );
-    const largestLength = assistantTextLength(items[largest]);
+    let largest = hidden[0]!;
+    let largestLength = -1;
+    for (const index of hidden) {
+      const group = new Set<number>();
+      addLogicalAssistantGroup({
+        items,
+        assistantIndices,
+        terminalIndex: index,
+        visibleIndices: group,
+      });
+      let groupLength = 0;
+      for (const member of group) {
+        if (!visibleIndices.has(member)) groupLength += assistantTextLength(items[member]);
+      }
+      if (groupLength > largestLength) {
+        largest = index;
+        largestLength = groupLength;
+      }
+    }
     if (largestLength < SUBSTANTIVE_ANSWER_CHARS) return;
     let visibleLength = 0;
     for (const index of visibleIndices) visibleLength += assistantTextLength(items[index]);

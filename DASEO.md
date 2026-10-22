@@ -88,8 +88,11 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
    partial/detached, permission-blocked, failed, and canceled turns stay open, while error and
    failed/canceled tool rows remain visible. Terminal outcomes survive canonical hydration, and
    provider message identity preserves manual expansion across renderer-row changes. A summary row
-   never hides more of the answer than it leaves visible: a folded assistant message that is
-   substantive on its own and longer than everything still on screen is revealed. That guard exists
+   never hides more of the answer than it leaves visible: a folded assistant answer that is
+   substantive on its own and longer than everything still on screen is revealed. The answer is
+   weighed as one logical message (its `blockGroupId` rows, or adjacent rows), because live
+   streaming promotes each markdown block to its own row and every paragraph of a long answer can
+   sit under the threshold; hydrated history merges them back. That guard exists
    because phase metadata is only as good as its source — codex gets commentary/final_answer from
    the model, while pi derives it from stopReason, so an answer written just before one last tool
    call is untagged and would otherwise fold behind a two-line sign-off. The projection

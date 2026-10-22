@@ -421,6 +421,57 @@ describe("collapseCompletedWork", () => {
     expect(result.workCountByTurnKey.get("wrap-up")).toBe(1);
   });
 
+  test("keeps a substantive answer visible when streaming split it into short blocks", () => {
+    // Live streaming promotes each completed markdown block into its own row of
+    // one blockGroupId. Every block of this answer is under the substantive
+    // threshold on its own; the answer as a whole is not, and it must not fold
+    // behind a one-line wrap-up.
+    const paragraph = "One paragraph of the real answer. ".repeat(8);
+    const items = [
+      item("user_message"),
+      assistant("answer-0", { text: paragraph, blockGroupId: "answer", blockIndex: 0 }),
+      assistant("answer-1", { text: paragraph, blockGroupId: "answer", blockIndex: 1 }),
+      assistant("answer-2", { text: paragraph, blockGroupId: "answer", blockIndex: 2 }),
+      item("tool_call"),
+      assistant("wrap-up", { text: "Saved to the project log.", phase: "final_answer" }),
+    ];
+    const result = collapseCompletedWork({
+      items,
+      expandedTurnKeys: NONE,
+      keepLastTurnExpanded: false,
+    });
+    expect(result.items.map((entry) => entry.id)).toEqual([
+      items[0]!.id,
+      "answer-0",
+      "answer-1",
+      "answer-2",
+      "wrap-up",
+    ]);
+    expect(result.workCountByTurnKey.get("wrap-up")).toBe(1);
+  });
+
+  test("keeps a split answer visible when its rows carry no group id", () => {
+    const paragraph = "Another paragraph of the answer. ".repeat(8);
+    const items = [
+      item("user_message"),
+      assistant("part-0", { text: paragraph }),
+      assistant("part-1", { text: paragraph }),
+      item("tool_call"),
+      assistant("wrap-up", { text: "Logged.", phase: "final_answer" }),
+    ];
+    const result = collapseCompletedWork({
+      items,
+      expandedTurnKeys: NONE,
+      keepLastTurnExpanded: false,
+    });
+    expect(result.items.map((entry) => entry.id)).toEqual([
+      items[0]!.id,
+      "part-0",
+      "part-1",
+      "wrap-up",
+    ]);
+  });
+
   test("still folds short narration when the visible answer is the substantial one", () => {
     const items = [
       item("user_message"),
