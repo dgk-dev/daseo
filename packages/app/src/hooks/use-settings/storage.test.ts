@@ -69,6 +69,31 @@ describe("loadAppSettingsFromStorage", () => {
     expect(second.theme).toBe("ghostty");
   });
 
+  it("hides the sidebar diff count once on an install that already took the theme switch", async () => {
+    const deps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({
+          theme: "ghostty",
+          sidebarWorkspaceTrailing: "diff",
+          [DASEO_TERMINAL_THEME_MARKER]: 55,
+        }),
+      }),
+    });
+
+    const first = await loadAppSettingsFromStorage(deps);
+    expect(first.theme).toBe("ghostty");
+    expect(first.sidebarWorkspaceTrailing).toBe("none");
+    const written = JSON.parse(deps.storage.entries.get(APP_SETTINGS_KEY) ?? "{}");
+    expect(written[DASEO_TERMINAL_THEME_MARKER]).toBe(DASEO_TERMINAL_THEME_REVISION);
+
+    await deps.storage.setItem(
+      APP_SETTINGS_KEY,
+      JSON.stringify({ ...written, sidebarWorkspaceTrailing: "diff" }),
+    );
+    const second = await loadAppSettingsFromStorage(deps);
+    expect(second.sidebarWorkspaceTrailing).toBe("diff");
+  });
+
   it.each(THEME_OPTIONS)("loads the persisted $name theme", async ({ name }) => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({

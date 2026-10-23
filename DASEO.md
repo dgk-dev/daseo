@@ -939,7 +939,9 @@ edits · 1 command · 2 file reads`; the counts end in an ellipsis before the ti
     sidebar and chat, none between tabs or under the tab bar; the active tab is its accent label with
     a 1 px accent underline. A submitted prompt is a left-aligned input line with a `>` marker, not a
     right-aligned box. Every install switches to this theme once (`daseoTerminalTheme: 55` in the
-    stored settings blob, `hooks/use-settings/storage.ts`), and a theme picked later sticks.
+    stored settings blob, `hooks/use-settings/storage.ts`), and a theme picked later sticks. The same
+    marker at 56 hides the sidebar's `+N -M` diff count once (owner's call the same day: not needed);
+    the row's trailing-slot setting still brings it back, and new installs default to nothing there.
 
 ## Local reliability contracts
 

@@ -118,9 +118,12 @@ const LegacyRendererSettingsSchema = StoredAppSettingsSchema;
 
 type StoredAppSettings = z.infer<typeof StoredAppSettingsSchema>;
 
-/** Stored-blob key recording that the one-time switch to the Daseo theme ran (delta 55). */
+/**
+ * Stored-blob key recording the last one-time Daseo look switch that ran on this install: 55 moved
+ * every install to the Daseo theme, 56 hid the sidebar diff count (the owner's call, 2026-10-23).
+ */
 export const DASEO_TERMINAL_THEME_MARKER = "daseoTerminalTheme";
-export const DASEO_TERMINAL_THEME_REVISION = 55;
+export const DASEO_TERMINAL_THEME_REVISION = 56;
 
 export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   theme: "daseo",
@@ -135,7 +138,7 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   codeFontSize: DEFAULT_CODE_FONT_SIZE,
   syntaxTheme: "one",
   workspaceTitleSource: "title",
-  sidebarWorkspaceTrailing: "diff",
+  sidebarWorkspaceTrailing: "none",
   sidebarRowItems: DEFAULT_SIDEBAR_ROW_ITEMS,
   sidebarChecksDisplay: DEFAULT_SIDEBAR_CHECKS_DISPLAY,
   autoExpandReasoning: false,
@@ -220,10 +223,17 @@ export async function loadAppSettingsFromStorage(deps: SettingsDeps): Promise<Ap
     const stored = await readStoredAppSettings(deps.storage);
     if (stored) {
       const normalized = normalizeAppSettings(stored);
-      // Daseo delta 55: switch every install to the terminal (Tokyo Night) theme once; a theme
-      // chosen afterwards sticks because the marker is kept in the stored blob.
-      if (stored[DASEO_TERMINAL_THEME_MARKER] !== DASEO_TERMINAL_THEME_REVISION) {
-        const next = { ...normalized, theme: "daseo" } satisfies AppSettings;
+      // Daseo delta 55: each install takes every one-time look switch it has not run yet (the
+      // terminal theme at 55, no sidebar diff count at 56); a choice made afterwards sticks
+      // because the marker is kept in the stored blob.
+      const marker = stored[DASEO_TERMINAL_THEME_MARKER];
+      const ranRevision = typeof marker === "number" ? marker : 0;
+      if (ranRevision < DASEO_TERMINAL_THEME_REVISION) {
+        const next = {
+          ...normalized,
+          ...(ranRevision < 55 ? { theme: "daseo" as const } : {}),
+          sidebarWorkspaceTrailing: "none",
+        } satisfies AppSettings;
         await deps.storage.setItem(
           APP_SETTINGS_KEY,
           JSON.stringify({
