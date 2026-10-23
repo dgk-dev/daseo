@@ -218,7 +218,7 @@ function SubagentsTrackRow({
           <View style={hovered || pressed ? styles.rowActive : styles.row}>
             <WorkspaceTabIcon
               presentation={presentation}
-              backdrop={hovered || pressed ? "surface2" : "surface1"}
+              backdrop={hovered || pressed ? "surface2" : "surface0"}
             />
             <Text style={styles.rowLabel} numberOfLines={1}>
               {displayLabel}
@@ -343,20 +343,17 @@ const styles = StyleSheet.create((theme) => ({
   track: {
     width: "100%",
     maxWidth: MAX_CONTENT_WIDTH,
-    marginBottom: -theme.spacing[4],
   },
+  // Daseo delta 57: a status line over the prompt line (delta 53), not a tab tucked under a
+  // composer box. Only the top rule stays; no fill, sides, corners, or overlap with the composer.
   surface: {
     alignSelf: "stretch",
-    backgroundColor: theme.colors.surface1,
-    borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.borderAccent,
-    borderBottomWidth: 0,
-    borderTopLeftRadius: theme.borderRadius["2xl"],
-    borderTopRightRadius: theme.borderRadius["2xl"],
+    borderTopWidth: theme.borderWidth[1],
+    borderTopColor: theme.colors.border,
     overflow: "hidden",
   },
   surfaceExpanded: {
-    paddingBottom: theme.spacing[4],
+    paddingBottom: theme.spacing[1],
   },
   header: {
     flexDirection: "row",
@@ -381,9 +378,7 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.xs,
     color: theme.colors.foregroundMuted,
   },
-  headerCollapsed: {
-    paddingBottom: theme.spacing[4],
-  },
+  headerCollapsed: {},
   headerDivider: {
     borderBottomWidth: theme.borderWidth[1],
     borderBottomColor: theme.colors.border,

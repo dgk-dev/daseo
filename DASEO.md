@@ -955,6 +955,12 @@ edits · 1 command · 2 file reads`; the counts end in an ellipsis before the ti
     opened in the default browser. App side: `assistant-file-links/use-file-link.ts`
     (`openInMacApp`), `provider.tsx` (`isLocalDaemon`).
 
+57. **The task list and subagents track are status lines** — the owner's call on 2026-10-23: once the
+    composer became a prompt line (delta 53), the two cards above it still had a surface1 fill, side
+    borders, rounded top corners, and a 16 px tuck under the composer, which now showed through the
+    transparent prompt. Both are now a header row under one top rule in the border color, with no
+    fill, sides, corners, or overlap (`composer/task-list/index.tsx`, `subagents/track.tsx`).
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including
