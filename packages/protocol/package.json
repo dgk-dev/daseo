@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/protocol",
-  "version": "0.5.66",
+  "version": "0.5.67",
   "description": "Paseo shared protocol schemas and wire types",
   "files": [
     "dist",
