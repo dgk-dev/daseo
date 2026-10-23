@@ -108,6 +108,7 @@ const StoredAppSettingsSchema = z.looseObject({
   compactToolCalls: z.unknown().optional(),
   chatOutlineEnabled: z.unknown().optional(),
   vimKeybindings: z.unknown().optional(),
+  daseoTerminalTheme: z.unknown().optional(),
   // COMPAT(rendererDesktopSettings): these fields used to share this renderer-owned key.
   manageBuiltInDaemon: z.unknown().optional(),
   releaseChannel: z.unknown().optional(),
@@ -117,8 +118,12 @@ const LegacyRendererSettingsSchema = StoredAppSettingsSchema;
 
 type StoredAppSettings = z.infer<typeof StoredAppSettingsSchema>;
 
+/** Stored-blob key recording that the one-time switch to the Daseo theme ran (delta 55). */
+export const DASEO_TERMINAL_THEME_MARKER = "daseoTerminalTheme";
+export const DASEO_TERMINAL_THEME_REVISION = 55;
+
 export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
-  theme: "auto",
+  theme: "daseo",
   language: "system",
   sendBehavior: "steer",
   serviceUrlBehavior: "ask",
@@ -214,7 +219,21 @@ export async function loadAppSettingsFromStorage(deps: SettingsDeps): Promise<Ap
   try {
     const stored = await readStoredAppSettings(deps.storage);
     if (stored) {
-      return normalizeAppSettings(stored);
+      const normalized = normalizeAppSettings(stored);
+      // Daseo delta 55: switch every install to the terminal (Tokyo Night) theme once; a theme
+      // chosen afterwards sticks because the marker is kept in the stored blob.
+      if (stored[DASEO_TERMINAL_THEME_MARKER] !== DASEO_TERMINAL_THEME_REVISION) {
+        const next = { ...normalized, theme: "daseo" } satisfies AppSettings;
+        await deps.storage.setItem(
+          APP_SETTINGS_KEY,
+          JSON.stringify({
+            ...mergeStoredAppSettings(stored, next),
+            [DASEO_TERMINAL_THEME_MARKER]: DASEO_TERMINAL_THEME_REVISION,
+          }),
+        );
+        return next;
+      }
+      return normalized;
     }
 
     const legacyStored = await readStoredAppSettings(deps.storage, LEGACY_SETTINGS_KEY);
@@ -230,7 +249,13 @@ export async function loadAppSettingsFromStorage(deps: SettingsDeps): Promise<Ap
       return next;
     }
 
-    await deps.storage.setItem(APP_SETTINGS_KEY, JSON.stringify(DEFAULT_CLIENT_SETTINGS));
+    await deps.storage.setItem(
+      APP_SETTINGS_KEY,
+      JSON.stringify({
+        ...DEFAULT_CLIENT_SETTINGS,
+        [DASEO_TERMINAL_THEME_MARKER]: DASEO_TERMINAL_THEME_REVISION,
+      }),
+    );
     return DEFAULT_CLIENT_SETTINGS;
   } catch (error) {
     console.error("[AppSettings] Failed to load settings:", error);

@@ -5,6 +5,7 @@ const withAndroidAsyncStorageSize = require("./plugins/with-android-async-storag
 const withAndroidFoldConfigChanges = require("./plugins/with-android-fold-config-changes");
 const withAndroidProfileable = require("./plugins/with-android-profileable");
 const withAndroidTextMetrics = require("./plugins/with-android-text-metrics");
+const withAndroidBlockCursor = require("./plugins/with-android-block-cursor");
 const withFdroidAutolinking = require("./plugins/with-fdroid-autolinking");
 const withPasteInput = require("./plugins/with-paste-input");
 const { getNativeReleaseVersion } = require("./native-release-version");
@@ -164,6 +165,7 @@ export default {
       withPasteInput,
       [withAndroidAsyncStorageSize, 64],
       withAndroidTextMetrics,
+      withAndroidBlockCursor,
       withAndroidFoldConfigChanges,
       // Daseo delta 51: NAVER's D2Coding, a monospace whose Hangul sits on the same grid as
       // its Latin, for code and machine-shaped text. Android here; web loads the same files

@@ -3,6 +3,8 @@ import { QueryClient } from "@tanstack/react-query";
 import {
   APP_SETTINGS_KEY,
   APP_SETTINGS_QUERY_KEY,
+  DASEO_TERMINAL_THEME_MARKER,
+  DASEO_TERMINAL_THEME_REVISION,
   DEFAULT_APP_SETTINGS,
   DEFAULT_CLIENT_SETTINGS,
   DEFAULT_CODE_FONT_SIZE,
@@ -18,6 +20,11 @@ import { createFakeDesktopBridge, createInMemoryKeyValueStorage } from "./fakes"
 import { THEME_OPTIONS } from "@/styles/theme";
 
 const LEGACY_SETTINGS_KEY = "@paseo:settings";
+
+/** A stored settings blob from a build that already ran the Daseo theme switch (delta 55). */
+function storedSettings(value: object): string {
+  return JSON.stringify({ ...value, [DASEO_TERMINAL_THEME_MARKER]: DASEO_TERMINAL_THEME_REVISION });
+}
 
 function makeDeps(
   overrides: {
@@ -35,18 +42,37 @@ function makeDeps(
 }
 
 describe("loadAppSettingsFromStorage", () => {
-  it("defaults theme to auto when storage is empty", async () => {
+  it("defaults theme to daseo when storage is empty", async () => {
     const deps = makeDeps();
 
     const result = await loadAppSettingsFromStorage(deps);
 
-    expect(result.theme).toBe("auto");
+    expect(result.theme).toBe("daseo");
+  });
+
+  it("switches an existing install to the daseo theme once and then keeps its choice", async () => {
+    const deps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({ theme: "ghostty", uiFontSize: 15 }),
+      }),
+    });
+
+    const first = await loadAppSettingsFromStorage(deps);
+    expect(first.theme).toBe("daseo");
+    expect(first.uiFontSize).toBe(15);
+    const written = JSON.parse(deps.storage.entries.get(APP_SETTINGS_KEY) ?? "{}");
+    expect(written.theme).toBe("daseo");
+    expect(written[DASEO_TERMINAL_THEME_MARKER]).toBe(DASEO_TERMINAL_THEME_REVISION);
+
+    await deps.storage.setItem(APP_SETTINGS_KEY, JSON.stringify({ ...written, theme: "ghostty" }));
+    const second = await loadAppSettingsFromStorage(deps);
+    expect(second.theme).toBe("ghostty");
   });
 
   it.each(THEME_OPTIONS)("loads the persisted $name theme", async ({ name }) => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ theme: name }),
+        [APP_SETTINGS_KEY]: storedSettings({ theme: name }),
       }),
     });
 
@@ -63,7 +89,7 @@ describe("loadAppSettingsFromStorage", () => {
     expect(result).toEqual(DEFAULT_CLIENT_SETTINGS);
     expect(DEFAULT_CLIENT_SETTINGS.language).toBe("system");
     expect(deps.storage.entries.get(APP_SETTINGS_KEY)).toBe(
-      JSON.stringify(DEFAULT_CLIENT_SETTINGS),
+      storedSettings(DEFAULT_CLIENT_SETTINGS),
     );
   });
 
@@ -78,7 +104,7 @@ describe("loadAppSettingsFromStorage", () => {
   it("migrates the legacy interrupt send preference to steering", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ sendBehavior: "interrupt" }),
+        [APP_SETTINGS_KEY]: storedSettings({ sendBehavior: "interrupt" }),
       }),
     });
 
@@ -96,7 +122,7 @@ describe("loadAppSettingsFromStorage", () => {
     };
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify(stored),
+        [APP_SETTINGS_KEY]: storedSettings(stored),
       }),
     });
 
@@ -105,7 +131,9 @@ describe("loadAppSettingsFromStorage", () => {
     expect(result.theme).toBe("dark");
     expect(result.sendBehavior).toBe(DEFAULT_CLIENT_SETTINGS.sendBehavior);
     expect(result.sidebarRowItems.host).toBe(false);
-    expect(JSON.parse(deps.storage.entries.get(APP_SETTINGS_KEY) ?? "null")).toEqual(stored);
+    expect(JSON.parse(deps.storage.entries.get(APP_SETTINGS_KEY) ?? "null")).toEqual(
+      JSON.parse(storedSettings(stored)),
+    );
   });
 
   it("defaults language to system when storage is empty", async () => {
@@ -135,7 +163,7 @@ describe("loadAppSettingsFromStorage", () => {
   it("loads a disabled chat outline preference", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ chatOutlineEnabled: false }),
+        [APP_SETTINGS_KEY]: storedSettings({ chatOutlineEnabled: false }),
       }),
     });
 
@@ -155,7 +183,7 @@ describe("loadAppSettingsFromStorage", () => {
   it("loads the per-device legacy terminal renderer preference", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ useLegacyTerminalRenderer: true }),
+        [APP_SETTINGS_KEY]: storedSettings({ useLegacyTerminalRenderer: true }),
       }),
     });
 
@@ -167,7 +195,7 @@ describe("loadAppSettingsFromStorage", () => {
   it("loads configured terminal scrollback lines from app settings", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ terminalScrollbackLines: 42_000 }),
+        [APP_SETTINGS_KEY]: storedSettings({ terminalScrollbackLines: 42_000 }),
       }),
     });
 
@@ -179,7 +207,7 @@ describe("loadAppSettingsFromStorage", () => {
   it("loads configured workspace title source from app settings", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ workspaceTitleSource: "branch" }),
+        [APP_SETTINGS_KEY]: storedSettings({ workspaceTitleSource: "branch" }),
       }),
     });
 
@@ -191,7 +219,7 @@ describe("loadAppSettingsFromStorage", () => {
   it("drops an unknown workspace title source back to title", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ workspaceTitleSource: "directory" }),
+        [APP_SETTINGS_KEY]: storedSettings({ workspaceTitleSource: "directory" }),
       }),
     });
 
@@ -203,7 +231,7 @@ describe("loadAppSettingsFromStorage", () => {
   it("normalizes terminal scrollback lines from storage", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ terminalScrollbackLines: 1_000_000.9 }),
+        [APP_SETTINGS_KEY]: storedSettings({ terminalScrollbackLines: 1_000_000.9 }),
       }),
     });
 
@@ -239,7 +267,7 @@ describe("loadAppSettingsFromStorage", () => {
   it("loads a persisted explicit language", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ language: "zh-CN" }),
+        [APP_SETTINGS_KEY]: storedSettings({ language: "zh-CN" }),
       }),
     });
 
@@ -251,7 +279,7 @@ describe("loadAppSettingsFromStorage", () => {
   it("drops an unknown persisted language back to system", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ language: "klingon" }),
+        [APP_SETTINGS_KEY]: storedSettings({ language: "klingon" }),
       }),
     });
 
@@ -281,7 +309,7 @@ describe("loadSettingsFromStorage", () => {
   it("ignores renderer-owned daemon management state outside Electron", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({
+        [APP_SETTINGS_KEY]: storedSettings({
           theme: "light",
           manageBuiltInDaemon: false,
         }),
@@ -299,7 +327,7 @@ describe("loadSettingsFromStorage", () => {
   it("ignores renderer-owned release channel outside Electron", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ releaseChannel: "beta" }),
+        [APP_SETTINGS_KEY]: storedSettings({ releaseChannel: "beta" }),
       }),
     });
 
@@ -319,7 +347,7 @@ describe("loadSettingsFromStorage", () => {
     });
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({
+        [APP_SETTINGS_KEY]: storedSettings({
           theme: "light",
           manageBuiltInDaemon: false,
           releaseChannel: "beta",
@@ -345,7 +373,7 @@ describe("loadSettingsFromStorage", () => {
     const desktop = createFakeDesktopBridge({ isElectron: false });
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ theme: "light" }),
+        [APP_SETTINGS_KEY]: storedSettings({ theme: "light" }),
       }),
       desktop,
     });
@@ -364,7 +392,7 @@ describe("saveAppSettings", () => {
   it("round-trips fields written by a newer build", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({
+        [APP_SETTINGS_KEY]: storedSettings({
           theme: "dark",
           sendBehavior: "future-mode",
           futureSetting: { enabled: true },
@@ -393,7 +421,7 @@ describe("saveAppSettings", () => {
   it("saves terminal scrollback through app settings persistence", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify(DEFAULT_CLIENT_SETTINGS),
+        [APP_SETTINGS_KEY]: storedSettings(DEFAULT_CLIENT_SETTINGS),
       }),
     });
     const queryClient = new QueryClient();
@@ -405,7 +433,7 @@ describe("saveAppSettings", () => {
     });
 
     expect(deps.storage.entries.get(APP_SETTINGS_KEY)).toBe(
-      JSON.stringify({
+      storedSettings({
         ...DEFAULT_CLIENT_SETTINGS,
         terminalScrollbackLines: 42_000,
       }),
@@ -445,7 +473,7 @@ describe("appearance settings", () => {
   it("defaults the appearance fields when an old blob omits them", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ theme: "dark" }),
+        [APP_SETTINGS_KEY]: storedSettings({ theme: "dark" }),
       }),
     });
 
@@ -462,7 +490,7 @@ describe("appearance settings", () => {
   it("migrates the enabled compact tool call preference to overview", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ compactToolCalls: true }),
+        [APP_SETTINGS_KEY]: storedSettings({ compactToolCalls: true }),
       }),
     });
 
@@ -472,7 +500,7 @@ describe("appearance settings", () => {
   it("clears settings with an unrecognized tool call detail level", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ toolCallDetailLevel: "unknown" }),
+        [APP_SETTINGS_KEY]: storedSettings({ toolCallDetailLevel: "unknown" }),
       }),
     });
 
@@ -482,7 +510,7 @@ describe("appearance settings", () => {
   it("migrates a switched-off checks row item to the hidden checks display", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ sidebarRowItems: { checks: false } }),
+        [APP_SETTINGS_KEY]: storedSettings({ sidebarRowItems: { checks: false } }),
       }),
     });
 
@@ -492,7 +520,7 @@ describe("appearance settings", () => {
   it("lets a stored checks display win over the row item it replaced", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({
+        [APP_SETTINGS_KEY]: storedSettings({
           sidebarChecksDisplay: "icon",
           sidebarRowItems: { checks: false },
         }),
@@ -505,21 +533,21 @@ describe("appearance settings", () => {
   it("clamps the UI font size into range and rejects non-numeric values", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ uiFontSize: 999 }),
+        [APP_SETTINGS_KEY]: storedSettings({ uiFontSize: 999 }),
       }),
     });
     expect((await loadAppSettingsFromStorage(deps)).uiFontSize).toBe(24);
 
     const low = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ uiFontSize: 8 }),
+        [APP_SETTINGS_KEY]: storedSettings({ uiFontSize: 8 }),
       }),
     });
     expect((await loadAppSettingsFromStorage(low)).uiFontSize).toBe(11);
 
     const bogus = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ uiFontSize: "abc" }),
+        [APP_SETTINGS_KEY]: storedSettings({ uiFontSize: "abc" }),
       }),
     });
     expect((await loadAppSettingsFromStorage(bogus)).uiFontSize).toBe(DEFAULT_UI_FONT_SIZE);
@@ -528,21 +556,21 @@ describe("appearance settings", () => {
   it("clamps the code font size into range and rejects non-numeric values", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ codeFontSize: 999 }),
+        [APP_SETTINGS_KEY]: storedSettings({ codeFontSize: 999 }),
       }),
     });
     expect((await loadAppSettingsFromStorage(deps)).codeFontSize).toBe(22);
 
     const low = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ codeFontSize: 8 }),
+        [APP_SETTINGS_KEY]: storedSettings({ codeFontSize: 8 }),
       }),
     });
     expect((await loadAppSettingsFromStorage(low)).codeFontSize).toBe(9);
 
     const bogus = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ codeFontSize: "abc" }),
+        [APP_SETTINGS_KEY]: storedSettings({ codeFontSize: "abc" }),
       }),
     });
     expect((await loadAppSettingsFromStorage(bogus)).codeFontSize).toBe(DEFAULT_CODE_FONT_SIZE);
@@ -551,7 +579,7 @@ describe("appearance settings", () => {
   it("trims an accepted font family", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ uiFontFamily: "  Menlo  " }),
+        [APP_SETTINGS_KEY]: storedSettings({ uiFontFamily: "  Menlo  " }),
       }),
     });
 
@@ -561,7 +589,7 @@ describe("appearance settings", () => {
   it("keeps an explicit empty font family as the default sentinel", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ uiFontFamily: "" }),
+        [APP_SETTINGS_KEY]: storedSettings({ uiFontFamily: "" }),
       }),
     });
 
@@ -571,7 +599,7 @@ describe("appearance settings", () => {
   it("rejects a font family containing CSS-breaking characters", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ uiFontFamily: "a;b{c}" }),
+        [APP_SETTINGS_KEY]: storedSettings({ uiFontFamily: "a;b{c}" }),
       }),
     });
 
@@ -581,7 +609,7 @@ describe("appearance settings", () => {
   it("rejects an over-length font family", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ uiFontFamily: "a".repeat(201) }),
+        [APP_SETTINGS_KEY]: storedSettings({ uiFontFamily: "a".repeat(201) }),
       }),
     });
 
@@ -591,7 +619,7 @@ describe("appearance settings", () => {
   it("accepts a known syntax theme id", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ syntaxTheme: "dracula" }),
+        [APP_SETTINGS_KEY]: storedSettings({ syntaxTheme: "dracula" }),
       }),
     });
 
@@ -601,7 +629,7 @@ describe("appearance settings", () => {
   it("drops a removed syntax theme id back to the default", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ syntaxTheme: "auto" }),
+        [APP_SETTINGS_KEY]: storedSettings({ syntaxTheme: "auto" }),
       }),
     });
 
@@ -611,7 +639,7 @@ describe("appearance settings", () => {
   it("drops an unknown syntax theme id back to the default", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ syntaxTheme: "bogus" }),
+        [APP_SETTINGS_KEY]: storedSettings({ syntaxTheme: "bogus" }),
       }),
     });
 

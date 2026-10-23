@@ -357,6 +357,7 @@ function WorkspaceRowBody({
                 serviceSummary={serviceSummary}
                 backdrop={backdrop}
                 isHovered={isHovered}
+                selected={selected}
                 isLoading={isArchiving || isCreating}
                 isCreating={isCreating}
                 shortcutNumber={shortcutNumber}
@@ -511,7 +512,7 @@ const styles = StyleSheet.create((theme) => ({
     minHeight: 36,
     marginBottom: theme.spacing[1],
     paddingVertical: theme.spacing[2],
-    paddingLeft: theme.spacing[2],
+    paddingLeft: theme.spacing[1],
     paddingRight: theme.spacing[3],
     borderRadius: theme.borderRadius.lg,
     flexDirection: "column",
@@ -534,9 +535,8 @@ const styles = StyleSheet.create((theme) => ({
     zIndex: 3,
     ...theme.shadow.md,
   },
-  sidebarRowSelected: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
-  },
+  // Daseo delta 55: the pointer in the row content marks the selection; no fill.
+  sidebarRowSelected: {},
   workspaceCreatingText: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.xs,

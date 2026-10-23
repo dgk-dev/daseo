@@ -645,10 +645,11 @@ function TabChip({
   const tabLabelStyle = useMemo(
     () => [
       styles.tabLabel,
-      isHighlighted && styles.tabLabelActive,
+      isHighlighted && styles.tabLabelHovered,
+      isActive && styles.tabLabelActive,
       showTrailingAffordance && styles.tabLabelWithCloseButton,
     ],
-    [isHighlighted, showTrailingAffordance],
+    [isHighlighted, isActive, showTrailingAffordance],
   );
 
   return (
@@ -1233,8 +1234,6 @@ const styles = StyleSheet.create((theme) => ({
   tabsContainer: {
     minWidth: 0,
     height: WORKSPACE_SECONDARY_HEADER_HEIGHT,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
     backgroundColor: theme.colors.surface0,
     flexDirection: "row",
     alignItems: "center",
@@ -1263,19 +1262,17 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: theme.spacing[1],
-    borderRightWidth: 1,
-    borderRightColor: theme.colors.border,
   },
   inlineAddButton: {
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: theme.spacing[1],
   },
+  // Daseo delta 55: tabs read like a tmux window list — no boxes or separators; the active
+  // tab is the accent label with an accent underline.
   tab: {
     paddingHorizontal: theme.spacing[3],
     paddingVertical: theme.spacing[2],
-    borderRightWidth: 1,
-    borderRightColor: theme.colors.border,
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[1],
@@ -1298,14 +1295,14 @@ const styles = StyleSheet.create((theme) => ({
   },
   tabFocusIndicator: {
     position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 2,
+    bottom: 0,
+    left: theme.spacing[3],
+    right: theme.spacing[3],
+    height: 1,
     backgroundColor: theme.colors.accent,
   },
   tabFocusIndicatorUnfocused: {
-    backgroundColor: theme.colors.borderAccent,
+    backgroundColor: theme.colors.foregroundMuted,
   },
   tabDropIndicator: {
     position: "absolute",
@@ -1347,8 +1344,12 @@ const styles = StyleSheet.create((theme) => ({
   tabLabelWithCloseButton: {
     paddingRight: 0,
   },
-  tabLabelActive: {
+  tabLabelHovered: {
     color: theme.colors.foreground,
+  },
+  tabLabelActive: {
+    color: theme.colors.accent,
+    fontWeight: theme.fontWeight.semibold,
   },
   tabCloseButton: {
     width: 18,

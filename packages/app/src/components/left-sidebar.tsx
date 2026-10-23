@@ -1096,9 +1096,8 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.lg,
     backgroundColor: theme.colors.surfaceSidebar,
   },
+  // Daseo delta 55: no rule between sidebar and chat; the darker sidebar surface is the edge.
   desktopSidebarBorder: {
-    borderRightWidth: 1,
-    borderRightColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceSidebar,
   },
   sidebarDragArea: {

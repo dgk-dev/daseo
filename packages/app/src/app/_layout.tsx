@@ -111,10 +111,16 @@ import { applyAppearance } from "@/screens/settings/appearance/apply-appearance"
 import { applyRootUiFont } from "@/screens/settings/appearance/apply-root-font";
 import { selectIsAgentListOpen, usePanelStore } from "@/stores/panel-store";
 import { flushDraftPersistStorage } from "@/stores/draft-store";
-import { DEFAULT_UI_FONT_STACK, getNextThemePreference, THEME_TO_UNISTYLES } from "@/styles/theme";
+import {
+  DEFAULT_UI_FONT_STACK,
+  darkDaseoTheme,
+  getNextThemePreference,
+  THEME_TO_UNISTYLES,
+} from "@/styles/theme";
 import { useSessionStore } from "@/stores/session-store";
 import { installWebScrollbarStyles } from "@/styles/install-web-scrollbar-styles";
 import { installBundledFonts } from "@/styles/bundled-fonts";
+import { applyTerminalChrome } from "@/styles/terminal-chrome";
 import type { HostProfile } from "@/types/host-connection";
 import { toggleDesktopSidebarsWithCheckoutIntent } from "@/utils/desktop-sidebar-toggle";
 import {
@@ -672,6 +678,10 @@ function ProvidersWrapper({ children }: { children: ReactNode }) {
       UnistylesRuntime.setAdaptiveThemes(false);
       UnistylesRuntime.setTheme(THEME_TO_UNISTYLES[settings.theme]);
     }
+    applyTerminalChrome({
+      enabled: settings.theme === "daseo",
+      caretColor: darkDaseoTheme.colors.accent,
+    });
   }, [settingsLoading, settings.theme]);
 
   // Apply font / size / syntax appearance settings on mount and when they change.

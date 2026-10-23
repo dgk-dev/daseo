@@ -326,7 +326,7 @@ const darkTerminalAnsi = {
   brightMagenta: "#c49ae0",
   brightCyan: "#6ec2cc",
   brightWhite: "#f0f0f2",
-} as const;
+};
 
 function buildDarkSemanticColors(tint: DarkThemeConfig) {
   return {
@@ -689,40 +689,77 @@ const pureBlackDarkColors = buildDarkSemanticColors({
 
 export const darkPureBlackTheme = buildDarkTheme(pureBlackDarkColors);
 
-// Daseo — monotone graphite. Grayscale accents, crisp borders, terminal-first feel.
-const daseoDarkColors = buildDarkSemanticColors({
-  surface0: "#050506",
-  surface1: "#0b0b0d",
-  surface2: "#121215",
-  surface3: "#1b1b1f",
-  surface4: "#26262b",
-  surfaceDiffEmpty: "#0a0a0c",
-  surfaceSidebar: "#050506",
-  surfaceSidebarHover: "#151518",
-  foregroundMuted: "#9b9ba3",
-  foregroundExtraMuted: "#66666e",
-  scrollbarHandle: "#4a4a52",
-  border: "#1f1f24",
-  borderAccent: "#2c2c33",
-  accent: "#52525b",
-  accentBright: "#c8c8d0",
-  destructive: "#b04a4a",
-  terminalBlack: "#55555c",
-  terminalBrightBlack: "#85858d",
+// Daseo — a terminal tool on Tokyo Night (delta 55, 2026-10-23, the owner's call). The chat is
+// Tokyo Night's editor background, the sidebar its darker panel, text its foreground; one
+// accent (Tokyo Night blue) marks everything that is active or selected. Status and diff
+// colors keep their meaning. Corners are square everywhere.
+const DASEO_FOREGROUND = "#c0caf5";
+const DASEO_ACCENT = "#7aa2f7";
+const daseoBaseColors = buildDarkSemanticColors({
+  surface0: "#16161e",
+  surface1: "#1a1b26",
+  surface2: "#1f2335",
+  surface3: "#292e42",
+  surface4: "#3b4261",
+  surfaceDiffEmpty: "#1f2335",
+  surfaceSidebar: "#16161e",
+  surfaceSidebarHover: "#1f2335",
+  foregroundMuted: "#a9b1d6",
+  foregroundExtraMuted: "#737aa2",
+  scrollbarHandle: "#3b4261",
+  border: "#292e42",
+  borderAccent: "#3b4261",
+  accent: DASEO_ACCENT,
+  accentBright: DASEO_ACCENT,
+  accentForeground: "#16161e",
+  destructive: "#f7768e",
+  terminalBlack: "#414868",
+  terminalBrightBlack: "#565f89",
 });
+const daseoDarkColors = {
+  ...daseoBaseColors,
+  foreground: DASEO_FOREGROUND,
+  popoverForeground: DASEO_FOREGROUND,
+  primary: DASEO_FOREGROUND,
+  secondaryForeground: DASEO_FOREGROUND,
+  ring: DASEO_ACCENT,
+  statusDotRunning: DASEO_ACCENT,
+  terminal: {
+    ...daseoBaseColors.terminal,
+    background: "#1a1b26",
+    foreground: DASEO_FOREGROUND,
+    cursor: DASEO_ACCENT,
+    cursorAccent: "#1a1b26",
+    selectionBackground: "rgba(122, 162, 247, 0.3)",
+    selectionForeground: DASEO_FOREGROUND,
+    red: "#f7768e",
+    green: "#9ece6a",
+    yellow: "#e0af68",
+    blue: "#7aa2f7",
+    magenta: "#bb9af7",
+    cyan: "#7dcfff",
+    white: "#a9b1d6",
+    brightRed: "#ff899d",
+    brightGreen: "#9fe044",
+    brightYellow: "#faba4a",
+    brightBlue: "#8db0ff",
+    brightMagenta: "#c7a9ff",
+    brightCyan: "#a4daff",
+    brightWhite: DASEO_FOREGROUND,
+  },
+};
 
-// Daseo delta 51: the Daseo theme draws its structural chrome with tighter corners
-// (controls and rows 4 px instead of 8), closer to a terminal tool's square geometry;
-// the user prompt panel and composer stay square, and full-radius dots stay round.
+// Every corner is square in the Daseo theme, dots and pills included (delta 55); on web a
+// root rule (styles/terminal-chrome.web.ts) also squares the few literal radii.
 const DASEO_BORDER_RADIUS: Record<keyof typeof BORDER_RADIUS, number> = {
   none: 0,
-  sm: 2,
-  base: 2,
-  md: 3,
-  lg: 4,
-  xl: 6,
-  "2xl": 8,
-  full: 9999,
+  sm: 0,
+  base: 0,
+  md: 0,
+  lg: 0,
+  xl: 0,
+  "2xl": 0,
+  full: 0,
 };
 
 export const darkDaseoTheme = {
@@ -819,7 +856,7 @@ export const THEME_OPTIONS = [
     group: "variant",
     unistylesName: "darkDaseo",
     theme: darkDaseoTheme,
-    swatch: "#151518",
+    swatch: "#7aa2f7",
   },
 ] as const;
 

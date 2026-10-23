@@ -1,3 +1,7 @@
+import {
+  SidebarSelectionPointer,
+  sidebarSelectedTitleStyles,
+} from "@/components/sidebar/sidebar-selection-pointer";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import {
   View,
@@ -394,8 +398,6 @@ function getProjectWorkspaceRowStyle({
     isPressed && styles.workspaceRowPressed,
   ];
 }
-
-const SELECTION_RAIL_WIDTH = 2;
 
 function noop() {}
 
@@ -957,6 +959,7 @@ function ProjectHeaderRow({
   const rowChildren = (
     <>
       <View style={styles.projectRowLeft}>
+        <SidebarSelectionPointer selected={selected} />
         <ProjectLeadingVisual
           displayName={displayName}
           iconDataUri={iconDataUri}
@@ -969,7 +972,14 @@ function ProjectHeaderRow({
         />
 
         <View style={styles.projectTitleGroup}>
-          <Text style={styles.projectTitle} numberOfLines={1}>
+          <Text
+            style={
+              selected
+                ? [styles.projectTitle, sidebarSelectedTitleStyles.title]
+                : styles.projectTitle
+            }
+            numberOfLines={1}
+          >
             {displayName}
           </Text>
         </View>
@@ -1181,6 +1191,7 @@ function WorkspaceRowInner({
                 serviceSummary={serviceSummary}
                 backdrop={backdrop}
                 isHovered={isHovered}
+                selected={selected}
                 isLoading={isArchiving || isCreating}
                 isCreating={isCreating}
                 shortcutNumber={shortcutNumber}
@@ -2588,12 +2599,9 @@ const styles = StyleSheet.create((theme) => ({
     position: "relative",
     minHeight: 36,
     paddingVertical: theme.spacing[2],
-    // The selection rail (sidebarRowSelected) is always reserved, so selecting a row
-    // never moves its text.
-    paddingLeft: theme.spacing[2] - SELECTION_RAIL_WIDTH,
+    // The selection pointer slot is always reserved, so selecting a row never moves its text.
+    paddingLeft: theme.spacing[1],
     paddingRight: theme.spacing[2],
-    borderLeftWidth: SELECTION_RAIL_WIDTH,
-    borderLeftColor: "transparent",
     borderRadius: theme.borderRadius.lg,
     marginBottom: theme.spacing[1],
     flexDirection: "row",
@@ -2716,10 +2724,8 @@ const styles = StyleSheet.create((theme) => ({
     minHeight: 36,
     marginBottom: theme.spacing[0.5],
     paddingVertical: theme.spacing[2],
-    paddingLeft: theme.spacing[2] - SELECTION_RAIL_WIDTH,
+    paddingLeft: theme.spacing[1],
     paddingRight: theme.spacing[3],
-    borderLeftWidth: SELECTION_RAIL_WIDTH,
-    borderLeftColor: "transparent",
     borderRadius: theme.borderRadius.lg,
     flexDirection: "column",
     alignItems: "stretch",
@@ -2761,14 +2767,8 @@ const styles = StyleSheet.create((theme) => ({
     zIndex: 3,
     ...theme.shadow.md,
   },
-  // Daseo delta 51: the selected row also carries a rail on its left edge, as a
-  // terminal UI marks its focused row (Charm Crush), with a square left side.
-  sidebarRowSelected: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
-    borderLeftColor: theme.colors.foreground,
-    borderTopLeftRadius: 0,
-    borderBottomLeftRadius: 0,
-  },
+  // Daseo delta 55: a pointer in the row marks the selection (fzf, lazygit); no fill, no rail.
+  sidebarRowSelected: {},
   workspaceRowContainer: {
     position: "relative",
   },

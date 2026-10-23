@@ -924,6 +924,20 @@ edits · 1 command · 2 file reads`; the counts end in an ellipsis before the ti
     the app shows it as a plain system row. Key file: `packages/server/src/server/agent/agent-prompt.ts`
     (`FINISH_WATCH_STALL_MS`, `checkStall`).
 
+55. **A terminal tool on Tokyo Night** — the owner's call on 2026-10-23 ("더 터미널스럽게, cli스럽게",
+    selection still obvious). The Daseo theme is Tokyo Night: chat `#1a1b26`, sidebar and tab bar
+    `#16161e`, text `#c0caf5`, and one accent (`#7aa2f7`) for everything active or selected; status
+    and diff colors keep their meaning. Every theme radius is 0 (dots and pills included), and on
+    web a root rule squares the literal radii too (`styles/terminal-chrome.web.ts`). Text fields get a
+    block cursor in the accent: CSS `caret-shape: block` on web (Chromium 146 in Electron 41) and an
+    app-theme cursor drawable on Android (`plugins/with-android-block-cursor.js`). A selected sidebar
+    row is a `>` pointer plus an accent title (`components/sidebar/sidebar-selection-pointer.tsx`, the
+    slot always reserved) instead of a fill with a rail; hover keeps its light fill. No rule between
+    sidebar and chat, none between tabs or under the tab bar; the active tab is its accent label with
+    a 1 px accent underline. A submitted prompt is a left-aligned input line with a `>` marker, not a
+    right-aligned box. Every install switches to this theme once (`daseoTerminalTheme: 55` in the
+    stored settings blob, `hooks/use-settings/storage.ts`), and a theme picked later sticks.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

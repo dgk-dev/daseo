@@ -22,6 +22,8 @@ export function getSidebarRowBackdrop({
   isHovered?: boolean;
 }): SidebarSurfaceBackdrop {
   if (isDragging || isPressed) return "surface2";
-  if (selected || isHovered) return "surfaceSidebarHover";
+  // Daseo delta 55: a selected row is marked by its pointer, not a fill.
+  void selected;
+  if (isHovered) return "surfaceSidebarHover";
   return "surfaceSidebar";
 }

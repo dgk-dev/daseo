@@ -334,13 +334,15 @@ function shouldStopDetailWheelPropagation(detailRoot: HTMLElement, event: WheelE
 }
 
 const userMessageStylesheet = StyleSheet.create((theme) => ({
+  // Daseo delta 55: a submitted prompt reads as a terminal input line — left-aligned, a `>`
+  // marker in the accent, no box — instead of a right-aligned chat bubble.
   container: {
     flexDirection: "row",
-    justifyContent: "flex-end",
+    justifyContent: "flex-start",
     ...(isWeb ? { userSelect: "text" as const } : {}),
   },
   content: {
-    alignItems: "flex-end",
+    alignItems: "flex-start",
     maxWidth: "100%",
     cursor: "auto",
   },
@@ -353,17 +355,22 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
   containerLastInGroup: {
     marginBottom: theme.spacing[4],
   },
-  // Daseo treats a submitted prompt as a quiet IDE panel, not a chat bubble. Keep the
-  // readable spacing and typography while the square frame distinguishes input from output.
   bubble: {
-    backgroundColor: theme.colors.surface2,
-    borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.borderAccent,
-    borderRadius: theme.borderRadius.none,
-    paddingHorizontal: theme.spacing[4],
-    paddingVertical: theme.spacing[4],
+    position: "relative",
+    paddingLeft: theme.spacing[4],
+    paddingVertical: theme.spacing[1],
     minWidth: 0,
     flexShrink: 1,
+  },
+  promptMarker: {
+    position: "absolute",
+    left: 0,
+    top: theme.spacing[1],
+    color: theme.colors.accent,
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.base,
+    fontWeight: theme.fontWeight.semibold,
+    lineHeight: 22,
   },
   text: {
     color: theme.colors.foreground,
@@ -372,12 +379,12 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
   },
   foldRow: {
     flexDirection: "row",
-    justifyContent: "flex-end",
+    justifyContent: "flex-start",
     marginTop: theme.spacing[2],
   },
   foldButton: {
-    // The label's last glyph stays on the bubble's text rail; the xs padding grows outward.
-    marginRight: -theme.spacing[3],
+    // The label's first glyph stays on the prompt's text rail; the xs padding grows outward.
+    marginLeft: -theme.spacing[3],
   },
   imagePreviewContainer: {
     flexDirection: "row",
@@ -400,7 +407,8 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
     marginRight: -theme.spacing[1],
   },
   trailingRow: {
-    alignSelf: "flex-end",
+    alignSelf: "flex-start",
+    marginLeft: theme.spacing[4],
     flexDirection: "row",
     alignItems: "center",
     height: 24,
@@ -424,7 +432,7 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
     fontFamily: theme.fontFamily.mono,
   },
   steeringLabel: {
-    alignSelf: "flex-end",
+    alignSelf: "flex-start",
     marginTop: theme.spacing[1],
     color: theme.colors.foregroundMuted,
     fontSize: STREAM_METADATA_FONT_SIZE,
@@ -614,6 +622,9 @@ export const UserMessage = memo(function UserMessage({
     <View style={containerStyle} testID="user-message" aria-busy={isPending}>
       <View style={userMessageStylesheet.content}>
         <View style={userMessageStylesheet.bubble}>
+          <Text style={userMessageStylesheet.promptMarker} aria-hidden selectable={false}>
+            {">"}
+          </Text>
           {hasImages ? (
             <View style={imagePreviewContainerStyle}>
               {images.map((image) => (

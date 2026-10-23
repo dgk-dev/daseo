@@ -902,6 +902,7 @@ function StatusWorkspaceRowInnerContent({
                 serviceSummary={serviceSummary}
                 backdrop={backdrop}
                 isHovered={isHovered}
+                selected={selected}
                 isLoading={isArchiving}
                 shortcutNumber={shortcutNumber}
                 showShortcutBadge={showShortcutBadge}
@@ -1107,7 +1108,7 @@ const styles = StyleSheet.create((theme) => ({
     minHeight: 36,
     marginBottom: theme.spacing[0.5],
     paddingVertical: theme.spacing[2],
-    paddingLeft: theme.spacing[2],
+    paddingLeft: theme.spacing[1],
     paddingRight: theme.spacing[3],
     borderRadius: theme.borderRadius.lg,
     flexDirection: "column",
@@ -1130,7 +1131,6 @@ const styles = StyleSheet.create((theme) => ({
     zIndex: 3,
     ...theme.shadow.md,
   },
-  sidebarRowSelected: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
-  },
+  // Daseo delta 55: the pointer in the row content marks the selection; no fill.
+  sidebarRowSelected: {},
 }));

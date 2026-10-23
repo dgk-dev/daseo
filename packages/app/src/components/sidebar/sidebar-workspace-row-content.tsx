@@ -28,6 +28,10 @@ import {
 import { shouldRenderSyncedStatusLoader } from "@/utils/status-loader";
 import { StatusRing } from "@/components/status-ring";
 import { resolveSidebarWorkspacePrimaryLabel } from "@/components/sidebar/sidebar-workspace-title";
+import {
+  SidebarSelectionPointer,
+  sidebarSelectedTitleStyles,
+} from "@/components/sidebar/sidebar-selection-pointer";
 
 // The scrim spans more than the kebab so the fade starts left of the diff stat. Solid from
 // SCRIM_SOLID_OFFSET rightward, which keeps the kebab itself off the gradient entirely.
@@ -130,6 +134,7 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   serviceSummary = null,
   backdrop,
   isHovered,
+  selected = false,
   isLoading,
   isCreating = false,
   shortcutNumber = null,
@@ -146,6 +151,8 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   /** The row's current background, so the project status badge can knock out of it. */
   backdrop: SidebarSurfaceBackdrop;
   isHovered: boolean;
+  /** Daseo delta 55: the row is the selected one (pointer and accent title). */
+  selected?: boolean;
   isLoading: boolean;
   isCreating?: boolean;
   shortcutNumber?: number | null;
@@ -162,14 +169,16 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
     () => [
       styles.workspaceBranchText,
       isHovered && styles.workspaceBranchTextHovered,
+      selected && sidebarSelectedTitleStyles.title,
       isCreating && styles.workspaceBranchTextCreating,
     ],
-    [isHovered, isCreating],
+    [isHovered, selected, isCreating],
   );
 
   return (
     <View style={styles.workspaceRowContent}>
       <View style={styles.workspaceRowMain}>
+        <SidebarSelectionPointer selected={selected} />
         {leadingProjectName ? (
           <ProjectStatusIndicator
             iconDataUri={leadingProjectIconDataUri}
