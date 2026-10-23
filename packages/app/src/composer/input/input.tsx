@@ -2019,10 +2019,12 @@ const styles = StyleSheet.create((theme: Theme) => ({
   inputWrapper: {
     flexDirection: "column",
     gap: theme.spacing[3],
-    backgroundColor: theme.colors.surface1,
-    borderWidth: theme.borderWidth[1],
+    // Daseo delta 53 (2026-10-23): a terminal prompt line, not a box. Only the top rule
+    // stays, and the field sits on the page background so no filled rectangle remains.
+    backgroundColor: "transparent",
+    borderWidth: 0,
+    borderTopWidth: theme.borderWidth[1],
     borderColor: theme.colors.borderAccent,
-    // The shared Daseo composer is an IDE-like prompt panel on both desktop and mobile.
     borderRadius: theme.borderRadius.none,
     paddingVertical: {
       xs: theme.spacing[2],

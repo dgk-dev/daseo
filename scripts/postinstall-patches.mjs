@@ -42,6 +42,11 @@ const patchedPackages = [
     nodeModulesPath: "node_modules/expo-image-picker",
     patchPrefix: "expo-image-picker+",
   },
+  // Daseo delta 53: root Text and TextInput fall back to the app's interface font.
+  {
+    nodeModulesPath: "node_modules/react-native",
+    patchPrefix: "react-native+",
+  },
   {
     nodeModulesPath: "packages/server/node_modules/@opencode-ai/sdk",
     patchPrefix: "@opencode-ai+sdk+",

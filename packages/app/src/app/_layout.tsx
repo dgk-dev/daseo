@@ -108,9 +108,10 @@ import {
 } from "@/runtime/host-runtime";
 import { getDaemonStartService } from "@/runtime/daemon-start-service";
 import { applyAppearance } from "@/screens/settings/appearance/apply-appearance";
+import { applyRootUiFont } from "@/screens/settings/appearance/apply-root-font";
 import { selectIsAgentListOpen, usePanelStore } from "@/stores/panel-store";
 import { flushDraftPersistStorage } from "@/stores/draft-store";
-import { getNextThemePreference, THEME_TO_UNISTYLES } from "@/styles/theme";
+import { DEFAULT_UI_FONT_STACK, getNextThemePreference, THEME_TO_UNISTYLES } from "@/styles/theme";
 import { useSessionStore } from "@/stores/session-store";
 import { installWebScrollbarStyles } from "@/styles/install-web-scrollbar-styles";
 import { installBundledFonts } from "@/styles/bundled-fonts";
@@ -140,6 +141,9 @@ polyfillNavigator();
 polyfillCrypto();
 // Start the bundled font downloads before the first paint (web/Electron; no-op on native).
 installBundledFonts();
+// Daseo delta 53: the default interface font from the first paint; saved settings replace it
+// once they load (applyAppearance).
+applyRootUiFont(DEFAULT_UI_FONT_STACK);
 
 export interface HostRuntimeBootstrapState {
   splashError: string | null;

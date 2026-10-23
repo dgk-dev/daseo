@@ -578,14 +578,15 @@ export const OPACITY = {
 // Platform default font stacks — copied verbatim from constants/theme.ts `Fonts`
 // (sans -> ui, mono -> mono). These seed the dynamic `fontFamily` theme token and
 // are the fallback an empty user-supplied family resolves to at apply time.
-// Daseo delta 51: web/Electron draw the interface in the bundled Pretendard and code and
-// machine-shaped text in the bundled D2Coding (src/styles/bundled-fonts.web.ts); Android
-// embeds D2Coding only (app.config.js) and keeps the system face for prose, which its
-// Korean line metrics were tuned against (delta 8).
+// Daseo delta 51 bundled Pretendard and NAVER's D2Coding (src/styles/bundled-fonts.web.ts,
+// app.config.js). Delta 53 (2026-10-23, the owner's call): the whole interface, Korean
+// prose included, is drawn in D2Coding on web/Electron and Android; Pretendard stays as the
+// web fallback for glyphs D2Coding lacks. iOS embeds no font and keeps the system face.
 export const DEFAULT_UI_FONT_STACK: string = Platform.select({
   ios: "system-ui",
+  android: "D2Coding",
   default: "normal",
-  web: "'Pretendard Variable', Pretendard, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+  web: "D2Coding, 'Pretendard Variable', Pretendard, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
 });
 
 export const DEFAULT_MONO_FONT_STACK: string = Platform.select({

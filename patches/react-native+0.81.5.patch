@@ -1,0 +1,41 @@
+diff --git a/node_modules/react-native/Libraries/Components/TextInput/TextInput.js b/node_modules/react-native/Libraries/Components/TextInput/TextInput.js
+index 1e95eb6..cd139f8 100644
+--- a/node_modules/react-native/Libraries/Components/TextInput/TextInput.js
++++ b/node_modules/react-native/Libraries/Components/TextInput/TextInput.js
+@@ -663,6 +663,14 @@ function InternalTextInput(props: TextInputProps): React.Node {
+       _style = [_style, overrides];
+     }
+   }
++  // Daseo delta 53: the app's interface font for inputs without their own fontFamily.
++  const daseoDefaultFont = globalThis.__daseoDefaultFontFamily;
++  if (
++    typeof daseoDefaultFont === 'string' &&
++    (flattenedStyle == null || flattenedStyle.fontFamily == null)
++  ) {
++    _style = [{fontFamily: daseoDefaultFont}, _style];
++  }
+ 
+   if (Platform.OS === 'ios') {
+     const RCTTextInputView =
+diff --git a/node_modules/react-native/Libraries/Text/Text.js b/node_modules/react-native/Libraries/Text/Text.js
+index b08b8f3..0f2031c 100644
+--- a/node_modules/react-native/Libraries/Text/Text.js
++++ b/node_modules/react-native/Libraries/Text/Text.js
+@@ -170,6 +170,17 @@ const TextImpl: component(
+   const _nativeID = id ?? nativeID;
+ 
+   const hasTextAncestor = useContext(TextAncestorContext);
++  // Daseo delta 53: React Native has no font cascade, so a root Text without its own
++  // fontFamily gets the app's interface font (set by the app at startup); nested Text
++  // inherits it from the root.
++  const daseoDefaultFont = globalThis.__daseoDefaultFontFamily;
++  if (
++    !hasTextAncestor &&
++    typeof daseoDefaultFont === 'string' &&
++    (processedStyle == null || processedStyle.fontFamily == null)
++  ) {
++    _style = [{fontFamily: daseoDefaultFont}, _style];
++  }
+   if (hasTextAncestor) {
+     if (isPressable) {
+       return (

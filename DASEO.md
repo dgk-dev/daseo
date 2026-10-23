@@ -65,7 +65,8 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
    name (`packages/desktop/src/main.ts`), quiet theme-derived project fallback icons in
    `packages/app/src/components/project-icon-view.tsx` that reserve color for operational
    status, square graphite user prompt panels in `packages/app/src/components/message.tsx`, and
-   a matching square Composer with a compact monochrome stop control in `packages/app/src/composer/`
+   a Composer with a compact monochrome stop control in `packages/app/src/composer/` (a top rule
+   only since delta 53)
    that preserves shared layout, touch targets, and readability. Packaging uses the safe post-build Info.plist patch at
    `packages/desktop/scripts/daseo-app-package.mjs` plus the outer `Daseo.app` rename. The patch
    keeps `CFBundleName=Paseo`; Electron uses that internal product name to locate the
@@ -870,9 +871,9 @@ edits · 1 command · 2 file reads`; the counts end in an ellipsis before the ti
     research. The owner's screen is seen by colleagues, so Daseo should read as a developer tool
     without copying Codex or Claude Code. (a) Fonts ship with the app: Pretendard 1.3.9 for the
     desktop UI, and NAVER D2Coding 1.4.0 (Regular, Bold; OFL, shipped unmodified) as the monospace
-    on desktop and Android, so Hangul in code matches the body. Android prose keeps the system face
-    that delta 8 tuned. (b) Machine facts use the monospace: timestamps, elapsed time, the
-    "Worked for" row, diff counts, and keycaps. Korean prose never does. (c) A one-line status bar
+    on desktop and Android, so Hangul in code matches the body (since delta 53 the body is D2Coding
+    too). (b) Machine facts use the monospace: timestamps, elapsed time, the "Worked for" row,
+    diff counts, and keycaps. (c) A one-line status bar
     under the desktop workspace: host · workspace · branch · active agent's model, and how many
     agents run in the workspace. (d) The Daseo theme's corners drop from 8 to 4 px (radius scale
     0/2/2/3/4/6/8); the selected sidebar row also gets a 2 px rail on its left, reserved on every
@@ -886,8 +887,8 @@ edits · 1 command · 2 file reads`; the counts end in an ellipsis before the ti
     about 130 ms for 200 px) instead of jumping; reading above the bottom still stops following,
     and a jump taller than the viewport snaps. (h) App-authored motion uses one scale: 120 ms for
     tooltips, menus, and rails, 180 ms for switches and row fades, 100 ms exits, one easing
-    curve (0.2, 0, 0, 1). Not taken: monospace for Korean body text, neon, gradients, scanlines,
-    or tighter spacing (2026-08-17 rules). Key files: `packages/app/src/styles/bundled-fonts.web.ts`,
+    curve (0.2, 0, 0, 1). Not taken: neon, gradients, scanlines, or tighter spacing (2026-08-17
+    rules; the rule against monospace Korean prose was lifted by delta 53). Key files: `packages/app/src/styles/bundled-fonts.web.ts`,
     `styles/motion.ts`, `agent-stream/stream-pacing.ts`, `agent-stream/use-paced-stream-text.ts`,
     `agent-stream/strategy-web.tsx`, and `screens/workspace/workspace-status-line.tsx`.
 52. **A navigation that lands is not reported as a failure** — from the 2026-10-22 Ego Lite
@@ -899,6 +900,18 @@ edits · 1 command · 2 file reads`; the counts end in an ellipsis before the ti
     status when that URL is the committed one. ERR_ABORTED without a commit (a download, or
     nothing loaded) and every other net error stay failures. Key file:
     `packages/desktop/src/features/browser-automation/service.ts` (`supersededNavigationResult`).
+53. **D2Coding everywhere and a one-line prompt** — the owner's call on 2026-10-23, after
+    delta 51 left the body text looking unchanged (Pretendard is drawn to match Apple SD Gothic
+    Neo, and Android prose kept the system face). The interface font default is NAVER D2Coding on
+    web/Electron and Android, Korean prose included; Pretendard stays as the web fallback, iOS
+    keeps the system face (no embedded font), and the appearance setting still overrides it.
+    React Native has no font cascade, so `patches/react-native+0.81.5.patch` makes a root `Text`
+    and every `TextInput` without their own `fontFamily` use the family the app publishes at
+    startup (`screens/settings/appearance/native-root-font.ts`, set before the first paint and
+    again whenever appearance settings load or change); nested text inherits from its root. The
+    composer is a terminal prompt line on desktop and mobile: only the top rule remains, on the
+    page background (`composer/input/input.tsx`). Not measured on the Fold before release: Korean
+    line heights tuned in delta 8 against the system face.
 
 ## Local reliability contracts
 
