@@ -969,8 +969,15 @@ edits · 1 command · 2 file reads`; the counts end in an ellipsis before the ti
     2.7 → 5.3 s and p90 5.2 → 14.2 s as more agents unloaded. The model is Codex app-server's split
     of `thread/read` (stored history, nothing loaded) from `thread/resume`. A timeline page, the
     prompt index, and clearing attention for a stored agent that is not loaded now answer from its
-    committed timeline and stored record, and only an opened, unarchived chat then resumes its agent
-    in the background. The committed view is the seed a resume registers (same epoch, rows, and
+    committed timeline and stored record, and only the unarchived chat on screen then resumes its
+    agent in the background: a cold open (a `tail` page with no cursor), or the focused agent of a
+    visible client's heartbeat, once per focus (a reopened chat whose rows the app still holds
+    catches up with an `after` page; the tracker sends a heartbeat as soon as focus changes).
+    `after` and `before` pages never load: the app catches up its five most recently viewed chats
+    with them on every reconnect, and the phone reconnects through the relay every few minutes, so
+    loading on them restarted up to five hidden agents each time and kept them from ever reaching
+    the idle unloader. A chat left on screen still unloads after the idle period; moving focus away
+    and back loads it again. The committed view is the seed a resume registers (same epoch, rows, and
     `nextSeq`, open compactions closed), so the page's cursors stay valid after the load and the app
     is unchanged. The stored path applies only when the record has a resumable provider session
     (a record without one is recreated with an empty timeline on load) and committed rows (otherwise

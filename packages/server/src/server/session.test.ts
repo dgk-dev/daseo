@@ -6123,8 +6123,24 @@ describe("opening an unloaded agent answers from its committed timeline", () => 
     expect(lifecycles).toEqual(["idle"]);
   });
 
-  test("a cursor fetch after an unload also answers from storage", async () => {
-    const { session, messages, before, resumeCalls } = await createUnloadedAgent({
+  // A load that was started reaches resumeAgentFromPersistence within a few
+  // event-loop turns with the fake client; give it ample time before asserting none did.
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  function heartbeat(focusedAgentId: string | null, appVisible: boolean) {
+    return {
+      type: "client_heartbeat" as const,
+      deviceType: "mobile" as const,
+      focusedAgentId,
+      lastActivityAt: new Date().toISOString(),
+      appVisible,
+    };
+  }
+
+  test("a catch-up fetch answers from storage and never loads the agent", async () => {
+    const { session, manager, messages, before, resumeCalls } = await createUnloadedAgent({
       withHistory: true,
     });
 
@@ -6144,7 +6160,50 @@ describe("opening an unloaded agent answers from its committed timeline", () => 
     expect(response?.payload.entries.map((entry) => entry.item)).toEqual(
       before.rows.slice(2).map((row) => row.item),
     );
-    await vi.waitFor(() => expect(resumeCalls).toEqual([{ responded: true }]));
+
+    // The app catches up its recently viewed chats with `after` and `before` pages on
+    // every reconnect; none of them is the chat on screen.
+    await session.handleMessage({
+      type: "fetch_agent_timeline_request",
+      requestId: "older-page",
+      agentId: AGENT_ID,
+      direction: "before",
+      cursor: { epoch: before.epoch, seq: 3 },
+      limit: 2,
+    });
+    await settle();
+    expect(resumeCalls).toEqual([]);
+    expect(manager.getAgent(AGENT_ID)).toBeNull();
+  });
+
+  test("the focused agent of a visible client loads once per focus", async () => {
+    const { session, manager, resumeCalls } = await createUnloadedAgent({ withHistory: true });
+
+    await session.handleMessage(heartbeat(AGENT_ID, true));
+    await vi.waitFor(() => expect(manager.getAgent(AGENT_ID)?.lifecycle).toBe("idle"));
+    expect(resumeCalls).toHaveLength(1);
+
+    // Left on screen, the chat unloads after the idle period and stays unloaded.
+    await expect(manager.unloadIdleAgent(AGENT_ID, async () => true)).resolves.toBe(true);
+    await session.handleMessage(heartbeat(AGENT_ID, true));
+    await settle();
+    expect(resumeCalls).toHaveLength(1);
+    expect(manager.getAgent(AGENT_ID)).toBeNull();
+
+    // Moving focus away and back loads it again.
+    await session.handleMessage(heartbeat(null, true));
+    await session.handleMessage(heartbeat(AGENT_ID, true));
+    await vi.waitFor(() => expect(manager.getAgent(AGENT_ID)?.lifecycle).toBe("idle"));
+    expect(resumeCalls).toHaveLength(2);
+  });
+
+  test("a hidden client's focused agent is not loaded", async () => {
+    const { session, manager, resumeCalls } = await createUnloadedAgent({ withHistory: true });
+
+    await session.handleMessage(heartbeat(AGENT_ID, false));
+    await settle();
+    expect(resumeCalls).toEqual([]);
+    expect(manager.getAgent(AGENT_ID)).toBeNull();
   });
 
   test("an agent with nothing committed loads before answering", async () => {

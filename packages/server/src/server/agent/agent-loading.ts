@@ -42,6 +42,11 @@ export interface EnsureAgentLoadedDeps {
   logger: Logger;
 }
 
+/** Whether a load of this agent is in flight (a later `ensureAgentLoaded` joins it). */
+export function isAgentLoadInFlight(agentId: string): boolean {
+  return pendingAgentInitializations.has(agentId);
+}
+
 export async function ensureUnarchivedAgentLoaded(
   agentId: string,
   deps: EnsureAgentLoadedDeps & {

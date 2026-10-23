@@ -40,7 +40,11 @@ import {
   isStoredAgentProviderAvailable,
   toAgentPersistenceHandle,
 } from "./persistence-hooks.js";
-import { ensureAgentLoaded, ensureUnarchivedAgentLoaded } from "./agent/agent-loading.js";
+import {
+  ensureAgentLoaded,
+  ensureUnarchivedAgentLoaded,
+  isAgentLoadInFlight,
+} from "./agent/agent-loading.js";
 import {
   sendPromptToAgent,
   waitForAgentRunStartWithTimeout,
@@ -763,6 +767,12 @@ export class Session {
     appVisibilityChangedAt: Date;
   } | null = null;
   private registeredPushToken: string | null = null;
+  /**
+   * The focused agent this session already handled a background load for. Cleared when focus
+   * moves, so returning to a chat that unloaded meanwhile loads it again; kept while focus
+   * stays, so a chat left on screen still unloads after the idle period.
+   */
+  private focusLoadedAgentId: string | null = null;
   private readonly terminalManager: TerminalManager | null;
   private readonly providerSnapshotManager: ProviderSnapshotManager;
   private readonly serviceProxy: ServiceProxySubsystem | null;
@@ -4116,6 +4126,7 @@ export class Session {
     if (msg.appVisible && focusedTerminalId) {
       void this.clearFocusedTerminalAttention(focusedTerminalId);
     }
+    void this.loadFocusedAgentInBackground(msg.focusedAgentId?.trim() || null, msg.appVisible);
     if (this.registeredPushToken) {
       this.pushNotifications.renew(this.registeredPushToken);
     }
@@ -6816,6 +6827,16 @@ export class Session {
    * down the loading path.
    */
   private async readUnloadedAgentTimeline(agentId: string): Promise<UnloadedAgentTimeline | null> {
+    const record = await this.readResumableUnloadedRecord(agentId);
+    if (!record) {
+      return null;
+    }
+    const timeline = await this.agentManager.loadCommittedTimeline(agentId);
+    return timeline ? { record, timeline } : null;
+  }
+
+  /** The stored record of an agent that is not loaded and can resume its provider session. */
+  private async readResumableUnloadedRecord(agentId: string): Promise<StoredAgentRecord | null> {
     if (this.agentManager.getAgent(agentId)) {
       return null;
     }
@@ -6834,8 +6855,36 @@ export class Session {
     ) {
       return null;
     }
-    const timeline = await this.agentManager.loadCommittedTimeline(agentId);
-    return timeline ? { record, timeline } : null;
+    return record;
+  }
+
+  /**
+   * Loads the chat on screen when the client reports it, which covers reopening a chat whose
+   * rows the app still holds (its catch-up is an `after` fetch, which never loads). Once per
+   * focus: a repeated heartbeat for the same agent does nothing until focus moves.
+   */
+  private async loadFocusedAgentInBackground(
+    agentId: string | null,
+    appVisible: boolean,
+  ): Promise<void> {
+    if (agentId !== this.focusLoadedAgentId) {
+      this.focusLoadedAgentId = null;
+    }
+    if (!agentId || !appVisible || this.focusLoadedAgentId === agentId) {
+      return;
+    }
+    this.focusLoadedAgentId = agentId;
+    if (this.agentManager.getAgent(agentId) || isAgentLoadInFlight(agentId)) {
+      return;
+    }
+    try {
+      const record = await this.readResumableUnloadedRecord(agentId);
+      if (record) {
+        this.loadOpenedAgentInBackground(record);
+      }
+    } catch (error) {
+      this.sessionLogger.warn({ err: error, agentId }, "Failed to read the focused agent's record");
+    }
   }
 
   private committedTimelinePageSource(unloaded: UnloadedAgentTimeline): AgentTimelinePageSource {
@@ -6860,9 +6909,9 @@ export class Session {
   }
 
   /**
-   * Starts the provider for an agent whose chat was just opened from its stored
-   * timeline, so the next prompt does not wait for it. Only the opened agent is
-   * loaded (listing, hovering, and tabs never are), archived history stays
+   * Starts the provider for the chat on screen (a cold open, or the focused
+   * agent of a visible client), so the next prompt does not wait for it. Catch-up
+   * pages, listing, hovering, and tabs never load an agent, archived history stays
    * unloaded, and a prompt sent meanwhile joins this load. The idle unloader
    * stops it again after the usual quiet period.
    */
@@ -6986,7 +7035,11 @@ export class Session {
         },
         source,
       );
-      if (unloaded) {
+      // Only a cold open (tail, no cursor) is the chat being put on screen. `after` and
+      // `before` pages also catch up the app's recently viewed chats on every reconnect;
+      // loading those would restart up to five hidden agents each time and keep them from
+      // ever going idle. A reopened chat on screen loads through the focus heartbeat.
+      if (unloaded && direction === "tail" && !cursor) {
         this.loadOpenedAgentInBackground(unloaded.record);
       }
     } catch (error) {
