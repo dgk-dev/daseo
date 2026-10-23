@@ -912,6 +912,17 @@ edits · 1 command · 2 file reads`; the counts end in an ellipsis before the ti
     composer is a terminal prompt line on desktop and mobile: only the top rule remains, on the
     page background (`composer/input/input.tsx`). Not measured on the Fold before release: Korean
     line heights tuned in delta 8 against the system face.
+54. **A subagent that goes silent is reported to its caller** — from the 2026-10-23 wait audit
+    (306 waits since 2026-10-18: no lost wake, but a caller waiting on `notifyOnFinish` had no
+    deadline at all, and nothing noticed a child that stayed "running" without progress). The
+    finish watcher now also checks once a minute: a child whose lifecycle is `running`, with no
+    pending permission, and with no event of any kind for 20 minutes is reported to the caller
+    once as `Agent <id> (<title>) has shown no progress for 20 minutes.` with a pointer to
+    `get_agent_activity` and `cancel_agent`; any later child event re-arms it, and the finish
+    notice still follows. An idle child holding wait_for waits is left to their own deadlines and
+    check-ins (pi-local `5f3398a`). The status line does not match the app's four agent reasons, so
+    the app shows it as a plain system row. Key file: `packages/server/src/server/agent/agent-prompt.ts`
+    (`FINISH_WATCH_STALL_MS`, `checkStall`).
 
 ## Local reliability contracts
 
