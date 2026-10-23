@@ -291,7 +291,22 @@ export interface SetupFinishNotificationParams {
   logger: Logger;
 }
 
-type FinishNotificationReason = "finished" | "errored" | "needs permission" | "was closed";
+type FinishNotificationReason =
+  | "finished"
+  | "errored"
+  | "needs permission"
+  | "was closed"
+  | typeof STALL_NOTIFICATION_REASON;
+
+/**
+ * Local fork (DASEO.md delta 54): a child that stays "running" with no event for this long is
+ * reported to its caller once per silent stretch. The caller waits on a message and is told not to
+ * poll, so a child stuck mid-run (a hung provider stream, a tool that never returns) otherwise left
+ * it waiting with no deadline at all (2026-10-23 wait audit). Any child event resets the clock.
+ */
+export const FINISH_WATCH_STALL_MS = 20 * 60_000;
+export const FINISH_WATCH_STALL_CHECK_MS = 60_000;
+const STALL_NOTIFICATION_REASON = "has shown no progress for 20 minutes";
 
 const FINISH_NOTIFICATION_MESSAGE_LIMIT = 4000;
 
@@ -309,6 +324,11 @@ function formatFinishNotificationBody(params: FinishNotificationBodyInput): stri
   if (params.reason === "errored") {
     sections.push(
       "Daseo keeps watching this agent: if it recovers and finishes, you will be notified again.",
+    );
+  }
+  if (params.reason === STALL_NOTIFICATION_REASON) {
+    sections.push(
+      "It is still marked running but has produced no output, tool call, or state change in that time. Look at it with `get_agent_activity`; if it is stuck, stop it with `cancel_agent` and decide whether to retry. Daseo keeps watching: you will still be notified when it finishes.",
     );
   }
   if (params.reason === "needs permission" && params.permissionRequest) {
@@ -426,11 +446,32 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
   const notifiedPermissionRequestIds = new Set<string>();
   let unsubscribe: (() => void) | null = null;
   let notificationQueue = Promise.resolve();
+  let lastProgressAt = Date.now();
+  let stallNotified = false;
+  const stallTimer = setInterval(checkStall, FINISH_WATCH_STALL_CHECK_MS);
+  stallTimer.unref?.();
 
   function stop(): void {
     if (stopped) return;
     stopped = true;
+    clearInterval(stallTimer);
     unsubscribe?.();
+  }
+
+  function noteProgress(): void {
+    lastProgressAt = Date.now();
+    stallNotified = false;
+  }
+
+  function checkStall(): void {
+    if (stopped || stallNotified) return;
+    const child = agentManager.getAgent(childAgentId);
+    // Only a run in progress can stall; an idle child holding wait_for waits has their deadlines,
+    // and a permission request is already reported and waits on a person.
+    if (!child || child.lifecycle !== "running" || child.pendingPermissions.size > 0) return;
+    if (Date.now() - lastProgressAt < FINISH_WATCH_STALL_MS) return;
+    stallNotified = true;
+    notifySafely(STALL_NOTIFICATION_REASON, { terminal: false });
   }
 
   async function notify(
@@ -483,6 +524,7 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
       if (stopped) {
         return;
       }
+      noteProgress();
 
       if (event.type === "agent_state") {
         for (const requestId of notifiedPermissionRequestIds) {

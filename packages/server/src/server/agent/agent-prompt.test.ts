@@ -5,6 +5,8 @@ import { createTestLogger } from "../../test-utils/test-logger.js";
 import { AgentManager } from "./agent-manager.js";
 import { AgentStorage } from "./agent-storage.js";
 import {
+  FINISH_WATCH_STALL_CHECK_MS,
+  FINISH_WATCH_STALL_MS,
   formatSystemNotificationPrompt,
   isSystemInjectedEnvelope,
   sendPromptToAgent,
@@ -55,6 +57,8 @@ interface FinishNotificationScenario {
   finishChildAndReadParentPrompt(): Promise<string>;
   closeChildAndReadParentPrompt(): Promise<string>;
   failChild(): void;
+  runChild(): void;
+  emitChildProgress(): void;
   parentPrompts(): string[];
   wasParentPrompted(): boolean;
 }
@@ -197,6 +201,17 @@ function createFinishNotificationScenario(
     failChild() {
       childAgent.lifecycle = "error";
       subscriber?.({ type: "agent_state", agent: childAgent });
+    },
+    runChild() {
+      childAgent.lifecycle = "running";
+      subscriber?.({ type: "agent_state", agent: childAgent });
+    },
+    emitChildProgress() {
+      subscriber?.({
+        type: "agent_stream",
+        agentId: "child-agent",
+        event: { type: "turn_started", provider: "pi" },
+      } as AgentManagerEvent);
     },
     finishChild(pendingBackgroundWaits = 0) {
       childAgent.lifecycle = "running";
@@ -617,6 +632,63 @@ it("does not notify archived callers", async () => {
 
   expect(streamAgentSpy).not.toHaveBeenCalled();
   expect(replaceAgentRunSpy).not.toHaveBeenCalled();
+});
+
+describe("stall notice (delta 54)", () => {
+  test("a running child with no event for 20 minutes is reported once per silent stretch", async () => {
+    vi.useFakeTimers();
+    try {
+      const scenario = createFinishNotificationScenario();
+      scenario.startWatchingChild();
+      scenario.runChild();
+
+      await vi.advanceTimersByTimeAsync(FINISH_WATCH_STALL_MS - FINISH_WATCH_STALL_CHECK_MS);
+      expect(scenario.parentPrompts()).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(2 * FINISH_WATCH_STALL_CHECK_MS);
+      expect(scenario.parentPrompts()).toHaveLength(1);
+      expect(scenario.parentPrompts()[0]).toContain(
+        "Agent child-agent (Child Agent) has shown no progress for 20 minutes.",
+      );
+      expect(scenario.parentPrompts()[0]).toContain("get_agent_activity");
+
+      await vi.advanceTimersByTimeAsync(FINISH_WATCH_STALL_MS * 2);
+      expect(scenario.parentPrompts()).toHaveLength(1);
+
+      // Progress resets the clock; the finish is still reported afterwards.
+      scenario.emitChildProgress();
+      await vi.advanceTimersByTimeAsync(FINISH_WATCH_STALL_MS / 2);
+      expect(scenario.parentPrompts()).toHaveLength(1);
+      scenario.finishChild();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(scenario.parentPrompts()).toHaveLength(2);
+      expect(scenario.parentPrompts()[1]).toContain("Agent child-agent (Child Agent) finished.");
+      await vi.advanceTimersByTimeAsync(FINISH_WATCH_STALL_MS * 2);
+      expect(scenario.parentPrompts()).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("an idle child or one waiting on a permission is never reported as stalled", async () => {
+    vi.useFakeTimers();
+    try {
+      const idle = createFinishNotificationScenario();
+      idle.startWatchingChild();
+      await vi.advanceTimersByTimeAsync(FINISH_WATCH_STALL_MS * 2);
+      expect(idle.parentPrompts()).toEqual([]);
+
+      const permission = createFinishNotificationScenario();
+      permission.startWatchingChild();
+      permission.requestChildPermission();
+      await vi.advanceTimersByTimeAsync(FINISH_WATCH_STALL_MS * 2);
+      expect(permission.parentPrompts().filter((prompt) => prompt.includes("no progress"))).toEqual(
+        [],
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("finish watcher journal (delta 44)", () => {
