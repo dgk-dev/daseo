@@ -928,7 +928,10 @@ edits · 1 command · 2 file reads`; the counts end in an ellipsis before the ti
     selection still obvious). The Daseo theme is Tokyo Night: chat `#1a1b26`, sidebar and tab bar
     `#16161e`, text `#c0caf5`, and one accent (`#7aa2f7`) for everything active or selected; status
     and diff colors keep their meaning. Every theme radius is 0 (dots and pills included), and on
-    web a root rule squares the literal radii too (`styles/terminal-chrome.web.ts`). Text fields get a
+    web a root rule squares the literal radii too (`styles/terminal-chrome.web.ts`). The one exception is
+    the running indicator in the sidebar and tabs, which stays a ring (owner's correction the same day:
+    squared, its quarter arc reads as a bar sliding around a box); it uses a literal radius and a
+    `data-daseo-round` exemption (`components/status-ring/frame.tsx`). Text fields get a
     block cursor in the accent: CSS `caret-shape: block` on web (Chromium 146 in Electron 41) and an
     app-theme cursor drawable on Android (`plugins/with-android-block-cursor.js`). A selected sidebar
     row is a `>` pointer plus an accent title (`components/sidebar/sidebar-selection-pointer.tsx`, the

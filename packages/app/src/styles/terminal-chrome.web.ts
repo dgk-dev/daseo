@@ -7,6 +7,8 @@ function rule(caretColor: string): string {
   const color = caretColor.replace(/[^#(),.\w\s%-]/g, "");
   return [
     ":is(#root, #overlay-root) *, :is(#root, #overlay-root) *::before, :is(#root, #overlay-root) *::after{border-radius:0 !important;}",
+    // The running indicator (components/status-ring) stays a ring; this selector outranks the one above.
+    ":is(#root, #overlay-root) :is([data-daseo-round], [data-daseo-round] *){border-radius:9999px !important;}",
     `:is(#root, #overlay-root) :is(textarea, input){caret-shape:block;caret-color:${color};}`,
   ].join("\n");
 }

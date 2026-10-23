@@ -12,6 +12,12 @@ import {
 } from "@/components/status-ring/geometry";
 import { STATUS_INDICATOR_FILLED_DOT_SIZE } from "@/utils/status-indicator-geometry";
 
+// The ring stays round in every theme: its quarter is a single border side, which on a square box
+// is a bar sliding around the edge (Daseo delta 55 squares every theme radius). On web the frame's
+// data attribute exempts it from the root rule that squares literal radii (terminal-chrome.web.ts).
+const ROUND = 9999;
+const ROUND_DATASET = { daseoRound: "" } as const;
+
 export interface StatusRingProps {
   // The surface the ring is drawn on top of, named rather than resolved, because theme colours
   // are only legible inside `StyleSheet.create` — see docs/unistyles.md. The frame fills itself
@@ -32,7 +38,7 @@ export interface StatusRingProps {
  */
 export function StatusRingFrame({ backdrop, children }: StatusRingProps & { children: ReactNode }) {
   return (
-    <View style={[styles.frame, getBackdropStyle(backdrop)]}>
+    <View dataSet={ROUND_DATASET} style={[styles.frame, getBackdropStyle(backdrop)]}>
       <View style={styles.track} />
       {children}
       <View style={styles.centerDot} />
@@ -74,7 +80,7 @@ export const styles = StyleSheet.create((theme) => {
   const circle = {
     width: STATUS_RING_SIZE,
     height: STATUS_RING_SIZE,
-    borderRadius: theme.borderRadius.full,
+    borderRadius: ROUND,
     borderWidth: STATUS_RING_STROKE,
   } as const;
   const runningColor = getStatusDotColor({ theme, bucket: "running" }) ?? undefined;
@@ -83,7 +89,7 @@ export const styles = StyleSheet.create((theme) => {
     frame: {
       width: STATUS_RING_FRAME_SIZE,
       height: STATUS_RING_FRAME_SIZE,
-      borderRadius: theme.borderRadius.full,
+      borderRadius: ROUND,
       alignItems: "center",
       justifyContent: "center",
     },
@@ -114,7 +120,7 @@ export const styles = StyleSheet.create((theme) => {
     centerDot: {
       width: STATUS_INDICATOR_FILLED_DOT_SIZE,
       height: STATUS_INDICATOR_FILLED_DOT_SIZE,
-      borderRadius: theme.borderRadius.full,
+      borderRadius: ROUND,
       backgroundColor: runningColor,
     },
   };
