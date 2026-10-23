@@ -80,13 +80,18 @@ import {
   hashAgentCommandPayload,
   type AgentCommandReceiptStore,
 } from "./agent/agent-command-receipt-store.js";
-import { buildTimelinePromptIndex } from "./agent/timeline-prompt-index.js";
+import {
+  buildTimelinePromptIndex,
+  type TimelinePromptIndex,
+} from "./agent/timeline-prompt-index.js";
 import { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
 import type {
   AgentManagerEvent,
   AgentTimelineCursor,
   AgentTimelineFetchDirection,
+  AgentTimelineFetchOptions,
   AgentTimelineFetchResult,
+  CommittedAgentTimeline,
   ManagedAgent,
 } from "./agent/agent-manager.js";
 import { createAgentCommand } from "./agent/create-agent/create.js";
@@ -617,6 +622,19 @@ interface AgentTimelineProjectionSelection {
   endSeq: number | null;
   hasOlder: boolean;
   hasNewer: boolean;
+}
+
+/** Where a timeline page is read from: the loaded agent, or its committed store. */
+interface AgentTimelinePageSource {
+  agent: AgentSnapshotPayload;
+  provider: string;
+  fetchTimeline(options: AgentTimelineFetchOptions): AgentTimelineFetchResult;
+}
+
+/** A stored agent that is not loaded and would resume with this committed timeline. */
+interface UnloadedAgentTimeline {
+  record: StoredAgentRecord;
+  timeline: CommittedAgentTimeline;
 }
 
 type RegistryTransition = "created" | "unarchived" | "existing";
@@ -4008,25 +4026,11 @@ export class Session {
     const agentIds = Array.isArray(agentId) ? agentId : [agentId];
 
     try {
-      await Promise.all(
-        agentIds.map((id) =>
-          ensureAgentLoaded(id, {
-            agentManager: this.agentManager,
-            agentStorage: this.agentStorage,
-            logger: this.sessionLogger,
-          }),
-        ),
-      );
-      await Promise.all(agentIds.map((id) => this.agentManager.clearAgentAttention(id)));
+      const cleared = await Promise.all(agentIds.map((id) => this.clearOneAgentAttention(id)));
       if (requestId) {
-        const agents = (
-          await Promise.all(
-            agentIds.map(async (id) => {
-              const agent = this.agentManager.getAgent(id);
-              return agent ? this.buildAgentPayload(agent) : null;
-            }),
-          )
-        ).filter((payload): payload is NonNullable<typeof payload> => payload !== null);
+        const agents = cleared.filter(
+          (payload): payload is NonNullable<typeof payload> => payload !== null,
+        );
         this.emit({
           type: "clear_agent_attention_response",
           payload: {
@@ -4040,6 +4044,50 @@ export class Session {
       this.sessionLogger.error({ err: error, agentIds }, "Failed to clear agent attention");
       // Don't throw - this is not critical
     }
+  }
+
+  /**
+   * Clears one agent's attention flag. A stored agent that is not loaded has
+   * the flag cleared on its record: starting its provider only to clear a flag
+   * is what made opening an idle chat wait for it. Resuming never restores the
+   * flag, so the record and a later resume agree.
+   */
+  private async clearOneAgentAttention(agentId: string): Promise<AgentSnapshotPayload | null> {
+    if (!this.agentManager.getAgent(agentId)) {
+      await this.agentManager.waitForAgentClose(agentId);
+      const record = this.agentManager.getAgent(agentId)
+        ? null
+        : await this.agentStorage.get(agentId);
+      if (record && !record.internal) {
+        return this.clearStoredAgentAttention(record);
+      }
+    }
+
+    await ensureAgentLoaded(agentId, {
+      agentManager: this.agentManager,
+      agentStorage: this.agentStorage,
+      logger: this.sessionLogger,
+    });
+    await this.agentManager.clearAgentAttention(agentId);
+    const agent = this.agentManager.getAgent(agentId);
+    return agent ? this.buildAgentPayload(agent) : null;
+  }
+
+  private async clearStoredAgentAttention(
+    record: StoredAgentRecord,
+  ): Promise<AgentSnapshotPayload | null> {
+    const stored = await this.agentStorage.clearAttention(record.id);
+    if (!stored) {
+      return null;
+    }
+    if (record.requiresAttention !== true || stored.requiresAttention === true) {
+      return this.buildStoredAgentPayload(stored);
+    }
+    const payload = await this.agentUpdates.emitStoredRecord(stored);
+    if (payload.workspaceId) {
+      await this.emitWorkspaceUpdateForWorkspaceId(payload.workspaceId);
+    }
+    return payload;
   }
 
   /**
@@ -6712,12 +6760,11 @@ export class Session {
   }
 
   private selectProjectedTimelineProjection(input: {
-    agentId: string;
     controlTimeline: AgentTimelineFetchResult;
     direction: AgentTimelineFetchDirection;
     cursor?: AgentTimelineCursor;
     pageLimit: number;
-    fullTimeline?: AgentTimelineFetchResult;
+    fetchFullTimeline: () => AgentTimelineFetchResult;
   }): AgentTimelineProjectionSelection {
     const direction = input.controlTimeline.reset ? "tail" : input.direction;
     const selectedTimeline = this.shouldUseFullTimelineForProjectedPage({
@@ -6725,8 +6772,7 @@ export class Session {
       direction,
       pageLimit: input.pageLimit,
     })
-      ? (input.fullTimeline ??
-        this.agentManager.fetchTimeline(input.agentId, { direction: "tail", limit: 0 }))
+      ? input.fetchFullTimeline()
       : input.controlTimeline;
     const page = selectProjectedTimelinePage({
       rows: selectedTimeline.rows,
@@ -6748,19 +6794,112 @@ export class Session {
   }
 
   private selectTimelineProjection(input: {
-    agentId: string;
     projection: TimelineProjectionMode;
     controlTimeline: AgentTimelineFetchResult;
     direction: AgentTimelineFetchDirection;
     cursor?: AgentTimelineCursor;
     pageLimit: number;
-    fullTimeline?: AgentTimelineFetchResult;
+    fetchFullTimeline: () => AgentTimelineFetchResult;
   }): AgentTimelineProjectionSelection {
     if (input.projection === "canonical") {
       return this.selectCanonicalTimelineProjection({ timeline: input.controlTimeline });
     }
 
     return this.selectProjectedTimelineProjection(input);
+  }
+
+  /**
+   * Returns the committed timeline of a stored agent that is not loaded and
+   * would resume with exactly that timeline: it has a resumable provider session
+   * (a record without one is recreated with an empty timeline) and committed
+   * rows (otherwise resume hydrates from the provider). Null sends the caller
+   * down the loading path.
+   */
+  private async readUnloadedAgentTimeline(agentId: string): Promise<UnloadedAgentTimeline | null> {
+    if (this.agentManager.getAgent(agentId)) {
+      return null;
+    }
+    await this.agentManager.waitForAgentClose(agentId);
+    if (this.agentManager.getAgent(agentId)) {
+      return null;
+    }
+    const record = await this.agentStorage.get(agentId);
+    if (!record || record.internal) {
+      return null;
+    }
+    const registeredProviderIds = this.providerSnapshotManager.listRegisteredProviderIds();
+    if (
+      !isStoredAgentProviderAvailable(record, registeredProviderIds) ||
+      !toAgentPersistenceHandle(registeredProviderIds, record.persistence)
+    ) {
+      return null;
+    }
+    const timeline = await this.agentManager.loadCommittedTimeline(agentId);
+    return timeline ? { record, timeline } : null;
+  }
+
+  private committedTimelinePageSource(unloaded: UnloadedAgentTimeline): AgentTimelinePageSource {
+    return {
+      agent: this.buildStoredAgentPayload(unloaded.record),
+      provider: unloaded.record.provider,
+      fetchTimeline: (options) => unloaded.timeline.fetch(options),
+    };
+  }
+
+  private async loadedTimelinePageSource(agentId: string): Promise<AgentTimelinePageSource> {
+    const snapshot = await ensureAgentLoaded(agentId, {
+      agentManager: this.agentManager,
+      agentStorage: this.agentStorage,
+      logger: this.sessionLogger,
+    });
+    return {
+      agent: await this.buildAgentPayload(snapshot),
+      provider: snapshot.provider,
+      fetchTimeline: (options) => this.agentManager.fetchTimeline(agentId, options),
+    };
+  }
+
+  /**
+   * Starts the provider for an agent whose chat was just opened from its stored
+   * timeline, so the next prompt does not wait for it. Only the opened agent is
+   * loaded (listing, hovering, and tabs never are), archived history stays
+   * unloaded, and a prompt sent meanwhile joins this load. The idle unloader
+   * stops it again after the usual quiet period.
+   */
+  private loadOpenedAgentInBackground(record: StoredAgentRecord): void {
+    if (record.archivedAt) {
+      return;
+    }
+    void ensureUnarchivedAgentLoaded(record.id, {
+      agentManager: this.agentManager,
+      agentStorage: this.agentStorage,
+      publishWhenReady: true,
+      logger: this.sessionLogger,
+    }).catch((error: unknown) => {
+      this.sessionLogger.warn(
+        { err: error, agentId: record.id },
+        "Failed to load an opened agent in the background",
+      );
+    });
+  }
+
+  private async buildAgentPromptIndex(agentId: string): Promise<TimelinePromptIndex> {
+    const unloaded = await this.readUnloadedAgentTimeline(agentId);
+    if (unloaded) {
+      const { epoch } = unloaded.timeline.fetch({ direction: "tail", limit: 1 });
+      return buildTimelinePromptIndex(epoch, unloaded.timeline.getRows());
+    }
+    await ensureAgentLoaded(agentId, {
+      agentManager: this.agentManager,
+      agentStorage: this.agentStorage,
+      logger: this.sessionLogger,
+    });
+    const rows = await this.agentManager.getTimelineRows(agentId);
+    const timeline = this.agentManager.fetchTimeline(agentId, {
+      direction: "tail",
+      limit: 1,
+    });
+    return buildTimelinePromptIndex(timeline.epoch, rows);
   }
 
   private async handleFetchAgentTimelineRequest(
@@ -6779,25 +6918,25 @@ export class Session {
       : undefined;
 
     try {
-      const snapshot = await ensureAgentLoaded(msg.agentId, {
-        agentManager: this.agentManager,
-        agentStorage: this.agentStorage,
-        logger: this.sessionLogger,
-      });
-      const agentPayload = await this.buildAgentPayload(snapshot);
+      // An unloaded agent answers from its committed timeline at once and loads
+      // in the background, instead of holding the page behind a provider start.
+      const unloaded = await this.readUnloadedAgentTimeline(msg.agentId);
+      const pageSource = unloaded
+        ? this.committedTimelinePageSource(unloaded)
+        : await this.loadedTimelinePageSource(msg.agentId);
 
-      const fetchedControlTimeline = this.agentManager.fetchTimeline(msg.agentId, {
+      const fetchedControlTimeline = pageSource.fetchTimeline({
         direction,
         cursor,
         limit: pageLimit,
       });
       const selectedTimeline = this.selectTimelineProjection({
-        agentId: msg.agentId,
         projection,
         controlTimeline: fetchedControlTimeline,
         direction,
         ...(cursor ? { cursor } : {}),
         pageLimit,
+        fetchFullTimeline: () => pageSource.fetchTimeline({ direction: "tail", limit: 0 }),
       });
       const startCursor =
         selectedTimeline.startSeq !== null
@@ -6814,7 +6953,7 @@ export class Session {
           payload: {
             requestId: msg.requestId,
             agentId: msg.agentId,
-            agent: agentPayload,
+            agent: pageSource.agent,
             direction,
             projection,
             epoch: selectedTimeline.timeline.epoch,
@@ -6828,7 +6967,7 @@ export class Session {
             hasNewer: selectedTimeline.hasNewer,
             ...(msg.mergeWindow === true ? { mergeWindow: true } : {}),
             entries: selectedTimeline.entries.map((entry) => ({
-              provider: snapshot.provider,
+              provider: pageSource.provider,
               item: entry.item,
               timestamp: entry.timestamp,
               seqStart: entry.seqStart,
@@ -6847,6 +6986,9 @@ export class Session {
         },
         source,
       );
+      if (unloaded) {
+        this.loadOpenedAgentInBackground(unloaded.record);
+      }
     } catch (error) {
       this.sessionLogger.error(
         { err: error, agentId: msg.agentId },
@@ -6885,17 +7027,7 @@ export class Session {
     source?: object,
   ): Promise<void> {
     try {
-      await ensureAgentLoaded(msg.agentId, {
-        agentManager: this.agentManager,
-        agentStorage: this.agentStorage,
-        logger: this.sessionLogger,
-      });
-      const rows = await this.agentManager.getTimelineRows(msg.agentId);
-      const timeline = this.agentManager.fetchTimeline(msg.agentId, {
-        direction: "tail",
-        limit: 1,
-      });
-      const index = buildTimelinePromptIndex(timeline.epoch, rows);
+      const index = await this.buildAgentPromptIndex(msg.agentId);
       this.emitForSource(
         {
           type: "agent.timeline.list_prompts.response",

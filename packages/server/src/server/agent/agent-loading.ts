@@ -33,6 +33,12 @@ export interface EnsureAgentLoadedDeps {
   agentStorage: AgentStorage;
   validProviders?: Iterable<AgentProvider>;
   broadcastTimeline?: boolean;
+  /**
+   * Resume without broadcasting the intermediate `initializing` state. Used when
+   * the agent is loaded in the background behind a stored-timeline answer.
+   * Joining an in-flight load keeps that load's choice.
+   */
+  publishWhenReady?: boolean;
   logger: Logger;
 }
 
@@ -109,7 +115,10 @@ export async function ensureAgentLoaded(
         handle,
         buildConfigOverrides(record),
         agentId,
-        extractTimestamps(record),
+        {
+          ...extractTimestamps(record),
+          ...(deps.publishWhenReady ? { publishWhenReady: true } : {}),
+        },
         record.archivedAt ? { purpose: "history" } : undefined,
       );
       deps.logger.info({ agentId, provider: record.provider }, "Agent resumed from persistence");

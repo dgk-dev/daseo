@@ -29,8 +29,11 @@ import {
 import { isSessionRpcAllowed, Session } from "./session.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
 import { StructuredAgentFallbackError } from "./agent/agent-response-loop.js";
-import type { StoredAgentRecord } from "./agent/agent-storage.js";
-import type { AgentManagerEvent } from "./agent/agent-manager.js";
+import { AgentStorage, type StoredAgentRecord } from "./agent/agent-storage.js";
+import { AgentManager, type AgentManagerEvent } from "./agent/agent-manager.js";
+import { ensureAgentLoaded } from "./agent/agent-loading.js";
+import { FileBackedAgentTimelineStore } from "./agent/file-backed-agent-timeline-store.js";
+import { createTestAgentClients } from "./test-utils/fake-agent-client.js";
 import { AgentCommandReceiptStore } from "./agent/agent-command-receipt-store.js";
 import { InMemoryAgentTimelineStore } from "./agent/agent-timeline-store.js";
 import type { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
@@ -5967,4 +5970,271 @@ test("projected tail page for a long turn begins at the turn's user message", as
   expect(response?.payload.entries).toHaveLength(61);
   expect(response?.payload.startCursor?.seq).toBe(3);
   expect(response?.payload.hasOlder).toBe(true);
+});
+
+describe("opening an unloaded agent answers from its committed timeline", () => {
+  const AGENT_ID = "00000000-0000-4000-8000-000000000581";
+  const tempDirs: string[] = [];
+  const managers: AgentManager[] = [];
+
+  afterEach(async () => {
+    for (const manager of managers.splice(0)) {
+      await manager.closeAgent(AGENT_ID).catch(() => undefined);
+      await manager.flush().catch(() => undefined);
+    }
+    for (const directory of tempDirs.splice(0)) {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  // The session test helper spreads its overrides, which drops class prototype
+  // methods; bind them so the session talks to the real manager and storage.
+  function bindMethods(instance: object): Record<string, unknown> {
+    const bound: Record<string, unknown> = {};
+    for (
+      let proto = Object.getPrototypeOf(instance);
+      proto && proto !== Object.prototype;
+      proto = Object.getPrototypeOf(proto)
+    ) {
+      for (const name of Object.getOwnPropertyNames(proto)) {
+        const descriptor = Object.getOwnPropertyDescriptor(proto, name);
+        if (name === "constructor" || name in bound || typeof descriptor?.value !== "function") {
+          continue;
+        }
+        // Read through the instance so spies installed on it are kept.
+        const method = Reflect.get(instance, name) as (...args: unknown[]) => unknown;
+        bound[name] = method.bind(instance);
+      }
+    }
+    return bound;
+  }
+
+  async function createUnloadedAgent(input: { withHistory: boolean }) {
+    const root = mkdtempSync(join(tmpdir(), "session-durable-first-open-"));
+    tempDirs.push(root);
+    const logger = pino({ level: "silent" });
+    const storage = new AgentStorage(join(root, "agents"), logger);
+    const durableTimelineStore = new FileBackedAgentTimelineStore(join(root, "timelines"));
+    const codex = createTestAgentClients().codex;
+    if (!codex) {
+      throw new Error("expected Codex test client");
+    }
+    const manager = new AgentManager({
+      clients: { codex },
+      registry: storage,
+      durableTimelineStore,
+      logger,
+    });
+    managers.push(manager);
+
+    await manager.createAgent({ provider: "codex", cwd: root }, AGENT_ID, {
+      workspaceId: undefined,
+    });
+    if (input.withHistory) {
+      await manager.appendTimelineItem(AGENT_ID, { type: "user_message", text: "first prompt" });
+      await manager.appendTimelineItem(AGENT_ID, {
+        type: "assistant_message",
+        text: "first answer",
+      });
+      await manager.appendTimelineItem(AGENT_ID, { type: "user_message", text: "second prompt" });
+      await manager.appendTimelineItem(AGENT_ID, {
+        type: "assistant_message",
+        text: "second answer",
+      });
+    }
+    await manager.flush();
+    const before = manager.fetchTimeline(AGENT_ID, { direction: "tail", limit: 0 });
+    await expect(manager.unloadIdleAgent(AGENT_ID, async () => true)).resolves.toBe(true);
+    await storage.flush();
+    expect(manager.getAgent(AGENT_ID)).toBeNull();
+
+    const messages: SessionOutboundMessage[] = [];
+    const resumeCalls: Array<{ responded: boolean }> = [];
+    const resume = manager.resumeAgentFromPersistence.bind(manager);
+    vi.spyOn(manager, "resumeAgentFromPersistence").mockImplementation((...args) => {
+      resumeCalls.push({
+        responded: messages.some(
+          (message) =>
+            message.type === "fetch_agent_timeline_response" ||
+            message.type === "clear_agent_attention_response" ||
+            message.type === "agent.timeline.list_prompts.response",
+        ),
+      });
+      return resume(...args);
+    });
+    const lifecycles: string[] = [];
+    manager.subscribe(
+      (event) => {
+        if (event.type === "agent_state" && event.agent.id === AGENT_ID) {
+          lifecycles.push(event.agent.lifecycle);
+        }
+      },
+      { replayState: false },
+    );
+    const providers = createProviderSnapshotManagerStub();
+    providers.listRegisteredProviderIds.mockReturnValue(["codex"]);
+    const session = createSessionForTest({
+      messages,
+      agentManager: bindMethods(manager),
+      agentStorage: bindMethods(storage),
+      providerSnapshotManager: providers.manager,
+    });
+    return { session, manager, storage, messages, before, resumeCalls, lifecycles, logger };
+  }
+
+  function findResponse<T extends SessionOutboundMessage["type"]>(
+    messages: SessionOutboundMessage[],
+    type: T,
+  ): Extract<SessionOutboundMessage, { type: T }> | undefined {
+    return messages.find(
+      (message): message is Extract<SessionOutboundMessage, { type: T }> => message.type === type,
+    );
+  }
+
+  test("a tail fetch answers from storage, then loads the agent with the same cursor", async () => {
+    const { session, manager, messages, before, resumeCalls, lifecycles } =
+      await createUnloadedAgent({ withHistory: true });
+
+    await session.handleMessage({
+      type: "fetch_agent_timeline_request",
+      requestId: "open-tail",
+      agentId: AGENT_ID,
+      direction: "tail",
+      limit: 200,
+    });
+
+    const response = findResponse(messages, "fetch_agent_timeline_response");
+    expect(response?.payload.error).toBeNull();
+    expect(response?.payload.agent).toMatchObject({ id: AGENT_ID, status: "idle" });
+    expect(response?.payload.epoch).toBe(before.epoch);
+    expect(response?.payload.window).toEqual(before.window);
+    expect(response?.payload.entries.map((entry) => entry.item)).toEqual(
+      before.rows.map((row) => row.item),
+    );
+    expect(response?.payload.entries.every((entry) => entry.provider === "codex")).toBe(true);
+
+    await vi.waitFor(() => expect(manager.getAgent(AGENT_ID)?.lifecycle).toBe("idle"));
+    expect(resumeCalls).toEqual([{ responded: true }]);
+    const resumed = manager.fetchTimeline(AGENT_ID, { direction: "tail", limit: 0 });
+    expect(resumed.epoch).toBe(response?.payload.epoch);
+    expect(resumed.window.nextSeq).toBe(response?.payload.window.nextSeq);
+    // The chat already shows the stored agent as idle; the background load
+    // publishes only its ready state.
+    expect(lifecycles).toEqual(["idle"]);
+  });
+
+  test("a cursor fetch after an unload also answers from storage", async () => {
+    const { session, messages, before, resumeCalls } = await createUnloadedAgent({
+      withHistory: true,
+    });
+
+    await session.handleMessage({
+      type: "fetch_agent_timeline_request",
+      requestId: "open-after",
+      agentId: AGENT_ID,
+      direction: "after",
+      cursor: { epoch: before.epoch, seq: 2 },
+      projection: "canonical",
+      limit: 0,
+    });
+
+    const response = findResponse(messages, "fetch_agent_timeline_response");
+    expect(response?.payload.error).toBeNull();
+    expect(response?.payload.staleCursor).toBe(false);
+    expect(response?.payload.entries.map((entry) => entry.item)).toEqual(
+      before.rows.slice(2).map((row) => row.item),
+    );
+    await vi.waitFor(() => expect(resumeCalls).toEqual([{ responded: true }]));
+  });
+
+  test("an agent with nothing committed loads before answering", async () => {
+    const { session, manager, messages, resumeCalls } = await createUnloadedAgent({
+      withHistory: false,
+    });
+
+    await session.handleMessage({
+      type: "fetch_agent_timeline_request",
+      requestId: "open-empty",
+      agentId: AGENT_ID,
+      direction: "tail",
+      limit: 200,
+    });
+
+    expect(findResponse(messages, "fetch_agent_timeline_response")?.payload.error).toBeNull();
+    expect(resumeCalls).toEqual([{ responded: false }]);
+    expect(manager.getAgent(AGENT_ID)).not.toBeNull();
+  });
+
+  test("clearing attention on an unloaded agent updates its record without loading it", async () => {
+    const { session, manager, storage, messages, resumeCalls, logger } = await createUnloadedAgent({
+      withHistory: true,
+    });
+    const record = await storage.get(AGENT_ID);
+    if (!record) {
+      throw new Error("expected a stored record");
+    }
+    await storage.upsert({
+      ...record,
+      requiresAttention: true,
+      attentionReason: "finished",
+      attentionTimestamp: "2026-10-24T00:00:00.000Z",
+    });
+
+    await session.handleMessage({
+      type: "clear_agent_attention",
+      agentId: AGENT_ID,
+      requestId: "clear-unloaded",
+    });
+
+    const response = findResponse(messages, "clear_agent_attention_response");
+    expect(response?.payload.agents).toEqual([
+      expect.objectContaining({ id: AGENT_ID, requiresAttention: false }),
+    ]);
+    expect(await storage.get(AGENT_ID)).toMatchObject({
+      requiresAttention: false,
+      attentionReason: null,
+      attentionTimestamp: null,
+      updatedAt: record.updatedAt,
+    });
+    expect(resumeCalls).toEqual([]);
+    expect(manager.getAgent(AGENT_ID)).toBeNull();
+
+    const resumed = await ensureAgentLoaded(AGENT_ID, {
+      agentManager: manager,
+      agentStorage: storage,
+      logger,
+    });
+    expect(resumed.attention).toEqual({ requiresAttention: false });
+  });
+
+  test("the prompt index of an unloaded agent comes from storage", async () => {
+    const { session, manager, storage, messages, resumeCalls, logger } = await createUnloadedAgent({
+      withHistory: true,
+    });
+
+    await session.handleMessage({
+      type: "agent.timeline.list_prompts.request",
+      requestId: "prompts-unloaded",
+      agentId: AGENT_ID,
+    });
+
+    const response = findResponse(messages, "agent.timeline.list_prompts.response");
+    expect(response?.payload.error).toBeNull();
+    expect(response?.payload.prompts.map((prompt) => prompt.preview)).toEqual([
+      "first prompt",
+      "second prompt",
+    ]);
+    expect(resumeCalls).toEqual([]);
+
+    await ensureAgentLoaded(AGENT_ID, { agentManager: manager, agentStorage: storage, logger });
+    messages.length = 0;
+    await session.handleMessage({
+      type: "agent.timeline.list_prompts.request",
+      requestId: "prompts-loaded",
+      agentId: AGENT_ID,
+    });
+    const loaded = findResponse(messages, "agent.timeline.list_prompts.response");
+    expect(loaded?.payload.epoch).toBe(response?.payload.epoch);
+    expect(loaded?.payload.prompts).toEqual(response?.payload.prompts);
+  });
 });

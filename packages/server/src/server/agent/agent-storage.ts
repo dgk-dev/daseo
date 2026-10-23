@@ -263,6 +263,28 @@ export class AgentStorage {
     });
   }
 
+  /**
+   * Clears an unloaded agent's attention flag inside the per-agent write queue,
+   * so it cannot interleave with a snapshot flush from a concurrent resume.
+   * Leaves `updatedAt` alone, as clearing a live agent's attention does.
+   * Returns the stored record afterwards, or null when there is none.
+   */
+  async clearAttention(agentId: string): Promise<StoredAgentRecord | null> {
+    await this.load();
+    await this.waitForPendingWrite(agentId);
+    const record = this.cache.get(agentId);
+    if (!record || record.requiresAttention !== true) {
+      return record ?? null;
+    }
+    await this.queueRecordMutation(agentId, (existing) => ({
+      ...(existing ?? record),
+      requiresAttention: false,
+      attentionReason: null,
+      attentionTimestamp: null,
+    }));
+    return this.cache.get(agentId) ?? null;
+  }
+
   async setTitle(agentId: string, title: string): Promise<void> {
     await this.load();
     await this.waitForPendingWrite(agentId);

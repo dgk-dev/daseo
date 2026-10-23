@@ -319,6 +319,27 @@ export interface WaitForAgentStartOptions {
   signal?: AbortSignal;
 }
 
+export interface ResumeAgentRegistrationOptions {
+  createdAt?: Date;
+  updatedAt?: Date;
+  lastUserMessageAt?: Date | null;
+  labels?: Record<string, string>;
+  workspaceId?: string;
+  owner?: AgentOwner;
+  /**
+   * Skip the `initializing` state broadcast and publish the agent once it is
+   * idle. Clients already list a stored agent as idle, so a background resume
+   * should not flash an intermediate state in an open chat.
+   */
+  publishWhenReady?: boolean;
+}
+
+/** A read-only page source over an unloaded agent's committed timeline. */
+export interface CommittedAgentTimeline {
+  fetch(options?: AgentTimelineFetchOptions): AgentTimelineFetchResult;
+  getRows(): AgentTimelineRow[];
+}
+
 type AttentionState =
   | { requiresAttention: false }
   | {
@@ -1124,6 +1145,30 @@ export class AgentManager {
     return this.timelineStore.fetch(id, options);
   }
 
+  /**
+   * Reads an agent's committed timeline without loading the agent, the way
+   * Codex app-server answers `thread/read` without `thread/resume`. The view is
+   * the same seed a resume registers (same epoch, rows, and nextSeq, open
+   * compactions closed), so cursors taken from it stay valid once the agent
+   * loads. Null when there is no durable store or nothing was committed.
+   */
+  async loadCommittedTimeline(agentId: string): Promise<CommittedAgentTimeline | null> {
+    if (!this.durableTimelineStore) {
+      return null;
+    }
+    const seed = await this.loadCommittedTimelineSeed(agentId, new Date());
+    if (!seed.rows?.length) {
+      return null;
+    }
+    const store = new InMemoryAgentTimelineStore();
+    store.initialize(agentId, seed);
+    store.terminalizeOpenCompactions(agentId, INTERRUPTED_COMPACTION_ERROR);
+    return {
+      fetch: (options) => store.fetch(agentId, options),
+      getRows: () => store.getRows(agentId),
+    };
+  }
+
   listProviderSubagents(parentAgentId: string): ProviderSubagentDescriptor[] {
     this.requirePublicAgent(parentAgentId);
     return this.providerSubagents.list(parentAgentId);
@@ -1214,14 +1259,7 @@ export class AgentManager {
     handle: AgentPersistenceHandle,
     overrides?: Partial<AgentSessionConfig>,
     agentId?: string,
-    options?: {
-      createdAt?: Date;
-      updatedAt?: Date;
-      lastUserMessageAt?: Date | null;
-      labels?: Record<string, string>;
-      workspaceId?: string;
-      owner?: AgentOwner;
-    },
+    options?: ResumeAgentRegistrationOptions,
     resumeOptions?: AgentResumeSessionOptions,
   ): Promise<ManagedAgent> {
     return this.trackAgentRegistrationOperation(
@@ -1233,14 +1271,7 @@ export class AgentManager {
     handle: AgentPersistenceHandle,
     overrides?: Partial<AgentSessionConfig>,
     agentId?: string,
-    options?: {
-      createdAt?: Date;
-      updatedAt?: Date;
-      lastUserMessageAt?: Date | null;
-      labels?: Record<string, string>;
-      workspaceId?: string;
-      owner?: AgentOwner;
-    },
+    options?: ResumeAgentRegistrationOptions,
     resumeOptions?: AgentResumeSessionOptions,
   ): Promise<ManagedAgent> {
     this.assertAcceptingAgentRegistrations();

@@ -508,8 +508,9 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     runtime (closing tree-kills them, which would stop a dev server it started), is not internal,
     and has a stored session to resume. The agent stays stored and shown as idle: no closed state
     is broadcast, because "Archive finished" and other client logic treat only `idle` as done. The
-    next open, prompt, or send resumes it through `ensureAgentLoaded`, the path every agent takes
-    after a daemon restart, with the same timeline epoch and rows (about 1 s for Pi). (e) pi-local's
+    next prompt or send resumes it through `ensureAgentLoaded`, the path every agent takes after a
+    daemon restart, with the same timeline epoch and rows (about 1 s for Pi); opening it answers from
+    storage first (delta 58). (e) pi-local's
     browser credential broker loads its MCP client on first use (about 34 MB less per Pi). Key
     files: `packages/desktop/src/features/browser-webviews/{lifecycle,index}.ts`,
     `packages/desktop/src/features/browser-automation/{ipc,service}.ts`,
@@ -960,6 +961,31 @@ edits · 1 command · 2 file reads`; the counts end in an ellipsis before the ti
     borders, rounded top corners, and a 16 px tuck under the composer, which now showed through the
     transparent prompt. Both are now a header row under one top rule in the border color, with no
     fill, sides, corners, or overlap (`composer/task-list/index.tsx`, `subagents/track.tsx`).
+
+58. **Opening an unloaded chat answers from storage, and the agent loads behind it** — the owner's
+    call on 2026-10-24 ("어떤 세션이든 누르면 즉시"). Opening an agent that delta 33(d) unloaded, or one
+    not opened since the daemon started, waited for its Pi process to start before the app dropped
+    its full-screen spinner: 595 slow `fetch_agent_timeline_request`s from 2026-10-02 to 10-23, p50
+    2.7 → 5.3 s and p90 5.2 → 14.2 s as more agents unloaded. The model is Codex app-server's split
+    of `thread/read` (stored history, nothing loaded) from `thread/resume`. A timeline page, the
+    prompt index, and clearing attention for a stored agent that is not loaded now answer from its
+    committed timeline and stored record, and only an opened, unarchived chat then resumes its agent
+    in the background. The committed view is the seed a resume registers (same epoch, rows, and
+    `nextSeq`, open compactions closed), so the page's cursors stay valid after the load and the app
+    is unchanged. The stored path applies only when the record has a resumable provider session
+    (a record without one is recreated with an empty timeline on load) and committed rows (otherwise
+    the load hydrates from the provider); anything else takes the old wait. The background resume
+    publishes only its final `idle` state, so the open chat's context meter does not flash a loading
+    ring, and a prompt sent meanwhile joins it. Clearing attention writes the record inside the
+    storage write queue and leaves `updatedAt` alone, as it does for a loaded agent; a resume never
+    restores the flag, so the record and the loaded agent agree. Listing, hovering, and tabs still
+    never load an agent, the provider-subagent list still waits for the load it shares, and the
+    idle unloader is unchanged. pi-local moved two startup costs off Pi's readiness answer in the
+    same change (worktree-scope ownership restore and Claude profile checks), so a Pi resume on a
+    6 MB session answers in a measured 0.6 s instead of an estimated 1.35 s. Key files:
+    `packages/server/src/server/session.ts`
+    (`readUnloadedAgentTimeline`, `loadOpenedAgentInBackground`),
+    `packages/server/src/server/agent/{agent-manager,agent-loading,agent-storage}.ts`.
 
 ## Local reliability contracts
 

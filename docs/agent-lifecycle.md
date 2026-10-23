@@ -19,7 +19,9 @@ processes and subscriptions while retaining its Paseo identity, persistence hand
 workspace, labels, title, usage, attention, timestamps, and parent relationship. Opening or prompting
 the agent runs through `ensureAgentLoaded()`, which resumes the durable provider session under the
 same Paseo agent ID. Provider history is not appended again when the canonical timeline is already
-primed.
+primed. Reads that need only the timeline or the stored record (a timeline page, the prompt index,
+clearing attention) answer from the committed timeline without resuming, and an opened chat then
+resumes its agent in the background (`readUnloadedAgentTimeline` in `session.ts`).
 
 Idle agents remain resident indefinitely. Runtime closure happens only through an explicit lifecycle
 action such as archive, replacement, reload, workspace teardown, or daemon shutdown.
