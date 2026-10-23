@@ -943,6 +943,18 @@ edits · 1 command · 2 file reads`; the counts end in an ellipsis before the ti
     marker at 56 hides the sidebar's `+N -M` diff count once (owner's call the same day: not needed);
     the row's trailing-slot setting still brings it back, and new installs default to nothing there.
 
+56. **Transcript paths open on the Mac** — the owner's call on 2026-10-23 (opening "saved it here"
+    paths by hand was tedious). On the Mac app, with the transcript's daemon on this machine, a path
+    link to a folder opens in Finder and one to a page, PDF, image, media file, or office/HWP
+    document opens in its macOS app (HTML in the default browser, Chrome here). The desktop main
+    process stats the path and decides (`packages/desktop/src/features/opener.ts`,
+    `paseo:opener:openLocalPath`); source, text, logs, unknown extensions, and app/installer bundles
+    come back "not-handled" and open in the file pane as before, because the macOS defaults for
+    those are wrong (`.ts` opens QuickTime) and a click must never run an agent-named script. A link
+    with a line number, a remote daemon's path, and the phone keep the file pane. URLs already
+    opened in the default browser. App side: `assistant-file-links/use-file-link.ts`
+    (`openInMacApp`), `provider.tsx` (`isLocalDaemon`).
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

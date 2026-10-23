@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import type { OpenFileDisposition } from "@/workspace/file-open";
 import { openExternalUrl } from "@/utils/open-external-url";
+import { getDesktopHost } from "@/desktop/host";
 import type { InlinePathTarget } from "./parse";
 import {
   useAssistantFileLinkResolverContext,
@@ -341,7 +342,29 @@ async function dispatchFileTarget(input: {
   ) {
     return;
   }
+  if (await openInMacApp(input.target, current.isLocalDaemon === true)) {
+    return;
+  }
   current.onOpenWorkspaceFile?.(input.target, input.disposition);
+}
+
+// Daseo delta 56: on the Mac app, a folder opens in Finder and a page, PDF, image, or document in
+// its Mac app; the desktop main process decides and answers "not-handled" for source, text, and
+// anything executable. A line reference means code to read, so it stays in the file pane, and so
+// does every path from a remote daemon — it may not exist on this machine.
+async function openInMacApp(target: InlinePathTarget, isLocalDaemon: boolean): Promise<boolean> {
+  if (!isLocalDaemon || target.lineStart !== undefined) {
+    return false;
+  }
+  const openLocalPath = getDesktopHost()?.opener?.openLocalPath;
+  if (typeof openLocalPath !== "function") {
+    return false;
+  }
+  try {
+    return (await openLocalPath(target.path)) === "opened";
+  } catch {
+    return false;
+  }
 }
 
 async function dispatchExternalUrl(input: {
