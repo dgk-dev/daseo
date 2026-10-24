@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { recordClientDiagnostic } from "@/diagnostics/client-diagnostics";
 import { createPortal } from "react-dom";
 import { Animated, Easing, Platform, Text, ToastAndroid, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -61,6 +62,14 @@ export function useToastHost(): {
     }
 
     const variant = options?.variant ?? "default";
+    if (variant === "error") {
+      // Daseo delta 61: every error the user sees is also a daemon.log row.
+      recordClientDiagnostic({
+        level: "error",
+        scope: "toast",
+        message: nativeMessage ?? "(error toast without text)",
+      });
+    }
     const durationMs = options?.durationMs === undefined ? DEFAULT_DURATION_MS : options.durationMs;
     const nativeAndroid = options?.nativeAndroid ?? false;
 

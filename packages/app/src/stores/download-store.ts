@@ -1,9 +1,9 @@
 import { create } from "zustand";
 import { File as FSFile, Paths } from "expo-file-system";
 import * as LegacyFileSystem from "expo-file-system/legacy";
-import * as Sharing from "expo-sharing";
 import type { HostProfile } from "@/types/host-connection";
 import { buildDaemonWebSocketUrl } from "@/utils/daemon-endpoints";
+import { openDownloadedFile } from "@/utils/open-downloaded-file";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { isWeb } from "@/constants/platform";
 import { i18n } from "@/i18n/i18next";
@@ -146,14 +146,13 @@ export const useDownloadStore = create<DownloadState>()((set, get) => ({
 
       get().completeDownload(id);
 
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(result.uri, {
-          mimeType: tokenResponse.mimeType ?? undefined,
-          dialogTitle: resolvedFileName
-            ? i18n.t("downloads.shareFileNamed", { fileName: resolvedFileName })
-            : i18n.t("downloads.shareFile"),
-        });
-      }
+      await openDownloadedFile({
+        uri: result.uri,
+        mimeType: tokenResponse.mimeType ?? null,
+        dialogTitle: resolvedFileName
+          ? i18n.t("downloads.shareFileNamed", { fileName: resolvedFileName })
+          : i18n.t("downloads.shareFile"),
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : i18n.t("downloads.failed");
       if (isWeb) {

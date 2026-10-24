@@ -62,7 +62,7 @@ export interface DesktopNotificationBridge {
 export interface DesktopOpenerBridge {
   openUrl?: (url: string) => Promise<void>;
   /** Daseo delta 56: folders, pages, and documents open in Finder or their Mac app. */
-  openLocalPath?: (filePath: string) => Promise<"opened" | "not-handled">;
+  openLocalPath?: (filePath: string) => Promise<"opened" | "revealed" | "not-handled">;
 }
 
 export interface DesktopEditorTargetDescriptor {

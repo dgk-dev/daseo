@@ -88,6 +88,7 @@ import type {
   DaemonGetPairingOfferResponse,
   DaemonConfigReloadResponse,
   DiagnosticsResponse,
+  ClientDiagnosticsEvent,
   AgentRewindResponseMessage,
   ListTerminalsResponse,
   CreateTerminalResponse,
@@ -4845,6 +4846,25 @@ export class DaemonClient {
     });
   }
 
+  /** Daseo delta 61: hand app-side errors to the daemon, which logs them in daemon.log. */
+  async reportClientDiagnostics(input: {
+    platform: string;
+    appVersion?: string;
+    events: ClientDiagnosticsEvent[];
+    requestId?: string;
+  }): Promise<{ accepted: number }> {
+    return this.sendNamespacedCorrelatedSessionRequest({
+      requestId: input.requestId,
+      message: {
+        type: "client.diagnostics.report.request",
+        platform: input.platform,
+        ...(input.appVersion ? { appVersion: input.appVersion } : {}),
+        events: input.events,
+      },
+      timeout: 15_000,
+    });
+  }
+
   async patchDaemonConfig(
     config: MutableDaemonConfigPatch,
     requestId?: string,
@@ -5458,7 +5478,12 @@ export class DaemonClient {
     workspaceId?: string;
     input: BrowserAutomationStreamInput;
     requestId?: string;
-  }): Promise<{ ok: boolean; error?: { code: string; message: string } }> {
+  }): Promise<{
+    ok: boolean;
+    error?: { code: string; message: string };
+    /** Daseo delta 60: the page's focused field after the input, when the host reports it. */
+    focus?: { editable: boolean; multiline?: boolean; inputType?: string };
+  }> {
     return this.sendCorrelatedSessionRequest({
       requestId: input.requestId,
       message: {

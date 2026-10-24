@@ -952,9 +952,10 @@ edits · 1 command · 2 file reads`; the counts end in an ellipsis before the ti
     `paseo:opener:openLocalPath`); source, text, logs, unknown extensions, and app/installer bundles
     come back "not-handled" and open in the file pane as before, because the macOS defaults for
     those are wrong (`.ts` opens QuickTime) and a click must never run an agent-named script. A link
-    with a line number, a remote daemon's path, and the phone keep the file pane. URLs already
-    opened in the default browser. App side: `assistant-file-links/use-file-link.ts`
-    (`openInMacApp`), `provider.tsx` (`isLocalDaemon`).
+    with a line number, a remote daemon's path, and the phone kept the file pane (delta 62 then
+    sent everything but a remote daemon's path out of the app). URLs already opened in the default
+    browser. App side: `assistant-file-links/use-file-link.ts` (`openInMacApp`), `provider.tsx`
+    (`isLocalDaemon`).
 
 57. **The task list and subagents track are status lines** — the owner's call on 2026-10-23: once the
     composer became a prompt line (delta 53), the two cards above it still had a surface1 fill, side
@@ -993,6 +994,71 @@ edits · 1 command · 2 file reads`; the counts end in an ellipsis before the ti
     `packages/server/src/server/session.ts`
     (`readUnloadedAgentTimeline`, `loadOpenedAgentInBackground`),
     `packages/server/src/server/agent/{agent-manager,agent-loading,agent-storage}.ts`.
+
+59. **The Composer stops below the header while the keyboard is up (phone)** — the owner's
+    report on 2026-10-25 ("입력창에 내용 길어지면 … 다른 것보다 위로 올라와버리던데"). The text
+    area's cap was half of `useWindowDimensions().height`, and the whole input area is then
+    translated up by the keyboard height. With KeyboardProvider's edge-to-edge mode Android does
+    not resize the window for the keyboard, so the cap never knew about it: on the Fold 7 inner
+    screen (about 712 dp, keyboard about 280 dp) a 356 dp text area plus status lines, attachments
+    and padding reached above the header, and the Composer painted over it because it comes later
+    in the tree, which reads as a z-index fault. The cap is now 45% of the height left above the
+    keyboard (`react-native-keyboard-controller` `useKeyboardState`, 0 on web): 268 dp on the cover
+    screen, 194 dp on the inner screen, 412 dp with no keyboard, never below 160 dp. Key files:
+    `packages/app/src/composer/input/input-height.ts`, `packages/app/src/hooks/use-keyboard-height.ts`.
+60. **Typing into the streamed browser from the phone, and taps that act like taps** — the owner's
+    ask on 2026-10-25 ("모바일에서도 daseo browser 켰을 때 조작 터치라던가 입력이라던가"). Before,
+    text could only reach a page through the URL bar, and a phone tap was a synthetic DOM click
+    (delta 14's focus isolation) whenever the Mac browser pane was not itself focused, so native
+    selects, date pickers, file dialogs and any site that checks `isTrusted` ignored it. Now: (a)
+    a tap is trusted Chromium input unless the owner is at the Mac (the host window has focus) with
+    focus on something other than this browser; only then does the synthetic click still protect
+    that focus (`isHostWindowFocused` on the registry). (b) After a tap, text or key, the host reads
+    the page's focused element (following same-origin iframes) and answers `focus: { editable,
+multiline, inputType }`, an optional field on `stream_input` results and
+    `browser.remote.input.response`. (c) The pane keeps an invisible text field focused while in
+    keyboard mode (a ⌨ toolbar toggle, and automatic after a tap that focused an editable field;
+    off after a tap that did not), mirrors it into the page by diff — Backspace keys for what the
+    page still shows past the common prefix, then one `text` insert — so a Hangul syllable being
+    rewritten by the IME (ㅎ → 하 → 한) is one Backspace plus one insert per step; Enter and an
+    empty-field Backspace go as keys; a key row above the keyboard offers Esc, Tab, arrows, Del
+    and Done. All inputs from one pane travel one promise chain so keystrokes stay in order over
+    the relay. The viewport and scroll buttons move up by the keyboard. Not done: pinch zoom, long
+    press, double tap. Key files: `packages/app/src/desktop/browser/pane/{remote-typing.tsx,
+remote-keyboard.ts,index.tsx}`, `packages/desktop/src/features/browser-automation/{service,ipc}.ts`
+    (`readStreamFocus`, `shouldIsolateRemoteTap`), `packages/protocol/src/browser-automation/rpc-schemas.ts`
+    (`BrowserAutomationStreamFocusSchema`), `packages/server/src/server/websocket-server.ts`.
+61. **The app's errors land in daemon.log** — the owner's report on 2026-10-25 ("요즘 오류가 많이
+    나는 것 같아 켤 때마다") could not be traced: the phone keeps no log the Mac can read, wireless
+    debugging was off, and past sessions held no error text for it. The app now records every error
+    toast, `console.error`, "Possible Unhandled Promise Rejection" warning, fatal/uncaught JS error
+    (`ErrorUtils`) and root error-boundary catch (with component stack), folds repeats within a
+    minute into a count, keeps at most 200 and records at most 40 a minute, and reports them in
+    batches of 50 to the first connected daemon whose `server_info.features.clientDiagnostics` is
+    true (`client.diagnostics.report.request`, platform and app version attached). The daemon writes
+    one row per event under `module: "client-diagnostics"` with the connection's transport, so
+    `grep client-diagnostics ~/.paseo/daemon.log` is the phone's error log. A report that fails is
+    retried after 30 s with the batch kept. Key files: `packages/app/src/diagnostics/client-diagnostics.ts`,
+    `packages/app/src/components/{toast-host,root-error-boundary}.tsx`, `packages/app/src/app/_layout.tsx`,
+    `packages/protocol/src/messages.ts` (`ClientDiagnosticsReportRequestSchema`),
+    `packages/server/src/server/session.ts` (`handleClientDiagnosticsReport`),
+    `packages/client/src/daemon-client.ts` (`reportClientDiagnostics`).
+62. **Paths and links always leave Daseo** — the owner's call on 2026-10-25 ("외부로 열리게 해줘,
+    daseo의 새 탭이 아니라; 호환이 잘 안되고 안 열리는 경우가 많아서"), widening delta 56. Mac: a
+    folder opens in Finder and an allowlisted document in its app as before; every other existing
+    path — source, text, logs, bundles, scripts, and a path with a line number — is now selected in
+    Finder (`shell.showItemInFolder`, result `revealed`) instead of opening a file pane; scripts and
+    bundles are still never launched. A document whose app refuses it is revealed too. Only a path
+    that does not exist, or one from a remote daemon, keeps the file pane. Phone: a file path is
+    downloaded from the daemon (download token scoped to the file's own directory, so paths outside
+    the workspace work) and opened with an Android "view" intent on a content URI (the chooser when
+    several apps qualify; `expo-intent-launcher`, new dependency), falling back to the share sheet
+    when nothing handles the type and on iOS; the file-explorer download uses the same opener. A
+    folder or a missing path on the phone keeps the in-app explorer. URLs already opened in the
+    default browser (Mac) and the system browser (phone). Key files:
+    `packages/desktop/src/features/opener.ts`, `packages/app/src/assistant-file-links/{use-file-link,
+use-open-file-externally}.ts`, `packages/app/src/utils/open-downloaded-file.ts`,
+    `packages/app/src/stores/download-store.ts`.
 
 ## Local reliability contracts
 

@@ -21,9 +21,12 @@ export function isAllowedExternalUrl(value: unknown): value is string {
 
 // Daseo delta 56: a path the agent names in the transcript opens where the owner reads it on the
 // Mac. A folder opens in Finder; a page, PDF, image, media file, or office document opens in its
-// macOS app (HTML in the default browser). Everything else — source, text, logs, and anything
-// executable — returns "not-handled" and stays in Daseo's file pane, because the macOS defaults
-// for those are wrong (.ts opens QuickTime) and an agent-named script must never run on a click.
+// macOS app (HTML in the default browser). Delta 62 (2026-10-25): everything else that exists —
+// source, text, logs, bundles, and anything executable — is revealed in Finder instead of being
+// handed to Daseo's file pane, because the owner asked for every path to leave the app. The
+// macOS defaults for those are wrong (.ts opens QuickTime) and an agent-named script must never
+// run on a click, so they are selected in Finder rather than launched. Only a path that does not
+// exist returns "not-handled".
 const SYSTEM_OPEN_FILE_EXTENSIONS = new Set([
   "htm",
   "html",
@@ -60,7 +63,7 @@ const SYSTEM_OPEN_FILE_EXTENSIONS = new Set([
   "pages",
 ]);
 
-export type LocalPathOpenResult = "opened" | "not-handled";
+export type LocalPathOpenResult = "opened" | "revealed" | "not-handled";
 
 export function expandLocalPath(value: string): string | null {
   const trimmed = value.trim();
@@ -105,10 +108,15 @@ export async function openLocalPath(value: unknown): Promise<LocalPathOpenResult
     isBundle: isDirectory && existsSync(path.join(filePath, "Contents", "Info.plist")),
   });
   if (!kind) {
-    return "not-handled";
+    shell.showItemInFolder(filePath);
+    return "revealed";
   }
   const errorMessage = await shell.openPath(filePath);
-  return errorMessage ? "not-handled" : "opened";
+  if (!errorMessage) {
+    return "opened";
+  }
+  shell.showItemInFolder(filePath);
+  return "revealed";
 }
 
 export function registerOpenerHandlers(): void {

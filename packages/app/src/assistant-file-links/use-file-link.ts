@@ -345,15 +345,18 @@ async function dispatchFileTarget(input: {
   if (await openInMacApp(input.target, current.isLocalDaemon === true)) {
     return;
   }
+  if (current.openFileExternally && (await current.openFileExternally(input.target))) {
+    return;
+  }
   current.onOpenWorkspaceFile?.(input.target, input.disposition);
 }
 
 // Daseo delta 56: on the Mac app, a folder opens in Finder and a page, PDF, image, or document in
-// its Mac app; the desktop main process decides and answers "not-handled" for source, text, and
-// anything executable. A line reference means code to read, so it stays in the file pane, and so
-// does every path from a remote daemon — it may not exist on this machine.
+// its Mac app; the desktop main process decides. Delta 62: every other existing path, and a path
+// with a line reference, is revealed in Finder — the owner wants nothing to open in a Daseo tab.
+// Only a path from a remote daemon keeps the file pane: it may not exist on this machine.
 async function openInMacApp(target: InlinePathTarget, isLocalDaemon: boolean): Promise<boolean> {
-  if (!isLocalDaemon || target.lineStart !== undefined) {
+  if (!isLocalDaemon) {
     return false;
   }
   const openLocalPath = getDesktopHost()?.opener?.openLocalPath;
@@ -361,7 +364,8 @@ async function openInMacApp(target: InlinePathTarget, isLocalDaemon: boolean): P
     return false;
   }
   try {
-    return (await openLocalPath(target.path)) === "opened";
+    const result = await openLocalPath(target.path);
+    return result === "opened" || result === "revealed";
   } catch {
     return false;
   }

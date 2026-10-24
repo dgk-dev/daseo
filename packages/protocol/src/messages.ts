@@ -79,6 +79,7 @@ import {
   BrowserAutomationExecuteRequestSchema,
   BrowserAutomationExecuteResponseSchema,
   BrowserAutomationBrowserIdSchema,
+  BrowserAutomationStreamFocusSchema,
   BrowserAutomationStreamInputSchema,
 } from "./browser-automation/rpc-schemas.js";
 import { BrowserAutomationHostCapabilitySchema } from "./browser-automation/capabilities.js";
@@ -1365,6 +1366,28 @@ export const HubManagementDaemonDisconnectRequestSchema = z.object({
 export const DiagnosticsRequestSchema = z.object({
   type: z.literal("diagnostics.request"),
   requestId: z.string(),
+});
+
+// Daseo delta 61: an app (the phone above all) hands its own errors to the daemon so they end
+// up in daemon.log next to the server's, where they can be read from the Mac.
+export const ClientDiagnosticsEventSchema = z.object({
+  /** Epoch milliseconds on the client's clock. */
+  at: z.number(),
+  level: z.enum(["error", "warn"]),
+  /** Where it was caught: toast, console, render, connection. */
+  scope: z.string().min(1).max(64),
+  message: z.string().min(1).max(2000),
+  detail: z.string().max(4000).optional(),
+  /** Identical events folded into this one since the previous report. */
+  count: z.number().int().positive().optional(),
+});
+
+export const ClientDiagnosticsReportRequestSchema = z.object({
+  type: z.literal("client.diagnostics.report.request"),
+  requestId: z.string(),
+  platform: z.string().min(1).max(32),
+  appVersion: z.string().max(64).optional(),
+  events: z.array(ClientDiagnosticsEventSchema).min(1).max(50),
 });
 
 export const PluginCatalogGetRequestSchema = z.object({
@@ -2927,6 +2950,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   HubManagementDaemonGetStatusRequestSchema,
   HubManagementDaemonDisconnectRequestSchema,
   DiagnosticsRequestSchema,
+  ClientDiagnosticsReportRequestSchema,
   PluginCatalogGetRequestSchema,
   PluginListRequestSchema,
   PluginDirectoryInstallRequestSchema,
@@ -3245,6 +3269,8 @@ export const ServerInfoStatusPayloadSchema = z
         browserRemoteStream: z.boolean().optional(),
         // Local fork: `/btw` side questions (agent.side_question.request).
         sideQuestion: z.boolean().optional(),
+        // Local fork (delta 61): client.diagnostics.report.request lands app errors in daemon.log.
+        clientDiagnostics: z.boolean().optional(),
         // Local fork (delta 46): send/create requests accept `imageUploads`.
         imageUploads: z.boolean().optional(),
         // COMPAT(directorySync): added in v0.3.x, remove gate after 2027-02-12.
@@ -4454,6 +4480,8 @@ export const BrowserRemoteInputResponseSchema = z.object({
     requestId: z.string(),
     ok: z.boolean(),
     error: BrowserRemoteErrorSchema.optional(),
+    // Daseo delta 60: the page's focused field after the input, when the host reports it.
+    focus: BrowserAutomationStreamFocusSchema.optional(),
   }),
 });
 
@@ -4626,6 +4654,14 @@ export const DiagnosticsResponseSchema = z.object({
       diagnostic: z.string(),
     })
     .passthrough(),
+});
+
+export const ClientDiagnosticsReportResponseSchema = z.object({
+  type: z.literal("client.diagnostics.report.response"),
+  payload: z.object({
+    requestId: z.string(),
+    accepted: z.number().int().nonnegative(),
+  }),
 });
 
 export const SetDaemonConfigResponseMessageSchema = z.object({
@@ -6235,6 +6271,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   HubManagementDaemonGetStatusResponseSchema,
   HubManagementDaemonDisconnectResponseSchema,
   DiagnosticsResponseSchema,
+  ClientDiagnosticsReportResponseSchema,
   GetDaemonConfigResponseMessageSchema,
   SetDaemonConfigResponseMessageSchema,
   ReadProjectConfigResponseMessageSchema,
@@ -6500,6 +6537,9 @@ export type BrowserRemoteWatchResponse = z.infer<typeof BrowserRemoteWatchRespon
 export type DaemonGetPairingOfferResponse = z.infer<typeof DaemonGetPairingOfferResponseSchema>;
 export type DaemonConfigReloadResponse = z.infer<typeof DaemonConfigReloadResponseSchema>;
 export type DiagnosticsResponse = z.infer<typeof DiagnosticsResponseSchema>;
+export type ClientDiagnosticsEvent = z.infer<typeof ClientDiagnosticsEventSchema>;
+export type ClientDiagnosticsReportRequest = z.infer<typeof ClientDiagnosticsReportRequestSchema>;
+export type ClientDiagnosticsReportResponse = z.infer<typeof ClientDiagnosticsReportResponseSchema>;
 export type GetProvidersSnapshotResponseMessage = z.infer<
   typeof GetProvidersSnapshotResponseMessageSchema
 >;

@@ -1627,6 +1627,8 @@ export class VoiceAssistantWebSocketServer {
         // Local fork: live desktop browser streaming to mobile watchers.
         browserRemoteStream: this.browserStreamHub !== null,
         sideQuestion: true,
+        // Local fork (delta 61): the app reports its own errors into daemon.log.
+        clientDiagnostics: true,
         // Local fork (delta 46): send/create requests accept chunk-uploaded images.
         imageUploads: true,
         // COMPAT(checkoutForgeSetAutoMerge): added in v0.1.106, remove old
@@ -2061,6 +2063,7 @@ export class VoiceAssistantWebSocketServer {
         payload: {
           requestId: message.requestId,
           ok: payload.ok,
+          ...streamInputFocusFields(payload),
           ...(payload.ok
             ? {}
             : { error: { code: payload.error.code, message: payload.error.message } }),
@@ -3249,4 +3252,14 @@ function extractRequestInfoFromUnknownWsInbound(
   }
 
   return null;
+}
+
+// Daseo delta 60: the page's focused field after a remote input, when the host reported it.
+function streamInputFocusFields(payload: Awaited<ReturnType<BrowserToolsBroker["execute"]>>): {
+  focus?: { editable: boolean; multiline?: boolean; inputType?: string };
+} {
+  if (payload.ok && payload.result.command === "stream_input" && payload.result.focus) {
+    return { focus: payload.result.focus };
+  }
+  return {};
 }

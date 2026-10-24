@@ -711,6 +711,15 @@ function createRegistry(hostWebContentsId: number): BrowserRegistry {
     getWorkspaceActiveBrowserId(workspaceId: string): string | null {
       return getWorkspaceActivePaseoBrowserIdForHostWindow(workspaceId, hostWebContentsId);
     },
+    isHostWindowFocused(): boolean {
+      const host = electronWebContents.fromId(hostWebContentsId);
+      if (!host || host.isDestroyed()) {
+        return false;
+      }
+      const focused = electronWebContents.getFocusedWebContents();
+      // Focus inside one of this window's browser guests still means the owner is at the Mac.
+      return Boolean(focused) && (focused?.id === host.id || host.isFocused());
+    },
     isBrowserInputFocused(browserId: string): boolean {
       const workspaceId = getPaseoBrowserWorkspaceId(browserId);
       if (

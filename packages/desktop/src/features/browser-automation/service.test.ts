@@ -55,6 +55,7 @@ class FakeTab implements TabContents {
 
   public destroyed = false;
   public focused = true;
+  public streamFocus: { editable: boolean; multiline?: boolean; inputType?: string } | null = null;
   public bodyText = "";
   public snapshotNodes: Array<{
     role: string;
@@ -145,6 +146,12 @@ class FakeTab implements TabContents {
 
   public async executeJavaScript(code: string): Promise<unknown> {
     this.scripts.push(code);
+    return code.includes("__DASEO_STREAM_FOCUS__")
+      ? (this.streamFocus ?? undefined)
+      : this.executeScriptedJavaScript(code);
+  }
+
+  private async executeScriptedJavaScript(code: string): Promise<unknown> {
     if (code.includes("document.body.innerText")) {
       const needle = /const needle = ("(?:[^"\\]|\\.)*");/.exec(code)?.[1];
       return needle ? this.bodyText.includes(JSON.parse(needle) as string) : this.bodyText;
@@ -426,6 +433,12 @@ class FakeRegistry implements BrowserRegistry {
 
   public getWorkspaceActiveBrowserId(workspaceId: string): string | null {
     return this.activeBrowserIdsByWorkspace.get(workspaceId) ?? null;
+  }
+
+  public hostWindowFocused = true;
+
+  public isHostWindowFocused(): boolean {
+    return this.hostWindowFocused;
   }
 
   public isBrowserInputFocused(browserId: string): boolean {
@@ -1533,6 +1546,59 @@ describe("executeAutomationCommand", () => {
       { type: "keyUp", keyCode: "Enter", skipIfUnhandled: true },
     ]);
     expect(browser.tab.debugCommands).toEqual([]);
+  });
+
+  test("remote tap reports the page's focused field so the phone can raise its keyboard", async () => {
+    const browser = new BrowserAutomationHarness();
+    browser.tab.focused = false;
+    browser.tab.streamFocus = { editable: true, multiline: false, inputType: "search" };
+
+    const tap = await browser.execute({
+      command: "stream_input",
+      args: { browserId: BROWSER_A, input: { kind: "tap", x: 12, y: 24 } },
+    });
+    browser.tab.streamFocus = { editable: false };
+    const text = await browser.execute({
+      command: "stream_input",
+      args: { browserId: BROWSER_A, input: { kind: "text", text: "ㅎ" } },
+    });
+
+    expect(tap).toEqual({
+      requestId: "req-stream_input",
+      ok: true,
+      result: {
+        command: "stream_input",
+        browserId: BROWSER_A,
+        focus: { editable: true, multiline: false, inputType: "search" },
+      },
+    });
+    expect(text).toEqual({
+      requestId: "req-stream_input",
+      ok: true,
+      result: { command: "stream_input", browserId: BROWSER_A, focus: { editable: false } },
+    });
+  });
+
+  test("remote tap is trusted Chromium input while the owner is away from the Mac", async () => {
+    const browser = new BrowserAutomationHarness();
+    browser.tab.focused = false;
+    browser.registry.hostWindowFocused = false;
+
+    const tap = await browser.execute({
+      command: "stream_input",
+      args: { browserId: BROWSER_A, input: { kind: "tap", x: 12, y: 24 } },
+    });
+
+    expect(tap).toEqual({
+      requestId: "req-stream_input",
+      ok: true,
+      result: { command: "stream_input", browserId: BROWSER_A },
+    });
+    expect(browser.tab.actions).not.toContain("focus-isolated-click");
+    expect(browser.tab.debugCommands.map((entry) => entry.command)).toEqual([
+      "Input.dispatchMouseEvent",
+      "Input.dispatchMouseEvent",
+    ]);
   });
 
   test("keypress dispatches a trusted key to the focused element when ref is omitted", async () => {

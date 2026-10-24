@@ -25,6 +25,11 @@ export interface AssistantFileLinkResolverConfig {
   isLocalDaemon?: boolean;
   workspaceRoot?: string;
   onOpenWorkspaceFile?: (target: InlinePathTarget, disposition: OpenFileDisposition) => void;
+  /**
+   * Delta 62: on the phone, download the file and open it in another app. Resolves false when
+   * the path is not a downloadable file (a folder, a missing path), so the file pane takes it.
+   */
+  openFileExternally?: (target: InlinePathTarget) => Promise<boolean>;
   toast?: ToastApi | null;
 }
 
@@ -45,6 +50,7 @@ export function AssistantFileLinkResolverProvider({
   serverId,
   workspaceRoot,
   onOpenWorkspaceFile,
+  openFileExternally,
   toast,
   children,
 }: AssistantFileLinkResolverProviderProps) {
@@ -55,6 +61,7 @@ export function AssistantFileLinkResolverProvider({
     isLocalDaemon,
     workspaceRoot,
     onOpenWorkspaceFile,
+    openFileExternally,
     toast,
   });
   configRef.current = {
@@ -63,6 +70,7 @@ export function AssistantFileLinkResolverProvider({
     isLocalDaemon,
     workspaceRoot,
     onOpenWorkspaceFile,
+    openFileExternally,
     toast,
   };
 

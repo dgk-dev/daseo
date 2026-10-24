@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollableCodeSurface } from "@/components/ui/scrollable-code-surface";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { formatCaughtValue } from "./root-error-details";
+import { flushClientDiagnostics, recordClientDiagnostic } from "@/diagnostics/client-diagnostics";
 
 interface RootErrorBoundaryProps {
   children: ReactNode;
@@ -32,6 +33,15 @@ export class RootErrorBoundary extends Component<RootErrorBoundaryProps, RootErr
       error: formatCaughtValue(error),
       componentStack: errorInfo.componentStack,
     });
+    // Daseo delta 61: the crash screen is reported with its component stack, then flushed at
+    // once because the app may not live long enough for the usual delay.
+    recordClientDiagnostic({
+      level: "error",
+      scope: "render",
+      message: formatCaughtValue(error),
+      detail: errorInfo.componentStack ?? undefined,
+    });
+    void flushClientDiagnostics();
   }
 
   retry = () => {

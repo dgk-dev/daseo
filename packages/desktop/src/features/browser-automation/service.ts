@@ -115,6 +115,8 @@ export interface BrowserRegistry {
   getBrowserWorkspaceId(browserId: string): string | null;
   getWorkspaceActiveBrowserId(workspaceId: string): string | null;
   isBrowserInputFocused(browserId: string): boolean;
+  /** Daseo delta 60: whether the Mac app window itself has keyboard focus (the owner is at the Mac). */
+  isHostWindowFocused?(): boolean;
   getBrowserTargetMetadata?(browserId: string): {
     kind: "tab" | "popup";
     rootBrowserId?: string;
@@ -1082,16 +1084,29 @@ async function executeStreamInput(
     return ok;
   }
 
+  // Daseo delta 60: the phone learns what the page focused so it can raise or drop its keyboard.
+  const withFocus = async (): Promise<AutomationCommandPayload> => {
+    const focus = await readStreamFocus(contents);
+    return focus
+      ? { requestId, ok: true, result: { command: "stream_input", browserId, focus } }
+      : ok;
+  };
+
   try {
     if (input.kind === "text") {
       await contents.insertText(input.text);
-      return ok;
+      return withFocus();
     }
     if (input.kind === "key") {
       dispatchTrustedKey((event) => contents.sendInputEvent(event), input.key);
-      return ok;
+      return withFocus();
     }
-    if (input.kind === "tap" && !registry.isBrowserInputFocused(browserId)) {
+    // A phone tap is trusted Chromium input unless the owner is at the Mac with focus on
+    // something other than this browser (the Composer, say): only then does a synthetic click
+    // keep the tap from stealing that focus (delta 14). Synthetic clicks cannot open native
+    // selects, date pickers, or file dialogs, and sites that check `isTrusted` ignore them,
+    // which is why phone taps "did nothing" on many pages before delta 60.
+    if (input.kind === "tap" && shouldIsolateRemoteTap(registry, browserId)) {
       const point = { x: input.x, y: input.y };
       const clicked = await dispatchFocusIsolatedClick(
         contents,
@@ -1110,7 +1125,7 @@ async function executeStreamInput(
           true,
         );
       }
-      return ok;
+      return withFocus();
     }
 
     if (!contents.sendDebugCommand) {
@@ -1120,13 +1135,68 @@ async function executeStreamInput(
     for (const step of steps) {
       await contents.sendDebugCommand(step.command, step.params);
     }
-    return ok;
+    return input.kind === "tap" ? withFocus() : ok;
   } catch (error) {
     return fail(
       requestId,
       "browser_unknown_error",
       `Remote input failed: ${error instanceof Error ? error.message : String(error)}`,
     );
+  }
+}
+
+// Daseo delta 60. A synthetic click only while the owner is at the Mac with focus elsewhere.
+function shouldIsolateRemoteTap(registry: BrowserRegistry, browserId: string): boolean {
+  const ownerAtMac = registry.isHostWindowFocused?.() ?? true;
+  return ownerAtMac && !registry.isBrowserInputFocused(browserId);
+}
+
+// Daseo delta 60. The focused element after an input, following same-origin iframes.
+// Run with a user gesture so a page that opens its own keyboard-only UI on focus still can.
+const STREAM_FOCUS_SCRIPT = String.raw`(() => {
+  const __DASEO_STREAM_FOCUS__ = true;
+  let doc = document;
+  let el = doc.activeElement;
+  for (let depth = 0; depth < 4 && el && el.tagName === 'IFRAME'; depth += 1) {
+    let inner = null;
+    try { inner = el.contentDocument; } catch { inner = null; }
+    if (!inner) break;
+    doc = inner;
+    el = inner.activeElement;
+  }
+  if (!el || el === doc.body || el === doc.documentElement) return { editable: false };
+  const tag = String(el.tagName || '').toLowerCase();
+  if (tag === 'textarea') {
+    return { editable: !el.disabled && !el.readOnly, multiline: true, inputType: 'textarea' };
+  }
+  if (tag === 'input') {
+    const type = String(el.type || 'text').toLowerCase();
+    const textual = ['text', 'search', 'url', 'email', 'password', 'tel', 'number'].includes(type);
+    return { editable: textual && !el.disabled && !el.readOnly, multiline: false, inputType: type };
+  }
+  if (el.isContentEditable) return { editable: true, multiline: true, inputType: 'contenteditable' };
+  return { editable: false };
+})()`;
+
+async function readStreamFocus(
+  contents: TabContents,
+): Promise<{ editable: boolean; multiline?: boolean; inputType?: string } | null> {
+  try {
+    const raw = await contents.executeJavaScript(STREAM_FOCUS_SCRIPT);
+    if (typeof raw !== "object" || raw === null) {
+      return null;
+    }
+    const record = raw as { editable?: unknown; multiline?: unknown; inputType?: unknown };
+    if (typeof record.editable !== "boolean") {
+      return null;
+    }
+    return {
+      editable: record.editable,
+      ...(typeof record.multiline === "boolean" ? { multiline: record.multiline } : {}),
+      ...(typeof record.inputType === "string" ? { inputType: record.inputType.slice(0, 64) } : {}),
+    };
+  } catch {
+    return null;
   }
 }
 

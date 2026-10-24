@@ -672,9 +672,18 @@ export const BrowserAutomationStreamStopResultSchema = z.object({
   browserId: BrowserAutomationBrowserIdSchema,
 });
 
+// Daseo delta 60: what the page is focused on after a remote input, so the phone can open
+// its keyboard when a tap landed on a text field and close it when the tap landed elsewhere.
+export const BrowserAutomationStreamFocusSchema = z.object({
+  editable: z.boolean(),
+  multiline: z.boolean().optional(),
+  inputType: z.string().max(64).optional(),
+});
+
 export const BrowserAutomationStreamInputResultSchema = z.object({
   command: z.literal("stream_input"),
   browserId: BrowserAutomationBrowserIdSchema,
+  focus: BrowserAutomationStreamFocusSchema.optional(),
 });
 
 export const BrowserAutomationCapturedRequestSchema = z.object({

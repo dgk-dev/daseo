@@ -32,6 +32,7 @@ import { useKeepAwakeWhile } from "@/hooks/use-keep-awake-while";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import { mapTouchToGuest } from "./remote-viewport";
+import { RemoteKeyboardToggle, useRemoteTyping } from "./remote-typing";
 import { nextRemoteStreamRetry, shouldAcceptRemoteStreamSequence } from "./remote-stream-retry";
 import { useRemoteBrowserPopupTargets } from "@/desktop/browser/remote-popup-targets";
 
@@ -80,6 +81,12 @@ interface FrameState {
 
 type StreamStatus = "connecting" | "retrying" | "live" | "stopped";
 type RemoteBrowserClient = ReturnType<typeof useHostRuntimeClient>;
+type RemoteInput = Parameters<
+  NonNullable<RemoteBrowserClient>["sendBrowserRemoteInput"]
+>[0]["input"];
+type RemoteInputResult = Awaited<
+  ReturnType<NonNullable<RemoteBrowserClient>["sendBrowserRemoteInput"]>
+>;
 
 interface RemotePopupController {
   targets: ReturnType<typeof useRemoteBrowserPopupTargets>;
@@ -288,16 +295,33 @@ export function BrowserPane({
     "browser-remote-stream",
   );
 
+  const inputChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const sendInput = useCallback(
-    (input: Parameters<NonNullable<typeof client>["sendBrowserRemoteInput"]>[0]["input"]) => {
+    (input: RemoteInput): Promise<RemoteInputResult | null> => {
       if (!client) {
-        return;
+        return Promise.resolve(null);
       }
-      void client
-        .sendBrowserRemoteInput({ browserId: activeBrowserId, workspaceId, input })
-        .catch(() => undefined);
+      // One chain per pane keeps keystrokes in order: a Backspace must land before the text
+      // that replaces what it deleted, and relay requests are not otherwise ordered.
+      const next = inputChainRef.current.then(
+        () =>
+          client
+            .sendBrowserRemoteInput({ browserId: activeBrowserId, workspaceId, input })
+            .catch(() => null),
+        () => null,
+      );
+      inputChainRef.current = next;
+      return next;
     },
     [activeBrowserId, client, workspaceId],
+  );
+  // Daseo delta 60: typing into the page from the phone.
+  const typing = useRemoteTyping({ sendInput, targetKey: activeBrowserId });
+  const sendTap = useCallback(
+    (input: Extract<RemoteInput, { kind: "tap" }>) => {
+      void sendInput(input).then((result) => typing.applyFocus(result?.focus));
+    },
+    [sendInput, typing],
   );
 
   useEffect(() => {
@@ -465,7 +489,7 @@ export function BrowserPane({
     gesture.pendingGuestDeltaX -= deltaX;
     gesture.pendingGuestDeltaY -= deltaY;
     gesture.lastSentAt = Date.now();
-    sendInput({
+    void sendInput({
       kind: "scroll",
       x: gesture.guestX,
       y: gesture.guestY,
@@ -548,7 +572,7 @@ export function BrowserPane({
           ) {
             const guest = mapEventToGuest(event);
             if (guest) {
-              sendInput({ kind: "tap", x: guest.x, y: guest.y });
+              sendTap({ kind: "tap", x: guest.x, y: guest.y });
             }
             return;
           }
@@ -558,7 +582,7 @@ export function BrowserPane({
           flushScrollDelta();
         },
       }),
-    [flushScrollDelta, isInteractive, mapEventToGuest, onFocusPane, sendInput, shouldWatch, status],
+    [flushScrollDelta, isInteractive, mapEventToGuest, onFocusPane, sendTap, shouldWatch, status],
   );
 
   const handleContainerLayout = useCallback((event: LayoutChangeEvent) => {
@@ -574,12 +598,12 @@ export function BrowserPane({
       return;
     }
     if (/^https?:\/\//i.test(trimmed)) {
-      sendInput({ kind: "navigate", url: trimmed });
+      void sendInput({ kind: "navigate", url: trimmed });
     } else if (/^[\w-]+(\.[\w-]+)+(\/.*)?$/.test(trimmed)) {
-      sendInput({ kind: "navigate", url: `https://${trimmed}` });
+      void sendInput({ kind: "navigate", url: `https://${trimmed}` });
     } else {
-      sendInput({ kind: "text", text: trimmed });
-      sendInput({ kind: "key", key: "Enter" });
+      void sendInput({ kind: "text", text: trimmed });
+      void sendInput({ kind: "key", key: "Enter" });
     }
     urlInputRef.current?.replaceText("");
     setUrlText("");
@@ -588,7 +612,7 @@ export function BrowserPane({
   const scrollBy = useCallback(
     (deltaY: number) => {
       const current = frameRef.current;
-      sendInput({
+      void sendInput({
         kind: "scroll",
         x: current ? Math.round(current.width / 2) : 200,
         y: current ? Math.round(current.height / 2) : 200,
@@ -599,15 +623,24 @@ export function BrowserPane({
     [sendInput],
   );
 
-  const handleBack = useCallback(() => sendInput({ kind: "back" }), [sendInput]);
-  const handleForward = useCallback(() => sendInput({ kind: "forward" }), [sendInput]);
-  const handleReload = useCallback(() => sendInput({ kind: "reload" }), [sendInput]);
+  const handleBack = useCallback(() => void sendInput({ kind: "back" }), [sendInput]);
+  const handleForward = useCallback(() => void sendInput({ kind: "forward" }), [sendInput]);
+  const handleReload = useCallback(() => void sendInput({ kind: "reload" }), [sendInput]);
   const handleScrollUp = useCallback(() => scrollBy(-600), [scrollBy]);
   const handleScrollDown = useCallback(() => scrollBy(600), [scrollBy]);
   const handleReconnect = useCallback(() => {
     setReconnectGeneration((current) => current + 1);
   }, []);
   const frameSource = useMemo(() => (frame ? { uri: frame.uri } : null), [frame]);
+  // The page viewport and the scroll buttons give the keyboard and key row their room.
+  const viewportStyle = useMemo(
+    () => [styles.viewport, { marginBottom: typing.keyboardInset }],
+    [typing.keyboardInset],
+  );
+  const scrollBarStyle = useMemo(
+    () => [styles.scrollBar, typing.keyboardMode ? { bottom: typing.keyboardInset } : null],
+    [typing.keyboardInset, typing.keyboardMode],
+  );
 
   const mutedColor = theme.colors.foregroundMuted;
   const foreground = theme.colors.foreground;
@@ -660,6 +693,11 @@ export function BrowserPane({
           mutedColor={mutedColor}
           accent={theme.colors.accent}
         />
+        <RemoteKeyboardToggle
+          typing={typing}
+          color={foreground}
+          activeColor={theme.colors.accent}
+        />
         <TextInput
           ref={urlInputRef}
           style={[styles.urlInput, { color: foreground, borderColor: theme.colors.border }]}
@@ -689,7 +727,7 @@ export function BrowserPane({
         </View>
       ) : null}
 
-      <View style={styles.viewport} onLayout={handleContainerLayout} {...panResponder.panHandlers}>
+      <View style={viewportStyle} onLayout={handleContainerLayout} {...panResponder.panHandlers}>
         {frameSource ? (
           <Image source={frameSource} style={styles.frameImage} resizeMode="contain" />
         ) : (
@@ -715,7 +753,7 @@ export function BrowserPane({
       </View>
 
       {status === "live" ? (
-        <View style={styles.scrollBar}>
+        <View style={scrollBarStyle}>
           <Pressable onPress={handleScrollUp} style={styles.scrollButton}>
             <Text style={[styles.scrollGlyph, { color: mutedColor }]}>▲</Text>
           </Pressable>
@@ -724,6 +762,7 @@ export function BrowserPane({
           </Pressable>
         </View>
       ) : null}
+      {typing.layer}
     </View>
   );
 }

@@ -2298,6 +2298,9 @@ export class Session {
         return this.daemonSession.handleHubRelationshipRequest(msg);
       case "diagnostics.request":
         return this.daemonSession.handleDiagnosticsRequest(msg);
+      case "client.diagnostics.report.request":
+        this.handleClientDiagnosticsReport(msg);
+        return undefined;
       case "daemon.update.request":
         return this.daemonSession.handleUpdateRequest(msg);
       case "set_daemon_config_request":
@@ -6949,6 +6952,34 @@ export class Session {
       limit: 1,
     });
     return buildTimelinePromptIndex(timeline.epoch, rows);
+  }
+
+  // Daseo delta 61: app-side errors, one log row each, so a phone problem can be read on the Mac.
+  private handleClientDiagnosticsReport(
+    msg: Extract<SessionInboundMessage, { type: "client.diagnostics.report.request" }>,
+  ): void {
+    const logger = this.sessionLogger.child({
+      module: "client-diagnostics",
+      clientPlatform: msg.platform,
+      ...(msg.appVersion ? { appVersion: msg.appVersion } : {}),
+    });
+    for (const event of msg.events) {
+      const fields = {
+        at: new Date(event.at).toISOString(),
+        scope: event.scope,
+        ...(event.detail ? { detail: event.detail } : {}),
+        ...(event.count && event.count > 1 ? { count: event.count } : {}),
+      };
+      if (event.level === "error") {
+        logger.error(fields, event.message);
+      } else {
+        logger.warn(fields, event.message);
+      }
+    }
+    this.emit({
+      type: "client.diagnostics.report.response",
+      payload: { requestId: msg.requestId, accepted: msg.events.length },
+    });
   }
 
   private async handleFetchAgentTimelineRequest(

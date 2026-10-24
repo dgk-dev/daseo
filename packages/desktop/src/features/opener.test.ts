@@ -14,7 +14,7 @@ import {
 
 vi.mock("electron", () => ({
   ipcMain: { handle: vi.fn() },
-  shell: { openExternal: vi.fn(), openPath: vi.fn(async () => "") },
+  shell: { openExternal: vi.fn(), openPath: vi.fn(async () => ""), showItemInFolder: vi.fn() },
 }));
 
 function getRegisteredOpenUrlHandler(): (_event: unknown, url: unknown) => Promise<void> {
@@ -86,19 +86,35 @@ describe("desktop opener", () => {
     }
   });
 
-  it("opens an existing folder and hands everything else back to the file pane", async () => {
+  it("opens an existing folder, reveals everything else in Finder, and hands back only a missing path", async () => {
     vi.mocked(shell.openPath).mockClear();
+    vi.mocked(shell.showItemInFolder).mockClear();
     const root = await mkdtemp(path.join(tmpdir(), "daseo-opener-"));
     await mkdir(path.join(root, "Fake.app", "Contents"), { recursive: true });
     await writeFile(path.join(root, "Fake.app", "Contents", "Info.plist"), "");
     await writeFile(path.join(root, "run.command"), "");
+    await writeFile(path.join(root, "main.ts"), "");
 
     expect(await openLocalPath(root)).toBe("opened");
     expect(shell.openPath).toHaveBeenCalledWith(root);
-    expect(await openLocalPath(path.join(root, "Fake.app"))).toBe("not-handled");
-    expect(await openLocalPath(path.join(root, "run.command"))).toBe("not-handled");
+    expect(await openLocalPath(path.join(root, "Fake.app"))).toBe("revealed");
+    expect(await openLocalPath(path.join(root, "run.command"))).toBe("revealed");
+    expect(await openLocalPath(path.join(root, "main.ts"))).toBe("revealed");
+    expect(shell.showItemInFolder).toHaveBeenCalledTimes(3);
+    expect(shell.showItemInFolder).toHaveBeenLastCalledWith(path.join(root, "main.ts"));
     expect(await openLocalPath(path.join(root, "missing.pdf"))).toBe("not-handled");
     expect(await openLocalPath(42)).toBe("not-handled");
     expect(shell.openPath).toHaveBeenCalledTimes(1);
+  });
+
+  it("reveals a document in Finder when its app refuses to open it", async () => {
+    vi.mocked(shell.openPath).mockClear();
+    vi.mocked(shell.showItemInFolder).mockClear();
+    vi.mocked(shell.openPath).mockResolvedValueOnce("No application");
+    const root = await mkdtemp(path.join(tmpdir(), "daseo-opener-"));
+    await writeFile(path.join(root, "report.pdf"), "");
+
+    expect(await openLocalPath(path.join(root, "report.pdf"))).toBe("revealed");
+    expect(shell.showItemInFolder).toHaveBeenCalledWith(path.join(root, "report.pdf"));
   });
 });
