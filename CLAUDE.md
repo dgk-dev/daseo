@@ -113,7 +113,7 @@ See [docs/development.md](docs/development.md) for full setup, build sync requir
   - Run only the specific test file you changed: `npx vitest run <file> --bail=1`
   - Never run `npm run test` for an entire workspace unless explicitly asked.
   - If you must run a broad suite, pipe output to a file and read it afterward: `npx vitest run <file> --bail=1 > /tmp/test-output.txt 2>&1` then read the file.
-  - Never re-run a test suite that another agent already ran and reported green — trust the result.
+  - Never re-run a test suite that another agent already ran and reported green — trust the result, but only when it ran at the same revision with the same command; a report from an older revision or a different command is not evidence for this change (Daseo, 2026-10-25).
   - For full suite verification, push to CI and check GitHub Actions instead.
 - **Always run typecheck and lint after every change.**
 - **Build workspace packages before diagnosing cross-package type errors.** This repo consumes generated declarations across workspaces. If typecheck fails in a package that depends on another workspace, rebuild the owning stack first so `dist` declarations are current:
