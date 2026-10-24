@@ -1,0 +1,144 @@
+package __PACKAGE__
+
+import android.app.ActivityManager
+import android.app.Application
+import android.app.ApplicationExitInfo
+import android.content.ComponentCallbacks2
+import android.content.Context
+import android.os.Build
+import android.os.Debug
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import com.facebook.react.ReactHost
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+
+/**
+ * Daseo delta 63. Two things the Fold 7 needed after the 2026-10-25 01:53 crash
+ * (`OutOfMemoryError: std::bad_alloc` inside Reanimated's UI-update flush):
+ *
+ * 1. A native-heap watchdog. Stale Fabric shadow-node revisions stay alive until Hermes
+ *    collects the JS wrappers that reference them, and Hermes does not count their native
+ *    size, so on commit-heavy screens (a long streamed answer, many open chats) native memory
+ *    climbs while the JS heap looks small and no collection happens. React Native runs a JS GC
+ *    on TRIM_MEMORY_RUNNING_CRITICAL, but Android 14+ never sends that level to a foreground
+ *    app (getpaseo/paseo#4408, ThePharmer's measurement: native heap 601 → 345 MB within 3 s).
+ *    The watchdog samples the native heap and raises that level itself through React Native's
+ *    own MemoryPressureRouter when the heap is large and still growing.
+ *
+ * 2. The previous process's exit reasons (API 30+) are written to a JSON file the app reports
+ *    into daemon.log on its next start, because a native crash never reaches JavaScript.
+ */
+object DaseoMemoryGuard {
+  private const val TAG = "DaseoMemoryGuard"
+  private const val SAMPLE_INTERVAL_MS = 10_000L
+  private const val HEAP_TRIGGER_BYTES = 320L * 1024 * 1024
+  private const val GROWTH_TRIGGER_BYTES = 48L * 1024 * 1024
+  private const val MIN_GC_INTERVAL_MS = 30_000L
+  private const val AFTER_GC_SAMPLE_MS = 3_000L
+  const val EXIT_REASONS_FILE = "daseo-exit-reasons.json"
+
+  private val handler = Handler(Looper.getMainLooper())
+  private var started = false
+  private var lastGcAt = 0L
+  private var heapAtLastGc = 0L
+
+  fun start(app: Application, reactHost: () -> ReactHost?) {
+    if (started) return
+    started = true
+    recordPreviousExitReasons(app)
+    heapAtLastGc = Debug.getNativeHeapAllocatedSize()
+    handler.postDelayed(object : Runnable {
+      override fun run() {
+        try {
+          sample(reactHost)
+        } catch (error: Throwable) {
+          Log.w(TAG, "native heap sample failed", error)
+        }
+        handler.postDelayed(this, SAMPLE_INTERVAL_MS)
+      }
+    }, SAMPLE_INTERVAL_MS)
+  }
+
+  private fun sample(reactHost: () -> ReactHost?) {
+    val allocated = Debug.getNativeHeapAllocatedSize()
+    val now = System.currentTimeMillis()
+    if (allocated < HEAP_TRIGGER_BYTES) return
+    if (now - lastGcAt < MIN_GC_INTERVAL_MS) return
+    if (allocated - heapAtLastGc < GROWTH_TRIGGER_BYTES && lastGcAt != 0L) return
+    val host = reactHost() ?: return
+    lastGcAt = now
+    heapAtLastGc = allocated
+    Log.w(TAG, "native heap ${allocated / 1024 / 1024} MB; asking the JS VM to collect")
+    host.memoryPressureRouter.onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL)
+    handler.postDelayed({
+      val after = Debug.getNativeHeapAllocatedSize()
+      heapAtLastGc = after
+      Log.w(TAG, "native heap after collect ${after / 1024 / 1024} MB (was ${allocated / 1024 / 1024} MB)")
+    }, AFTER_GC_SAMPLE_MS)
+  }
+
+  private fun recordPreviousExitReasons(context: Context) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+    try {
+      val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+      val exits = manager.getHistoricalProcessExitReasons(context.packageName, 0, 5)
+      val file = File(context.filesDir, EXIT_REASONS_FILE)
+      val previous = readRecordedTimestamps(file)
+      val rows = JSONArray()
+      for (exit in exits) {
+        if (previous.contains(exit.timestamp)) continue
+        rows.put(describeExit(exit))
+      }
+      if (rows.length() == 0) return
+      val root = JSONObject()
+      root.put("recordedAt", System.currentTimeMillis())
+      root.put("exits", rows)
+      file.writeText(root.toString())
+    } catch (error: Throwable) {
+      Log.w(TAG, "could not record exit reasons", error)
+    }
+  }
+
+  private fun readRecordedTimestamps(file: File): Set<Long> {
+    if (!file.exists()) return emptySet()
+    return try {
+      val exits = JSONObject(file.readText()).optJSONArray("exits") ?: return emptySet()
+      (0 until exits.length()).map { exits.getJSONObject(it).optLong("timestamp") }.toSet()
+    } catch (_: Throwable) {
+      emptySet()
+    }
+  }
+
+  private fun describeExit(exit: ApplicationExitInfo): JSONObject {
+    val row = JSONObject()
+    row.put("timestamp", exit.timestamp)
+    row.put("reason", reasonName(exit.reason))
+    row.put("status", exit.status)
+    row.put("importance", exit.importance)
+    row.put("pss", exit.pss)
+    row.put("rss", exit.rss)
+    row.put("description", exit.description ?: "")
+    return row
+  }
+
+  private fun reasonName(reason: Int): String =
+      when (reason) {
+        ApplicationExitInfo.REASON_ANR -> "anr"
+        ApplicationExitInfo.REASON_CRASH -> "crash"
+        ApplicationExitInfo.REASON_CRASH_NATIVE -> "crash_native"
+        ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "dependency_died"
+        ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> "excessive_resource_usage"
+        ApplicationExitInfo.REASON_EXIT_SELF -> "exit_self"
+        ApplicationExitInfo.REASON_INITIALIZATION_FAILURE -> "initialization_failure"
+        ApplicationExitInfo.REASON_LOW_MEMORY -> "low_memory"
+        ApplicationExitInfo.REASON_OTHER -> "other"
+        ApplicationExitInfo.REASON_PERMISSION_CHANGE -> "permission_change"
+        ApplicationExitInfo.REASON_SIGNALED -> "signaled"
+        ApplicationExitInfo.REASON_USER_REQUESTED -> "user_requested"
+        ApplicationExitInfo.REASON_USER_STOPPED -> "user_stopped"
+        else -> "unknown_$reason"
+      }
+}

@@ -3,6 +3,7 @@ const path = require("node:path");
 const pkg = require("./package.json");
 const withAndroidAsyncStorageSize = require("./plugins/with-android-async-storage-size");
 const withAndroidFoldConfigChanges = require("./plugins/with-android-fold-config-changes");
+const withAndroidMemoryGuard = require("./plugins/with-android-memory-guard");
 const withAndroidProfileable = require("./plugins/with-android-profileable");
 const withAndroidTextMetrics = require("./plugins/with-android-text-metrics");
 const withAndroidBlockCursor = require("./plugins/with-android-block-cursor");
@@ -167,6 +168,7 @@ export default {
       withAndroidTextMetrics,
       withAndroidBlockCursor,
       withAndroidFoldConfigChanges,
+      withAndroidMemoryGuard,
       // Daseo delta 51: NAVER's D2Coding, a monospace whose Hangul sits on the same grid as
       // its Latin, for code and machine-shaped text. Android here; web loads the same files
       // through src/styles/bundled-fonts.web.ts.

@@ -1060,6 +1060,29 @@ remote-keyboard.ts,index.tsx}`, `packages/desktop/src/features/browser-automatio
 use-open-file-externally}.ts`, `packages/app/src/utils/open-downloaded-file.ts`,
     `packages/app/src/stores/download-store.ts`.
 
+63. **The phone survives long streams: a native-heap watchdog and previous-exit reporting** —
+    from the Fold 7's logcat on 2026-10-25 (wireless debugging on): the 0.5.67 process died at
+    01:53:26 with `OutOfMemoryError: std::bad_alloc` inside Reanimated's UI-update flush
+    (`NativeProxy.performOperations` ← `AnimationFrameQueue`) while the owner was opening and
+    resuming chats from the phone. Upstream getpaseo/paseo#4408 (open, p1) carries the same
+    stack: stale Fabric shadow-node revisions stay alive until Hermes collects the JS wrappers
+    that reference them, Hermes does not count their native size, so a long streamed answer or
+    many open chats grow native memory while no JS collection happens; React Native collects on
+    TRIM_MEMORY_RUNNING_CRITICAL, which Android 14+ never sends to a foreground app (ThePharmer
+    measured native heap 601 → 345 MB within 3 s of sending it by hand). The issue's second cause,
+    one `workspace_update` per workspace on a checkout, does not apply here (14 active workspaces,
+    at most 4 on one checkout). Daseo now samples the native heap every 10 s and, when it is over
+    320 MB and has grown 48 MB since the last collection (at most once per 30 s), raises that
+    trim level itself through React Native's own MemoryPressureRouter, logging the heap before
+    and 3 s after under tag `DaseoMemoryGuard`. The same guard writes the previous process's exit
+    reasons (`ActivityManager.getHistoricalProcessExitReasons`, API 30+) to
+    `files/daseo-exit-reasons.json`; the app reports each non-routine one (crash, native crash,
+    low-memory kill, ANR, signal) into daemon.log through delta 61 on its next start, so a death
+    JavaScript never saw still leaves a `client-diagnostics` row with scope `process-exit`. Key
+    files: `packages/app/plugins/with-android-memory-guard.js` (prebuild writes
+    `DaseoMemoryGuard.kt` from `plugins/android-memory-guard/` and patches `MainApplication.kt`;
+    `android/` itself is generated and ignored), `packages/app/src/diagnostics/process-exit-report.ts`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

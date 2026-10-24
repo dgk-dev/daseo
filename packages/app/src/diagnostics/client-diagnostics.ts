@@ -3,6 +3,7 @@ import type { ClientDiagnosticsEvent } from "@getpaseo/protocol/messages";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import { resolveAppVersion } from "@/utils/app-version";
+import { reportPreviousProcessExits } from "./process-exit-report";
 
 // Daseo delta 61. Errors the app shows or logs are handed to a connected daemon that
 // advertises `clientDiagnostics`, so a phone problem can be read in daemon.log on the Mac.
@@ -183,6 +184,7 @@ export function installClientDiagnostics(): void {
     return;
   }
   installed = true;
+  void reportPreviousProcessExits();
 
   const originalError = console.error.bind(console);
   console.error = (...args: unknown[]) => {
