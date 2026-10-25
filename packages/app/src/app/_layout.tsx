@@ -40,6 +40,7 @@ import { CompactExplorerSidebarHost } from "@/components/compact-explorer-sideba
 import { ProviderSettingsHost } from "@/components/provider-settings-host";
 import { RootErrorBoundary } from "@/components/root-error-boundary";
 import { installClientDiagnostics } from "@/diagnostics/client-diagnostics";
+import { installDebugLogBuffer } from "@/diagnostics/debug-log-buffer";
 import { WorkspaceSetupDialog } from "@/components/workspace-setup-dialog";
 import { WorkspaceShortcutTargetsSubscriber } from "@/components/workspace-shortcut-targets-subscriber";
 import { FloatingPanelPortalHost } from "@/components/ui/floating-panel-portal";
@@ -1030,7 +1031,10 @@ function RootAppTree() {
 
 export default function RootLayout() {
   useEffect(() => installWebScrollbarStyles(), []);
-  useEffect(() => installClientDiagnostics(), []);
+  useEffect(() => {
+    installDebugLogBuffer();
+    installClientDiagnostics();
+  }, []);
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (nextState) => {
       if (nextState !== "active") {

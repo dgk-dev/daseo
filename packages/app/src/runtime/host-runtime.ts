@@ -54,6 +54,7 @@ import {
   mountServerDataPushRouter,
 } from "@/data/push-router";
 import { mountBrowserAutomationDaemonClientHandler } from "@/desktop/browser/automation/handler";
+import { clientDebugCapability, mountClientDebugResponder } from "@/diagnostics/debug-collect";
 import { schedulesQueryBaseKey } from "@/schedules/aggregated-schedules";
 import {
   dispatchComposerAgentMessage,
@@ -487,9 +488,12 @@ function createDefaultDeps(): HostRuntimeControllerDeps {
         },
       }
     : undefined;
+  // Daseo delta 68: native apps answer the daemon's log requests (`phone_logs`).
+  const debugCollect = clientDebugCapability();
   const appCapabilities = {
     [CLIENT_CAPS.selectiveAgentTimeline]: true,
     ...browserAutomationCapabilities,
+    ...(debugCollect ? { [CLIENT_CAPS.debugCollect]: debugCollect } : {}),
   };
 
   return {
@@ -573,14 +577,13 @@ function createDefaultDeps(): HostRuntimeControllerDeps {
         queryClient,
         serverId: host.serverId,
       });
-      if (!browserAutomationCapabilities) {
-        return unmountServerData;
-      }
-      const unmountBrowserAutomation = mountBrowserAutomationDaemonClientHandler(client, {
-        serverId: host.serverId,
-      });
+      const unmountDebugCollect = debugCollect ? mountClientDebugResponder(client) : null;
+      const unmountBrowserAutomation = browserAutomationCapabilities
+        ? mountBrowserAutomationDaemonClientHandler(client, { serverId: host.serverId })
+        : null;
       return () => {
-        unmountBrowserAutomation();
+        unmountBrowserAutomation?.();
+        unmountDebugCollect?.();
         unmountServerData();
       };
     },

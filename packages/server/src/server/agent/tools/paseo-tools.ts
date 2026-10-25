@@ -85,6 +85,8 @@ import {
   createPaseoWorktreeCommand,
 } from "../../worktree/commands.js";
 import { registerBrowserTools } from "../../browser-tools/tools.js";
+import type { ClientDebugBroker } from "../../client-debug/broker.js";
+import { registerClientDebugTools } from "../../client-debug/tools.js";
 import type { BrowserToolsBroker } from "../../browser-tools/broker.js";
 import type {
   PaseoToolCatalog,
@@ -129,6 +131,8 @@ export interface PaseoToolHostDependencies {
   ) => Promise<string>;
   browserToolsEnabled?: boolean;
   browserToolsBroker?: BrowserToolsBroker | null;
+  /** Daseo delta 68: phone logs over the app's own connection. */
+  clientDebugBroker?: ClientDebugBroker | null;
   paseoHome?: string;
   worktreesRoot?: string;
   /**
@@ -1212,6 +1216,14 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
 
   if (options.voiceOnly) {
     return toCatalog();
+  }
+
+  if (options.clientDebugBroker) {
+    registerClientDebugTools({
+      registerTool,
+      broker: options.clientDebugBroker,
+      ...(options.paseoHome ? { paseoHome: options.paseoHome } : {}),
+    });
   }
 
   if (options.browserToolsEnabled && options.browserToolsBroker) {

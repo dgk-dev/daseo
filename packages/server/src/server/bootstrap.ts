@@ -163,6 +163,7 @@ import {
 import { DaemonConfigStore, type MutableDaemonConfig } from "./daemon-config-store.js";
 import { resolveConfigFromPersisted, type CliConfigOverrides } from "./config.js";
 import { BrowserToolsBroker } from "./browser-tools/broker.js";
+import { ClientDebugBroker } from "./client-debug/broker.js";
 import { DaemonConfigBrowserToolsPolicy } from "./browser-tools/policy.js";
 import { WorkspaceGitServiceImpl } from "./workspace-git-service.js";
 import { resolveWorkspaceIdForPath } from "./resolve-workspace-id-for-path.js";
@@ -613,6 +614,8 @@ export async function createPaseoDaemon(
   });
   const browserToolsPolicy = new DaemonConfigBrowserToolsPolicy(daemonConfigStore);
   const browserToolsBroker = new BrowserToolsBroker({});
+  // Daseo delta 68: phone logs over the app's own connection.
+  const clientDebugBroker = new ClientDebugBroker();
   const pluginRuntime = new PluginService(logger, daemonConfigStore);
 
   const serverId = getOrCreateServerId(config.paseoHome, { logger });
@@ -1399,6 +1402,7 @@ export async function createPaseoDaemon(
     createPaseoWorktree: createAgentCommandDependencies.createPaseoWorktree,
     browserToolsEnabled: browserToolsPolicy.isEnabled(),
     browserToolsBroker,
+    clientDebugBroker,
     paseoHome: config.paseoHome,
     worktreesRoot: config.worktreesRoot,
     callerAgentId: runtime.callerAgentId,
@@ -1724,6 +1728,7 @@ export async function createPaseoDaemon(
               hubRelationships,
               workspaceSetupRuntime,
               pluginRuntime,
+              clientDebugBroker,
             );
             relayRuntime = createRelayRuntime({
               config: {

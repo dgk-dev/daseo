@@ -1390,6 +1390,49 @@ export const ClientDiagnosticsReportRequestSchema = z.object({
   events: z.array(ClientDiagnosticsEventSchema).min(1).max(50),
 });
 
+// Daseo delta 68: the daemon asks one connected app for its own logs, so the Mac (and the
+// agents on it) can read the phone without wireless ADB. Daemon to client; the app answers with
+// `client.debug.collect.response`. Sent only to clients advertising `debug_collect`.
+export const ClientDebugCollectRequestSchema = z.object({
+  type: z.literal("client.debug.collect.request"),
+  requestId: z.string(),
+  /** Newest JS console entries to include. */
+  maxConsoleEntries: z.number().int().min(0).max(5000).optional(),
+  /** Newest lines of the app's own Android logcat (main, system, crash buffers). */
+  maxLogcatLines: z.number().int().min(0).max(20000).optional(),
+  /** Android: previous process exits, with ANR traces when the system kept one. */
+  includeExitInfo: z.boolean().optional(),
+});
+
+export const ClientDebugConsoleEntrySchema = z.object({
+  at: z.number(),
+  level: z.string().min(1).max(16),
+  message: z.string().max(4000),
+});
+
+export const ClientDebugExitInfoSchema = z.object({
+  at: z.number(),
+  reason: z.string().max(64),
+  processName: z.string().max(256).optional(),
+  description: z.string().max(2000).optional(),
+  trace: z.string().max(200_000).optional(),
+});
+
+export const ClientDebugCollectResponseSchema = z.object({
+  type: z.literal("client.debug.collect.response"),
+  payload: z.object({
+    requestId: z.string(),
+    platform: z.string().min(1).max(32),
+    appVersion: z.string().max(64).optional(),
+    collectedAt: z.number(),
+    console: z.array(ClientDebugConsoleEntrySchema).max(5000),
+    logcat: z.string().max(1_000_000).optional(),
+    exitInfo: z.array(ClientDebugExitInfoSchema).max(10).optional(),
+    /** What could not be collected and why (unsupported platform, native failure, size cap). */
+    notes: z.array(z.string().max(500)).max(20).optional(),
+  }),
+});
+
 export const PluginCatalogGetRequestSchema = z.object({
   type: z.literal("plugin.catalog.get.request"),
   requestId: z.string(),
@@ -2910,6 +2953,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   HubExecutionAgentValidateRequestSchema,
   HubExecutionControlRequestSchema,
   BrowserAutomationExecuteResponseSchema,
+  ClientDebugCollectResponseSchema,
   VoiceAudioChunkMessageSchema,
   AbortRequestMessageSchema,
   AudioPlayedMessageSchema,
@@ -6188,6 +6232,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   HubExecutionAgentUpdateSchema,
   HubExecutionAgentStreamSchema,
   BrowserAutomationExecuteRequestSchema,
+  ClientDebugCollectRequestSchema,
   PluginCatalogGetResponseSchema,
   PluginListResponseSchema,
   PluginDirectoryInstallResponseSchema,
@@ -6539,6 +6584,9 @@ export type DaemonConfigReloadResponse = z.infer<typeof DaemonConfigReloadRespon
 export type DiagnosticsResponse = z.infer<typeof DiagnosticsResponseSchema>;
 export type ClientDiagnosticsEvent = z.infer<typeof ClientDiagnosticsEventSchema>;
 export type ClientDiagnosticsReportRequest = z.infer<typeof ClientDiagnosticsReportRequestSchema>;
+export type ClientDebugCollectRequest = z.infer<typeof ClientDebugCollectRequestSchema>;
+export type ClientDebugCollectResponse = z.infer<typeof ClientDebugCollectResponseSchema>;
+export type ClientDebugCollectPayload = ClientDebugCollectResponse["payload"];
 export type ClientDiagnosticsReportResponse = z.infer<typeof ClientDiagnosticsReportResponseSchema>;
 export type GetProvidersSnapshotResponseMessage = z.infer<
   typeof GetProvidersSnapshotResponseMessageSchema
@@ -6888,6 +6936,7 @@ export const WSHelloMessageSchema = z.object({
       [CLIENT_CAPS.projectUpdates]: z.boolean().optional(),
       [CLIENT_CAPS.compactProviderSnapshots]: z.boolean().optional(),
       [CLIENT_CAPS.browserHost]: BrowserAutomationHostCapabilitySchema.optional(),
+      [CLIENT_CAPS.debugCollect]: z.object({ platform: z.string().max(32) }).optional(),
     })
     .passthrough()
     .optional(),

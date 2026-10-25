@@ -1205,6 +1205,24 @@ acceptLanguages)`, so the header is now `en-US,en-KR;q=0.9,ko-KR;q=0.8`. `--lang
     initial text, puts the cursor at the end and refocuses unless the transcript was auto-sent.
     Key file: `packages/app/src/composer/input/input.tsx`.
 
+68. **Agents on the Mac read the phone's logs over the app's own connection** — the owner asked
+    on 2026-10-26 for a debug route that works without wireless debugging or Tailscale ADB. The
+    Paseo MCP tool `phone_logs` sends `client.debug.collect.request` to the newest connected
+    phone (or `clientId`; `list` shows the candidates) and the app answers with
+    `client.debug.collect.response`: the last 2,000 JS console lines of every level (an in-memory
+    ring installed at startup), on Android the newest 3,000 lines of its own `logcat` (an app
+    without log credentials reads only its own UID, so main and `:assistant` both show and no
+    consent prompt appears) and the last 5 `ApplicationExitInfo` records with ANR traces. The
+    reply is capped near 600 KB. The daemon saves the full dump to `$PASEO_HOME/phone-logs/` and
+    returns errors, warnings, exits and logcat W/E/F lines, or `grep` matches. The daemon asks
+    only clients whose hello advertises `debug_collect` (`{ platform }`), so older apps never
+    see the request. The app must be open or recently backgrounded with its socket alive; a
+    sleeping phone times out after 30 s (an FCM wake-up is not built). Error-level events still
+    flow on their own through delta 61. Key files:
+    `packages/server/src/server/client-debug/`, `packages/app/src/diagnostics/debug-collect.ts`,
+    `packages/app/modules/daseo-debug/`. Takes effect with the next release, daemon restart, and
+    app build.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

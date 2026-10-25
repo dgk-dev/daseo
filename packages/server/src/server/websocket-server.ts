@@ -97,6 +97,7 @@ import {
   type BrowserAutomationHostCapability,
 } from "@getpaseo/protocol/browser-automation/capabilities";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
+import { getClientDebugCapability, type ClientDebugBroker } from "./client-debug/broker.js";
 import { BrowserStreamHub, createBrokerStreamStarter } from "./browser-tools/stream-hub.js";
 import type { DaemonRuntimeConfig } from "./session/daemon/daemon-session.js";
 import { DirectorySyncService } from "./directory-sync/index.js";
@@ -630,6 +631,9 @@ export class VoiceAssistantWebSocketServer {
   private readonly browserStreamHub: BrowserStreamHub | null;
   private readonly hubRelationships: HubRelationshipManagement | null;
   private readonly browserToolsRegistrations = new Map<string, BrowserToolsRegistration>();
+  // Daseo delta 68: apps that answer `client.debug.collect.request`, by client id.
+  private readonly clientDebugBroker: ClientDebugBroker | null;
+  private readonly clientDebugRegistrations = new Map<string, () => void>();
   private acceptingConnections = true;
   private readonly advertiseDaemonStatusRpc: boolean;
   private readonly advertiseRelayConfig: boolean;
@@ -680,6 +684,7 @@ export class VoiceAssistantWebSocketServer {
     hubRelationships?: HubRelationshipManagement | null,
     workspaceSetupRuntime: WorkspaceSetupRuntime = new WorkspaceSetupRuntime(),
     pluginRuntime?: SessionOptions["pluginRuntime"],
+    clientDebugBroker?: ClientDebugBroker | null,
   ) {
     this.logger = logger.child({ module: "websocket-server" });
     this.workspaceSetupRuntime = workspaceSetupRuntime;
@@ -692,6 +697,7 @@ export class VoiceAssistantWebSocketServer {
     this.daemonVersion = daemonVersion.trim();
     this.daemonRuntimeConfig = daemonRuntimeConfig;
     this.browserToolsBroker = browserToolsBroker ?? null;
+    this.clientDebugBroker = clientDebugBroker ?? null;
     this.browserStreamHub = this.browserToolsBroker
       ? new BrowserStreamHub(createBrokerStreamStarter(this.browserToolsBroker), this.logger)
       : null;
@@ -1124,6 +1130,9 @@ export class VoiceAssistantWebSocketServer {
     this.externalSessionsByKey.clear();
     for (const clientId of this.browserToolsRegistrations.keys()) {
       this.unregisterBrowserToolsClient(clientId);
+    }
+    for (const clientId of Array.from(this.clientDebugRegistrations.keys())) {
+      this.unregisterClientDebug(clientId);
     }
     this.wss.close();
   }
@@ -1567,11 +1576,13 @@ export class VoiceAssistantWebSocketServer {
       ) {
         existing.clientCapabilities = newClientCapabilities;
         this.syncBrowserToolsClientRegistration(existing);
+        this.syncClientDebugRegistration(existing);
       }
       existing.sockets.add(ws);
       this.sessions.set(ws, existing);
       pending.identity.sessionId = existing.session.getSessionId();
       this.syncBrowserToolsClientRegistration(existing);
+      this.syncClientDebugRegistration(existing);
       this.sendToClient(ws, this.createServerInfoMessage());
       pending.connectionLogger.info(
         {
@@ -1597,6 +1608,7 @@ export class VoiceAssistantWebSocketServer {
     this.externalSessionsByKey.set(clientId, connection);
     pending.identity.sessionId = connection.session.getSessionId();
     this.syncBrowserToolsClientRegistration(connection);
+    this.syncClientDebugRegistration(connection);
     this.sendToClient(ws, this.createServerInfoMessage());
     connection.connectionLogger.info(
       {
@@ -1868,6 +1880,7 @@ export class VoiceAssistantWebSocketServer {
 
     if (connection.sockets.size === 0) {
       this.unregisterBrowserToolsClient(connection.clientId);
+      this.unregisterClientDebug(connection.clientId);
       this.incrementRuntimeCounter("sessionDisconnectedWaitingReconnect");
       if (connection.externalDisconnectCleanupTimeout) {
         clearTimeout(connection.externalDisconnectCleanupTimeout);
@@ -1930,6 +1943,7 @@ export class VoiceAssistantWebSocketServer {
       this.externalSessionsByKey.delete(connection.clientId);
     }
     this.unregisterBrowserToolsClient(connection.clientId);
+    this.unregisterClientDebug(connection.clientId);
     void this.browserStreamHub?.removeConnection(connection.clientId);
 
     connection.connectionLogger.trace(
@@ -2275,6 +2289,35 @@ export class VoiceAssistantWebSocketServer {
     registration.unregister();
   }
 
+  private syncClientDebugRegistration(connection: TrustedSessionConnection): void {
+    if (!this.clientDebugBroker) {
+      return;
+    }
+    const capability = getClientDebugCapability(connection.clientCapabilities);
+    this.unregisterClientDebug(connection.clientId);
+    if (!capability || connection.sockets.size === 0) {
+      return;
+    }
+    const unregister = this.clientDebugBroker.register({
+      clientId: connection.clientId,
+      platform: capability.platform,
+      appVersion: connection.appVersion,
+      send: (request) => {
+        this.sendToConnection(connection, wrapSessionMessage(request));
+      },
+    });
+    this.clientDebugRegistrations.set(connection.clientId, unregister);
+  }
+
+  private unregisterClientDebug(clientId: string): void {
+    const unregister = this.clientDebugRegistrations.get(clientId);
+    if (!unregister) {
+      return;
+    }
+    this.clientDebugRegistrations.delete(clientId);
+    unregister();
+  }
+
   private handleInvalidInboundMessage(args: {
     ws: WebSocketLike;
     parsed: unknown;
@@ -2545,6 +2588,13 @@ export class VoiceAssistantWebSocketServer {
         },
         "ws_control_rpc_received",
       );
+    }
+    if (
+      activeConnection.kind === "trusted" &&
+      message.message.type === "client.debug.collect.response"
+    ) {
+      this.clientDebugBroker?.receiveResponse(message.message);
+      return;
     }
     if (
       activeConnection.kind === "trusted" &&

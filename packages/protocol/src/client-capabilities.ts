@@ -25,6 +25,10 @@ export const CLIENT_CAPS = {
   // Remove the legacy snapshot encoding after 2027-02-04.
   compactProviderSnapshots: "compact_provider_snapshots",
   browserHost: "browser_host",
+  // Daseo delta 68: the client answers `client.debug.collect.request` with its own logs (JS
+  // console ring, and on Android its own logcat and exit traces). The daemon only asks clients
+  // that advertise this, so older apps never see the request.
+  debugCollect: "debug_collect",
 } as const;
 
 export type ClientCapability = (typeof CLIENT_CAPS)[keyof typeof CLIENT_CAPS];

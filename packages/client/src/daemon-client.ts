@@ -89,6 +89,7 @@ import type {
   DaemonConfigReloadResponse,
   DiagnosticsResponse,
   ClientDiagnosticsEvent,
+  ClientDebugCollectResponse,
   AgentRewindResponseMessage,
   ListTerminalsResponse,
   CreateTerminalResponse,
@@ -4880,6 +4881,11 @@ export class DaemonClient {
   }
 
   sendBrowserAutomationExecuteResponse(response: BrowserAutomationExecuteResponse): void {
+    this.sendSessionMessageStrict(response);
+  }
+
+  /** Daseo delta 68: answers the daemon's `client.debug.collect.request` with this app's logs. */
+  sendClientDebugCollectResponse(response: ClientDebugCollectResponse): void {
     this.sendSessionMessageStrict(response);
   }
 
