@@ -77,6 +77,11 @@ export interface AppSettings {
   toolCallDetailLevel: ToolCallDetailLevel;
   chatOutlineEnabled: boolean;
   vimKeybindings: boolean;
+  /**
+   * Daseo delta 64: the workspace each host's side-button quick ask opens a new agent in, by
+   * server id. A host without an entry uses the default rule (latest home-folder workspace).
+   */
+  quickAskWorkspaces: Record<string, string>;
 }
 
 export interface Settings extends AppSettings {
@@ -108,6 +113,7 @@ const StoredAppSettingsSchema = z.looseObject({
   compactToolCalls: z.unknown().optional(),
   chatOutlineEnabled: z.unknown().optional(),
   vimKeybindings: z.unknown().optional(),
+  quickAskWorkspaces: z.unknown().optional(),
   daseoTerminalTheme: z.unknown().optional(),
   // COMPAT(rendererDesktopSettings): these fields used to share this renderer-owned key.
   manageBuiltInDaemon: z.unknown().optional(),
@@ -145,6 +151,7 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   toolCallDetailLevel: "detailed",
   chatOutlineEnabled: true,
   vimKeybindings: false,
+  quickAskWorkspaces: {},
 };
 
 export const DEFAULT_APP_SETTINGS: Settings = {
@@ -425,6 +432,24 @@ function pickAppSettings(stored: StoredAppSettings): Partial<AppSettings> {
   const toolCallDetailLevel = parseToolCallDetailLevel(stored);
   if (toolCallDetailLevel !== null) {
     result.toolCallDetailLevel = toolCallDetailLevel;
+  }
+  const quickAskWorkspaces = parseQuickAskWorkspaces(stored.quickAskWorkspaces);
+  if (quickAskWorkspaces !== null) {
+    result.quickAskWorkspaces = quickAskWorkspaces;
+  }
+  return result;
+}
+
+/** Keeps only non-empty string entries, so one bad value never drops the others. */
+export function parseQuickAskWorkspaces(value: unknown): Record<string, string> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const result: Record<string, string> = {};
+  for (const [serverId, workspaceId] of Object.entries(value)) {
+    if (serverId.trim() && typeof workspaceId === "string" && workspaceId.trim()) {
+      result[serverId] = workspaceId;
+    }
   }
   return result;
 }

@@ -2,10 +2,12 @@ import { z } from "zod";
 
 import type { PersistedConfig } from "../persisted-config.js";
 import type { PaseoOpenAIConfig, PaseoSpeechConfig } from "../bootstrap.js";
+import { resolveAzureSpeechConfig } from "./providers/azure/config.js";
 import { resolveLocalSpeechConfig } from "./providers/local/config.js";
 import { resolveOpenAiSpeechConfig } from "./providers/openai/config.js";
 import {
   SpeechProviderIdSchema,
+  VoiceSpeechProviderIdSchema,
   type RequestedSpeechProvider,
   type RequestedSpeechProviders,
 } from "./speech-types.js";
@@ -15,6 +17,13 @@ const OptionalSpeechProviderSchema = z
   .trim()
   .toLowerCase()
   .pipe(SpeechProviderIdSchema)
+  .optional();
+
+const OptionalVoiceSpeechProviderSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .pipe(VoiceSpeechProviderIdSchema)
   .optional();
 
 const OptionalBooleanFlagSchema = z
@@ -38,9 +47,9 @@ const OptionalBooleanFlagSchema = z
 
 const RequestedSpeechProvidersSchema = z.object({
   dictationStt: OptionalSpeechProviderSchema.default("local"),
-  voiceTurnDetection: OptionalSpeechProviderSchema.default("local"),
-  voiceStt: OptionalSpeechProviderSchema.default("local"),
-  voiceTts: OptionalSpeechProviderSchema.default("local"),
+  voiceTurnDetection: OptionalVoiceSpeechProviderSchema.default("local"),
+  voiceStt: OptionalVoiceSpeechProviderSchema.default("local"),
+  voiceTts: OptionalVoiceSpeechProviderSchema.default("local"),
 });
 
 function resolveOptionalBooleanFlag(value: unknown): boolean {
@@ -169,12 +178,19 @@ export function resolveSpeechConfig(params: {
     providers,
   });
 
+  const azure = resolveAzureSpeechConfig({
+    env: params.env,
+    persisted: params.persisted,
+    providers,
+  });
+
   return {
     openai,
     speech: {
       providers,
       sttLanguages: local.sttLanguages,
       ...(local.local ? { local: local.local } : {}),
+      ...(azure ? { azure } : {}),
     },
   };
 }

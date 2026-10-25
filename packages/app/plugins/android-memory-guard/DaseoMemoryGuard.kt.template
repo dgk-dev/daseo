@@ -90,6 +90,8 @@ object DaseoMemoryGuard {
       val rows = JSONArray()
       for (exit in exits) {
         if (previous.contains(exit.timestamp)) continue
+        // Daseo delta 64: only the app's own process; the `:assistant` services live apart.
+        if (exit.processName != context.packageName) continue
         rows.put(describeExit(exit))
       }
       if (rows.length() == 0) return

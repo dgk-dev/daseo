@@ -89,6 +89,10 @@ export const ja: TranslationResources = {
       fallback: "メッセージ...",
       terminal: "Prompt",
     },
+    quickAsk: {
+      countdown: "{{seconds}} 秒後に送信 · タップして編集",
+      cancelAccessibilityLabel: "自動送信をキャンセル",
+    },
     input: {
       accessibilityLabel: "エージェントにメッセージ...",
       terminalAccessibilityLabel: "Terminal prompt",
@@ -2283,6 +2287,17 @@ export const ja: TranslationResources = {
         unavailable: "エージェントを管理するにはこのホストに接続してください",
       },
       workspaces: {
+        quickAsk: {
+          title: "クイック質問のワークスペース",
+          hint: "サイドボタンを長押しすると、ここで新しいエージェントが開きます。",
+          automatic: "自動",
+          automaticWithName: "自動（{{name}}）",
+          automaticNew: "自動（ホームフォルダに新規作成）",
+          assistantHint:
+            "Android の設定 → 便利な機能 → サイドボタン → 長押しで、Daseo をデジタルアシスタントに選んでください。",
+          openAssistantSettings: "アシスタント設定",
+          accessibilityLabel: "クイック質問のワークスペース: {{value}}",
+        },
         unavailable: "ワークスペースを管理するにはこのホストに接続してください",
       },
       terminalProfiles: {

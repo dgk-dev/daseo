@@ -57,6 +57,8 @@ import { MOTION_DURATION_MS, MOTION_EASING_CSS } from "@/styles/motion";
 import type { MessageInputKeyboardActionKind } from "@/keyboard/actions";
 import { isImeComposingKeyboardEvent } from "@/utils/keyboard-ime";
 import { isWeb } from "@/constants/platform";
+import { QuickAskCountdownRow } from "@/composer/quick-ask/countdown-row";
+import { useComposerQuickAsk } from "@/composer/quick-ask/use-quick-ask-voice";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useComposerHeightMirror } from "./height-mirror";
 import { resolveComposerInputMode, type ComposerInputMode } from "@/composer/input-mode";
@@ -177,6 +179,12 @@ export interface MessageInputProps {
   textReplacementKey: string;
   /** Replaces the submit icon with this label, still inside the composer's own toolbar row. */
   submitLabel?: string;
+  /** Daseo delta 64: a quick-ask draft dictates, then sends after a cancellable countdown. */
+  quickAsk?: QuickAskComposerRequest | null;
+}
+
+export interface QuickAskComposerRequest {
+  onFinished: () => void;
 }
 
 export interface MessageInputRef {
@@ -1283,6 +1291,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     }));
     const inputHeightRef = useRef(MIN_INPUT_HEIGHT);
     const sendAfterTranscriptRef = useRef(false);
+    const quickAskTranscriptRef = useRef<((text: string) => void) | null>(null);
+    const quickAskCancelRef = useRef<(() => void) | null>(null);
     const serverInfo = useSessionStore(
       useCallback(
         (state) => {
@@ -1343,6 +1353,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           cwd,
           autoSend,
         });
+        quickAskTranscriptRef.current?.(text);
       },
       [
         replaceText,
@@ -1592,6 +1603,26 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       handleSendMessage,
     ]);
 
+    const quickAskVoice = useComposerQuickAsk({
+      request: props.quickAsk,
+      isPaneFocused,
+      disabled,
+      readOnly,
+      isConnected,
+      dictationUnavailableMessage,
+      canStartDictation,
+      isRecording: isDictating,
+      isProcessing: isDictationProcessing,
+      volume: dictationVolume,
+      startDictation: startDictationIfAvailable,
+      confirmDictation: handleAcceptRecording,
+      cancelDictation,
+      textInputRef,
+      send: handleDefaultSendAction,
+      transcriptRef: quickAskTranscriptRef,
+      cancelRef: quickAskCancelRef,
+    });
+
     const handleAlternateSendAction = useCallback(() => {
       if (!isSubmitOwner()) return;
       runAlternateSendAction({
@@ -1784,6 +1815,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
 
         valueRef.current = nextValue;
         onChangeText(nextValue);
+        quickAskCancelRef.current?.();
       },
       [isSubmitOwner, onChangeText],
     );
@@ -1796,6 +1828,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       isInputFocusedRef.current = true;
       setIsInputFocused(true);
       onFocusChange?.(true);
+      quickAskCancelRef.current?.();
     }, [isSubmitOwner, onFocusChange]);
 
     const handleInputBlur = useCallback(() => {
@@ -1900,6 +1933,10 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           pointerEvents={surfacePresentation.input.pointerEvents}
         >
           {attachmentSlot}
+          <QuickAskCountdownRow
+            remainingMs={quickAskVoice.countdownRemainingMs}
+            onCancel={quickAskVoice.cancelCountdown}
+          />
           {/* Text input */}
           <ComposerTextSurface
             readOnly={readOnly}

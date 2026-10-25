@@ -49,7 +49,12 @@ import { selectAgentTurnPresentation, useSessionStore } from "@/stores/session-s
 import { useFilePicker } from "@/hooks/use-file-picker";
 import { useFileDrop } from "@/components/file-drop/use-file-drop";
 import type { DroppedItem } from "@/components/file-drop/types";
-import { MessageInput, type MessageInputRef, type AttachmentMenuItem } from "./input/input";
+import {
+  MessageInput,
+  type AttachmentMenuItem,
+  type MessageInputRef,
+  type QuickAskComposerRequest,
+} from "./input/input";
 import type { ImageAttachment, MessagePayload } from "./types";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 import type { DraftCommandConfig } from "@/hooks/use-agent-commands-query";
@@ -972,6 +977,8 @@ interface ComposerProps {
   submitLabel?: string;
   /** Overrides the mode's default placeholder, for text only the caller can build. */
   placeholder?: string;
+  /** Daseo delta 64: this draft was opened by quick ask; dictate, then auto-send. */
+  quickAsk?: QuickAskComposerRequest | null;
 }
 
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
@@ -1165,6 +1172,7 @@ export function Composer({
   readOnly = false,
   submitLabel,
   placeholder,
+  quickAsk,
 }: ComposerProps) {
   const mode = resolveComposerInputMode(inputMode);
   const { t } = useTranslation();
@@ -2478,6 +2486,7 @@ export function Composer({
                 readOnly={readOnly}
                 textReplacementKey={textReplacementKey}
                 submitLabel={submitLabel}
+                quickAsk={quickAsk}
               />
               <Combobox
                 options={githubSearchOptions}

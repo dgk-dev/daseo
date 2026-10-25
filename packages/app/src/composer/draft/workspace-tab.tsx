@@ -48,6 +48,7 @@ import {
   useIsCompactFormFactor,
 } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
+import { useQuickAskStore } from "@/stores/quick-ask-store";
 import type { WorkspaceDraftTabSetup } from "@/workspace-tabs/model";
 
 const EMPTY_PENDING_PERMISSIONS = new Map();
@@ -621,6 +622,15 @@ export function WorkspaceDraftAgentTab({
     workspaceId,
   ]);
 
+  const isQuickAskDraft = useQuickAskStore(
+    (state) => state.pendingByDraftId[draftId]?.serverId === serverId,
+  );
+  const quickAsk = useMemo(
+    () =>
+      isQuickAskDraft ? { onFinished: () => useQuickAskStore.getState().finish(draftId) } : null,
+    [draftId, isQuickAskDraft],
+  );
+
   const focusInputRef = useRef<(() => void) | null>(null);
 
   const handleFocusInputCallback = useCallback((focus: () => void) => {
@@ -715,6 +725,7 @@ export function WorkspaceDraftAgentTab({
           commandDraftConfig={composerState.commandDraftConfig}
           agentControls={composerAgentControls}
           isCompactLayout={isCompactComposerLayout}
+          quickAsk={quickAsk}
         />
       </ReanimatedAnimated.View>
     </FileDropZone>

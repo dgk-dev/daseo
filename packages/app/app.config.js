@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const pkg = require("./package.json");
+const withAndroidAssistantEntry = require("./plugins/with-android-assistant-entry");
 const withAndroidAsyncStorageSize = require("./plugins/with-android-async-storage-size");
 const withAndroidFoldConfigChanges = require("./plugins/with-android-fold-config-changes");
 const withAndroidMemoryGuard = require("./plugins/with-android-memory-guard");
@@ -169,6 +170,8 @@ export default {
       withAndroidBlockCursor,
       withAndroidFoldConfigChanges,
       withAndroidMemoryGuard,
+      // Daseo delta 64: side-button digital assistant → paseo://quick-ask.
+      withAndroidAssistantEntry,
       // Daseo delta 51: NAVER's D2Coding, a monospace whose Hangul sits on the same grid as
       // its Latin, for code and machine-shaped text. Android here; web loads the same files
       // through src/styles/bundled-fonts.web.ts.

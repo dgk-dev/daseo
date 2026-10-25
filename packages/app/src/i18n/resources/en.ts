@@ -86,6 +86,10 @@ export const en = {
       fallback: "Message...",
       terminal: "Prompt",
     },
+    quickAsk: {
+      countdown: "Sending in {{seconds}} s · tap to edit",
+      cancelAccessibilityLabel: "Cancel automatic send",
+    },
     input: {
       accessibilityLabel: "Message agent...",
       terminalAccessibilityLabel: "Terminal prompt",
@@ -2321,6 +2325,17 @@ export const en = {
         unavailable: "Connect to this host to manage agents",
       },
       workspaces: {
+        quickAsk: {
+          title: "Quick ask workspace",
+          hint: "Holding the side button opens a new agent here.",
+          automatic: "Automatic",
+          automaticWithName: "Automatic ({{name}})",
+          automaticNew: "Automatic (new in the home folder)",
+          assistantHint:
+            "Choose Daseo as the digital assistant in Android Settings → Advanced features → Side button → Press and hold.",
+          openAssistantSettings: "Assistant settings",
+          accessibilityLabel: "Quick ask workspace: {{value}}",
+        },
         unavailable: "Connect to this host to manage workspaces",
       },
       terminalProfiles: {

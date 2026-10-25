@@ -12,6 +12,7 @@ import {
   loadAppSettingsFromStorage,
   loadSettingsFromStorage,
   parseClampedFontSize,
+  parseQuickAskWorkspaces,
   parseTerminalScrollbackLines,
   saveAppSettings,
   type SettingsDeps,
@@ -42,6 +43,22 @@ function makeDeps(
 }
 
 describe("loadAppSettingsFromStorage", () => {
+  it("keeps per-host quick-ask workspaces and drops malformed entries", async () => {
+    const deps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: storedSettings({
+          quickAskWorkspaces: { mac: "wks_home", broken: 42, empty: " " },
+        }),
+      }),
+    });
+
+    const result = await loadAppSettingsFromStorage(deps);
+
+    expect(result.quickAskWorkspaces).toEqual({ mac: "wks_home" });
+    expect(DEFAULT_CLIENT_SETTINGS.quickAskWorkspaces).toEqual({});
+    expect(parseQuickAskWorkspaces(["wks"])).toBeNull();
+  });
+
   it("defaults theme to daseo when storage is empty", async () => {
     const deps = makeDeps();
 

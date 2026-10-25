@@ -9,6 +9,10 @@ import {
   getLocalSpeechModelDir,
   listLocalSpeechModels,
 } from "./providers/local/models.js";
+import {
+  initializeAzureSpeechServices,
+  validateAzureCredentialRequirements,
+} from "./providers/azure/runtime.js";
 import { initializeLocalSpeechServices } from "./providers/local/runtime.js";
 import {
   getOpenAiSpeechAvailability,
@@ -370,12 +374,18 @@ export function createSpeechService(params: {
     openaiConfig,
     logger,
   });
+  validateAzureCredentialRequirements({
+    providers,
+    azureConfig: speechConfig?.azure,
+    logger,
+  });
 
   logger.info(
     {
       requestedProviders,
       availability: {
         openai: getOpenAiSpeechAvailability(openaiConfig),
+        azure: { dictationStt: Boolean(speechConfig?.azure) },
       },
     },
     "Speech provider reconciliation started",
@@ -514,12 +524,18 @@ export function createSpeechService(params: {
       },
       logger,
     });
+    const nextSpeech = initializeAzureSpeechServices({
+      providers,
+      azureConfig: speechConfig?.azure,
+      existing: nextOpenAiSpeech,
+      logger,
+    });
 
     const previousLocalCleanup = localCleanup;
-    turnDetectionService = nextOpenAiSpeech.turnDetectionService;
-    sttService = nextOpenAiSpeech.sttService;
-    ttsService = nextOpenAiSpeech.ttsService;
-    dictationSttService = nextOpenAiSpeech.dictationSttService;
+    turnDetectionService = nextSpeech.turnDetectionService;
+    sttService = nextSpeech.sttService;
+    ttsService = nextSpeech.ttsService;
+    dictationSttService = nextSpeech.dictationSttService;
     localModelConfig = nextLocalSpeech.localModelConfig;
     localVoiceTtsProvider = nextLocalSpeech.localVoiceTtsProvider;
     localCleanup = nextLocalSpeech.cleanup;

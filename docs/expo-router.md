@@ -87,6 +87,13 @@ targets.
 Both paths converge on `navigateToAgent()`. Do not make notification routing
 guess a workspace, and do not add a workspace to the stable agent URL format.
 
+`paseo://quick-ask` (Daseo delta 64: the Android side button, the "Quick ask"
+app shortcut) is not an agent URL. The root layout owns `quick-ask`, outside the
+store-ready guard so a cold-start link is not redirected to `/` before the store
+loads. The route waits for its host like the agent route, picks the workspace,
+and leaves through `navigateToWorkspace()` with a new draft tab as the `target`,
+which pops `/quick-ask` off the stack. Do not widen the agent URL parser for it.
+
 ## Params
 
 Required dynamic params belong to the matched route.

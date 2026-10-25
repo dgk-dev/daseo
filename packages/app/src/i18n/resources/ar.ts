@@ -89,6 +89,10 @@ export const ar: TranslationResources = {
       fallback: "رسالة...",
       terminal: "Prompt",
     },
+    quickAsk: {
+      countdown: "الإرسال خلال {{seconds}} ث · اضغط للتعديل",
+      cancelAccessibilityLabel: "إلغاء الإرسال التلقائي",
+    },
     input: {
       accessibilityLabel: "وكيل الرسائل...",
       terminalAccessibilityLabel: "Terminal prompt",
@@ -2263,6 +2267,17 @@ export const ar: TranslationResources = {
         unavailable: "Connect to this host to manage agents",
       },
       workspaces: {
+        quickAsk: {
+          title: "مساحة عمل الأسئلة السريعة",
+          hint: "الضغط مطولًا على الزر الجانبي يفتح وكيلًا جديدًا هنا.",
+          automatic: "تلقائي",
+          automaticWithName: "تلقائي ({{name}})",
+          automaticNew: "تلقائي (جديد في المجلد الرئيسي)",
+          assistantHint:
+            "اختر Daseo كمساعد رقمي من إعدادات Android ← الميزات المتقدمة ← الزر الجانبي ← الضغط مطولًا.",
+          openAssistantSettings: "إعدادات المساعد",
+          accessibilityLabel: "مساحة عمل الأسئلة السريعة: {{value}}",
+        },
         unavailable: "Connect to this host to manage workspaces",
       },
       terminalProfiles: {

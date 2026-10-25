@@ -9,6 +9,7 @@ import {
 } from "./agent/provider-launch-config.js";
 import type { AgentProviderRuntimeSettingsMap } from "./agent/provider-launch-config.js";
 import { ensurePrivateFile, writePrivateFileAtomicSync } from "./private-files.js";
+import { AZURE_SPEECH_REGION_PATTERN } from "./speech/providers/azure/region.js";
 import {
   AgentProfileSchema,
   PluginIdSchema,
@@ -73,10 +74,19 @@ const LocalSpeechProviderSchema = z
   })
   .strict();
 
+const AzureSpeechProviderSchema = z
+  .object({
+    apiKey: z.string().trim().min(1).optional(),
+    region: z.string().trim().regex(AZURE_SPEECH_REGION_PATTERN).optional(),
+  })
+  .strict();
+
 const ProvidersSchema = z
   .object({
     openai: OpenAiProviderSchema.optional(),
     local: LocalSpeechProviderSchema.optional(),
+    // Local fork (delta 64): Azure Speech fast transcription for dictation.
+    azureSpeech: AzureSpeechProviderSchema.optional(),
   })
   .strict();
 
@@ -103,12 +113,19 @@ const SpeechProviderIdSchema = z
   .toLowerCase()
   .pipe(z.enum(["openai", "local"]));
 
+// Local fork (delta 64): dictation alone can also use Azure Speech.
+const DictationSttProviderIdSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .pipe(z.enum(["openai", "local", "azure"]));
+
 const FeatureDictationSchema = z
   .object({
     enabled: z.boolean().optional(),
     stt: z
       .object({
-        provider: SpeechProviderIdSchema.optional(),
+        provider: DictationSttProviderIdSchema.optional(),
         model: z.string().min(1).optional(),
         language: z.string().trim().min(1).optional(),
         confidenceThreshold: z.number().optional(),

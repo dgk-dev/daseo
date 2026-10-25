@@ -200,4 +200,70 @@ describe("resolveSpeechConfig", () => {
       enabled: false,
     });
   });
+
+  test("resolves Azure Speech for dictation from providers.azureSpeech", () => {
+    const persisted = PersistedConfigSchema.parse({
+      providers: { azureSpeech: { apiKey: "azure-key", region: "koreacentral" } },
+      features: {
+        dictation: {
+          enabled: true,
+          stt: { provider: "azure", model: "MAI-Transcribe-2", language: "ko" },
+        },
+        voiceMode: { enabled: false },
+      },
+    });
+
+    const result = resolveSpeechConfig({
+      paseoHome: "/tmp/paseo-home",
+      env: {} as NodeJS.ProcessEnv,
+      persisted,
+    });
+
+    expect(result.speech.providers.dictationStt).toEqual({
+      provider: "azure",
+      explicit: true,
+      enabled: true,
+    });
+    expect(result.speech.azure).toEqual({
+      apiKey: "azure-key",
+      region: "koreacentral",
+      model: "MAI-Transcribe-2",
+    });
+    expect(result.speech.sttLanguages?.dictation).toBe("ko");
+    // Azure dictation needs no local models; voice mode is off here.
+    expect(result.speech.local).toBeUndefined();
+  });
+
+  test("leaves Azure unresolved without a key and keeps voice mode on openai | local", () => {
+    const persisted = PersistedConfigSchema.parse({
+      features: { dictation: { stt: { provider: "azure" } } },
+    });
+    const result = resolveSpeechConfig({
+      paseoHome: "/tmp/paseo-home",
+      env: {} as NodeJS.ProcessEnv,
+      persisted,
+    });
+    expect(result.speech.azure).toBeUndefined();
+
+    expect(() =>
+      resolveSpeechConfig({
+        paseoHome: "/tmp/paseo-home",
+        env: { PASEO_VOICE_STT_PROVIDER: "azure" } as NodeJS.ProcessEnv,
+        persisted: PersistedConfigSchema.parse({}),
+      }),
+    ).toThrow();
+  });
+
+  test("rejects an Azure region that is not a region name", () => {
+    expect(
+      PersistedConfigSchema.safeParse({
+        providers: { azureSpeech: { apiKey: "k", region: "evil.example.com/x" } },
+      }).success,
+    ).toBe(false);
+    expect(
+      PersistedConfigSchema.safeParse({
+        features: { voiceMode: { stt: { provider: "azure" } } },
+      }).success,
+    ).toBe(false);
+  });
 });

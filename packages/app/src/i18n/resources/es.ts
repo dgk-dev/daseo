@@ -89,6 +89,10 @@ export const es: TranslationResources = {
       fallback: "Mensaje...",
       terminal: "Prompt",
     },
+    quickAsk: {
+      countdown: "Enviando en {{seconds}} s · toca para editar",
+      cancelAccessibilityLabel: "Cancelar envío automático",
+    },
     input: {
       accessibilityLabel: "Agente de mensajes...",
       terminalAccessibilityLabel: "Terminal prompt",
@@ -2314,6 +2318,17 @@ export const es: TranslationResources = {
         unavailable: "Connect to this host to manage agents",
       },
       workspaces: {
+        quickAsk: {
+          title: "Espacio de trabajo para preguntas rápidas",
+          hint: "Al mantener pulsado el botón lateral se abre aquí un agente nuevo.",
+          automatic: "Automático",
+          automaticWithName: "Automático ({{name}})",
+          automaticNew: "Automático (nuevo en la carpeta personal)",
+          assistantHint:
+            "Elige Daseo como asistente digital en Ajustes de Android → Funciones avanzadas → Botón lateral → Mantener pulsado.",
+          openAssistantSettings: "Ajustes del asistente",
+          accessibilityLabel: "Espacio de trabajo para preguntas rápidas: {{value}}",
+        },
         unavailable: "Connect to this host to manage workspaces",
       },
       terminalProfiles: {

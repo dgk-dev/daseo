@@ -1083,6 +1083,57 @@ use-open-file-externally}.ts`, `packages/app/src/utils/open-downloaded-file.ts`,
     `DaseoMemoryGuard.kt` from `plugins/android-memory-guard/` and patches `MainApplication.kt`;
     `android/` itself is generated and ignored), `packages/app/src/diagnostics/process-exit-report.ts`.
 
+64. **Holding the side button asks Daseo (the phone as a digital assistant)** — the owner's ask on
+    2026-10-25 (Gemini's gesture, for Daseo): hold the Galaxy side button, get a new agent in the
+    home-folder workspace with the keyboard up and the microphone listening. (a) Android lists an
+    app as a digital assistant when it has an ASSIST activity or a `VoiceInteractionService` with
+    `supportsAssist`; Samsung's picker rule is reported both ways, so Daseo ships both: an
+    `activity-alias` `.DaseoAssistActivity` on MainActivity, and `DaseoVoiceInteractionService` +
+    `DaseoVoiceInteractionSessionService` + a refusing `DaseoRecognitionService` (the metadata
+    must name one or the app drops out of the picker; `selectableAsDefault="false"` keeps it from
+    becoming the system recognizer; AOSP has no bind permission for recognizers). The three
+    services run in an `:assistant` process that returns from `MainApplication.onCreate` before
+    React Native loads, because Android keeps the selected assistant service bound for good; the
+    delta 63 exit report ignores that process. The session opens `paseo://quick-ask` and hides; it
+    disables assist data and screenshots, so the screen the owner was on is never read. (b) Every
+    entry ends as that one URL: MainActivity rewrites ASSIST to it before React Native reads the
+    intent (expo-linking only delivers VIEW data), a quick-ask intent Android replays from Recents
+    after a process death becomes a plain launch (no surprise agent), and a launch while the device
+    is locked asks for the unlock (`requestDismissKeyguard`; no `showWhenLocked`, Daseo shows
+    private content; the Fold's side button is the fingerprint sensor). A static "빠른 질문"
+    shortcut points at the same URL (launcher long-press, Samsung's double-press "app feature").
+    (c) The root `quick-ask` route waits for the host, opens a new draft tab (a new agent every
+    time) in the host's "빠른 질문 워크스페이스" (Settings → host → Workspaces, Android only), else
+    the most recently active workspace whose directory is the home folder (`shortenPath`'s `~`
+    rule), else a new home-folder workspace titled "빠른 질문". (d) The draft raises the keyboard
+    (focus is retried until the IME is up: an early `showSoftInput` is ignored), starts the
+    composer's own dictation, confirms it after 1.5 s below the speech level (0.25 on the
+    dictation meter, about −40 dBFS) once speech began, shows "1.5초 후 보냄 · 눌러서 고치기",
+    and sends through the composer's normal send action; a tap, a keystroke or focusing the field
+    cancels the countdown; no speech in 8 s, an empty transcript or dictation that is not ready in
+    4 s leaves the text and keyboard for typing. Thresholds are constants in
+    `composer/quick-ask/state.ts`.
+    **Speech-to-text: Azure Speech MAI-Transcribe-2** (the owner's call, 2026-10-25). Dictation
+    and quick ask share the daemon pipeline with a new provider `features.dictation.stt.provider:
+    "azure"` (`providers.azureSpeech { apiKey, region }`, model `MAI-Transcribe-2`, language `ko`):
+    each committed segment is one synchronous `transcriptions:transcribe` call. Why: Anthropic has
+    no audio input; MAI-Transcribe-2 is $0.10 per audio hour (Microsoft's limited price to
+    2026-12-31), #2 on Artificial Analysis's non-streaming STT board (WER 2.0%), Korean, and HYM
+    Office measured it best for Korean on 2026-10-07. Voice mode stays `openai | local`. To switch
+    back, set `features.dictation.stt.provider` to `local` or `openai` (or turn dictation off) and
+    restart the daemon: the speech runtime is built at start, `paseo reload` does not rebuild it.
+    Rolling the daemon back below 0.5.72 needs `providers.azureSpeech` and the `azure` value
+    removed first; older daemons reject them at config load. The key never sits in git: the 0.5.72
+    activation merges `~/.paseo/daseo-azure-speech.pending.json` (written by `npm run
+    speech:smoke:azure -- --stage <path>` after a real round trip) into config.json while the
+    daemon is stopped. Verify: `apkanalyzer manifest print` shows the alias, the three services and
+    the shortcut metadata; `adb shell am start -a android.intent.action.VIEW -d paseo://quick-ask
+    sh.paseo.dgk` opens the flow; `npm run speech:smoke:azure` prints a Korean transcript. Key
+    files: `packages/app/plugins/with-android-assistant-entry.js` (+ `android-assistant-entry/`
+    Kotlin templates), `packages/app/src/{app/quick-ask.tsx,screens/quick-ask-screen.tsx,
+navigation/quick-ask.ts,composer/quick-ask/,screens/settings/quick-ask-workspace-card.tsx}`,
+    `packages/server/src/server/speech/providers/azure/`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

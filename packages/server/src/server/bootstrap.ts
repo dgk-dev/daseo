@@ -128,6 +128,7 @@ import { createWorkspaceProvisioningService } from "./session/workspace-provisio
 import { createPaseoWorktreeWorkflow } from "./worktree-session.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
 import type { OpenAiSpeechProviderConfig } from "./speech/providers/openai/config.js";
+import type { AzureSpeechProviderConfig } from "./speech/providers/azure/config.js";
 import type { LocalSpeechProviderConfig } from "./speech/providers/local/config.js";
 import type { RequestedSpeechProviders } from "./speech/speech-types.js";
 import { createSpeechService } from "./speech/speech-runtime.js";
@@ -382,6 +383,8 @@ export interface PaseoSpeechConfig {
   providers: RequestedSpeechProviders;
   sttLanguages?: PaseoSpeechSttLanguages;
   local?: PaseoLocalSpeechConfig;
+  /** Local fork (delta 64): Azure Speech for dictation; holds the subscription key. */
+  azure?: AzureSpeechProviderConfig;
 }
 
 export type DaemonLifecycleIntent =

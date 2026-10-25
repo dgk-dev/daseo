@@ -221,7 +221,8 @@ snapshot so a mixed edit can apply its live subset and still name the paths that
       stt?: { apiKey?: string, baseUrl?: string },
       tts?: { apiKey?: string, baseUrl?: string }
     },
-    local: { modelsDir: string }
+    local: { modelsDir: string },
+    azureSpeech: { apiKey?: string, region?: string }   // Daseo: dictation only
   },
   agents: {
     // ProviderOverrideSchema; legacy entries with `command: { mode, ... }` are migrated to the
@@ -333,6 +334,22 @@ Paseo uses these paths under the configured OpenAI base URL:
 - dictation STT: `/v1/audio/transcriptions`
 - voice mode STT: `/v1/audio/transcriptions`
 - voice mode TTS: `/v1/audio/speech`
+
+Daseo adds Azure Speech fast transcription as a third dictation provider (`features.dictation.stt.provider: "azure"`; voice mode stays `openai | local`). Each committed dictation segment is one synchronous `transcriptions:transcribe` request with the configured model (default `MAI-Transcribe-2`) and the dictation language as its one locale:
+
+```json
+{
+  "providers": { "azureSpeech": { "apiKey": "...", "region": "koreacentral" } },
+  "features": {
+    "dictation": {
+      "enabled": true,
+      "stt": { "provider": "azure", "model": "MAI-Transcribe-2", "language": "ko" }
+    }
+  }
+}
+```
+
+The key and region fall back to `AZURE_SPEECH_KEY` and `AZURE_SPEECH_REGION`. `region` must be an Azure region name; anything else fails config validation. The speech runtime is built at daemon start, so a provider change needs a daemon restart; `paseo reload` does not rebuild it. A daemon older than Daseo 0.5.72 rejects `providers.azureSpeech` and the `azure` provider value at config load, so remove both before rolling the daemon back.
 
 ---
 

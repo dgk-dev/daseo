@@ -1,6 +1,8 @@
 import { z } from "zod";
 
-export const SpeechProviderIdSchema = z.enum(["openai", "local"]);
+// `azure` serves dictation only (Daseo delta 64); voice mode keeps `openai | local`.
+export const SpeechProviderIdSchema = z.enum(["openai", "local", "azure"]);
+export const VoiceSpeechProviderIdSchema = z.enum(["openai", "local"]);
 export type SpeechProviderId = z.infer<typeof SpeechProviderIdSchema>;
 
 export const RequestedSpeechProviderSchema = z.object({

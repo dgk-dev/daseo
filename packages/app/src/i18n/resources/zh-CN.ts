@@ -89,6 +89,10 @@ export const zhCN: TranslationResources = {
       fallback: "输入消息...",
       terminal: "Prompt",
     },
+    quickAsk: {
+      countdown: "{{seconds}} 秒后发送 · 点按以编辑",
+      cancelAccessibilityLabel: "取消自动发送",
+    },
     input: {
       accessibilityLabel: "给 Agent 发消息...",
       terminalAccessibilityLabel: "Terminal prompt",
@@ -2239,6 +2243,16 @@ export const zhCN: TranslationResources = {
         unavailable: "连接到这个 Host 以管理 Agent",
       },
       workspaces: {
+        quickAsk: {
+          title: "快速提问工作区",
+          hint: "长按侧边按钮会在这里打开新的代理。",
+          automatic: "自动",
+          automaticWithName: "自动（{{name}}）",
+          automaticNew: "自动（在主文件夹新建）",
+          assistantHint: "在 Android 设置 → 实用功能 → 侧边按钮 → 长按 中，将 Daseo 选为数字助理。",
+          openAssistantSettings: "助理设置",
+          accessibilityLabel: "快速提问工作区：{{value}}",
+        },
         unavailable: "连接到这个 Host 以管理 Workspace",
       },
       terminalProfiles: {

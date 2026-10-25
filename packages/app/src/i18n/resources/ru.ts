@@ -89,6 +89,10 @@ export const ru: TranslationResources = {
       fallback: "Сообщение...",
       terminal: "Prompt",
     },
+    quickAsk: {
+      countdown: "Отправка через {{seconds}} с · нажмите, чтобы изменить",
+      cancelAccessibilityLabel: "Отменить автоотправку",
+    },
     input: {
       accessibilityLabel: "Агент сообщений...",
       terminalAccessibilityLabel: "Terminal prompt",
@@ -2304,6 +2308,17 @@ export const ru: TranslationResources = {
         unavailable: "Connect to this host to manage agents",
       },
       workspaces: {
+        quickAsk: {
+          title: "Рабочее пространство быстрых вопросов",
+          hint: "Удержание боковой кнопки открывает здесь нового агента.",
+          automatic: "Автоматически",
+          automaticWithName: "Автоматически ({{name}})",
+          automaticNew: "Автоматически (новое в домашней папке)",
+          assistantHint:
+            "Выберите Daseo цифровым помощником: Настройки Android → Дополнительные функции → Боковая кнопка → Нажатие и удержание.",
+          openAssistantSettings: "Настройки помощника",
+          accessibilityLabel: "Рабочее пространство быстрых вопросов: {{value}}",
+        },
         unavailable: "Connect to this host to manage workspaces",
       },
       terminalProfiles: {

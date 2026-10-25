@@ -1,0 +1,57 @@
+package __PACKAGE__
+
+import android.content.Context
+import android.content.Intent
+import android.os.Bundle
+import android.speech.RecognitionService
+import android.speech.SpeechRecognizer
+import android.service.voice.VoiceInteractionService
+import android.service.voice.VoiceInteractionSession
+import android.service.voice.VoiceInteractionSessionService
+
+/**
+ * Daseo delta 64. Android lists an app as a digital assistant when it has an ASSIST activity or
+ * a VoiceInteractionService with `supportsAssist`; Daseo ships both (the alias lives in the
+ * manifest). The system keeps the selected service bound, so all three classes run in the
+ * `:assistant` process and stay small: the session only opens the quick-ask URL and hides.
+ */
+class DaseoVoiceInteractionService : VoiceInteractionService() {
+  override fun onReady() {
+    super.onReady()
+    // Quick ask opens Daseo's own screen; it never collects the screen the owner was on.
+    setDisabledShowContext(
+        VoiceInteractionSession.SHOW_WITH_ASSIST or VoiceInteractionSession.SHOW_WITH_SCREENSHOT,
+    )
+  }
+
+  override fun onLaunchVoiceAssistFromKeyguard() {
+    startActivity(DaseoQuickAsk.launchIntent(this))
+  }
+}
+
+class DaseoVoiceInteractionSessionService : VoiceInteractionSessionService() {
+  override fun onNewSession(args: Bundle?): VoiceInteractionSession = DaseoQuickAskSession(this)
+}
+
+class DaseoQuickAskSession(context: Context) : VoiceInteractionSession(context) {
+  override fun onShow(args: Bundle?, showFlags: Int) {
+    super.onShow(args, showFlags)
+    context.startActivity(DaseoQuickAsk.launchIntent(context))
+    hide()
+  }
+}
+
+/**
+ * The voice-interaction metadata must name a RecognitionService or Android drops the app from
+ * the assistant picker. Daseo's dictation runs through the Mac daemon, so this one only refuses;
+ * its metadata marks it not selectable as the system default recognizer.
+ */
+class DaseoRecognitionService : RecognitionService() {
+  override fun onStartListening(recognizerIntent: Intent?, listener: Callback?) {
+    listener?.error(SpeechRecognizer.ERROR_CLIENT)
+  }
+
+  override fun onCancel(listener: Callback?) {}
+
+  override fun onStopListening(listener: Callback?) {}
+}

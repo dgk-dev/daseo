@@ -1,0 +1,61 @@
+package __PACKAGE__
+
+import android.app.Activity
+import android.app.Application
+import android.app.KeyguardManager
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+
+/**
+ * Daseo delta 64: the side-button "quick ask" entry.
+ *
+ * Every route into quick ask ends as one URL, `paseo://quick-ask`, because React Native's
+ * Linking and expo-linking only deliver VIEW intents with data. The ASSIST activity-alias is
+ * rewritten here before React Native reads the intent; the voice-interaction session and the
+ * static shortcut send the URL directly.
+ */
+object DaseoQuickAsk {
+  const val URL = "paseo://quick-ask"
+  private const val ASSISTANT_PROCESS_SUFFIX = ":assistant"
+
+  fun launchIntent(context: Context): Intent =
+      Intent(Intent.ACTION_VIEW, Uri.parse(URL))
+          .setClassName(context.packageName, "${context.packageName}.MainActivity")
+          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+  /**
+   * ASSIST becomes the quick-ask URL. A quick-ask intent that Android replays from Recents after
+   * the process died becomes a plain launch, so reopening the task never starts another agent.
+   */
+  fun prepareLaunchIntent(intent: Intent?) {
+    if (intent == null) return
+    val isQuickAskEntry = intent.action == Intent.ACTION_ASSIST || isQuickAsk(intent)
+    if (!isQuickAskEntry) return
+    if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) {
+      intent.action = Intent.ACTION_MAIN
+      intent.data = null
+      return
+    }
+    intent.action = Intent.ACTION_VIEW
+    intent.data = Uri.parse(URL)
+  }
+
+  fun isQuickAsk(intent: Intent?): Boolean =
+      intent?.action == Intent.ACTION_VIEW && intent.data?.toString() == URL
+
+  /**
+   * Daseo shows private content, so it never draws over the lock screen. A quick ask that
+   * arrives while the device is locked asks for the unlock (one fingerprint touch on the Fold's
+   * side button) and opens once it succeeds.
+   */
+  fun dismissKeyguardIfLocked(activity: Activity, intent: Intent?) {
+    if (!isQuickAsk(intent)) return
+    val keyguard = activity.getSystemService(KeyguardManager::class.java) ?: return
+    if (!keyguard.isKeyguardLocked) return
+    keyguard.requestDismissKeyguard(activity, null)
+  }
+
+  /** The assistant services run in a light `:assistant` process that never loads React Native. */
+  fun isAssistantProcess(): Boolean = Application.getProcessName().endsWith(ASSISTANT_PROCESS_SUFFIX)
+}
