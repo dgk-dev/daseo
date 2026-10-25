@@ -94,6 +94,20 @@ describe("summarizeClientDebugDump", () => {
     expect(summary).not.toContain("I ReactNativeJS: fine");
     expect(summary).toContain("anr: Input dispatching timed out");
   });
+  it("folds repeated logcat warnings", () => {
+    const repeated = {
+      ...payload("r"),
+      logcat: [
+        "10-26 07:50:32.073 1 2 W [RNScreens]: backTitleVisible prop is not available on Android",
+        "10-26 07:50:32.369 1 2 W [RNScreens]: backTitleVisible prop is not available on Android",
+        "10-26 07:50:33.000 1 2 E Real: broke",
+      ].join("\n"),
+    };
+    const summary = summarizeClientDebugDump({ path: "/tmp/x.log", target, payload: repeated });
+    expect(summary).toContain("Android  (x2)");
+    expect(summary.match(/backTitleVisible/g)).toHaveLength(1);
+    expect(summary).toContain("E Real: broke");
+  });
   it("filters every line with grep", () => {
     const summary = summarizeClientDebugDump({
       path: "/tmp/x.log",

@@ -108,11 +108,35 @@ export function summarizeClientDebugDump(input: {
       .slice(-HIGHLIGHT_CONSOLE)
       .map((entry) => `${stamp(entry.at)} ${entry.level} ${entry.message.slice(0, 500)}`),
   );
-  const logcatIssues = logcatLines.filter((line) => LOGCAT_WARN_OR_ERROR.test(line));
-  out.push("", `Logcat W/E/F lines (last ${HIGHLIGHT_LOGCAT} of ${logcatIssues.length}):`);
+  const logcatIssues = dedupeLogcat(logcatLines.filter((line) => LOGCAT_WARN_OR_ERROR.test(line)));
+  out.push(
+    "",
+    `Logcat W/E/F lines, repeats folded (last ${HIGHLIGHT_LOGCAT} of ${logcatIssues.length}):`,
+  );
   out.push(...logcatIssues.slice(-HIGHLIGHT_LOGCAT).map((line) => line.slice(0, 500)));
   out.push("", "Read the saved file for everything, or call again with grep to filter.");
   return out.join("\n");
+}
+
+/**
+ * Keeps the last occurrence of each distinct "level tag: message" and notes how often it
+ * appeared, so startup warnings repeated per screen do not crowd out the one real error.
+ */
+function dedupeLogcat(lines: string[]): string[] {
+  const counts = new Map<string, number>();
+  const lastIndex = new Map<string, number>();
+  lines.forEach((line, index) => {
+    // Drop "date time pid tid" so the same message from any moment folds together.
+    const key = line.replace(/^\S+\s+\S+\s+\d+\s+\d+\s+/u, "");
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+    lastIndex.set(key, index);
+  });
+  return lines.flatMap((line, index) => {
+    const key = line.replace(/^\S+\s+\S+\s+\d+\s+\d+\s+/u, "");
+    if (lastIndex.get(key) !== index) return [];
+    const count = counts.get(key) ?? 1;
+    return [count > 1 ? `${line}  (x${count})` : line];
+  });
 }
 
 function dumpPath(paseoHome: string, payload: ClientDebugCollectPayload): string {

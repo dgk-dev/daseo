@@ -98,6 +98,10 @@ class DaseoDebugModule : Module() {
         ApplicationExitInfo.REASON_SIGNALED -> "signaled"
         ApplicationExitInfo.REASON_USER_REQUESTED -> "user_requested"
         ApplicationExitInfo.REASON_USER_STOPPED -> "user_stopped"
+        // API 33/34 constants, by value so older compile SDKs still build.
+        14 -> "freezer"
+        15 -> "package_state_change"
+        16 -> "package_updated"
         else -> "reason_$reason"
       }
 
