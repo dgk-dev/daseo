@@ -1,6 +1,6 @@
 {
   "name": "@paseo/plugin",
-  "version": "0.5.74",
+  "version": "0.5.75",
   "private": true,
   "files": [
     "dist",
