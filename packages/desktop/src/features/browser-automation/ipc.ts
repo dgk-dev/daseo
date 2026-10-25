@@ -8,15 +8,27 @@ import type {
 import type { TabContents, BrowserRegistry } from "./service.js";
 import type { IsolatedKeyboardInputEvent } from "./trusted-input.js";
 import { collectElementStyles } from "./css-styles.js";
-import { applyDeviceEmulation, resolveDeviceEmulation } from "./device-emulation.js";
+import {
+  clearPaseoBrowserClientHintOverride,
+  setPaseoBrowserClientHintOverride,
+  userAgentDataPlatform,
+} from "../browser-profile.js";
+import {
+  applyDeviceEmulation,
+  deviceEmulationClientHints,
+  type DeviceEmulationHost,
+  resolveDeviceEmulation,
+} from "./device-emulation.js";
 import { CdpSessionQueue } from "./cdp-session-queue.js";
 import {
   dialogAcceptValue,
   handledDialogEvent,
   MAX_DIALOGS_PER_COMMAND,
-  promptShimDrainScript,
+  PROMPT_SHIM_DRAIN_FUNCTION,
+  PROMPT_SHIM_INSTALLED_FUNCTION,
+  PROMPT_SHIM_OBJECT_GROUP,
+  PROMPT_SHIM_RESTORE_FUNCTION,
   promptShimInstallScript,
-  promptShimRestoreScript,
 } from "./dialog-handling.js";
 import { executeAutomationCommand } from "./service.js";
 import { startScreencast, stopScreencast } from "./screencast.js";
@@ -343,12 +355,18 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
         await applyDeviceEmulation(
           (command, params) => contents.debugger.sendCommand(command, params ?? {}),
           emulation,
+          deviceEmulationHost(),
         );
       });
       if (emulation) {
         emulatedContentsIds.add(contentsId);
+        setPaseoBrowserClientHintOverride(
+          contentsId,
+          deviceEmulationClientHints(emulation, deviceEmulationHost()),
+        );
       } else {
         emulatedContentsIds.delete(contentsId);
+        clearPaseoBrowserClientHintOverride(contentsId);
       }
       return emulation;
     },
@@ -400,6 +418,14 @@ function getNetworkCapture(
   return capture;
 }
 
+// What the tab reports without emulation; a desktop user agent on this platform keeps its version.
+function deviceEmulationHost(): DeviceEmulationHost {
+  return {
+    platform: userAgentDataPlatform(process.platform),
+    platformVersion: process.getSystemVersion(),
+  };
+}
+
 function getCdpQueue(contentsId: number): CdpSessionQueue {
   const existing = cdpQueuesByContentsId.get(contentsId);
   if (existing) {
@@ -440,6 +466,7 @@ function observeConsoleMessages(contents: BrowserAutomationWebContents, contents
     consoleMessagesByContentsId.delete(contentsId);
     mainFrameNavigationsByContentsId.delete(contentsId);
     emulatedContentsIds.delete(contentsId);
+    clearPaseoBrowserClientHintOverride(contentsId);
     cdpQueuesByContentsId.delete(contentsId);
     dialogMonitorsByContentsId.delete(contentsId);
     networkCapturesByContentsId.delete(contentsId);
@@ -467,6 +494,7 @@ class DialogMonitor {
   private persistent = false;
   private listenerRegistered = false;
   private detachGeneration = 0;
+  private promptShimObjectId: string | null = null;
   private readonly activeCollectors: DialogCollector[] = [];
   private readonly pendingDialogs: BrowserAutomationDialogEvent[] = [];
 
@@ -563,18 +591,38 @@ class DialogMonitor {
   }
 
   private async installPromptShim(): Promise<void> {
-    await this.sendDebugCommand("Runtime.evaluate", {
+    // Overlapping captures share one shim; a navigation since the last install took it away.
+    if (this.promptShimObjectId && (await this.promptShimInstalled(this.promptShimObjectId))) {
+      return;
+    }
+    const result = (await this.sendDebugCommand("Runtime.evaluate", {
       expression: promptShimInstallScript(),
-      returnByValue: true,
-    });
+      objectGroup: PROMPT_SHIM_OBJECT_GROUP,
+    })) as { result?: { objectId?: unknown } };
+    const objectId = result.result?.objectId;
+    this.promptShimObjectId = typeof objectId === "string" ? objectId : null;
+  }
+
+  private async promptShimInstalled(objectId: string): Promise<boolean> {
+    try {
+      const result = (await this.callPromptShim(objectId, PROMPT_SHIM_INSTALLED_FUNCTION)) as {
+        result?: { value?: unknown };
+      };
+      return result.result?.value === true;
+    } catch {
+      return false;
+    }
   }
 
   private async drainPromptShim(): Promise<BrowserAutomationDialogEvent[]> {
+    if (!this.promptShimObjectId) {
+      return [];
+    }
     try {
-      const result = (await this.sendDebugCommand("Runtime.evaluate", {
-        expression: promptShimDrainScript(),
-        returnByValue: true,
-      })) as { result?: { value?: unknown } };
+      const result = (await this.callPromptShim(
+        this.promptShimObjectId,
+        PROMPT_SHIM_DRAIN_FUNCTION,
+      )) as { result?: { value?: unknown } };
       return parsePromptShimDialogs(result.result?.value);
     } catch {
       return [];
@@ -582,14 +630,27 @@ class DialogMonitor {
   }
 
   private async restorePromptShim(): Promise<void> {
+    const objectId = this.promptShimObjectId;
+    this.promptShimObjectId = null;
+    if (!objectId) {
+      return;
+    }
     try {
-      await this.sendDebugCommand("Runtime.evaluate", {
-        expression: promptShimRestoreScript(),
-        returnByValue: true,
+      await this.callPromptShim(objectId, PROMPT_SHIM_RESTORE_FUNCTION);
+      await this.sendDebugCommand("Runtime.releaseObjectGroup", {
+        objectGroup: PROMPT_SHIM_OBJECT_GROUP,
       });
     } catch {
       // Navigation can destroy the execution context before cleanup runs; the next page has no shim.
     }
+  }
+
+  private callPromptShim(objectId: string, functionDeclaration: string): Promise<unknown> {
+    return this.sendDebugCommand("Runtime.callFunctionOn", {
+      objectId,
+      functionDeclaration,
+      returnByValue: true,
+    });
   }
 
   private recordDialogs(collector: DialogCollector, dialogs: BrowserAutomationDialogEvent[]): void {

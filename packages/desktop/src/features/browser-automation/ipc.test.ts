@@ -6,6 +6,11 @@ import {
   HostSnapshotEngineRegistry,
   preparePersistentBrowserDialogMonitoring,
 } from "./ipc.js";
+import {
+  PROMPT_SHIM_DRAIN_FUNCTION,
+  PROMPT_SHIM_OBJECT_GROUP,
+  PROMPT_SHIM_RESTORE_FUNCTION,
+} from "./dialog-handling.js";
 import type { IsolatedKeyboardInputEvent } from "./trusted-input.js";
 import { getPaseoBrowserTabLifecycle } from "../browser-webviews/index.js";
 
@@ -23,6 +28,22 @@ class FakeImage implements FullPageCaptureImage {
   }
 }
 
+const INSTALL_PROMPT_SHIM = {
+  command: "Runtime.evaluate",
+  params: { expression: expect.any(String), objectGroup: PROMPT_SHIM_OBJECT_GROUP },
+};
+const RELEASE_PROMPT_SHIM = {
+  command: "Runtime.releaseObjectGroup",
+  params: { objectGroup: PROMPT_SHIM_OBJECT_GROUP },
+};
+
+function promptShimCall(functionDeclaration: string, objectId = "prompt-shim-1") {
+  return {
+    command: "Runtime.callFunctionOn",
+    params: { objectId, functionDeclaration, returnByValue: true },
+  };
+}
+
 class FakeDebugger {
   public attachedProtocolVersions: string[] = [];
   public commands: Array<{ command: string; params: Record<string, unknown> }> = [];
@@ -32,6 +53,7 @@ class FakeDebugger {
   public readonly failedCommandErrors = new Map<string, Error>();
   public readonly promptDialogs: unknown[] = [];
   public failPromptDrain = false;
+  public promptShimHandles = 0;
   public beforeCommand: ((command: string) => void) | null = null;
   private messageListener:
     | ((event: unknown, method: string, params?: Record<string, unknown>) => void)
@@ -62,8 +84,15 @@ class FakeDebugger {
         this.blockedCommands.push(resolve);
       });
     }
+    if (command === "Runtime.evaluate" && params?.objectGroup === PROMPT_SHIM_OBJECT_GROUP) {
+      this.promptShimHandles += 1;
+      return { result: { type: "object", objectId: `prompt-shim-${this.promptShimHandles}` } };
+    }
     if (command === "Runtime.evaluate" && typeof params?.expression === "string") {
-      if (params.expression.includes("state.prompts.splice(0)")) {
+      return { result: { value: true } };
+    }
+    if (command === "Runtime.callFunctionOn") {
+      if (params?.functionDeclaration === PROMPT_SHIM_DRAIN_FUNCTION) {
         if (this.failPromptDrain) {
           throw new Error("execution context destroyed");
         }
@@ -416,10 +445,7 @@ describe("browser automation IPC adapter", () => {
 
       expect(contents.debugger.commands).toEqual([
         { command: "Page.enable", params: {} },
-        {
-          command: "Runtime.evaluate",
-          params: { expression: expect.any(String), returnByValue: true },
-        },
+        INSTALL_PROMPT_SHIM,
         { command: "Input.dispatchMouseEvent", params: { type: "mouseReleased" } },
         { command: "Page.handleJavaScriptDialog", params: { accept: false } },
       ]);
@@ -444,20 +470,12 @@ describe("browser automation IPC adapter", () => {
     });
     expect(contents.debugger.commands).toEqual([
       { command: "Page.enable", params: {} },
-      {
-        command: "Runtime.evaluate",
-        params: { expression: expect.any(String), returnByValue: true },
-      },
+      INSTALL_PROMPT_SHIM,
       { command: "Input.dispatchMouseEvent", params: { type: "mouseReleased" } },
       { command: "Page.handleJavaScriptDialog", params: { accept: false } },
-      {
-        command: "Runtime.evaluate",
-        params: { expression: expect.any(String), returnByValue: true },
-      },
-      {
-        command: "Runtime.evaluate",
-        params: { expression: expect.any(String), returnByValue: true },
-      },
+      promptShimCall(PROMPT_SHIM_DRAIN_FUNCTION),
+      promptShimCall(PROMPT_SHIM_RESTORE_FUNCTION),
+      RELEASE_PROMPT_SHIM,
     ]);
   });
 
@@ -478,10 +496,7 @@ describe("browser automation IPC adapter", () => {
 
       expect(contents.debugger.commands).toEqual([
         { command: "Page.enable", params: {} },
-        {
-          command: "Runtime.evaluate",
-          params: { expression: expect.any(String), returnByValue: true },
-        },
+        INSTALL_PROMPT_SHIM,
         { command: "Input.dispatchMouseEvent", params: { type: "mousePressed" } },
         { command: "Page.handleJavaScriptDialog", params: { accept: true } },
       ]);
@@ -503,13 +518,10 @@ describe("browser automation IPC adapter", () => {
         },
       ],
     });
-    expect(contents.debugger.commands.at(-1)).toEqual({
-      command: "Runtime.evaluate",
-      params: {
-        expression: expect.stringContaining("delete window[stateKey]"),
-        returnByValue: true,
-      },
-    });
+    expect(contents.debugger.commands.slice(-2)).toEqual([
+      promptShimCall(PROMPT_SHIM_RESTORE_FUNCTION),
+      RELEASE_PROMPT_SHIM,
+    ]);
   });
 
   test("keeps the prompt shim installed until overlapping captures finish", async () => {
@@ -571,14 +583,11 @@ describe("browser automation IPC adapter", () => {
         },
       ],
     });
-    expect(
-      contents.debugger.commands.some(
-        (entry) =>
-          entry.command === "Runtime.evaluate" &&
-          typeof entry.params.expression === "string" &&
-          entry.params.expression.includes("delete window[stateKey]"),
-      ),
-    ).toBe(false);
+    expect(contents.debugger.commands).not.toContainEqual(
+      promptShimCall(PROMPT_SHIM_RESTORE_FUNCTION),
+    );
+    // The second capture reused the first one's shim instead of wrapping it in another.
+    expect(contents.debugger.promptShimHandles).toBe(1);
 
     finishSecond.resolve();
     await expect(second).resolves.toEqual({
@@ -600,13 +609,10 @@ describe("browser automation IPC adapter", () => {
         },
       ],
     });
-    expect(contents.debugger.commands.at(-1)).toEqual({
-      command: "Runtime.evaluate",
-      params: {
-        expression: expect.stringContaining("delete window[stateKey]"),
-        returnByValue: true,
-      },
-    });
+    expect(contents.debugger.commands.slice(-2)).toEqual([
+      promptShimCall(PROMPT_SHIM_RESTORE_FUNCTION),
+      RELEASE_PROMPT_SHIM,
+    ]);
   });
 
   test("leaves JavaScript dialogs alone when no capture is active", async () => {
@@ -670,21 +676,10 @@ describe("browser automation IPC adapter", () => {
 
     expect(contents.debugger.commands).toEqual([
       { command: "Page.enable", params: {} },
-      {
-        command: "Runtime.evaluate",
-        params: { expression: expect.any(String), returnByValue: true },
-      },
-      {
-        command: "Runtime.evaluate",
-        params: { expression: expect.any(String), returnByValue: true },
-      },
-      {
-        command: "Runtime.evaluate",
-        params: {
-          expression: expect.stringContaining("delete window[stateKey]"),
-          returnByValue: true,
-        },
-      },
+      INSTALL_PROMPT_SHIM,
+      promptShimCall(PROMPT_SHIM_DRAIN_FUNCTION),
+      promptShimCall(PROMPT_SHIM_RESTORE_FUNCTION),
+      RELEASE_PROMPT_SHIM,
     ]);
   });
 

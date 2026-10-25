@@ -1,3 +1,8 @@
+import {
+  chromiumBrandVersionList,
+  type ClientHintMetadata,
+  type UserAgentBrandVersion,
+} from "../browser-profile.js";
 import type { CdpCommandSender } from "./cdp-session-queue.js";
 
 // browser_resize changed only the webview size, so a 390px "mobile" check still
@@ -14,9 +19,15 @@ export interface DeviceEmulation {
 
 const DEFAULT_MOBILE_SCALE_FACTOR = 3;
 
+/** The machine the browser runs on, as `navigator.userAgentData` reports it without emulation. */
+export interface DeviceEmulationHost {
+  platform: string;
+  platformVersion: string;
+}
+
 interface UserAgentMetadata {
-  brands: Array<{ brand: string; version: string }>;
-  fullVersionList: Array<{ brand: string; version: string }>;
+  brands: UserAgentBrandVersion[];
+  fullVersionList: UserAgentBrandVersion[];
   fullVersion: string;
   platform: string;
   platformVersion: string;
@@ -54,13 +65,18 @@ export function androidChromeUserAgent(browserUserAgent: string): string {
 
 // Client hints have to agree with the user agent string or sites that read
 // navigator.userAgentData (and Sec-CH-UA-Mobile) still see a Mac. Safari sends
-// no client hints, so an iOS user agent gets none.
-function userAgentMetadata(userAgent: string, mobile: boolean): UserAgentMetadata | undefined {
+// no client hints, so an iOS user agent gets none. Brands use the browser's own
+// GREASE brand, so emulation changes the platform and nothing else; a desktop
+// user agent on the host's own platform keeps the host's real platform version.
+function userAgentMetadata(
+  userAgent: string,
+  mobile: boolean,
+  host: DeviceEmulationHost,
+): UserAgentMetadata | undefined {
   const version = /Chrome\/([\d.]+)/.exec(userAgent)?.[1];
   if (!version || /iPhone|iPad|iPod/.test(userAgent)) {
     return undefined;
   }
-  const major = version.split(".")[0] ?? version;
   const android = /Android/.test(userAgent);
   let platform = "macOS";
   if (android) {
@@ -68,27 +84,42 @@ function userAgentMetadata(userAgent: string, mobile: boolean): UserAgentMetadat
   } else if (/Windows/.test(userAgent)) {
     platform = "Windows";
   }
+  let platformVersion = "";
+  if (android) {
+    platformVersion = "10.0.0";
+  } else if (platform === host.platform) {
+    platformVersion = host.platformVersion;
+  }
   return {
-    brands: [
-      { brand: "Chromium", version: major },
-      { brand: "Not_A Brand", version: "24" },
-    ],
-    fullVersionList: [
-      { brand: "Chromium", version },
-      { brand: "Not_A Brand", version: "24.0.0.0" },
-    ],
+    brands: chromiumBrandVersionList(version, "major"),
+    fullVersionList: chromiumBrandVersionList(version, "full"),
     fullVersion: version,
     platform,
-    platformVersion: android ? "10.0.0" : "",
+    platformVersion,
     architecture: android ? "" : "arm",
     model: android ? (/Android [^;]+; ([^;)]+)/.exec(userAgent)?.[1] ?? "") : "",
     mobile: mobile || / Mobile /.test(userAgent),
   };
 }
 
+/**
+ * The client hints an emulating tab's requests carry: what its `navigator.userAgentData` reports,
+ * or null when the emulated user agent sends none.
+ */
+export function deviceEmulationClientHints(
+  emulation: DeviceEmulation,
+  host: DeviceEmulationHost,
+): ClientHintMetadata | null {
+  const metadata = userAgentMetadata(emulation.userAgent, emulation.mobile, host);
+  return metadata
+    ? { brands: metadata.brands, mobile: metadata.mobile, platform: metadata.platform }
+    : null;
+}
+
 export async function applyDeviceEmulation(
   send: CdpCommandSender,
   emulation: DeviceEmulation | null,
+  host: DeviceEmulationHost,
 ): Promise<void> {
   if (!emulation) {
     await send("Emulation.clearDeviceMetricsOverride");
@@ -108,7 +139,7 @@ export async function applyDeviceEmulation(
     enabled: emulation.mobile,
     ...(emulation.mobile ? { maxTouchPoints: 5 } : {}),
   });
-  const metadata = userAgentMetadata(emulation.userAgent, emulation.mobile);
+  const metadata = userAgentMetadata(emulation.userAgent, emulation.mobile, host);
   await send("Emulation.setUserAgentOverride", {
     userAgent: emulation.userAgent,
     ...(metadata ? { userAgentMetadata: metadata } : {}),

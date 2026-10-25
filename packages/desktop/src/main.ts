@@ -1,8 +1,13 @@
 process.emitWarning = (() => {}) as typeof process.emitWarning;
 
 import log from "electron-log/main";
+import {
+  electronLogInitializeOptions,
+  forwardAppRendererConsole,
+} from "./features/renderer-console-log.js";
 log.transports.console.level = "info";
-log.initialize({ spyRendererConsole: true });
+// Delta 65: the preload goes to Daseo's own session only; read when the app is ready.
+log.initialize(electronLogInitializeOptions(() => [session.defaultSession]));
 
 import { inheritLoginShellEnv } from "./login-shell-env.js";
 
@@ -88,13 +93,17 @@ import {
 } from "./features/browser-webviews/popup-targets.js";
 import {
   applyPaseoBrowserProfileUserAgent,
+  chromiumBrandVersionList,
   clearPaseoBrowserProfile,
   getLegacyPaseoBrowserProfileSession,
   PASEO_BROWSER_PROFILE_PARTITION,
   getPaseoBrowserProfileSession,
   getPaseoBrowserProfileSessions,
+  installPaseoBrowserClientHints,
   listPaseoBrowserProfileGuests,
   readLegacyPaseoBrowserIds,
+  rendererAcceptLanguages,
+  userAgentDataPlatform,
 } from "./features/browser-profile.js";
 import { parseOpenProjectPathFromArgv } from "./open-project-routing.js";
 import { PendingOpenProjectStore } from "./pending-open-project-store.js";
@@ -1439,9 +1448,23 @@ async function bootstrap(): Promise<void> {
   }
 
   await app.whenReady();
+  forwardAppRendererConsole({
+    app,
+    logger: log,
+    isBrowserProfileSession: (candidate) => candidate === getPaseoBrowserProfileSession(session),
+  });
   // Before any window exists: browser webviews and popups take the session's user agent
   // when they are created.
-  applyPaseoBrowserProfileUserAgent(session, app.getName());
+  applyPaseoBrowserProfileUserAgent(
+    session,
+    app.getName(),
+    rendererAcceptLanguages(app.getLocale(), app.getPreferredSystemLanguages()),
+  );
+  installPaseoBrowserClientHints(session, {
+    brands: chromiumBrandVersionList(process.versions.chrome, "major"),
+    mobile: false,
+    platform: userAgentDataPlatform(process.platform),
+  });
   await configureBrowserTabLifecycle();
 
   const appDistDir = getAppDistDir();

@@ -1,5 +1,8 @@
 export const ARIA_SNAPSHOT_SCRIPT_MARKER = "__PASEO_ARIA_SNAPSHOT__";
 export const ARIA_FIND_SCRIPT_MARKER = "__PASEO_ARIA_FIND__";
+// The ref registry is keyed by a registered symbol, so later scripts reach it while a page listing
+// its global names (Object.keys, Object.getOwnPropertyNames) finds no automation property.
+export const BROWSER_AUTOMATION_RUNTIME = "window[Symbol.for('paseo.browser-automation')]";
 
 // Adapted from Playwright's injected ARIA snapshot model.
 // Copyright (c) Microsoft Corporation. Licensed under the Apache License, Version 2.0.
@@ -212,7 +215,7 @@ export const ARIA_SHARED_SOURCE = String.raw`
   // keepRefs (browser_find) adds to the refs of the latest snapshot instead of
   // starting a new set, so the snapshot's refs keep resolving.
   function ensureRuntime(keepRefs) {
-    const previous = window.__PASEO_BROWSER_AUTOMATION__;
+    const previous = ${BROWSER_AUTOMATION_RUNTIME};
     if (keepRefs && previous && previous.refs instanceof Map && previous.numbering &&
       previous.numbering.refByElement instanceof WeakMap) {
       return previous;
@@ -231,7 +234,7 @@ export const ARIA_SHARED_SOURCE = String.raw`
         return { ok: true, element };
       }
     };
-    Object.defineProperty(window, '__PASEO_BROWSER_AUTOMATION__', {
+    Object.defineProperty(window, Symbol.for('paseo.browser-automation'), {
       configurable: true,
       enumerable: false,
       value: runtime

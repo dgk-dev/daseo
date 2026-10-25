@@ -1,13 +1,22 @@
 import { describe, expect, test } from "vitest";
 import {
   applyPaseoBrowserProfileUserAgent,
+  chromiumBrandVersionList,
+  clearPaseoBrowserClientHintOverride,
   clearPaseoBrowserProfile,
+  clientHintHeaders,
   getLegacyPaseoBrowserProfileSession,
   getPaseoBrowserProfileSessions,
+  installPaseoBrowserClientHints,
   listPaseoBrowserProfileGuests,
   PASEO_BROWSER_PROFILE_PARTITION,
   plainChromeUserAgent,
   readLegacyPaseoBrowserIds,
+  rendererAcceptLanguages,
+  requestHeadersWithClientHints,
+  sendsClientHints,
+  setPaseoBrowserClientHintOverride,
+  userAgentDataPlatform,
 } from "./browser-profile.js";
 
 // Measured on Daseo 0.5.36 (2026-09-29).
@@ -27,22 +36,206 @@ describe("browser profile user agent", () => {
     expect(plainChromeUserAgent(chrome, "Paseo")).toBe(chrome);
   });
 
-  test("sets the plain user agent on the browser profile session only", () => {
-    const set = new Map<string, string>();
+  test("sets the plain user agent and accept languages on the browser profile session only", () => {
+    const set = new Map<string, [string, string | undefined]>();
     applyPaseoBrowserProfileUserAgent(
       {
         fromPartition: (partition) => ({
           getUserAgent: () => ELECTRON_DEFAULT_USER_AGENT,
-          setUserAgent: (userAgent) => set.set(partition, userAgent),
+          setUserAgent: (userAgent, acceptLanguages) =>
+            set.set(partition, [userAgent, acceptLanguages]),
         }),
       },
       "Paseo",
+      "en-US,en-KR,ko-KR",
     );
     expect([...set.keys()]).toEqual([PASEO_BROWSER_PROFILE_PARTITION]);
-    const applied = set.get(PASEO_BROWSER_PROFILE_PARTITION) ?? "";
+    const [applied, acceptLanguages] = set.get(PASEO_BROWSER_PROFILE_PARTITION) ?? ["", ""];
     expect(applied).not.toMatch(/Electron\//);
     expect(applied).not.toMatch(/Paseo\//);
     expect(applied).toContain("Chrome/146.0.7680.216");
+    expect(acceptLanguages).toBe("en-US,en-KR,ko-KR");
+  });
+});
+
+describe("browser profile accept languages", () => {
+  // Measured on Electron 41.10.6 (2026-10-25): app.getLocale() "en-US",
+  // app.getPreferredSystemLanguages() ["en-KR", "ko-KR"], navigator.languages
+  // ["en-US", "en-KR", "ko-KR"].
+  test("lists the app locale, then the system languages, as navigator.languages does", () => {
+    expect(rendererAcceptLanguages("en-US", ["en-KR", "ko-KR"])).toBe("en-US,en-KR,ko-KR");
+  });
+
+  test("does not repeat the app locale when the system lists it", () => {
+    expect(rendererAcceptLanguages("ko-KR", ["ko-KR", "en-US"])).toBe("ko-KR,en-US");
+  });
+});
+
+describe("browser profile client hints", () => {
+  test("matches navigator.userAgentData on Chromium 146", () => {
+    // Measured in the browser profile on Daseo 0.5.73 and Electron 41.10.6 (2026-10-25).
+    expect(chromiumBrandVersionList("146.0.7680.216", "major")).toEqual([
+      { brand: "Not-A.Brand", version: "24" },
+      { brand: "Chromium", version: "146" },
+    ]);
+    expect(chromiumBrandVersionList("146.0.7680.216", "full")).toEqual([
+      { brand: "Not-A.Brand", version: "24.0.0.0" },
+      { brand: "Chromium", version: "146.0.7680.216" },
+    ]);
+  });
+
+  test("follows Chromium's GREASE seed for other major versions", () => {
+    // Published Chrome Sec-CH-UA values: 120 "Not_A Brand";v="8",
+    // 124 "Not-A.Brand";v="99", 131 "Not_A Brand";v="24".
+    const grease = (version: string) =>
+      chromiumBrandVersionList(version, "major").find((entry) => entry.brand !== "Chromium");
+    expect(grease("120.0.6099.71")).toEqual({ brand: "Not_A Brand", version: "8" });
+    expect(grease("124.0.6367.60")).toEqual({ brand: "Not-A.Brand", version: "99" });
+    expect(grease("131.0.6778.85")).toEqual({ brand: "Not_A Brand", version: "24" });
+    // An odd seed takes the swapped order.
+    expect(chromiumBrandVersionList("147.0.0.0", "major").map((entry) => entry.brand)).toEqual([
+      "Chromium",
+      "Not.A/Brand",
+    ]);
+  });
+
+  test("formats the three headers the way Chrome sends them", () => {
+    expect(
+      clientHintHeaders({
+        brands: chromiumBrandVersionList("146.0.7680.216", "major"),
+        mobile: false,
+        platform: userAgentDataPlatform("darwin"),
+      }),
+    ).toEqual({
+      "Sec-CH-UA": '"Not-A.Brand";v="24", "Chromium";v="146"',
+      "Sec-CH-UA-Mobile": "?0",
+      "Sec-CH-UA-Platform": '"macOS"',
+    });
+  });
+
+  test("goes to potentially trustworthy URLs only", () => {
+    expect(sendsClientHints("https://example.com/")).toBe(true);
+    expect(sendsClientHints("wss://example.com/socket")).toBe(true);
+    expect(sendsClientHints("http://localhost:8081/")).toBe(true);
+    expect(sendsClientHints("http://app.localhost/")).toBe(true);
+    expect(sendsClientHints("http://127.0.0.1:3000/")).toBe(true);
+    expect(sendsClientHints("http://[::1]/")).toBe(true);
+    expect(sendsClientHints("http://example.com/")).toBe(false);
+    expect(sendsClientHints("http://127.example.com/")).toBe(false);
+    expect(sendsClientHints("data:text/plain,hi")).toBe(false);
+    expect(sendsClientHints("not a url")).toBe(false);
+  });
+
+  const defaults = clientHintHeaders({
+    brands: chromiumBrandVersionList("146.0.7680.216", "major"),
+    mobile: false,
+    platform: "macOS",
+  });
+
+  test("adds the hints a request lacks and never replaces one it has", () => {
+    expect(
+      requestHeadersWithClientHints(
+        {
+          url: "https://example.com/",
+          webContentsId: 1,
+          requestHeaders: { "User-Agent": "UA", "sec-ch-ua-mobile": "?1" },
+        },
+        defaults,
+      ),
+    ).toEqual({
+      "User-Agent": "UA",
+      "sec-ch-ua-mobile": "?1",
+      "Sec-CH-UA": '"Not-A.Brand";v="24", "Chromium";v="146"',
+      "Sec-CH-UA-Platform": '"macOS"',
+    });
+    expect(
+      requestHeadersWithClientHints(
+        { url: "http://example.com/", webContentsId: 1, requestHeaders: {} },
+        defaults,
+      ),
+    ).toBeNull();
+    expect(
+      requestHeadersWithClientHints(
+        { url: "https://example.com/", requestHeaders: defaults },
+        defaults,
+      ),
+    ).toBeNull();
+  });
+
+  test("an emulating tab sends its own hints, or none", () => {
+    setPaseoBrowserClientHintOverride(7, {
+      brands: chromiumBrandVersionList("146.0.0.0", "major"),
+      mobile: true,
+      platform: "Android",
+    });
+    setPaseoBrowserClientHintOverride(8, null);
+    try {
+      expect(
+        requestHeadersWithClientHints(
+          { url: "https://example.com/", webContentsId: 7, requestHeaders: {} },
+          defaults,
+        ),
+      ).toEqual({
+        "Sec-CH-UA": '"Not-A.Brand";v="24", "Chromium";v="146"',
+        "Sec-CH-UA-Mobile": "?1",
+        "Sec-CH-UA-Platform": '"Android"',
+      });
+      expect(
+        requestHeadersWithClientHints(
+          { url: "https://example.com/", webContentsId: 8, requestHeaders: {} },
+          defaults,
+        ),
+      ).toBeNull();
+    } finally {
+      clearPaseoBrowserClientHintOverride(7);
+      clearPaseoBrowserClientHintOverride(8);
+    }
+    expect(
+      requestHeadersWithClientHints(
+        { url: "https://example.com/", webContentsId: 7, requestHeaders: {} },
+        defaults,
+      ),
+    ).toEqual(defaults);
+  });
+
+  test("registers one listener on the browser profile session, filtered to secure URLs", () => {
+    const registered: Array<{ partition: string; urls: string[] }> = [];
+    let listener:
+      | ((
+          details: { url: string; webContentsId?: number; requestHeaders: Record<string, string> },
+          callback: (response: { requestHeaders?: Record<string, string> }) => void,
+        ) => void)
+      | null = null;
+    installPaseoBrowserClientHints(
+      {
+        fromPartition: (partition) => ({
+          webRequest: {
+            onBeforeSendHeaders: (filter, next) => {
+              registered.push({ partition, urls: filter.urls });
+              listener = next;
+            },
+          },
+        }),
+      },
+      {
+        brands: chromiumBrandVersionList("146.0.7680.216", "major"),
+        mobile: false,
+        platform: "macOS",
+      },
+    );
+    expect(registered).toHaveLength(1);
+    expect(registered[0]?.partition).toBe(PASEO_BROWSER_PROFILE_PARTITION);
+    expect(registered[0]?.urls).toContain("https://*/*");
+    expect(registered[0]?.urls).not.toContain("http://*/*");
+
+    const responses: unknown[] = [];
+    listener?.({ url: "https://example.com/", requestHeaders: {} }, (response) =>
+      responses.push(response),
+    );
+    listener?.({ url: "http://localhost.example/", requestHeaders: {} }, (response) =>
+      responses.push(response),
+    );
+    expect(responses).toEqual([{ requestHeaders: defaults }, {}]);
   });
 });
 

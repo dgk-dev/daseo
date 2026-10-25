@@ -249,7 +249,7 @@ describe("browser_find script", () => {
     Element.prototype.getBoundingClientRect = originalRect;
     Element.prototype.scrollIntoView = originalScrollIntoView;
     document.body.innerHTML = "";
-    delete (window as unknown as Record<string, unknown>).__PASEO_BROWSER_AUTOMATION__;
+    delete (window as unknown as Record<symbol, unknown>)[Symbol.for("paseo.browser-automation")];
   });
 
   it("returns a ref that clicks the matched button", async () => {

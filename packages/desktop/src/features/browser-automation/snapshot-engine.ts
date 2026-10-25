@@ -3,6 +3,7 @@ import {
   ARIA_FIND_SCRIPT_MARKER,
   ARIA_SNAPSHOT_SCRIPT,
   ARIA_SNAPSHOT_SCRIPT_MARKER,
+  BROWSER_AUTOMATION_RUNTIME,
   buildAriaFindScript,
   type AriaFindQuery,
 } from "./aria-snapshot-script.js";
@@ -601,7 +602,7 @@ function buildRuntimeElementExpression(metadata: BrowserRefMetadata): string {
 }
 
 function buildResolveExpression(metadata: BrowserRefMetadata): string {
-  return `window.__PASEO_BROWSER_AUTOMATION__?.resolve(${JSON.stringify(metadata.ref)}, ${JSON.stringify(metadata.fingerprint)}) ?? { ok: false, reason: 'stale_ref' }`;
+  return `${BROWSER_AUTOMATION_RUNTIME}?.resolve(${JSON.stringify(metadata.ref)}, ${JSON.stringify(metadata.fingerprint)}) ?? { ok: false, reason: 'stale_ref' }`;
 }
 
 function readString(value: unknown): string | null {

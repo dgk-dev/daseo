@@ -36,16 +36,18 @@ export function dialogAcceptValue(type: BrowserAutomationDialogEvent["type"]): b
   return DIALOG_POLICIES[type].accept;
 }
 
+// During a command the page's window.prompt is replaced by a recorder that dismisses the prompt.
+// Its state lives in a closure the main process reaches through the CDP object handle the install
+// expression returns (evaluate it without returnByValue), so nothing is added to window and a page
+// enumerating its globals finds no trace of the automation.
+export const PROMPT_SHIM_OBJECT_GROUP = "paseo-prompt-shim";
+
 export function promptShimInstallScript(): string {
   return String.raw`(() => {
-    const stateKey = "__PASEO_BROWSER_AUTOMATION_DIALOG_STATE__";
-    const state = window[stateKey] || { prompts: [], installed: false };
-    window[stateKey] = state;
-    if (state.installed) return true;
+    const prompts = [];
     const originalPrompt = window.prompt;
-    Object.defineProperty(state, "originalPrompt", { configurable: true, value: originalPrompt });
     const promptShim = (message = "", defaultValue = "") => {
-      state.prompts.push({
+      prompts.push({
         type: "prompt",
         message: String(message ?? ""),
         defaultValue: String(defaultValue ?? ""),
@@ -54,33 +56,22 @@ export function promptShimInstallScript(): string {
       });
       return null;
     };
-    Object.defineProperty(state, "promptShim", { configurable: true, value: promptShim });
     window.prompt = promptShim;
-    state.installed = true;
-    return true;
+    return {
+      installed: () => window.prompt === promptShim,
+      drain: () => prompts.splice(0),
+      restore: () => {
+        if (window.prompt === promptShim) window.prompt = originalPrompt;
+        return true;
+      },
+    };
   })()`;
 }
 
-export function promptShimDrainScript(): string {
-  return String.raw`(() => {
-    const state = window.__PASEO_BROWSER_AUTOMATION_DIALOG_STATE__;
-    if (!state || !Array.isArray(state.prompts)) return [];
-    return state.prompts.splice(0);
-  })()`;
-}
-
-export function promptShimRestoreScript(): string {
-  return String.raw`(() => {
-    const stateKey = "__PASEO_BROWSER_AUTOMATION_DIALOG_STATE__";
-    const state = window[stateKey];
-    if (!state || !state.installed) return true;
-    if (window.prompt === state.promptShim && typeof state.originalPrompt === "function") {
-      window.prompt = state.originalPrompt;
-    }
-    delete window[stateKey];
-    return true;
-  })()`;
-}
+/** `Runtime.callFunctionOn` declarations, called on the handle the install expression returns. */
+export const PROMPT_SHIM_INSTALLED_FUNCTION = "function () { return this.installed(); }";
+export const PROMPT_SHIM_DRAIN_FUNCTION = "function () { return this.drain(); }";
+export const PROMPT_SHIM_RESTORE_FUNCTION = "function () { return this.restore(); }";
 
 function normalizeDialogType(value: unknown): BrowserAutomationDialogEvent["type"] {
   return value === "alert" || value === "confirm" || value === "prompt" || value === "beforeunload"

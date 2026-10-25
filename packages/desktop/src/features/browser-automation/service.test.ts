@@ -2208,9 +2208,9 @@ describe("executeAutomationCommand", () => {
         truncated: false,
       },
     });
-    expect(containsScript(browser.tab, '"@e1"', "__PASEO_BROWSER_AUTOMATION__?.resolve")).toBe(
-      true,
-    );
+    expect(
+      containsScript(browser.tab, '"@e1"', "Symbol.for('paseo.browser-automation')]?.resolve"),
+    ).toBe(true);
   });
 
   test("evaluate returns stale ref when the target ref cannot be resolved", async () => {

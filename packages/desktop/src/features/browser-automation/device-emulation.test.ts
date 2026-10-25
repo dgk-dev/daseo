@@ -2,8 +2,11 @@ import { describe, expect, test } from "vitest";
 import {
   androidChromeUserAgent,
   applyDeviceEmulation,
+  deviceEmulationClientHints,
   resolveDeviceEmulation,
 } from "./device-emulation.js";
+
+const MAC_HOST = { platform: "macOS", platformVersion: "26.5.1" };
 
 const MAC_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.80 Safari/537.36";
@@ -34,10 +37,14 @@ describe("resolveDeviceEmulation", () => {
 describe("applyDeviceEmulation", () => {
   async function record(emulation: Parameters<typeof applyDeviceEmulation>[1]) {
     const sent: Array<[string, unknown]> = [];
-    await applyDeviceEmulation(async (command, params) => {
-      sent.push([command, params]);
-      return {};
-    }, emulation);
+    await applyDeviceEmulation(
+      async (command, params) => {
+        sent.push([command, params]);
+        return {};
+      },
+      emulation,
+      MAC_HOST,
+    );
     return sent;
   }
 
@@ -58,11 +65,28 @@ describe("applyDeviceEmulation", () => {
     ]);
     expect(sent[2]?.[1]).toMatchObject({
       userAgentMetadata: {
+        brands: [
+          { brand: "Not-A.Brand", version: "24" },
+          { brand: "Chromium", version: "146" },
+        ],
+        fullVersionList: [
+          { brand: "Not-A.Brand", version: "24.0.0.0" },
+          { brand: "Chromium", version: "146.0.0.0" },
+        ],
         platform: "Android",
+        platformVersion: "10.0.0",
         mobile: true,
         model: "K",
         fullVersion: "146.0.0.0",
       },
+    });
+  });
+
+  test("a desktop user agent on the host platform keeps the host's platform version", async () => {
+    const sent = await record({ mobile: false, userAgent: MAC_UA, deviceScaleFactor: 2 });
+
+    expect(sent[2]?.[1]).toMatchObject({
+      userAgentMetadata: { platform: "macOS", platformVersion: "26.5.1", mobile: false },
     });
   });
 
@@ -75,6 +99,33 @@ describe("applyDeviceEmulation", () => {
     });
 
     expect(sent[2]?.[1]).not.toHaveProperty("userAgentMetadata");
+  });
+
+  test("request client hints match the emulated userAgentData", () => {
+    expect(
+      deviceEmulationClientHints(
+        { mobile: true, userAgent: androidChromeUserAgent(MAC_UA), deviceScaleFactor: 3 },
+        MAC_HOST,
+      ),
+    ).toEqual({
+      brands: [
+        { brand: "Not-A.Brand", version: "24" },
+        { brand: "Chromium", version: "146" },
+      ],
+      mobile: true,
+      platform: "Android",
+    });
+    expect(
+      deviceEmulationClientHints(
+        {
+          mobile: true,
+          userAgent:
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+          deviceScaleFactor: 3,
+        },
+        MAC_HOST,
+      ),
+    ).toBeNull();
   });
 
   test("clearing removes every override", async () => {

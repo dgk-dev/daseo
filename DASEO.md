@@ -321,7 +321,8 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     - The browser profile session (`persist:paseo-browser`, used by browser webviews and popups)
       sends a plain Chrome user agent: the `Paseo/<version>` and `Electron/<version>` tokens are
       removed, the Chrome version stays, and Paseo's own renderer keeps Electron's default. It is
-      set right after `app.whenReady()` because existing WebContents keep the old value. Key
+      set right after `app.whenReady()` because existing WebContents keep the old value; delta 65
+      makes the session's Accept-Language and client-hint headers agree with it. Key
       files: `packages/desktop/src/features/browser-profile.ts` and `packages/desktop/src/main.ts`.
     - Snapshots mark `focused=true` on the element keyboard input goes to (followed into open
       shadow roots) and `disabled=true` on disabled controls, which still get no ref, so the agent
@@ -1136,6 +1137,46 @@ use-open-file-externally}.ts`, `packages/app/src/utils/open-downloaded-file.ts`,
     Kotlin templates), `packages/app/src/{app/quick-ask.tsx,screens/quick-ask-screen.tsx,
 navigation/quick-ask.ts,composer/quick-ask/,screens/settings/quick-ask-workspace-card.tsx}`,
     `packages/server/src/server/speech/providers/azure/`.
+
+65. **Sites see the browser profile's Chromium as it is** — from the 2026-10-25 Turnstile
+    research (the owner approved its recommendation the same day). Daseo itself added four things a
+    page or a server can read that Chromium 146 does not have; measured on 0.5.73 and fixed:
+    (a) electron-log's `initialize` registers its preload on every session as it is created and
+    listens to every WebContents' console, so every site page and cross-origin frame got
+    `window.__electronLog` and site console lines landed in `~/Library/Logs/Paseo/main.log`. The
+    preload now goes to the default session only (`getSessions` plus `includeFutureSession:
+false`; 5.4.3's typings call it `includeFutureSessions` while its runtime reads the singular,
+    so both are set), and Daseo's own console forwarding skips WebContents in the browser profile.
+    (b) While a command ran, the prompt recorder kept its state on
+    `window.__PASEO_BROWSER_AUTOMATION_DIALOG_STATE__`; it now lives in a closure the main process
+    reaches through the CDP object handle the install expression returns (`Runtime.callFunctionOn`,
+    released with its object group). If the debugger detaches mid-command, the handle is lost and
+    the page keeps the recorder until it navigates. The snapshot ref registry moved from
+    `window.__PASEO_BROWSER_AUTOMATION__` to `window[Symbol.for('paseo.browser-automation')]`:
+    `Object.keys` and `Object.getOwnPropertyNames` no longer list it,
+    `Object.getOwnPropertySymbols` still does. Hiding it fully needs an isolated world for every
+    ref script and every CDP evaluate that resolves a ref.
+    (c) `navigator.languages` was `en-US,en-KR,ko-KR` and Accept-Language `en-US`: Electron builds
+    the renderer list from the app locale plus `app.getPreferredSystemLanguages()`, the network
+    stack uses the locale alone. The profile session gets the same list through `setUserAgent(ua,
+acceptLanguages)`, so the header is now `en-US,en-KR;q=0.9,ko-KR;q=0.8`. `--lang` was rejected:
+    it changes Daseo's own locale.
+    (d) Electron has no client-hints delegate, so no `Sec-CH-UA*` header was ever sent. One
+    `webRequest.onBeforeSendHeaders` listener on the profile session (Electron allows one per
+    session; secure URLs only, as Chrome; a header already on the request is kept) adds the three
+    low-entropy hints, built from `process.versions.chrome` with Chromium's GREASE seed:
+    `"Not-A.Brand";v="24", "Chromium";v="146"`, `?0`, `"macOS"`. Device emulation uses the same
+    brand list (it sent `Not_A Brand` 24 first) and the host's platform version for a desktop user
+    agent, and an emulating tab's headers follow it (`?1`, `"Android"`; none for an iOS user agent).
+    Unchanged on purpose: the user agent string, `navigator.webdriver`, `window.chrome`, and no
+    Google Chrome brand. High-entropy hints a server asks for with `Accept-CH` are still not sent.
+    Measured in an isolated dev desktop on 2026-10-25 through its daemon's browser tools:
+    `typeof __electronLog` `undefined` in the page and a cross-origin frame, automation-named
+    window properties `[]` after snapshot, click and evaluate, every header equal to
+    `navigator.languages` and `navigator.userAgentData` with and without mobile emulation, and the
+    non-interactive Turnstile test still issued a token in about 1 s. Key files:
+    `packages/desktop/src/features/{renderer-console-log,browser-profile}.ts`,
+    `packages/desktop/src/features/browser-automation/{dialog-handling,ipc,device-emulation,aria-snapshot-script}.ts`.
 
 ## Local reliability contracts
 
