@@ -2280,15 +2280,15 @@ export const ko: TranslationResources = {
       },
       workspaces: {
         quickAsk: {
-          title: "빠른 질문 워크스페이스",
-          hint: "측면 버튼을 길게 누르면 여기서 새 에이전트가 열립니다.",
+          title: "빠른 질문 프로젝트",
+          hint: "측면 버튼을 길게 누르면 이 프로젝트에 새 워크스페이스와 새 에이전트가 열립니다.",
           automatic: "자동",
           automaticWithName: "자동 ({{name}})",
-          automaticNew: "자동 (홈 폴더에 새로 만들기)",
+          automaticNew: "자동 (홈 폴더)",
           assistantHint:
             "Android 설정 → 유용한 기능 → 측면 버튼 → 길게 누르기에서 Daseo를 디지털 어시스턴트로 고르세요.",
           openAssistantSettings: "어시스턴트 설정",
-          accessibilityLabel: "빠른 질문 워크스페이스: {{value}}",
+          accessibilityLabel: "빠른 질문 프로젝트: {{value}}",
         },
         unavailable: "워크스페이스를 관리하려면 이 호스트에 연결하세요",
       },

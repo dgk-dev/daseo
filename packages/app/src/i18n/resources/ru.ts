@@ -2309,15 +2309,15 @@ export const ru: TranslationResources = {
       },
       workspaces: {
         quickAsk: {
-          title: "Рабочее пространство быстрых вопросов",
-          hint: "Удержание боковой кнопки открывает здесь нового агента.",
+          title: "Проект быстрых вопросов",
+          hint: "Удержание боковой кнопки открывает в этом проекте новое рабочее пространство с новым агентом.",
           automatic: "Автоматически",
           automaticWithName: "Автоматически ({{name}})",
-          automaticNew: "Автоматически (новое в домашней папке)",
+          automaticNew: "Автоматически (домашняя папка)",
           assistantHint:
             "Выберите Daseo цифровым помощником: Настройки Android → Дополнительные функции → Боковая кнопка → Нажатие и удержание.",
           openAssistantSettings: "Настройки помощника",
-          accessibilityLabel: "Рабочее пространство быстрых вопросов: {{value}}",
+          accessibilityLabel: "Проект быстрых вопросов: {{value}}",
         },
         unavailable: "Connect to this host to manage workspaces",
       },

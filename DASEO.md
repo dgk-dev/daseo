@@ -1084,8 +1084,8 @@ use-open-file-externally}.ts`, `packages/app/src/utils/open-downloaded-file.ts`,
     `android/` itself is generated and ignored), `packages/app/src/diagnostics/process-exit-report.ts`.
 
 64. **Holding the side button asks Daseo (the phone as a digital assistant)** — the owner's ask on
-    2026-10-25 (Gemini's gesture, for Daseo): hold the Galaxy side button, get a new agent in the
-    home-folder workspace with the keyboard up and the microphone listening. (a) Android lists an
+    2026-10-25 (Gemini's gesture, for Daseo): hold the Galaxy side button, get a new workspace in
+    the home-folder project with a new agent in it, the keyboard up and the microphone listening. (a) Android lists an
     app as a digital assistant when it has an ASSIST activity or a `VoiceInteractionService` with
     `supportsAssist`; Samsung's picker rule is reported both ways, so Daseo ships both: an
     `activity-alias` `.DaseoAssistActivity` on MainActivity, and `DaseoVoiceInteractionService` +
@@ -1102,10 +1102,13 @@ use-open-file-externally}.ts`, `packages/app/src/utils/open-downloaded-file.ts`,
     is locked asks for the unlock (`requestDismissKeyguard`; no `showWhenLocked`, Daseo shows
     private content; the Fold's side button is the fingerprint sensor). A static "빠른 질문"
     shortcut points at the same URL (launcher long-press, Samsung's double-press "app feature").
-    (c) The root `quick-ask` route waits for the host, opens a new draft tab (a new agent every
-    time) in the host's "빠른 질문 워크스페이스" (Settings → host → Workspaces, Android only), else
-    the most recently active workspace whose directory is the home folder (`shortenPath`'s `~`
-    rule), else a new home-folder workspace titled "빠른 질문". (d) The draft raises the keyboard
+    (c) The root `quick-ask` route waits for the host, creates a new untitled workspace (the
+    daemon names it from the first prompt) and opens a new draft tab in it, every time, exactly
+    what the sidebar's "new workspace" row does. The workspace goes into the host's "빠른 질문
+    프로젝트" (Settings → host → Workspaces, Android only, stored as `quickAskProjects`), else the
+    project rooted at the home folder (`shortenPath`'s `~` rule), else `~` itself. The owner
+    corrected 0.5.72-0.5.73 on 2026-10-25: those reused the latest home-folder workspace; its
+    `quickAskWorkspaces` key is no longer read. (d) The draft raises the keyboard
     (focus is retried until the IME is up: an early `showSoftInput` is ignored), starts the
     composer's own dictation, confirms it after 1.5 s below the speech level (0.25 on the
     dictation meter, about −40 dBFS) once speech began, shows "1.5초 후 보냄 · 눌러서 고치기",

@@ -2268,15 +2268,15 @@ export const ar: TranslationResources = {
       },
       workspaces: {
         quickAsk: {
-          title: "مساحة عمل الأسئلة السريعة",
-          hint: "الضغط مطولًا على الزر الجانبي يفتح وكيلًا جديدًا هنا.",
+          title: "مشروع الأسئلة السريعة",
+          hint: "الضغط مطولًا على الزر الجانبي يفتح مساحة عمل جديدة ووكيلًا جديدًا في هذا المشروع.",
           automatic: "تلقائي",
           automaticWithName: "تلقائي ({{name}})",
-          automaticNew: "تلقائي (جديد في المجلد الرئيسي)",
+          automaticNew: "تلقائي (المجلد الرئيسي)",
           assistantHint:
             "اختر Daseo كمساعد رقمي من إعدادات Android ← الميزات المتقدمة ← الزر الجانبي ← الضغط مطولًا.",
           openAssistantSettings: "إعدادات المساعد",
-          accessibilityLabel: "مساحة عمل الأسئلة السريعة: {{value}}",
+          accessibilityLabel: "مشروع الأسئلة السريعة: {{value}}",
         },
         unavailable: "Connect to this host to manage workspaces",
       },

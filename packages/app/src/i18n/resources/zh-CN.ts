@@ -2244,14 +2244,14 @@ export const zhCN: TranslationResources = {
       },
       workspaces: {
         quickAsk: {
-          title: "快速提问工作区",
-          hint: "长按侧边按钮会在这里打开新的代理。",
+          title: "快速提问项目",
+          hint: "长按侧边按钮会在此项目中打开新的工作区和新的代理。",
           automatic: "自动",
           automaticWithName: "自动（{{name}}）",
-          automaticNew: "自动（在主文件夹新建）",
+          automaticNew: "自动（主文件夹）",
           assistantHint: "在 Android 设置 → 实用功能 → 侧边按钮 → 长按 中，将 Daseo 选为数字助理。",
           openAssistantSettings: "助理设置",
-          accessibilityLabel: "快速提问工作区：{{value}}",
+          accessibilityLabel: "快速提问项目：{{value}}",
         },
         unavailable: "连接到这个 Host 以管理 Workspace",
       },

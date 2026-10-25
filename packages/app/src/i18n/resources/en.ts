@@ -2326,15 +2326,15 @@ export const en = {
       },
       workspaces: {
         quickAsk: {
-          title: "Quick ask workspace",
-          hint: "Holding the side button opens a new agent here.",
+          title: "Quick ask project",
+          hint: "Holding the side button opens a new workspace with a new agent in this project.",
           automatic: "Automatic",
           automaticWithName: "Automatic ({{name}})",
-          automaticNew: "Automatic (new in the home folder)",
+          automaticNew: "Automatic (home folder)",
           assistantHint:
             "Choose Daseo as the digital assistant in Android Settings → Advanced features → Side button → Press and hold.",
           openAssistantSettings: "Assistant settings",
-          accessibilityLabel: "Quick ask workspace: {{value}}",
+          accessibilityLabel: "Quick ask project: {{value}}",
         },
         unavailable: "Connect to this host to manage workspaces",
       },

@@ -2303,15 +2303,15 @@ export const ptBR: TranslationResources = {
       },
       workspaces: {
         quickAsk: {
-          title: "Espaço de trabalho das perguntas rápidas",
-          hint: "Segurar o botão lateral abre um novo agente aqui.",
+          title: "Projeto das perguntas rápidas",
+          hint: "Segurar o botão lateral abre um novo espaço de trabalho com um novo agente neste projeto.",
           automatic: "Automático",
           automaticWithName: "Automático ({{name}})",
-          automaticNew: "Automático (novo na pasta pessoal)",
+          automaticNew: "Automático (pasta pessoal)",
           assistantHint:
             "Escolha o Daseo como assistente digital em Configurações do Android → Recursos avançados → Botão lateral → Pressionar e segurar.",
           openAssistantSettings: "Configurações do assistente",
-          accessibilityLabel: "Espaço de trabalho das perguntas rápidas: {{value}}",
+          accessibilityLabel: "Projeto das perguntas rápidas: {{value}}",
         },
         unavailable: "Conecte-se a este host para gerenciar workspaces",
       },

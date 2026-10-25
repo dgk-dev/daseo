@@ -3,10 +3,9 @@ import { useRouter, type Href } from "expo-router";
 import { useStoreReady } from "@/app/_layout";
 import { useAppSettings } from "@/hooks/use-settings";
 import {
-  QUICK_ASK_WORKSPACE_DIRECTORY,
-  QUICK_ASK_WORKSPACE_TITLE,
+  QUICK_ASK_HOME_DIRECTORY,
+  resolveQuickAskProject,
   resolveQuickAskServerId,
-  resolveQuickAskWorkspace,
 } from "@/navigation/quick-ask";
 import type { AgentRouteResolution } from "@/navigation/agent-route-resolution";
 import { AgentRouteResolutionView } from "@/navigation/agent-route-resolution-view";
@@ -47,7 +46,7 @@ interface QuickAskTarget {
   lastHostError: string | null;
   isReady: boolean;
   noHosts: boolean;
-  quickAskWorkspaces: Record<string, string>;
+  quickAskProjects: Record<string, string>;
 }
 
 /** The host quick ask goes to, and whether its workspaces are known well enough to choose. */
@@ -63,7 +62,7 @@ function useQuickAskTarget(): QuickAskTarget {
     ? resolveQuickAskServerId({
         hosts,
         lastSelectionServerId: lastSelection?.serverId ?? null,
-        quickAskWorkspaces: settings.quickAskWorkspaces,
+        quickAskProjects: settings.quickAskProjects,
       })
     : null;
   const snapshot = useHostRuntimeSnapshot(serverId ?? "");
@@ -80,41 +79,40 @@ function useQuickAskTarget(): QuickAskTarget {
     lastHostError: snapshot?.lastError ?? null,
     isReady: storeReady && client !== null && connectionStatus === "online" && workspacesHydrated,
     noHosts: hostRegistryStatus === "ready" && hosts.length === 0,
-    quickAskWorkspaces: settings.quickAskWorkspaces,
+    quickAskProjects: settings.quickAskProjects,
   };
 }
 
 async function openQuickAskDraft(input: {
   serverId: string;
   client: DaemonClient;
-  configuredWorkspaceId: string | null;
+  configuredProjectId: string | null;
 }): Promise<void> {
   const session = useSessionStore.getState().sessions[input.serverId];
-  const target = resolveQuickAskWorkspace({
-    configuredWorkspaceId: input.configuredWorkspaceId,
-    workspaces: session?.workspaces.values() ?? [],
-    agents: session?.agents.values() ?? [],
+  const target = resolveQuickAskProject({
+    configuredProjectId: input.configuredProjectId,
+    projects: session?.projects.values() ?? [],
   });
-  let workspaceId: string;
-  if (target.kind === "workspace") {
-    workspaceId = target.workspaceId;
-  } else {
-    const payload = await input.client.createWorkspace({
-      source: { kind: "directory", path: QUICK_ASK_WORKSPACE_DIRECTORY },
-      title: QUICK_ASK_WORKSPACE_TITLE,
-    });
-    if (payload.error || !payload.workspace) {
-      throw new Error(payload.error ?? "Workspace was not created");
-    }
-    const workspace = normalizeWorkspaceDescriptor(payload.workspace);
-    useSessionStore.getState().mergeWorkspaces(input.serverId, [workspace]);
-    workspaceId = workspace.id;
+  // A new workspace every time, like the sidebar's "new workspace" row: no title, so the daemon
+  // names it from the first prompt.
+  const payload = await input.client.createWorkspace({
+    source:
+      target.kind === "project"
+        ? { kind: "directory", path: target.directory, projectId: target.projectId }
+        : { kind: "directory", path: QUICK_ASK_HOME_DIRECTORY },
+  });
+  if (payload.error || !payload.workspace) {
+    throw new Error(payload.error ?? "Workspace was not created");
   }
+  const workspace = normalizeWorkspaceDescriptor(payload.workspace);
+  useSessionStore.getState().mergeWorkspaces(input.serverId, [workspace]);
   const draftId = generateDraftId();
-  useQuickAskStore.getState().request({ serverId: input.serverId, workspaceId, draftId });
+  useQuickAskStore
+    .getState()
+    .request({ serverId: input.serverId, workspaceId: workspace.id, draftId });
   navigateToWorkspace({
     serverId: input.serverId,
-    workspaceId,
+    workspaceId: workspace.id,
     target: { kind: "draft", draftId },
   });
 }
@@ -126,7 +124,7 @@ function useQuickAskOpener(target: QuickAskTarget): {
 } {
   const [openState, setOpenState] = useState<QuickAskOpenState>({ kind: "waiting" });
   const startedRef = useRef(false);
-  const { isReady, serverId, client, quickAskWorkspaces } = target;
+  const { isReady, serverId, client, quickAskProjects } = target;
 
   useEffect(() => {
     if (!isReady || !serverId || !client || startedRef.current || openState.kind !== "waiting") {
@@ -137,12 +135,12 @@ function useQuickAskOpener(target: QuickAskTarget): {
     openQuickAskDraft({
       serverId,
       client,
-      configuredWorkspaceId: quickAskWorkspaces[serverId] ?? null,
+      configuredProjectId: quickAskProjects[serverId] ?? null,
     }).catch((error: unknown) => {
       startedRef.current = false;
       setOpenState({ kind: "failed", error: toErrorMessage(error) });
     });
-  }, [client, isReady, openState.kind, quickAskWorkspaces, serverId]);
+  }, [client, isReady, openState.kind, quickAskProjects, serverId]);
 
   const retryOpen = useCallback(() => setOpenState({ kind: "waiting" }), []);
   return { openState, retryOpen };
@@ -165,7 +163,8 @@ function resolveStatus(
 /**
  * Daseo delta 64: `paseo://quick-ask` lands here, possibly on a cold start before any host is
  * connected. The screen waits for the chosen host like the agent route does, picks the quick-ask
- * workspace, and opens a new draft tab there marked for quick ask (a new agent every time).
+ * project, creates a new workspace in it and opens a new draft tab there marked for quick ask
+ * (a new workspace and a new agent every time).
  */
 export function QuickAskScreen() {
   const router = useRouter();

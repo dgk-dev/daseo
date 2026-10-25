@@ -12,8 +12,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useAppSettings } from "@/hooks/use-settings";
-import { listHomeWorkspaces } from "@/navigation/quick-ask";
-import { useSessionStore, type WorkspaceDescriptor } from "@/stores/session-store";
+import { listHomeProjects } from "@/navigation/quick-ask";
+import { useSessionStore, type ProjectDescriptor } from "@/stores/session-store";
 import { settingsStyles } from "@/styles/settings";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { shortenPath } from "@/utils/shorten-path";
@@ -28,71 +28,70 @@ function triggerStyle({ pressed }: PressableStateCallbackType) {
   return pressed ? [styles.trigger, styles.triggerPressed] : styles.trigger;
 }
 
-function workspaceLabel(workspace: WorkspaceDescriptor): string {
-  return workspace.title?.trim() || workspace.name;
+function projectLabel(project: ProjectDescriptor): string {
+  return project.projectCustomName?.trim() || project.projectDisplayName;
 }
 
-function WorkspaceMenuItem({
-  workspace,
+function ProjectMenuItem({
+  project,
   selected,
   onSelect,
 }: {
-  workspace: WorkspaceDescriptor;
+  project: ProjectDescriptor;
   selected: boolean;
-  onSelect: (workspaceId: string) => void;
+  onSelect: (projectId: string) => void;
 }) {
-  const handleSelect = useCallback(() => onSelect(workspace.id), [onSelect, workspace.id]);
+  const handleSelect = useCallback(
+    () => onSelect(project.projectId),
+    [onSelect, project.projectId],
+  );
   return (
     <DropdownMenuItem
       selected={selected}
-      description={shortenPath(workspace.workspaceDirectory)}
+      description={shortenPath(project.projectRootPath)}
       onSelect={handleSelect}
     >
-      {workspaceLabel(workspace)}
+      {projectLabel(project)}
     </DropdownMenuItem>
   );
 }
 
-/** Daseo delta 64: where this host's side-button quick ask opens its new agent. */
+/** Daseo delta 64: the project this host's side-button quick ask creates a new workspace in. */
 export function QuickAskWorkspaceCard({ serverId }: { serverId: string }) {
   const { t } = useTranslation();
   const { settings, updateSettings } = useAppSettings();
-  const workspacesMap = useSessionStore((state) => state.sessions[serverId]?.workspaces);
-  const agentsMap = useSessionStore((state) => state.sessions[serverId]?.agents);
-  const workspaces = useMemo(
+  const projectsMap = useSessionStore((state) => state.sessions[serverId]?.projects);
+  const projects = useMemo(
     () =>
-      Array.from(workspacesMap?.values() ?? [])
-        .filter((workspace) => !workspace.archivingAt)
-        .sort((left, right) => workspaceLabel(left).localeCompare(workspaceLabel(right))),
-    [workspacesMap],
+      Array.from(projectsMap?.values() ?? []).sort((left, right) =>
+        projectLabel(left).localeCompare(projectLabel(right)),
+      ),
+    [projectsMap],
   );
-  const automaticWorkspace = useMemo(
-    () => listHomeWorkspaces({ workspaces, agents: agentsMap?.values() ?? [] })[0] ?? null,
-    [agentsMap, workspaces],
-  );
-  const configuredId = settings.quickAskWorkspaces[serverId] ?? null;
-  const configured = workspaces.find((workspace) => workspace.id === configuredId) ?? null;
+  const automaticProject = useMemo(() => listHomeProjects(projects)[0] ?? null, [projects]);
+  const configuredId = settings.quickAskProjects[serverId] ?? null;
+  const configured = projects.find((project) => project.projectId === configuredId) ?? null;
 
   let value = t("settings.host.workspaces.quickAsk.automaticNew");
   if (configured) {
-    value = workspaceLabel(configured);
-  } else if (automaticWorkspace) {
+    value = projectLabel(configured);
+  } else if (automaticProject) {
     value = t("settings.host.workspaces.quickAsk.automaticWithName", {
-      name: workspaceLabel(automaticWorkspace),
+      name: projectLabel(automaticProject),
     });
   }
 
   const select = useCallback(
-    (workspaceId: string | null) => {
-      const next = { ...settings.quickAskWorkspaces };
-      if (workspaceId) {
-        next[serverId] = workspaceId;
+    (projectId: string | null) => {
+      const next = { ...settings.quickAskProjects };
+      if (projectId) {
+        next[serverId] = projectId;
       } else {
         delete next[serverId];
       }
-      void updateSettings({ quickAskWorkspaces: next });
+      void updateSettings({ quickAskProjects: next });
     },
-    [serverId, settings.quickAskWorkspaces, updateSettings],
+    [serverId, settings.quickAskProjects, updateSettings],
   );
   const selectAutomatic = useCallback(() => select(null), [select]);
   const openAssistantSettings = useCallback(() => {
@@ -128,11 +127,11 @@ export function QuickAskWorkspaceCard({ serverId }: { serverId: string }) {
             <DropdownMenuItem selected={!configured} onSelect={selectAutomatic}>
               {t("settings.host.workspaces.quickAsk.automatic")}
             </DropdownMenuItem>
-            {workspaces.map((workspace) => (
-              <WorkspaceMenuItem
-                key={workspace.id}
-                workspace={workspace}
-                selected={workspace.id === configured?.id}
+            {projects.map((project) => (
+              <ProjectMenuItem
+                key={project.projectId}
+                project={project}
+                selected={project.projectId === configured?.projectId}
                 onSelect={select}
               />
             ))}

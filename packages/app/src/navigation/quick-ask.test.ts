@@ -4,17 +4,12 @@ import { isHomeDirectoryPath } from "@/utils/shorten-path";
 import {
   QUICK_ASK_ROUTE,
   QUICK_ASK_URL,
+  resolveQuickAskProject,
   resolveQuickAskServerId,
-  resolveQuickAskWorkspace,
-  type QuickAskWorkspaceCandidate,
 } from "./quick-ask";
 
-function workspace(
-  id: string,
-  workspaceDirectory: string,
-  overrides: Partial<QuickAskWorkspaceCandidate> = {},
-): QuickAskWorkspaceCandidate {
-  return { id, workspaceDirectory, archivingAt: null, statusEnteredAt: null, ...overrides };
+function project(projectId: string, projectRootPath: string) {
+  return { projectId, projectRootPath };
 }
 
 describe("quick-ask URL", () => {
@@ -30,12 +25,12 @@ describe("quick-ask URL", () => {
 describe("resolveQuickAskServerId", () => {
   const hosts = [{ serverId: "mac" }, { serverId: "studio" }];
 
-  it("prefers a host with a quick-ask workspace set", () => {
+  it("prefers a host with a quick-ask project set", () => {
     expect(
       resolveQuickAskServerId({
         hosts,
         lastSelectionServerId: "mac",
-        quickAskWorkspaces: { studio: "wks_1" },
+        quickAskProjects: { studio: "wks_1" },
       }),
     ).toBe("studio");
   });
@@ -45,68 +40,54 @@ describe("resolveQuickAskServerId", () => {
       resolveQuickAskServerId({
         hosts,
         lastSelectionServerId: "studio",
-        quickAskWorkspaces: { mac: "a", studio: "b" },
+        quickAskProjects: { mac: "a", studio: "b" },
       }),
     ).toBe("studio");
     expect(
-      resolveQuickAskServerId({ hosts, lastSelectionServerId: "studio", quickAskWorkspaces: {} }),
+      resolveQuickAskServerId({ hosts, lastSelectionServerId: "studio", quickAskProjects: {} }),
     ).toBe("studio");
     expect(
-      resolveQuickAskServerId({ hosts, lastSelectionServerId: "gone", quickAskWorkspaces: {} }),
+      resolveQuickAskServerId({ hosts, lastSelectionServerId: "gone", quickAskProjects: {} }),
     ).toBe("mac");
     expect(
-      resolveQuickAskServerId({ hosts: [], lastSelectionServerId: null, quickAskWorkspaces: {} }),
+      resolveQuickAskServerId({ hosts: [], lastSelectionServerId: null, quickAskProjects: {} }),
     ).toBeNull();
   });
 });
 
-describe("resolveQuickAskWorkspace", () => {
+describe("resolveQuickAskProject", () => {
   const home = "/Users/ddgk";
 
-  it("opens the workspace set for the host while it still exists", () => {
+  it("creates the new workspace in the project set for the host while it still exists", () => {
     expect(
-      resolveQuickAskWorkspace({
-        configuredWorkspaceId: "wks_repo",
-        workspaces: [workspace("wks_home", home), workspace("wks_repo", `${home}/ws/paseo`)],
-        agents: [],
+      resolveQuickAskProject({
+        configuredProjectId: "prj_repo",
+        projects: [project("prj_home", home), project("prj_repo", `${home}/ws/paseo`)],
       }),
-    ).toEqual({ kind: "workspace", workspaceId: "wks_repo", source: "setting" });
-  });
-
-  it("falls back to the most recently active home-folder workspace", () => {
-    const result = resolveQuickAskWorkspace({
-      configuredWorkspaceId: "wks_archived",
-      workspaces: [
-        workspace("wks_old", home, { statusEnteredAt: new Date("2026-10-20T00:00:00Z") }),
-        workspace("wks_recent", `${home}/`),
-        workspace("wks_repo", `${home}/ws/paseo`, {
-          statusEnteredAt: new Date("2026-10-25T09:00:00Z"),
-        }),
-        workspace("wks_leaving", home, {
-          archivingAt: "2026-10-25T09:00:00Z",
-          statusEnteredAt: new Date("2026-10-25T09:00:00Z"),
-        }),
-      ],
-      agents: [
-        { workspaceId: "wks_recent", lastActivityAt: new Date("2026-10-24T00:00:00Z") },
-        {
-          workspaceId: "wks_old",
-          lastActivityAt: new Date("2026-10-25T08:00:00Z"),
-          archivedAt: new Date("2026-10-25T08:30:00Z"),
-        },
-      ],
+    ).toEqual({
+      kind: "project",
+      projectId: "prj_repo",
+      directory: `${home}/ws/paseo`,
+      source: "setting",
     });
-    expect(result).toEqual({ kind: "workspace", workspaceId: "wks_recent", source: "home" });
   });
 
-  it("asks to create a home-folder workspace when none exists", () => {
+  it("falls back to the home-folder project, never a project under it", () => {
     expect(
-      resolveQuickAskWorkspace({
-        configuredWorkspaceId: null,
-        workspaces: [workspace("wks_repo", "/Users/ddgk/ws/hym")],
-        agents: [],
+      resolveQuickAskProject({
+        configuredProjectId: "prj_gone",
+        projects: [project("prj_repo", `${home}/ws/hym`), project("prj_home", `${home}/`)],
       }),
-    ).toEqual({ kind: "create" });
+    ).toEqual({ kind: "project", projectId: "prj_home", directory: `${home}/`, source: "home" });
+  });
+
+  it("uses the home folder itself when the host has no home-folder project", () => {
+    expect(
+      resolveQuickAskProject({
+        configuredProjectId: null,
+        projects: [project("prj_repo", "/Users/ddgk/ws/hym")],
+      }),
+    ).toEqual({ kind: "homeDirectory" });
   });
 });
 

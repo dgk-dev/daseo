@@ -78,10 +78,11 @@ export interface AppSettings {
   chatOutlineEnabled: boolean;
   vimKeybindings: boolean;
   /**
-   * Daseo delta 64: the workspace each host's side-button quick ask opens a new agent in, by
-   * server id. A host without an entry uses the default rule (latest home-folder workspace).
+   * Daseo delta 64: the project each host's side-button quick ask creates a new workspace in,
+   * by server id. A host without an entry uses its home-folder project. (An earlier 0.5.72 key,
+   * `quickAskWorkspaces`, chose a workspace; it is no longer read.)
    */
-  quickAskWorkspaces: Record<string, string>;
+  quickAskProjects: Record<string, string>;
 }
 
 export interface Settings extends AppSettings {
@@ -113,7 +114,7 @@ const StoredAppSettingsSchema = z.looseObject({
   compactToolCalls: z.unknown().optional(),
   chatOutlineEnabled: z.unknown().optional(),
   vimKeybindings: z.unknown().optional(),
-  quickAskWorkspaces: z.unknown().optional(),
+  quickAskProjects: z.unknown().optional(),
   daseoTerminalTheme: z.unknown().optional(),
   // COMPAT(rendererDesktopSettings): these fields used to share this renderer-owned key.
   manageBuiltInDaemon: z.unknown().optional(),
@@ -151,7 +152,7 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   toolCallDetailLevel: "detailed",
   chatOutlineEnabled: true,
   vimKeybindings: false,
-  quickAskWorkspaces: {},
+  quickAskProjects: {},
 };
 
 export const DEFAULT_APP_SETTINGS: Settings = {
@@ -433,22 +434,22 @@ function pickAppSettings(stored: StoredAppSettings): Partial<AppSettings> {
   if (toolCallDetailLevel !== null) {
     result.toolCallDetailLevel = toolCallDetailLevel;
   }
-  const quickAskWorkspaces = parseQuickAskWorkspaces(stored.quickAskWorkspaces);
-  if (quickAskWorkspaces !== null) {
-    result.quickAskWorkspaces = quickAskWorkspaces;
+  const quickAskProjects = parseQuickAskProjects(stored.quickAskProjects);
+  if (quickAskProjects !== null) {
+    result.quickAskProjects = quickAskProjects;
   }
   return result;
 }
 
 /** Keeps only non-empty string entries, so one bad value never drops the others. */
-export function parseQuickAskWorkspaces(value: unknown): Record<string, string> | null {
+export function parseQuickAskProjects(value: unknown): Record<string, string> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return null;
   }
   const result: Record<string, string> = {};
-  for (const [serverId, workspaceId] of Object.entries(value)) {
-    if (serverId.trim() && typeof workspaceId === "string" && workspaceId.trim()) {
-      result[serverId] = workspaceId;
+  for (const [serverId, projectId] of Object.entries(value)) {
+    if (serverId.trim() && typeof projectId === "string" && projectId.trim()) {
+      result[serverId] = projectId;
     }
   }
   return result;

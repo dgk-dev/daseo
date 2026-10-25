@@ -12,7 +12,7 @@ import {
   loadAppSettingsFromStorage,
   loadSettingsFromStorage,
   parseClampedFontSize,
-  parseQuickAskWorkspaces,
+  parseQuickAskProjects,
   parseTerminalScrollbackLines,
   saveAppSettings,
   type SettingsDeps,
@@ -43,20 +43,22 @@ function makeDeps(
 }
 
 describe("loadAppSettingsFromStorage", () => {
-  it("keeps per-host quick-ask workspaces and drops malformed entries", async () => {
+  it("keeps per-host quick-ask projects and drops malformed entries", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
         [APP_SETTINGS_KEY]: storedSettings({
-          quickAskWorkspaces: { mac: "wks_home", broken: 42, empty: " " },
+          quickAskProjects: { mac: "prj_home", broken: 42, empty: " " },
+          quickAskWorkspaces: { mac: "wks_old" },
         }),
       }),
     });
 
     const result = await loadAppSettingsFromStorage(deps);
 
-    expect(result.quickAskWorkspaces).toEqual({ mac: "wks_home" });
-    expect(DEFAULT_CLIENT_SETTINGS.quickAskWorkspaces).toEqual({});
-    expect(parseQuickAskWorkspaces(["wks"])).toBeNull();
+    expect(result.quickAskProjects).toEqual({ mac: "prj_home" });
+    expect(result).not.toHaveProperty("quickAskWorkspaces");
+    expect(DEFAULT_CLIENT_SETTINGS.quickAskProjects).toEqual({});
+    expect(parseQuickAskProjects(["prj"])).toBeNull();
   });
 
   it("defaults theme to daseo when storage is empty", async () => {

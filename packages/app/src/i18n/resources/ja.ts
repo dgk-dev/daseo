@@ -2288,15 +2288,15 @@ export const ja: TranslationResources = {
       },
       workspaces: {
         quickAsk: {
-          title: "クイック質問のワークスペース",
-          hint: "サイドボタンを長押しすると、ここで新しいエージェントが開きます。",
+          title: "クイック質問のプロジェクト",
+          hint: "サイドボタンを長押しすると、このプロジェクトに新しいワークスペースと新しいエージェントが開きます。",
           automatic: "自動",
           automaticWithName: "自動（{{name}}）",
-          automaticNew: "自動（ホームフォルダに新規作成）",
+          automaticNew: "自動（ホームフォルダ）",
           assistantHint:
             "Android の設定 → 便利な機能 → サイドボタン → 長押しで、Daseo をデジタルアシスタントに選んでください。",
           openAssistantSettings: "アシスタント設定",
-          accessibilityLabel: "クイック質問のワークスペース: {{value}}",
+          accessibilityLabel: "クイック質問のプロジェクト: {{value}}",
         },
         unavailable: "ワークスペースを管理するにはこのホストに接続してください",
       },
