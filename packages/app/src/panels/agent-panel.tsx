@@ -107,6 +107,7 @@ import { useForkAgent } from "@/hooks/use-fork-agent";
 import { useHostFeature } from "@/runtime/host-features";
 import { SideQuestionSheet } from "@/side-question/side-question-sheet";
 import { sideQuestionThreadKey, useSideQuestionStore } from "@/side-question/store";
+import { useQuickAskComposerRequest } from "@/stores/quick-ask-store";
 
 interface ChatAgentStateShape {
   serverId: string | null;
@@ -1713,6 +1714,8 @@ function ActiveAgentComposer({
   const { style: composerKeyboardStyle } = useKeyboardShiftStyle({
     mode: "translate",
   });
+  // Daseo delta 64: holding the side button while this session is on screen dictates here.
+  const quickAsk = useQuickAskComposerRequest(serverId, agentId);
 
   const inputAreaStyle = useMemo(
     () => [
@@ -1762,6 +1765,7 @@ function ActiveAgentComposer({
         onClientSlashCommand={handleClientSlashCommand}
         onSideQuestion={supportsSideQuestion ? handleSideQuestion : undefined}
         isCompactLayout={isCompactComposerLayout}
+        quickAsk={quickAsk}
       />
     </ReanimatedAnimated.View>
   );

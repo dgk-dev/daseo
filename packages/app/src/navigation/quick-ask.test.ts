@@ -4,6 +4,7 @@ import { isHomeDirectoryPath } from "@/utils/shorten-path";
 import {
   QUICK_ASK_ROUTE,
   QUICK_ASK_URL,
+  resolveQuickAskContinueTarget,
   resolveQuickAskProject,
   resolveQuickAskServerId,
 } from "./quick-ask";
@@ -88,6 +89,48 @@ describe("resolveQuickAskProject", () => {
         projects: [project("prj_repo", "/Users/ddgk/ws/hym")],
       }),
     ).toEqual({ kind: "homeDirectory" });
+  });
+});
+
+describe("resolveQuickAskContinueTarget", () => {
+  const lastSelection = { serverId: "mac", workspaceId: "wks_1" };
+  const agentTab = { kind: "agent", agentId: "agent_1" };
+
+  it("dictates into the session on screen when Daseo was already in front", () => {
+    expect(
+      resolveQuickAskContinueTarget({
+        fromForeground: true,
+        isCompact: true,
+        mobilePanelTarget: "agent",
+        lastSelection,
+        focusedTabTarget: agentTab,
+      }),
+    ).toEqual({ kind: "agent", serverId: "mac", workspaceId: "wks_1", agentId: "agent_1" });
+    expect(
+      resolveQuickAskContinueTarget({
+        fromForeground: true,
+        isCompact: false,
+        mobilePanelTarget: "agent-list",
+        lastSelection,
+        focusedTabTarget: { kind: "draft", draftId: "draft_1" },
+      }),
+    ).toEqual({ kind: "draft", serverId: "mac", workspaceId: "wks_1", draftId: "draft_1" });
+  });
+
+  it("opens a new session from the background, the agent list, or a non-chat tab", () => {
+    const base = {
+      fromForeground: true,
+      isCompact: true,
+      mobilePanelTarget: "agent" as const,
+      lastSelection,
+      focusedTabTarget: agentTab,
+    };
+    expect(resolveQuickAskContinueTarget({ ...base, fromForeground: false })).toBeNull();
+    expect(resolveQuickAskContinueTarget({ ...base, mobilePanelTarget: "agent-list" })).toBeNull();
+    expect(
+      resolveQuickAskContinueTarget({ ...base, focusedTabTarget: { kind: "terminal" } }),
+    ).toBeNull();
+    expect(resolveQuickAskContinueTarget({ ...base, lastSelection: null })).toBeNull();
   });
 });
 

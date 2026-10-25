@@ -83,3 +83,36 @@ export function resolveQuickAskProject(input: {
   }
   return { kind: "homeDirectory" };
 }
+
+export type QuickAskContinueTarget =
+  | { kind: "agent"; serverId: string; workspaceId: string; agentId: string }
+  | { kind: "draft"; serverId: string; workspaceId: string; draftId: string };
+
+/**
+ * Holding the side button while Daseo already shows a session dictates into that session instead
+ * of opening a new one (David-Daniel, 2026-10-25). Android marks the launch `from=foreground` when
+ * Daseo was on screen; on a compact layout the session must also be the panel in view, so a
+ * press while the agent list is open still opens a new session.
+ */
+export function resolveQuickAskContinueTarget(input: {
+  fromForeground: boolean;
+  isCompact: boolean;
+  mobilePanelTarget: "agent-list" | "agent" | "file-explorer";
+  lastSelection: { serverId: string; workspaceId: string } | null;
+  focusedTabTarget: { kind: string; agentId?: string; draftId?: string } | null;
+}): QuickAskContinueTarget | null {
+  const { lastSelection, focusedTabTarget } = input;
+  if (!input.fromForeground || !lastSelection || !focusedTabTarget) {
+    return null;
+  }
+  if (input.isCompact && input.mobilePanelTarget !== "agent") {
+    return null;
+  }
+  if (focusedTabTarget.kind === "agent" && focusedTabTarget.agentId) {
+    return { kind: "agent", ...lastSelection, agentId: focusedTabTarget.agentId };
+  }
+  if (focusedTabTarget.kind === "draft" && focusedTabTarget.draftId) {
+    return { kind: "draft", ...lastSelection, draftId: focusedTabTarget.draftId };
+  }
+  return null;
+}

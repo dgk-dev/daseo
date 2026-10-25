@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter, type Href } from "expo-router";
+import { useLocalSearchParams, useRouter, type Href } from "expo-router";
 import { useStoreReady } from "@/app/_layout";
 import { useAppSettings } from "@/hooks/use-settings";
+import { useIsCompactFormFactor } from "@/constants/layout";
 import {
   QUICK_ASK_HOME_DIRECTORY,
+  resolveQuickAskContinueTarget,
   resolveQuickAskProject,
   resolveQuickAskServerId,
+  type QuickAskContinueTarget,
 } from "@/navigation/quick-ask";
 import type { AgentRouteResolution } from "@/navigation/agent-route-resolution";
 import { AgentRouteResolutionView } from "@/navigation/agent-route-resolution-view";
@@ -23,7 +26,11 @@ import {
   useIsLastWorkspaceSelectionHydrated,
   useLastWorkspaceSelection,
 } from "@/stores/navigation-active-workspace-store";
+import { usePanelStore } from "@/stores/panel-store";
 import { useQuickAskStore } from "@/stores/quick-ask-store";
+import { collectAllPanes, collectAllTabs, findPaneById } from "@/stores/workspace-layout-actions";
+import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
+import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import { normalizeWorkspaceDescriptor, useSessionStore } from "@/stores/session-store";
 import { toErrorMessage } from "@/utils/error-messages";
 import { buildSettingsHostRoute } from "@/utils/host-routes";
@@ -109,16 +116,67 @@ async function openQuickAskDraft(input: {
   const draftId = generateDraftId();
   useQuickAskStore
     .getState()
-    .request({ serverId: input.serverId, workspaceId: workspace.id, draftId });
+    .request({ serverId: input.serverId, workspaceId: workspace.id, targetId: draftId });
   navigateToWorkspace({
     serverId: input.serverId,
     workspaceId: workspace.id,
     target: { kind: "draft", draftId },
   });
+  // On the folded cover screen the agent list may be the panel in view; show the new session.
+  usePanelStore.getState().showMobileAgent();
+}
+
+/** Dictates into the session Daseo was showing: same tab, no new workspace or agent. */
+function continueQuickAsk(target: QuickAskContinueTarget): void {
+  const targetId = target.kind === "agent" ? target.agentId : target.draftId;
+  useQuickAskStore
+    .getState()
+    .request({ serverId: target.serverId, workspaceId: target.workspaceId, targetId });
+  navigateToWorkspace({
+    serverId: target.serverId,
+    workspaceId: target.workspaceId,
+    target:
+      target.kind === "agent"
+        ? { kind: "agent", agentId: target.agentId }
+        : { kind: "draft", draftId: target.draftId },
+  });
+  usePanelStore.getState().showMobileAgent();
+}
+
+function readFocusedTabTarget(selection: { serverId: string; workspaceId: string } | null) {
+  const key = selection ? buildWorkspaceTabPersistenceKey(selection) : null;
+  const layout = key ? useWorkspaceLayoutStore.getState().layoutByWorkspace[key] : undefined;
+  if (!layout) {
+    return null;
+  }
+  const pane = findPaneById(layout.root, layout.focusedPaneId) ?? collectAllPanes(layout.root)[0];
+  const tabId = pane?.focusedTabId ?? null;
+  return collectAllTabs(layout.root).find((tab) => tab.tabId === tabId)?.target ?? null;
+}
+
+/** The session to dictate into when Daseo was already showing one; read once, at launch. */
+function useQuickAskContinueTarget(): QuickAskContinueTarget | null {
+  const params = useLocalSearchParams<{ from?: string }>();
+  const isCompact = useIsCompactFormFactor();
+  const lastSelection = useLastWorkspaceSelection();
+  const resolvedRef = useRef<QuickAskContinueTarget | null | undefined>(undefined);
+  if (resolvedRef.current === undefined) {
+    resolvedRef.current = resolveQuickAskContinueTarget({
+      fromForeground: params.from === "foreground",
+      isCompact,
+      mobilePanelTarget: usePanelStore.getState().mobilePanel.target,
+      lastSelection,
+      focusedTabTarget: readFocusedTabTarget(lastSelection),
+    });
+  }
+  return resolvedRef.current;
 }
 
 /** Opens the quick-ask draft once the target is ready; a failure can be retried. */
-function useQuickAskOpener(target: QuickAskTarget): {
+function useQuickAskOpener(
+  target: QuickAskTarget,
+  continueTarget: QuickAskContinueTarget | null,
+): {
   openState: QuickAskOpenState;
   retryOpen: () => void;
 } {
@@ -127,7 +185,22 @@ function useQuickAskOpener(target: QuickAskTarget): {
   const { isReady, serverId, client, quickAskProjects } = target;
 
   useEffect(() => {
-    if (!isReady || !serverId || !client || startedRef.current || openState.kind !== "waiting") {
+    if (!continueTarget || startedRef.current) {
+      return;
+    }
+    startedRef.current = true;
+    continueQuickAsk(continueTarget);
+  }, [continueTarget]);
+
+  useEffect(() => {
+    if (
+      continueTarget ||
+      !isReady ||
+      !serverId ||
+      !client ||
+      startedRef.current ||
+      openState.kind !== "waiting"
+    ) {
       return;
     }
     startedRef.current = true;
@@ -140,7 +213,7 @@ function useQuickAskOpener(target: QuickAskTarget): {
       startedRef.current = false;
       setOpenState({ kind: "failed", error: toErrorMessage(error) });
     });
-  }, [client, isReady, openState.kind, quickAskProjects, serverId]);
+  }, [client, continueTarget, isReady, openState.kind, quickAskProjects, serverId]);
 
   const retryOpen = useCallback(() => setOpenState({ kind: "waiting" }), []);
   return { openState, retryOpen };
@@ -169,7 +242,8 @@ function resolveStatus(
 export function QuickAskScreen() {
   const router = useRouter();
   const target = useQuickAskTarget();
-  const { openState, retryOpen } = useQuickAskOpener(target);
+  const continueTarget = useQuickAskContinueTarget();
+  const { openState, retryOpen } = useQuickAskOpener(target, continueTarget);
   const { serverId, noHosts, connectionStatus } = target;
   const resolution = useMemo(
     () => resolveStatus(openState, serverId, connectionStatus),

@@ -20,7 +20,7 @@ export interface SidebarProjectSectionRowModel {
 
 export type SidebarProjectRowModel = SidebarProjectSectionRowModel;
 
-const EMPTY_MULTIPLICITY_MAP: ReadonlyMap<string, boolean> = new Map();
+const EMPTY_MULTIPLICITY_MAP: ReadonlyMap<string, boolean | null> = new Map();
 function hostTarget(input: {
   serverId: string;
   projectId: string;
@@ -82,12 +82,17 @@ export function resolveSidebarProjectLocalPath(
 // SidebarNewWorkspaceHeaderRow): `canCreateWorktree || supportsMultiplicity`.
 function resolveNewWorkspaceTarget(
   project: SidebarProjectEntry,
-  supportsMultiplicityByServerId: ReadonlyMap<string, boolean>,
+  supportsMultiplicityByServerId: ReadonlyMap<string, boolean | null>,
 ): SidebarProjectHostTarget | null {
   for (const host of project.hosts) {
+    // Daseo: `null` means the host's capabilities have not arrived yet (connecting or
+    // reconnecting). The button stays, so a non-git project such as the home folder does not
+    // lose it every time the phone reconnects; only a host known to lack the feature hides it.
+    const supportsMultiplicity = supportsMultiplicityByServerId.get(host.serverId);
     if (
       host.worktreeSupport === "unsupported" &&
-      !supportsMultiplicityByServerId.get(host.serverId)
+      supportsMultiplicity !== null &&
+      !supportsMultiplicity
     ) {
       continue;
     }
@@ -99,7 +104,7 @@ function resolveNewWorkspaceTarget(
 
 function projectTrailingAction(
   project: SidebarProjectEntry,
-  supportsMultiplicityByServerId: ReadonlyMap<string, boolean>,
+  supportsMultiplicityByServerId: ReadonlyMap<string, boolean | null>,
 ): SidebarProjectTrailingAction {
   const target = resolveNewWorkspaceTarget(project, supportsMultiplicityByServerId);
   return target ? { kind: "new_workspace", target } : { kind: "none" };
@@ -108,7 +113,7 @@ function projectTrailingAction(
 export function buildSidebarProjectRowModel(input: {
   project: SidebarProjectEntry;
   collapsed: boolean;
-  supportsMultiplicityByServerId?: ReadonlyMap<string, boolean>;
+  supportsMultiplicityByServerId?: ReadonlyMap<string, boolean | null>;
 }): SidebarProjectRowModel {
   return {
     kind: "project_section",

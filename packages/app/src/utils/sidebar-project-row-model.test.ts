@@ -123,6 +123,19 @@ describe("buildSidebarProjectRowModel", () => {
     expect(result.trailingAction).toEqual({ kind: "none" });
   });
 
+  it("keeps the new workspace action for a non-git project while the host's capabilities are unknown", () => {
+    const result = buildSidebarProjectRowModel({
+      project: project({ projectKind: "directory", workspaces: [] }),
+      collapsed: false,
+      supportsMultiplicityByServerId: new Map([["srv", null]]),
+    });
+
+    expect(result.trailingAction).toEqual({
+      kind: "new_workspace",
+      target: { serverId: "srv", projectId: "project-srv", iconWorkingDir: "/repo" },
+    });
+  });
+
   it("still shows the new workspace action for a git project regardless of multiplicity", () => {
     const result = buildSidebarProjectRowModel({
       project: project({ projectKind: "git" }),

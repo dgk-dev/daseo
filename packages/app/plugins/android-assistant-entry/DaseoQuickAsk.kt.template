@@ -6,6 +6,8 @@ import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Bundle
+import android.os.SystemClock
 
 /**
  * Daseo delta 64: the side-button "quick ask" entry.
@@ -17,7 +19,48 @@ import android.net.Uri
  */
 object DaseoQuickAsk {
   const val URL = "paseo://quick-ask"
+  /** Added when Daseo was already on screen: the app then dictates into the session in view. */
+  const val FOREGROUND_URL = "$URL?from=foreground"
   private const val ASSISTANT_PROCESS_SUFFIX = ":assistant"
+  // Coming back from the background starts the activity right around the new intent (Android
+  // orders onStart and onNewIntent either way), so only an activity visible this long before the
+  // intent counts as "already on screen".
+  private const val FOREGROUND_SETTLE_MS = 1000L
+
+  private var tracking = false
+  private var startedActivities = 0
+  private var visibleSince = 0L
+
+  /** Counts visible activities of the main process; registered once, before the first onStart. */
+  fun trackForeground(activity: Activity) {
+    if (tracking) return
+    tracking = true
+    activity.application.registerActivityLifecycleCallbacks(
+        object : Application.ActivityLifecycleCallbacks {
+          override fun onActivityStarted(started: Activity) {
+            if (startedActivities == 0) visibleSince = SystemClock.elapsedRealtime()
+            startedActivities += 1
+          }
+
+          override fun onActivityStopped(stopped: Activity) {
+            startedActivities = maxOf(0, startedActivities - 1)
+          }
+
+          override fun onActivityCreated(created: Activity, state: Bundle?) {}
+
+          override fun onActivityResumed(resumed: Activity) {}
+
+          override fun onActivityPaused(paused: Activity) {}
+
+          override fun onActivitySaveInstanceState(saved: Activity, state: Bundle) {}
+
+          override fun onActivityDestroyed(destroyed: Activity) {}
+        },
+    )
+  }
+
+  fun wasInForeground(): Boolean =
+      startedActivities > 0 && SystemClock.elapsedRealtime() - visibleSince >= FOREGROUND_SETTLE_MS
 
   fun launchIntent(context: Context): Intent =
       Intent(Intent.ACTION_VIEW, Uri.parse(URL))
@@ -25,10 +68,11 @@ object DaseoQuickAsk {
           .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
   /**
-   * ASSIST becomes the quick-ask URL. A quick-ask intent that Android replays from Recents after
-   * the process died becomes a plain launch, so reopening the task never starts another agent.
+   * ASSIST becomes the quick-ask URL, marked when Daseo was already on screen. A quick-ask intent
+   * that Android replays from Recents after the process died becomes a plain launch, so reopening
+   * the task never starts another agent.
    */
-  fun prepareLaunchIntent(intent: Intent?) {
+  fun prepareLaunchIntent(intent: Intent?, fromForeground: Boolean) {
     if (intent == null) return
     val isQuickAskEntry = intent.action == Intent.ACTION_ASSIST || isQuickAsk(intent)
     if (!isQuickAskEntry) return
@@ -38,11 +82,14 @@ object DaseoQuickAsk {
       return
     }
     intent.action = Intent.ACTION_VIEW
-    intent.data = Uri.parse(URL)
+    intent.data = Uri.parse(if (fromForeground) FOREGROUND_URL else URL)
   }
 
-  fun isQuickAsk(intent: Intent?): Boolean =
-      intent?.action == Intent.ACTION_VIEW && intent.data?.toString() == URL
+  fun isQuickAsk(intent: Intent?): Boolean {
+    if (intent?.action != Intent.ACTION_VIEW) return false
+    val data = intent.data?.toString() ?: return false
+    return data == URL || data.startsWith("$URL?")
+  }
 
   /**
    * Daseo shows private content, so it never draws over the lock screen. A quick ask that

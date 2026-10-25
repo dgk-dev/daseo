@@ -116,10 +116,10 @@ describe("withAndroidAssistantEntry", () => {
     const patched = patchMainActivity(source);
 
     expect(patched).toContain(
-      "    DaseoQuickAsk.prepareLaunchIntent(intent)\n    super.onCreate(null)\n    DaseoQuickAsk.dismissKeyguardIfLocked(this, intent)",
+      "    DaseoQuickAsk.trackForeground(this)\n    DaseoQuickAsk.prepareLaunchIntent(intent, fromForeground = false)\n    super.onCreate(null)\n    DaseoQuickAsk.dismissKeyguardIfLocked(this, intent)",
     );
     expect(patched).toContain(
-      "  override fun onNewIntent(intent: Intent) {\n    DaseoQuickAsk.prepareLaunchIntent(intent)\n    super.onNewIntent(intent)",
+      "  override fun onNewIntent(intent: Intent) {\n    DaseoQuickAsk.prepareLaunchIntent(intent, DaseoQuickAsk.wasInForeground())\n    super.onNewIntent(intent)",
     );
     expect(patched).toContain("import android.content.Intent\nimport android.os.Bundle");
     expect(patchMainActivity(patched)).toBe(patched);

@@ -97,7 +97,15 @@ export function useQuickAskVoice(input: QuickAskVoiceInput): QuickAskVoiceOutput
   // Start once, when the draft is ready: keyboard up first, then the tick loop starts dictation.
   // Losing readiness (pane hidden, unmount) ends the quick ask; the draft stays as typed.
   useEffect(() => {
-    if (!input.active || phaseRef.current) {
+    if (!input.active) {
+      // A session's composer stays mounted between quick asks; a finished one makes way for the
+      // next request on the same composer.
+      if (phaseRef.current?.kind === "done") {
+        phaseRef.current = null;
+      }
+      return;
+    }
+    if (phaseRef.current) {
       return;
     }
     phaseRef.current = initialQuickAskVoicePhase(Date.now());

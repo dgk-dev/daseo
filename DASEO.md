@@ -1109,7 +1109,15 @@ use-open-file-externally}.ts`, `packages/app/src/utils/open-downloaded-file.ts`,
     프로젝트" (Settings → host → Workspaces, Android only, stored as `quickAskProjects`), else the
     project rooted at the home folder (`shortenPath`'s `~` rule), else `~` itself. The owner
     corrected 0.5.72-0.5.73 on 2026-10-25: those reused the latest home-folder workspace; its
-    `quickAskWorkspaces` key is no longer read. (d) The draft raises the keyboard
+    `quickAskWorkspaces` key is no longer read. Holding the button while Daseo already shows a session dictates into
+    that session instead (the owner's ask, 2026-10-26): MainActivity counts visible activities and
+    marks the launch `paseo://quick-ask?from=foreground` when Daseo was on screen for at least
+    1 s (Android orders onStart and onNewIntent either way, so a launch from the background never
+    counts); the route then reuses the focused agent or draft tab of the last workspace, unless the
+    compact layout shows the agent list, where a new session still opens. Either way the compact
+    layout switches to the agent panel, so a press with the agent list open no longer leaves the
+    new session behind it. The quick-ask marker is keyed by draft id or agent id, and a finished
+    quick ask resets on the composer so the same session can take the next one. (d) The draft raises the keyboard
     (focus is retried until the IME is up: an early `showSoftInput` is ignored), starts the
     composer's own dictation, confirms it after 1.5 s below the speech level (0.25 on the
     dictation meter, about −40 dBFS) once speech began, shows "1.5초 후 보냄 · 눌러서 고치기",
@@ -1177,6 +1185,15 @@ acceptLanguages)`, so the header is now `en-US,en-KR;q=0.9,ko-KR;q=0.8`. `--lang
     non-interactive Turnstile test still issued a token in about 1 s. Key files:
     `packages/desktop/src/features/{renderer-console-log,browser-profile}.ts`,
     `packages/desktop/src/features/browser-automation/{dialog-handling,ipc,device-emulation,aria-snapshot-script}.ts`.
+
+66. **A project's "new workspace" button survives a reconnect** — the owner's report on
+    2026-10-26: on the folded Fold 7 the project rows sometimes had the + button and sometimes
+    not. A non-git project (the home folder) gets it only when the host supports
+    `workspaceMultiplicity`, and the sidebar read a host whose `server_info` had not arrived yet
+    (cold start from the replica cache, reconnect) as "not supported". It now reads availability
+    (`useHostFeatureAvailabilityMap`): unknown keeps the button, only a host known to lack the
+    feature hides it. Key files: `packages/app/src/utils/sidebar-project-row-model.ts`,
+    `packages/app/src/components/sidebar-workspace-list.tsx`.
 
 ## Local reliability contracts
 

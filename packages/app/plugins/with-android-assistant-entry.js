@@ -27,7 +27,9 @@ const QUICK_ASK_LABELS = {
 };
 
 const ACTIVITY_CREATE_LINE = "    super.onCreate(null)";
-const ACTIVITY_PREPARE_LINE = "    DaseoQuickAsk.prepareLaunchIntent(intent)";
+const ACTIVITY_TRACK_LINE = "    DaseoQuickAsk.trackForeground(this)";
+const ACTIVITY_PREPARE_LINE =
+  "    DaseoQuickAsk.prepareLaunchIntent(intent, fromForeground = false)";
 const ACTIVITY_COMPONENT_LINE = "  override fun getMainComponentName(): String";
 const APPLICATION_CREATE_LINE = "    super.onCreate()";
 const APPLICATION_GUARD_LINE = "    if (DaseoQuickAsk.isAssistantProcess()) return";
@@ -160,7 +162,7 @@ function addAssistantEntryToManifest(manifest) {
 }
 
 function patchMainActivity(contents) {
-  if (contents.includes(ACTIVITY_PREPARE_LINE)) return contents;
+  if (contents.includes("DaseoQuickAsk.prepareLaunchIntent(")) return contents;
   if (!contents.includes(ACTIVITY_CREATE_LINE) || !contents.includes(ACTIVITY_COMPONENT_LINE)) {
     throw new Error("MainActivity does not have the shape the Daseo assistant entry patches");
   }
@@ -168,6 +170,7 @@ function patchMainActivity(contents) {
     ACTIVITY_CREATE_LINE,
     [
       "    // Daseo delta 64: ASSIST becomes paseo://quick-ask before React Native reads the intent.",
+      ACTIVITY_TRACK_LINE,
       ACTIVITY_PREPARE_LINE,
       ACTIVITY_CREATE_LINE,
       "    DaseoQuickAsk.dismissKeyguardIfLocked(this, intent)",
@@ -177,7 +180,7 @@ function patchMainActivity(contents) {
     ACTIVITY_COMPONENT_LINE,
     [
       "  override fun onNewIntent(intent: Intent) {",
-      "    DaseoQuickAsk.prepareLaunchIntent(intent)",
+      "    DaseoQuickAsk.prepareLaunchIntent(intent, DaseoQuickAsk.wasInForeground())",
       "    super.onNewIntent(intent)",
       "    DaseoQuickAsk.dismissKeyguardIfLocked(this, intent)",
       "  }",
