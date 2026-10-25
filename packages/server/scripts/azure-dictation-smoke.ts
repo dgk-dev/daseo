@@ -17,6 +17,9 @@ import { AzureSTT } from "../src/server/speech/providers/azure/stt.js";
 // config.json while the daemon is stopped. Prints the transcript and the latency, never the key.
 const DEFAULT_PHRASE = "오늘 오후 세 시 회의 일정을 알려줘";
 const SAMPLE_RATE = 16000;
+// Azure Speech subscription keys are 32 hex characters (older) or 84 characters (newer). A shorter
+// value is a placeholder, such as Vercel's `[SENSITIVE]` for a Sensitive variable.
+const MIN_STAGEABLE_KEY_LENGTH = 32;
 
 interface AzureCredentials {
   apiKey: string;
@@ -83,9 +86,25 @@ function synthesizeKoreanWav(phrase: string): Buffer {
   }
 }
 
+/** Refuses credentials that cannot be real, so a placeholder never reaches the staging file. */
+function assertStageable(credentials: AzureCredentials): void {
+  if (!isAzureSpeechRegion(credentials.region)) {
+    throw new Error("Not staging credentials: the region is not an Azure region name");
+  }
+  if (credentials.apiKey.length < MIN_STAGEABLE_KEY_LENGTH) {
+    throw new Error(
+      `Not staging credentials: the key is shorter than ${MIN_STAGEABLE_KEY_LENGTH} characters`,
+    );
+  }
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const credentials = readCredentials(argv);
+  const stagePath = argValue(argv, "--stage");
+  if (stagePath) {
+    assertStageable(credentials);
+  }
   const wavFlag = argv.indexOf("--wav");
   const wav =
     wavFlag >= 0 && argv[wavFlag + 1]
@@ -110,8 +129,8 @@ async function main(): Promise<void> {
   process.stdout.write(
     `audioSeconds: ${(pcm16.length / 2 / SAMPLE_RATE).toFixed(2)}\nlatencyMs: ${Date.now() - startedAt}\ntranscript: ${transcript}\n`,
   );
-  const stagePath = argValue(argv, "--stage");
   if (stagePath) {
+    assertStageable(credentials);
     if (!transcript.trim()) {
       throw new Error("Not staging credentials: the round trip returned no transcript");
     }

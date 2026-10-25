@@ -12,6 +12,11 @@ export const QUICK_ASK_NO_SPEECH_MS = 8000;
 export const QUICK_ASK_SEND_COUNTDOWN_MS = 1500;
 /** How long to wait for the host to report dictation ready, and for recording to begin. */
 export const QUICK_ASK_DICTATION_START_MS = 4000;
+/**
+ * Listening never runs longer than this from the start of recording. Steady noise above the speech
+ * level (a street, a car) keeps moving `lastSpeechAt`, so silence alone would never end it.
+ */
+export const QUICK_ASK_MAX_LISTEN_MS = 30_000;
 
 export type QuickAskVoicePhase =
   | { kind: "waitingForDictation"; since: number }
@@ -73,6 +78,11 @@ function stepListening(
   if (event.type === "tick") {
     if (phase.lastSpeechAt !== null && event.now - phase.lastSpeechAt >= QUICK_ASK_SILENCE_MS) {
       return { phase: { kind: "transcribing" }, effects: ["confirmDictation"] };
+    }
+    if (event.now - phase.startedAt >= QUICK_ASK_MAX_LISTEN_MS) {
+      return phase.speechStartedAt !== null
+        ? { phase: { kind: "transcribing" }, effects: ["confirmDictation"] }
+        : { phase: TYPING, effects: ["cancelDictation"] };
     }
     if (phase.speechStartedAt === null && event.now - phase.startedAt >= QUICK_ASK_NO_SPEECH_MS) {
       return { phase: TYPING, effects: ["cancelDictation"] };

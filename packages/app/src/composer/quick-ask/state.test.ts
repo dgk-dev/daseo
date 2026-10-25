@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   QUICK_ASK_DICTATION_START_MS,
+  QUICK_ASK_MAX_LISTEN_MS,
   QUICK_ASK_NO_SPEECH_MS,
   QUICK_ASK_SEND_COUNTDOWN_MS,
   QUICK_ASK_SILENCE_MS,
@@ -83,6 +84,41 @@ describe("quick-ask voice", () => {
     ]);
     expect(result.phase).toEqual({ kind: "done", outcome: "typing" });
     expect(result.effects).toEqual(["startDictation", "cancelDictation"]);
+  });
+
+  it("confirms after the listening cap when steady noise never falls silent", () => {
+    const listening: QuickAskVoicePhase = {
+      kind: "listening",
+      startedAt: 0,
+      speechStartedAt: null,
+      lastSpeechAt: null,
+    };
+    const noisy: QuickAskVoiceEvent[] = [];
+    for (let now = 0; now < QUICK_ASK_MAX_LISTEN_MS; now += 500) {
+      noisy.push(loud(now), tick(now));
+    }
+    const beforeCap = run(noisy, listening);
+    expect(beforeCap.phase.kind).toBe("listening");
+    expect(beforeCap.effects).toEqual([]);
+
+    const atCap = run(
+      [...noisy, loud(QUICK_ASK_MAX_LISTEN_MS), tick(QUICK_ASK_MAX_LISTEN_MS)],
+      listening,
+    );
+    expect(atCap.phase).toEqual({ kind: "transcribing" });
+    expect(atCap.effects).toEqual(["confirmDictation"]);
+  });
+
+  it("cancels to typing at the listening cap when no speech was ever detected", () => {
+    const listening: QuickAskVoicePhase = {
+      kind: "listening",
+      startedAt: 0,
+      speechStartedAt: null,
+      lastSpeechAt: null,
+    };
+    const capped = stepQuickAskVoice(listening, tick(QUICK_ASK_MAX_LISTEN_MS));
+    expect(capped.phase).toEqual({ kind: "done", outcome: "typing" });
+    expect(capped.effects).toEqual(["cancelDictation"]);
   });
 
   it("falls back to typing when dictation never becomes ready or recording never starts", () => {
