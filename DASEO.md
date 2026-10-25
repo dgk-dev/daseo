@@ -1195,6 +1195,16 @@ acceptLanguages)`, so the header is now `en-US,en-KR;q=0.9,ko-KR;q=0.8`. `--lang
     feature hides it. Key files: `packages/app/src/utils/sidebar-project-row-model.ts`,
     `packages/app/src/components/sidebar-workspace-list.tsx`.
 
+67. **A dictated transcript shows up in the Android composer at once** — the owner's report on
+    2026-10-26, the first time dictation ran on the phone (Azure, delta 64): after the pencil
+    (accept) or "tap to edit" the transcript was in the draft but the native field still showed the
+    old text until the session was reopened. The native field drops a JS replacement whose event
+    count it considers stale, and dictation runs while the field is disabled. The root cause on the
+    device is not confirmed (wireless debugging was off), so the fix does not depend on it: on
+    native a transcript remounts the field (`key` = input generation), which reads the draft as its
+    initial text, puts the cursor at the end and refocuses unless the transcript was auto-sent.
+    Key file: `packages/app/src/composer/input/input.tsx`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

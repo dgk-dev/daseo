@@ -643,6 +643,8 @@ function FocusHint({
 interface ComposerTextSurfaceProps {
   readOnly: boolean;
   value: string;
+  /** Daseo: a new value remounts the native input with `value` as its initial text. */
+  inputGeneration: number;
   textInputRef: React.Ref<ComposerTextInputHandle>;
   textInputStyle: EditingTextInputProps["style"];
   readOnlyTextStyle: React.ComponentProps<typeof Text>["style"];
@@ -682,6 +684,7 @@ function ComposerTextSurface(props: ComposerTextSurfaceProps): React.ReactElemen
   return (
     <View style={styles.textInputScrollWrapper}>
       <ComposerTextInput
+        key={props.inputGeneration}
         ref={props.textInputRef}
         dataSet={COMPOSER_INPUT_DATASET}
         initialValue={props.value}
@@ -1338,6 +1341,24 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
 
     useAutoFocusOnWebEffect(textInputRef, autoFocus, autoFocusKey);
 
+    // Daseo: on Android the transcript reached the draft but not the native field, which kept
+    // showing the old text until the composer remounted (leaving and reopening the session). The
+    // native field ignores a JS replacement whose event count it considers stale, and dictation
+    // runs while the field is disabled. A transcript therefore remounts the native field, which
+    // reads the draft as its initial text; the cursor then goes to the end.
+    const [nativeInputGeneration, setNativeInputGeneration] = useState(0);
+    const refocusAfterRemountRef = useRef(false);
+    useEffect(() => {
+      if (nativeInputGeneration === 0) return;
+      pendingNativeReplacementRef.current = null;
+      const length = valueRef.current.length;
+      textInputRef.current?.replaceText(valueRef.current, { start: length, end: length });
+      if (refocusAfterRemountRef.current) {
+        refocusAfterRemountRef.current = false;
+        textInputRef.current?.focus();
+      }
+    }, [nativeInputGeneration]);
+
     const handleDictationTranscript = useCallback(
       (text: string, _meta: { requestId: string }) => {
         const autoSend = sendAfterTranscriptRef.current && isSubmitOwner();
@@ -1353,6 +1374,10 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           cwd,
           autoSend,
         });
+        if (!isWeb && text) {
+          refocusAfterRemountRef.current = !autoSend && isPaneFocusedRef.current;
+          setNativeInputGeneration((generation) => generation + 1);
+        }
         quickAskTranscriptRef.current?.(text);
       },
       [
@@ -1941,6 +1966,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           <ComposerTextSurface
             readOnly={readOnly}
             value={value}
+            inputGeneration={nativeInputGeneration}
             textInputRef={textInputRef}
             textInputStyle={textInputStyle}
             readOnlyTextStyle={readOnlyTextStyle}
