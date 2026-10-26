@@ -803,6 +803,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         return (
           <ToolCallSlot
             itemId={item.id}
+            seenAt={item.timestamp}
             onInlineDetailsExpandedChangeByItemId={setInlineDetailsExpanded}
             toolName="thinking"
             args={item.text}
@@ -841,6 +842,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           return (
             <ToolCallSlot
               itemId={item.id}
+              seenAt={item.timestamp}
               onInlineDetailsExpandedChangeByItemId={setInlineDetailsExpanded}
               toolName={data.name}
               error={data.error}
@@ -859,6 +861,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         return (
           <ToolCallSlot
             itemId={item.id}
+            seenAt={item.timestamp}
             onInlineDetailsExpandedChangeByItemId={setInlineDetailsExpanded}
             toolName={data.toolName}
             args={data.arguments}
@@ -1321,14 +1324,35 @@ AgentStreamView.displayName = "AgentStreamView";
 
 interface ToolCallSlotProps extends Omit<
   ComponentProps<typeof ToolCall>,
-  "onInlineDetailsExpandedChange"
+  "onInlineDetailsExpandedChange" | "startedAt"
 > {
   itemId: string;
+  /** The stream item's timestamp; it moves with every update of the call. */
+  seenAt: Date;
   onInlineDetailsExpandedChangeByItemId: (itemId: string, expanded: boolean) => void;
+}
+
+// Daseo delta 73: a tool call's item timestamp moves with every update, so the running
+// row counts its elapsed time from the first time this app saw the call running. The
+// entry goes when the call stops running, which keeps the map to the calls in flight.
+const runningSinceByItemId = new Map<string, number>();
+
+function pinRunningSince(itemId: string, running: boolean, seenAt: Date): number | undefined {
+  if (!running) {
+    runningSinceByItemId.delete(itemId);
+    return undefined;
+  }
+  let since = runningSinceByItemId.get(itemId);
+  if (since === undefined) {
+    since = Math.min(seenAt.getTime(), Date.now());
+    runningSinceByItemId.set(itemId, since);
+  }
+  return since;
 }
 
 function ToolCallSlot({
   itemId,
+  seenAt,
   onInlineDetailsExpandedChangeByItemId,
   ...rest
 }: ToolCallSlotProps) {
@@ -1336,7 +1360,15 @@ function ToolCallSlot({
     (expanded: boolean) => onInlineDetailsExpandedChangeByItemId(itemId, expanded),
     [onInlineDetailsExpandedChangeByItemId, itemId],
   );
-  return <ToolCall {...rest} onInlineDetailsExpandedChange={handleExpandedChange} />;
+  const running = rest.status === "running" || rest.status === "executing";
+  const startedAt = pinRunningSince(itemId, running, seenAt);
+  return (
+    <ToolCall
+      {...rest}
+      startedAt={startedAt}
+      onInlineDetailsExpandedChange={handleExpandedChange}
+    />
+  );
 }
 
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);

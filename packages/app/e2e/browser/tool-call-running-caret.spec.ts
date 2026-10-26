@@ -5,14 +5,6 @@ import { openAgentRoute, seedMockAgentWorkspace } from "../support/helpers/mock-
 
 type WebSocketMessage = string | Buffer;
 
-interface ShimmerEvidence {
-  animationDuration: string;
-  endPx: number;
-  label: string;
-  renderedWidth: number;
-  startPx: number;
-}
-
 function parseSessionMessage(message: WebSocketMessage): Record<string, unknown> | null {
   const raw = typeof message === "string" ? message : message.toString("utf8");
   try {
@@ -155,26 +147,28 @@ async function gateSecondToolCall(page: Page, agentId: string) {
   };
 }
 
-async function readShimmerEvidence(locator: Locator): Promise<ShimmerEvidence> {
-  return locator.evaluate((root) => {
-    const shimmer = Array.from(root.querySelectorAll<HTMLElement>("*")).find((element) =>
-      getComputedStyle(element).animationName.includes("paseo-toolcall-shimmer"),
-    );
-    if (!shimmer) {
-      throw new Error("Expected a running shimmer inside the badge");
-    }
-    const style = getComputedStyle(shimmer);
-    return {
-      animationDuration: style.animationDuration,
-      endPx: Number.parseFloat(style.getPropertyValue("--paseo-shimmer-end")),
-      label: shimmer.textContent ?? "",
-      renderedWidth: shimmer.getBoundingClientRect().width,
-      startPx: Number.parseFloat(style.getPropertyValue("--paseo-shimmer-start")),
-    };
-  });
+async function readCaretOpacities(locator: Locator): Promise<string[]> {
+  const caret = locator.getByTestId("tool-call-running-caret").first();
+  const samples: string[] = [];
+  for (let index = 0; index < 6; index += 1) {
+    samples.push(await caret.evaluate((element) => getComputedStyle(element).opacity));
+    await locator.page().waitForTimeout(200);
+  }
+  return samples;
 }
 
-test("measures an overview heading that becomes loading after its idle mount", async ({
+async function countSweepAnimations(locator: Locator): Promise<number> {
+  return locator.evaluate(
+    (root) =>
+      Array.from(root.querySelectorAll<HTMLElement>("*")).filter((element) =>
+        getComputedStyle(element).animationName.includes("shimmer"),
+      ).length,
+  );
+}
+
+// Daseo delta 73: a running tool row ends in a blinking block caret instead of a light
+// sweeping across its text. The overview header keeps its node when it starts loading.
+test("shows a blinking caret on a running tool row and its retained overview header", async ({
   page,
 }, testInfo) => {
   test.setTimeout(120_000);
@@ -185,8 +179,8 @@ test("measures an overview heading that becomes loading after its idle mount", a
     );
   });
   const agent = await seedMockAgentWorkspace({
-    repoPrefix: "tool-call-shimmer-",
-    title: "Tool-call shimmer",
+    repoPrefix: "tool-call-caret-",
+    title: "Tool-call caret",
     model: "ten-second-stream",
   });
 
@@ -196,7 +190,7 @@ test("measures an overview heading that becomes loading after its idle mount", a
       workspaceId: agent.workspaceId,
       agentId: agent.agentId,
     });
-    await agent.client.sendAgentMessage(agent.agentId, "Prove the overview shimmer lifecycle.");
+    await agent.client.sendAgentMessage(agent.agentId, "Prove the running caret lifecycle.");
 
     await gate.waitForFirstCompleted();
     const group = page.getByTestId("tool-call-group");
@@ -205,11 +199,11 @@ test("measures an overview heading that becomes loading after its idle mount", a
     if (!idleGroupHandle) {
       throw new Error("Expected the idle tool-call group to be mounted");
     }
-    await expect(group.locator('[style*="paseo-toolcall-shimmer"]')).toHaveCount(0);
+    await expect(group.getByTestId("tool-call-running-caret")).toHaveCount(0);
 
     await gate.waitForSecondRunning();
     gate.releaseSecondRunning();
-    await expect(group.locator('[style*="paseo-toolcall-shimmer"]')).not.toHaveCount(0);
+    await expect(group.getByTestId("tool-call-running-caret").first()).toBeVisible();
     const sameGroupNode = await group.evaluate(
       (node, previous) => node === previous,
       idleGroupHandle,
@@ -217,21 +211,17 @@ test("measures an overview heading that becomes loading after its idle mount", a
 
     await group.click();
     const runningChild = page.getByTestId("tool-call-badge").last();
-    await expect(runningChild).toBeVisible();
-    const header = await readShimmerEvidence(group);
-    const child = await readShimmerEvidence(runningChild);
-    const evidence = { sameGroupNode, header, child };
-    await testInfo.attach("tool-call-shimmer-evidence", {
-      body: JSON.stringify(evidence, null, 2),
+    await expect(runningChild.getByTestId("tool-call-running-caret")).toHaveCount(1);
+    const headerOpacities = await readCaretOpacities(group);
+    const sweeps = await countSweepAnimations(group);
+    await testInfo.attach("tool-call-caret-evidence", {
+      body: JSON.stringify({ sameGroupNode, headerOpacities, sweeps }, null, 2),
       contentType: "application/json",
     });
 
     expect(sameGroupNode).toBe(true);
-    expect(child.endPx).toBeGreaterThan(0);
-    expect(
-      header.endPx,
-      `The retained header rendered ${header.renderedWidth}px wide but its shimmer still ends at ${header.endPx}px`,
-    ).toBeGreaterThan(0);
+    expect(new Set(headerOpacities)).toEqual(new Set(["0", "1"]));
+    expect(sweeps).toBe(0);
   } finally {
     await agent.cleanup();
   }

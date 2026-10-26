@@ -1288,6 +1288,22 @@ acceptLanguages)`, so the header is now `en-US,en-KR;q=0.9,ko-KR;q=0.8`. `--lang
     `packages/app/src/components/markdown/short-url.ts`, the `table`/`th`/`td`/`link` rules in
     `packages/app/src/components/message.tsx`, and the copy-text attribute in
     `packages/app/src/assistant-selection-copy/`.
+73. **A running tool row ends in a blinking block caret** — the owner's pick (option A) on
+    2026-10-27 after a deep research on working indicators. Before, a light gradient swept
+    across the running row's text: a CSS `background-clip: text` sweep on web, an SVG gradient
+    under a mask on native. That is Codex's look. The research covered other tools: Claude Code
+    cycles stars with verbs, while Gemini CLI, OpenCode and Pi all spin the same braille dots.
+    Now the label stays still and the row ends in an accent-colored block that blinks every
+    530 ms, the way a terminal waits on a process. From 5 s on, the row's right edge shows the
+    elapsed time in mono. The overview group header gets the caret without a time. Reduce
+    motion keeps the caret solid, and a retained panel that is off screen stops ticking. A
+    tool call's stream timestamp moves with every update, so `agent-stream/view.tsx` pins the
+    first time the app saw each call running and drops the pin when it stops. The whole
+    shimmer machinery is gone (measuring, keyframes, masked SVG); this replaces the delta 49
+    note that reduce motion stills the shimmer. Previews of the four options are in
+    `~/paseo-builds/preview/working-indicator.html`. Key files:
+    `packages/app/src/components/message.tsx` (`RunningToolCaret`) and
+    `packages/app/e2e/browser/tool-call-running-caret.spec.ts`.
 
 ## Local reliability contracts
 
