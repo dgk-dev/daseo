@@ -1273,6 +1273,21 @@ acceptLanguages)`, so the header is now `en-US,en-KR;q=0.9,ko-KR;q=0.8`. `--lang
       The web composer re-measures its height when the scale changes, since no size observer
       sees a theme font change. Key files: `packages/app/src/styles/markdown-styles.ts`,
       `packages/app/src/screens/settings/appearance/`, `packages/app/src/keyboard/keyboard-shortcuts.ts`.
+72. **Tables and long URLs read on a phone** — the owner's request on 2026-10-26, after a
+    readability review of agent replies. Before, every table cell had `flex: 1`, so a
+    four-column table on the phone split ~380dp four ways and wrapped prose a few letters per
+    line. Now each column gets a basis from its widest cell, clamped to 3–7em (Hangul counts
+    1em, Latin about half), and a grow share by content. A table whose bases exceed the screen
+    scrolls sideways inside its border (persistent scrollbar on Android). A table that fits
+    fills the width as before. Cells set `width` as well as `flexBasis`: on web a horizontal
+    scroll container sizes to max-content, and a cell without a definite width stretched its
+    text onto one line. A bare URL longer than 48 characters shows its host and a shortened
+    path, with `?…`/`#…` for the query and fragment. Tapping still opens the full address, and
+    on web the hover title and selection copy give the full address. Labelled links keep their
+    label. Key files: `packages/app/src/components/markdown/table-columns.ts`,
+    `packages/app/src/components/markdown/short-url.ts`, the `table`/`th`/`td`/`link` rules in
+    `packages/app/src/components/message.tsx`, and the copy-text attribute in
+    `packages/app/src/assistant-selection-copy/`.
 
 ## Local reliability contracts
 

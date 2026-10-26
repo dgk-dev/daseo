@@ -2,6 +2,8 @@ export const MARKDOWN_COPY_TAG_ATTRIBUTE = "data-paseo-markdown-tag";
 export const MARKDOWN_COPY_IGNORE_ATTRIBUTE = "data-paseo-markdown-ignore";
 export const MARKDOWN_COPY_LIST_MARKER_ATTRIBUTE = "data-paseo-markdown-list-marker";
 export const MARKDOWN_COPY_UNWRAP_ATTRIBUTE = "data-paseo-markdown-unwrap";
+/** A shortened link label copies as this full address instead (Daseo delta 72). */
+export const MARKDOWN_COPY_TEXT_ATTRIBUTE = "data-paseo-markdown-copy-text";
 export const MARKDOWN_COPY_LIST_START_ATTRIBUTE = "data-paseo-markdown-list-start";
 export const MARKDOWN_COPY_LANGUAGE_ATTRIBUTE = "data-paseo-markdown-language";
 export const MARKDOWN_COPY_ALIGN_ATTRIBUTE = "data-paseo-markdown-align";

@@ -12,6 +12,7 @@ import {
   MARKDOWN_COPY_LIST_MARKER_ATTRIBUTE,
   MARKDOWN_COPY_LIST_START_ATTRIBUTE,
   MARKDOWN_COPY_TAG_ATTRIBUTE,
+  MARKDOWN_COPY_TEXT_ATTRIBUTE,
   MARKDOWN_COPY_UNWRAP_ATTRIBUTE,
   TRAILING_CODE_LINE_BREAKS,
 } from "./markup";
@@ -445,6 +446,10 @@ function restoreMarkdownElements(container: HTMLElement): void {
   }
 
   unwrapIncompleteTables(container);
+
+  for (const element of container.querySelectorAll(`[${MARKDOWN_COPY_TEXT_ATTRIBUTE}]`)) {
+    element.textContent = element.getAttribute(MARKDOWN_COPY_TEXT_ATTRIBUTE);
+  }
 
   const generatedLinks = Array.from(
     container.querySelectorAll(`[${MARKDOWN_COPY_UNWRAP_ATTRIBUTE}]`),

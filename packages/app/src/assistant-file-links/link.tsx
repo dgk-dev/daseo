@@ -9,7 +9,10 @@ import { Shortcut } from "@/components/ui/shortcut";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
-import { markdownCopyDataSet } from "@/assistant-selection-copy/markup";
+import {
+  MARKDOWN_COPY_TEXT_ATTRIBUTE,
+  markdownCopyDataSet,
+} from "@/assistant-selection-copy/markup";
 import { useAssistantFileLinkResolverContext } from "./provider";
 import type { AssistantFileLinkSource } from "./resolver";
 import { useFileLink } from "./use-file-link";
@@ -18,6 +21,8 @@ interface AssistantMarkdownLinkProps {
   source: AssistantFileLinkSource;
   style: StyleProp<TextStyle>;
   monoSurface?: boolean;
+  /** Set when the label is a shortened URL: shown on hover and copied in its place. */
+  fullAddress?: string;
   children: ReactNode;
 }
 
@@ -30,6 +35,7 @@ export function AssistantMarkdownLink({
   source,
   style,
   monoSurface,
+  fullAddress,
   children,
 }: AssistantMarkdownLinkProps) {
   const { target, onHoverIn, onHoverOut, onPress, onAuxPress } = useFileLink(source);
@@ -51,7 +57,8 @@ export function AssistantMarkdownLink({
     () => ({ onPress, accessibilityRole: "link" }),
     [onPress],
   );
-  const unwrapForMarkdownCopy = source.sourceType === "inline-code" || source.markup === "linkify";
+  const unwrapForMarkdownCopy =
+    source.sourceType === "inline-code" || source.markup === "linkify" || Boolean(fullAddress);
 
   if (isNative) {
     // Must be a MarkdownTextSpan, not a plain <Text>: on iOS the link renders
@@ -91,8 +98,9 @@ export function AssistantMarkdownLink({
   const anchor = (
     <a
       {...(unwrapForMarkdownCopy ? { "data-paseo-markdown-unwrap": "true" } : {})}
+      {...(fullAddress ? { [MARKDOWN_COPY_TEXT_ATTRIBUTE]: fullAddress } : {})}
       href={source.href}
-      title={source.title}
+      title={fullAddress ?? source.title}
       onClickCapture={handleAnchorClickCapture}
       onAuxClickCapture={preventAnchorNavigation}
       style={LINK_ANCHOR_STYLE}

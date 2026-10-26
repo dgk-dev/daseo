@@ -553,3 +553,21 @@ describe("assistant selection copy inside highlighted code", () => {
     );
   });
 });
+
+describe("shortened link labels", () => {
+  it("copies the full address in place of a shortened bare URL", () => {
+    const full =
+      "https://github.com/dgk-dev/daseo/blob/main/packages/app/src/components/message.tsx";
+    const host = document.createElement("div");
+    host.innerHTML = `
+      <div data-testid="assistant-message">
+        <div data-paseo-markdown-tag="p">See <a href="${full}" data-paseo-markdown-unwrap="true" data-paseo-markdown-copy-text="${full}"><span>github.com/dgk-dev/…/message.tsx</span></a> now.</div>
+        <div data-paseo-markdown-tag="p">Next paragraph.</div>
+      </div>
+    `;
+    document.body.append(host);
+    const message = fixtureElement(host, '[data-testid="assistant-message"]');
+
+    expect(copiedMarkdown(selectNodeContents(message))).toBe(`See ${full} now.\n\nNext paragraph.`);
+  });
+});

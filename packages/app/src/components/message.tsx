@@ -7,6 +7,7 @@ import {
   Text,
   Image,
   Pressable,
+  ScrollView,
   type GestureResponderEvent,
   type LayoutChangeEvent,
   StyleProp,
@@ -16,6 +17,8 @@ import {
 import { useTranslation } from "react-i18next";
 import { MarkdownParagraphView, MarkdownTextSpan } from "@/components/markdown-text";
 import { MarkdownTableCellText } from "@/components/markdown-text-selection";
+import { tableCellStyle, tableScrollStyles } from "@/components/markdown/table-columns";
+import { shortenBareUrlLabel } from "@/components/markdown/short-url";
 import * as React from "react";
 import {
   useState,
@@ -1736,10 +1739,22 @@ export const AssistantMessage = memo(function AssistantMessage({
       hr: (node: ASTNode, _children: ReactNode[], _parent: ASTNode[], styles: MarkdownStyles) => (
         <View key={node.key} style={styles._VIEW_SAFE_hr} dataSet={markdownCopyDataSet.hr} />
       ),
+      // Daseo delta 72: a table wider than the screen scrolls sideways instead of
+      // crushing its columns; see components/markdown/table-columns.ts.
       table: (node: ASTNode, children: ReactNode[], _parent: ASTNode[], styles: MarkdownStyles) => (
-        <View key={node.key} style={styles._VIEW_SAFE_table} dataSet={markdownCopyDataSet.table}>
-          {children}
-        </View>
+        <ScrollView
+          key={node.key}
+          horizontal
+          nestedScrollEnabled
+          persistentScrollbar
+          showsHorizontalScrollIndicator
+          style={[styles._VIEW_SAFE_table, tableScrollStyles.frame]}
+          contentContainerStyle={tableScrollStyles.content}
+        >
+          <View style={tableScrollStyles.table} dataSet={markdownCopyDataSet.table}>
+            {children}
+          </View>
+        </ScrollView>
       ),
       thead: (node: ASTNode, children: ReactNode[], _parent: ASTNode[], styles: MarkdownStyles) => (
         <View key={node.key} style={styles._VIEW_SAFE_thead} dataSet={markdownCopyDataSet.thead}>
@@ -2012,20 +2027,20 @@ export const AssistantMessage = memo(function AssistantMessage({
           </View>
         );
       },
-      th: (node: ASTNode, children: ReactNode[], _parent: ASTNode[], styles: MarkdownStyles) => (
+      th: (node: ASTNode, children: ReactNode[], parent: ASTNode[], styles: MarkdownStyles) => (
         <MarkdownTableCellText key={node.key}>
           <View
-            style={styles._VIEW_SAFE_th}
+            style={tableCellStyle(styles._VIEW_SAFE_th, node, parent, styles.th)}
             dataSet={markdownCopyTableCellDataSet("th", node.attributes?.style)}
           >
             {children}
           </View>
         </MarkdownTableCellText>
       ),
-      td: (node: ASTNode, children: ReactNode[], _parent: ASTNode[], styles: MarkdownStyles) => (
+      td: (node: ASTNode, children: ReactNode[], parent: ASTNode[], styles: MarkdownStyles) => (
         <MarkdownTableCellText key={node.key}>
           <View
-            style={styles._VIEW_SAFE_td}
+            style={tableCellStyle(styles._VIEW_SAFE_td, node, parent, styles.td)}
             dataSet={markdownCopyTableCellDataSet("td", node.attributes?.style)}
           >
             {children}
@@ -2046,15 +2061,21 @@ export const AssistantMessage = memo(function AssistantMessage({
           {children}
         </MarkdownParagraphView>
       ),
-      link: (node: ASTNode, children: ReactNode[], _parent: ASTNode[], styles: MarkdownStyles) => (
-        <AssistantMarkdownLink
-          key={node.key}
-          source={getMarkdownLinkSource(node)}
-          style={styles.link}
-        >
-          {colorMarkdownLinkChildren(children, styles.link.color)}
-        </AssistantMarkdownLink>
-      ),
+      link: (node: ASTNode, children: ReactNode[], _parent: ASTNode[], styles: MarkdownStyles) => {
+        const source = getMarkdownLinkSource(node);
+        // Daseo delta 72: a long bare URL shows host and a shortened path.
+        const shortLabel = shortenBareUrlLabel(source.href, source.text);
+        return (
+          <AssistantMarkdownLink
+            key={node.key}
+            source={source}
+            style={styles.link}
+            fullAddress={shortLabel ? source.href : undefined}
+          >
+            {shortLabel ?? colorMarkdownLinkChildren(children, styles.link.color)}
+          </AssistantMarkdownLink>
+        );
+      },
       image: (
         node: ASTNode,
         _children: ReactNode[],
