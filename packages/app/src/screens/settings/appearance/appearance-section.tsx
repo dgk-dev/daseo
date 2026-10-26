@@ -3,7 +3,8 @@ import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { ChevronDown, Monitor, Moon, Sun } from "lucide-react-native";
+import { ChevronDown, Minus, Monitor, Moon, Plus, Sun } from "lucide-react-native";
+import { Button } from "@/components/ui/button";
 import {
   SYNTAX_THEME_OPTIONS,
   type SyntaxThemeId,
@@ -24,6 +25,10 @@ import {
   MAX_UI_FONT_SIZE,
   MIN_CODE_FONT_SIZE,
   MIN_UI_FONT_SIZE,
+  CHAT_TEXT_SCALE_STEP,
+  MAX_CHAT_TEXT_SCALE,
+  MIN_CHAT_TEXT_SCALE,
+  normalizeChatTextScale,
   parseClampedFontSize,
   sanitizeFontFamily,
   useAppSettings,
@@ -390,6 +395,49 @@ function FontSizeRow({
 }
 
 // ---------------------------------------------------------------------------
+// Daseo delta 71: conversation text size (answers, own messages, composer only)
+// ---------------------------------------------------------------------------
+
+function ChatTextSizeRow({ value, onChange }: { value: number; onChange: (next: number) => void }) {
+  const { t } = useTranslation();
+  const handleSmaller = useCallback(
+    () => onChange(normalizeChatTextScale(value - CHAT_TEXT_SCALE_STEP) ?? value),
+    [onChange, value],
+  );
+  const handleLarger = useCallback(
+    () => onChange(normalizeChatTextScale(value + CHAT_TEXT_SCALE_STEP) ?? value),
+    [onChange, value],
+  );
+  return (
+    <View style={styles.rowWithBorder}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>{t("settings.appearance.fonts.chatSize")}</Text>
+        <Text style={settingsStyles.rowHint}>{t("settings.appearance.fonts.chatSizeHint")}</Text>
+      </View>
+      <View style={styles.sizeField}>
+        <Button
+          size="sm"
+          variant="outline"
+          leftIcon={Minus}
+          disabled={value <= MIN_CHAT_TEXT_SCALE}
+          onPress={handleSmaller}
+          accessibilityLabel={t("settings.appearance.fonts.chatSizeSmaller")}
+        />
+        <Text style={styles.chatSizeValue}>{`${Math.round(value * 100)}%`}</Text>
+        <Button
+          size="sm"
+          variant="outline"
+          leftIcon={Plus}
+          disabled={value >= MAX_CHAT_TEXT_SCALE}
+          onPress={handleLarger}
+          accessibilityLabel={t("settings.appearance.fonts.chatSizeLarger")}
+        />
+      </View>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Syntax highlight theme picker (commits immediately)
 // ---------------------------------------------------------------------------
 
@@ -567,6 +615,13 @@ export function AppearanceSection() {
     }
   }, [settings.uiFontSize, uiSizeDraft, updateSettings]);
 
+  const handleChatTextScaleChange = useCallback(
+    (next: number) => {
+      void updateSettings({ chatTextScale: next });
+    },
+    [updateSettings],
+  );
+
   const commitCodeSize = useCallback(() => {
     const parsed = parseClampedFontSize(codeSizeDraft, {
       min: MIN_CODE_FONT_SIZE,
@@ -641,6 +696,7 @@ export function AppearanceSection() {
             onChangeDraft={handleUiSizeChange}
             onCommit={commitUiSize}
           />
+          <ChatTextSizeRow value={settings.chatTextScale} onChange={handleChatTextScaleChange} />
           {showFontFamilyRows ? (
             <FontFamilyRow
               title={t("settings.appearance.fonts.codeFont")}
@@ -748,6 +804,13 @@ const styles = StyleSheet.create((theme) => ({
   unit: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
+  },
+  chatSizeValue: {
+    minWidth: 48,
+    textAlign: "center",
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.sm,
+    fontVariant: ["tabular-nums"],
   },
   placeholderColor: {
     color: theme.colors.foregroundMuted,

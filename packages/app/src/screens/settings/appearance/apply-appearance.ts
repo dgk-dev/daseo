@@ -19,6 +19,8 @@ export interface AppearanceInput {
   monoFontFamily: string; // "" -> default stack
   uiFontSize: number; // already clamped
   codeFontSize: number; // already clamped
+  /** Daseo delta 71: conversation-only text factor; omitted means 1. */
+  chatTextScale?: number;
   syntaxTheme: SyntaxThemeId;
 }
 
@@ -74,12 +76,14 @@ export function applyAppearance(input: AppearanceInput): void {
       const fontFamily = { ui, mono };
       const fontSize = scaleFontSize(input.uiFontSize, input.codeFontSize);
       const lineHeight = { ...t.lineHeight, diff: diffLineHeight };
+      const chatTextScale = input.chatTextScale ?? 1;
       if (t.colorScheme === "light") {
         return {
           ...t,
           fontFamily,
           fontSize,
           lineHeight,
+          chatTextScale,
           colors: { ...t.colors, syntax: resolveSyntaxColors(input.syntaxTheme, t.colorScheme) },
         };
       }
@@ -88,6 +92,7 @@ export function applyAppearance(input: AppearanceInput): void {
         fontFamily,
         fontSize,
         lineHeight,
+        chatTextScale,
         colors: { ...t.colors, syntax: resolveSyntaxColors(input.syntaxTheme, t.colorScheme) },
       };
     });

@@ -368,14 +368,16 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
     top: theme.spacing[1],
     color: theme.colors.accent,
     fontFamily: theme.fontFamily.mono,
-    fontSize: theme.fontSize.base,
+    fontSize: theme.fontSize.base * theme.chatTextScale,
     fontWeight: theme.fontWeight.semibold,
-    lineHeight: 22,
+    lineHeight: Math.round(22 * theme.chatTextScale),
   },
   text: {
     color: theme.colors.foreground,
-    fontSize: theme.fontSize.base,
-    ...(isWeb ? { lineHeight: 22, overflowWrap: "anywhere" as const } : {}),
+    fontSize: theme.fontSize.base * theme.chatTextScale,
+    ...(isWeb
+      ? { lineHeight: Math.round(22 * theme.chatTextScale), overflowWrap: "anywhere" as const }
+      : {}),
   },
   foldRow: {
     flexDirection: "row",

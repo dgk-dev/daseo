@@ -52,6 +52,8 @@ export type KeyboardActionId =
   | "workspace.pin"
   | "view.toggle.focus"
   | "theme.cycle"
+  | "chat-text.larger"
+  | "chat-text.smaller"
   | "message-input.action";
 
 export type KeyboardShortcutPayload =

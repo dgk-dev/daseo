@@ -2073,9 +2073,10 @@ const styles = StyleSheet.create((theme: Theme) => ({
   textInput: {
     width: "100%",
     color: theme.colors.foreground,
-    fontSize: theme.fontSize.base,
+    // Daseo delta 71: the composer grows with the conversation text.
+    fontSize: theme.fontSize.base * theme.chatTextScale,
     fontWeight: theme.fontWeight.normal,
-    lineHeight: theme.fontSize.base * 1.4,
+    lineHeight: Math.round(theme.fontSize.base * 1.4 * theme.chatTextScale),
     ...(isWeb
       ? ({
           outlineStyle: "none",

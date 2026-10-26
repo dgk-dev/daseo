@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import type { RefObject } from "react";
+import { useAppSettings } from "@/hooks/use-settings";
 
 interface Args {
   value: string;
@@ -99,6 +100,15 @@ export function useComposerHeightMirror({
   useLayoutEffect(() => {
     measure();
   }, [maxHeight, minHeight, value, measure]);
+
+  // Daseo delta 71: the conversation text size changes the textarea's font through the theme,
+  // which no size observer sees; measure again once the new style has been applied.
+  const chatTextScale = useAppSettings().settings.chatTextScale;
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const frame = window.requestAnimationFrame(() => measure());
+    return () => window.cancelAnimationFrame(frame);
+  }, [chatTextScale, measure]);
 
   useEffect(() => {
     const source = textareaRef.current;

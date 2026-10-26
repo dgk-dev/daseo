@@ -133,3 +133,16 @@ describe("createMarkdownStyles", () => {
     expect(compactStyles.code_inline).not.toHaveProperty("lineHeight");
   });
 });
+
+describe("conversation text scale (delta 71)", () => {
+  it("leaves markdown untouched at 1 and grows every text size at 1.5", () => {
+    const base = createMarkdownStyles(darkTheme);
+    const scaled = createMarkdownStyles({ ...darkTheme, chatTextScale: 1.5 });
+    expect(scaled.body.fontSize).toBe(Math.round(base.body.fontSize * 1.5));
+    expect(scaled.body.lineHeight).toBe(Math.round(base.body.lineHeight * 1.5));
+    expect(scaled.heading1.fontSize).toBe(Math.round(base.heading1.fontSize * 1.5));
+    expect(createCompactMarkdownStyles({ ...darkTheme, chatTextScale: 1.5 }).body.fontSize).toBe(
+      Math.round(createCompactMarkdownStyles(darkTheme).body.fontSize * 1.5),
+    );
+  });
+});

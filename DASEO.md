@@ -1259,6 +1259,21 @@ acceptLanguages)`, so the header is now `en-US,en-KR;q=0.9,ko-KR;q=0.8`. `--lang
     `packages/app/src/workspace/discard-empty-on-leave.tsx`, `packages/server/src/server/session.ts`
     (`handleWorkspaceDiscardEmptyRequest`), `packages/app/src/composer/input/state.ts`.
 
+71. **Conversation text grows on its own, sidebar unchanged** — the owner's request on
+    2026-10-26: over Parsec from a ThinkPad, the smaller screen made the conversation hard to
+    read. A `chatTextScale` app setting (1–2, 10% steps; 1, the old size, is the smallest)
+    becomes the theme token `chatTextScale` through `applyAppearance`. It multiplies the font
+    size and line height of markdown (`createMarkdownStyles` and its compact variant), the
+    user message text, and the composer input. Nothing else reads it, so the sidebar, headers,
+    tool rows and settings keep their size. Controls:
+    - Settings → Appearance → Fonts, a − / percent / + row.
+    - Cmd+Option with + or − on macOS (a PC keyboard's Windows key arrives as Cmd over Parsec).
+    - Ctrl+Alt with + or − elsewhere.
+    - Cmd with + or − alone still zooms the whole window through the menu.
+      The web composer re-measures its height when the scale changes, since no size observer
+      sees a theme font change. Key files: `packages/app/src/styles/markdown-styles.ts`,
+      `packages/app/src/screens/settings/appearance/`, `packages/app/src/keyboard/keyboard-shortcuts.ts`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

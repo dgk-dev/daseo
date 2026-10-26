@@ -91,7 +91,7 @@ import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { KeyboardShiftProvider } from "@/hooks/use-keyboard-shift-style";
 import { useCompactWebViewportZoomLock } from "@/hooks/use-compact-web-viewport-zoom-lock";
 import { useOpenProject } from "@/hooks/use-open-project";
-import { useAppSettings } from "@/hooks/use-settings";
+import { CHAT_TEXT_SCALE_STEP, normalizeChatTextScale, useAppSettings } from "@/hooks/use-settings";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { useOpenAgentListGesture } from "@/mobile-panels/gestures";
 import { MobilePanelsProvider } from "@/mobile-panels/provider";
@@ -490,6 +490,21 @@ function AppContainer({ children, chromeEnabled: chromeEnabledOverride }: AppCon
     void updateSettings({ theme: getNextThemePreference(settings.theme) });
   }, [settings.theme, updateSettings]);
 
+  // Daseo delta 71: conversation-only text size, one 10% step per press.
+  const stepChatText = useCallback(
+    (direction: 1 | -1) => {
+      const next = normalizeChatTextScale(
+        settings.chatTextScale + direction * CHAT_TEXT_SCALE_STEP,
+      );
+      if (next !== null && next !== settings.chatTextScale) {
+        void updateSettings({ chatTextScale: next });
+      }
+    },
+    [settings.chatTextScale, updateSettings],
+  );
+  const chatTextLarger = useCallback(() => stepChatText(1), [stepChatText]);
+  const chatTextSmaller = useCallback(() => stepChatText(-1), [stepChatText]);
+
   const isCompactLayout = useIsCompactFormFactor();
   useCompactWebViewportZoomLock(isCompactLayout);
   const pathname = usePathname();
@@ -527,6 +542,8 @@ function AppContainer({ children, chromeEnabled: chromeEnabledOverride }: AppCon
     toggleBothSidebars: toggleDesktopSidebars,
     exitFocusMode,
     cycleTheme,
+    chatTextLarger,
+    chatTextSmaller,
   });
 
   useActiveWorktreeNewAction();
@@ -698,6 +715,7 @@ function ProvidersWrapper({ children }: { children: ReactNode }) {
       monoFontFamily: settings.monoFontFamily,
       uiFontSize: settings.uiFontSize,
       codeFontSize: settings.codeFontSize,
+      chatTextScale: settings.chatTextScale,
       syntaxTheme: settings.syntaxTheme,
     });
   }, [
@@ -706,6 +724,7 @@ function ProvidersWrapper({ children }: { children: ReactNode }) {
     settings.monoFontFamily,
     settings.uiFontSize,
     settings.codeFontSize,
+    settings.chatTextScale,
     settings.syntaxTheme,
   ]);
 

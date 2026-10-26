@@ -46,6 +46,8 @@ export function useKeyboardShortcuts({
   toggleBothSidebars,
   exitFocusMode,
   cycleTheme,
+  chatTextLarger,
+  chatTextSmaller,
 }: {
   enabled: boolean;
   isMobile: boolean;
@@ -54,6 +56,9 @@ export function useKeyboardShortcuts({
   toggleBothSidebars?: () => void;
   exitFocusMode: () => void;
   cycleTheme?: () => void;
+  /** Daseo delta 71: conversation-only text size. */
+  chatTextLarger?: () => void;
+  chatTextSmaller?: () => void;
 }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -157,6 +162,8 @@ export function useKeyboardShortcuts({
       "toggle-agent-list": toggleAgentList,
       "toggle-both-sidebars": toggleBothSidebars,
       "cycle-theme": cycleTheme,
+      "chat-text-larger": chatTextLarger,
+      "chat-text-smaller": chatTextSmaller,
     };
 
     const performShortcutAction = (
@@ -398,6 +405,8 @@ export function useKeyboardShortcuts({
   }, [
     bindings,
     cycleTheme,
+    chatTextLarger,
+    chatTextSmaller,
     enabled,
     exitFocusMode,
     activeWorkspaceSelection,

@@ -610,6 +610,8 @@ interface CommonTheme {
   borderRadius: Record<keyof typeof BORDER_RADIUS, number>;
   borderWidth: typeof BORDER_WIDTH;
   opacity: typeof OPACITY;
+  /** Daseo delta 71: multiplies conversation text only (patched by the appearance updater). */
+  chatTextScale: number;
 }
 
 const commonTheme: CommonTheme = {
@@ -622,6 +624,7 @@ const commonTheme: CommonTheme = {
   borderRadius: BORDER_RADIUS,
   borderWidth: BORDER_WIDTH,
   opacity: OPACITY,
+  chatTextScale: 1,
 };
 
 const darkShadow = {

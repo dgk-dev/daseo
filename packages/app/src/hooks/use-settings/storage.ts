@@ -56,6 +56,21 @@ export const DEFAULT_CODE_FONT_SIZE = 12; // == FONT_SIZE.code
 export const MIN_CODE_FONT_SIZE = 9;
 export const MAX_CODE_FONT_SIZE = 22; // line-height 1.5×22=33 stays safe
 export const MAX_FONT_FAMILY_LENGTH = 200;
+// Daseo delta 71: conversation-only text size (answers, own messages, composer), as a factor of
+// the UI size. 1 is the smallest; the sidebar and other chrome never change with it.
+export const DEFAULT_CHAT_TEXT_SCALE = 1;
+export const MIN_CHAT_TEXT_SCALE = 1;
+export const MAX_CHAT_TEXT_SCALE = 2;
+export const CHAT_TEXT_SCALE_STEP = 0.1;
+
+/** Clamps to the allowed range on 0.1 steps; null for anything that is not a finite number. */
+export function normalizeChatTextScale(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const stepped = Math.round(value / CHAT_TEXT_SCALE_STEP) * CHAT_TEXT_SCALE_STEP;
+  return (
+    Math.round(Math.min(MAX_CHAT_TEXT_SCALE, Math.max(MIN_CHAT_TEXT_SCALE, stepped)) * 10) / 10
+  );
+}
 
 export interface AppSettings {
   theme: ThemePreference;
@@ -68,6 +83,7 @@ export interface AppSettings {
   monoFontFamily: string; // "" = platform default mono stack
   uiFontSize: number; // clamped px, default 16
   codeFontSize: number; // clamped px, default 12
+  chatTextScale: number; // Daseo delta 71: conversation text only, 1–2 in 0.1 steps
   syntaxTheme: SyntaxThemeId; // default "one"
   workspaceTitleSource: WorkspaceTitleSource;
   sidebarWorkspaceTrailing: SidebarWorkspaceTrailing;
@@ -104,6 +120,7 @@ const StoredAppSettingsSchema = z.looseObject({
   monoFontFamily: z.unknown().optional(),
   uiFontSize: z.unknown().optional(),
   codeFontSize: z.unknown().optional(),
+  chatTextScale: z.unknown().optional(),
   syntaxTheme: z.unknown().optional(),
   workspaceTitleSource: z.unknown().optional(),
   sidebarWorkspaceTrailing: z.unknown().optional(),
@@ -143,6 +160,7 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   monoFontFamily: "",
   uiFontSize: DEFAULT_UI_FONT_SIZE,
   codeFontSize: DEFAULT_CODE_FONT_SIZE,
+  chatTextScale: DEFAULT_CHAT_TEXT_SCALE,
   syntaxTheme: "one",
   workspaceTitleSource: "title",
   sidebarWorkspaceTrailing: "none",
@@ -425,6 +443,10 @@ function pickAppSettings(stored: StoredAppSettings): Partial<AppSettings> {
   });
   if (codeFontSize !== null) {
     result.codeFontSize = codeFontSize;
+  }
+  const chatTextScale = normalizeChatTextScale(stored.chatTextScale);
+  if (chatTextScale !== null) {
+    result.chatTextScale = chatTextScale;
   }
   Object.assign(result, pickBooleanAppSettings(stored));
   if (typeof stored.autoExpandReasoning === "boolean") {

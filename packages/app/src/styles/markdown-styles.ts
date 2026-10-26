@@ -35,7 +35,33 @@ const markdownHeadingTextStyle = {
  *   const markdownStyles = useMemo(() => createMarkdownStyles(theme), [theme]);
  *   <Markdown style={markdownStyles}>{content}</Markdown>
  */
+/**
+ * Daseo delta 71: multiplies every numeric fontSize and lineHeight by the conversation text
+ * scale. Markdown renders the conversation, so its whole ramp grows together.
+ */
+function scaleConversationText<T extends Record<string, unknown>>(styles: T, scale: number): T {
+  if (scale === 1) return styles;
+  const scaled: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(styles)) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const style = { ...(value as Record<string, unknown>) };
+      if (typeof style.fontSize === "number") style.fontSize = Math.round(style.fontSize * scale);
+      if (typeof style.lineHeight === "number") {
+        style.lineHeight = Math.round(style.lineHeight * scale);
+      }
+      scaled[key] = style;
+    } else {
+      scaled[key] = value;
+    }
+  }
+  return scaled as T;
+}
+
 export function createMarkdownStyles(theme: Theme) {
+  return scaleConversationText(buildMarkdownStyles(theme), theme.chatTextScale ?? 1);
+}
+
+function buildMarkdownStyles(theme: Theme) {
   return {
     // =========================================================================
     // BASE STYLES
@@ -383,7 +409,11 @@ export function createMarkdownStyles(theme: Theme) {
  * like thought bubbles, tooltips, or side panels.
  */
 export function createCompactMarkdownStyles(theme: Theme) {
-  const baseStyles = createMarkdownStyles(theme);
+  return scaleConversationText(buildCompactMarkdownStyles(theme), theme.chatTextScale ?? 1);
+}
+
+function buildCompactMarkdownStyles(theme: Theme) {
+  const baseStyles = buildMarkdownStyles(theme);
 
   return {
     ...baseStyles,

@@ -160,6 +160,8 @@ export const SHORTCUT_HELP_ROW_ORDER: Record<ShortcutSectionId, readonly string[
     "show-shortcuts",
     "toggle-settings",
     "cycle-theme",
+    "chat-text-larger",
+    "chat-text-smaller",
   ],
   workspaces: [
     "new-agent",
@@ -235,6 +237,8 @@ const SHORTCUT_HELP_LABEL_KEYS: Record<string, string> = {
   "toggle-settings": "settings.shortcuts.help.toggleSettings",
   "toggle-focus": "settings.shortcuts.help.toggleFocusMode",
   "cycle-theme": "settings.shortcuts.help.cycleTheme",
+  "chat-text-larger": "settings.shortcuts.help.chatTextLarger",
+  "chat-text-smaller": "settings.shortcuts.help.chatTextSmaller",
   "focus-message-input": "settings.shortcuts.help.focusMessageInput",
   "cycle-agent-mode": "settings.shortcuts.help.cycleAgentMode",
   "model-toggle": "settings.shortcuts.help.toggleModel",
@@ -951,6 +955,36 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
       section: "general",
       label: "Cycle theme",
     },
+  },
+
+  // --- Daseo delta 71: conversation text size (Cmd/Ctrl +/- alone zoom the whole window) ---
+  {
+    id: "chat-text-larger-cmd-alt-equal-mac",
+    action: "chat-text.larger",
+    combo: "Cmd+Alt+=",
+    when: { mac: true, commandCenter: false },
+    help: { id: "chat-text-larger", section: "general", label: "Larger conversation text" },
+  },
+  {
+    id: "chat-text-smaller-cmd-alt-minus-mac",
+    action: "chat-text.smaller",
+    combo: "Cmd+Alt+-",
+    when: { mac: true, commandCenter: false },
+    help: { id: "chat-text-smaller", section: "general", label: "Smaller conversation text" },
+  },
+  {
+    id: "chat-text-larger-ctrl-alt-equal-non-mac",
+    action: "chat-text.larger",
+    combo: "Ctrl+Alt+=",
+    when: { mac: false, commandCenter: false, terminal: false },
+    help: { id: "chat-text-larger", section: "general", label: "Larger conversation text" },
+  },
+  {
+    id: "chat-text-smaller-ctrl-alt-minus-non-mac",
+    action: "chat-text.smaller",
+    combo: "Ctrl+Alt+-",
+    when: { mac: false, commandCenter: false, terminal: false },
+    help: { id: "chat-text-smaller", section: "general", label: "Smaller conversation text" },
   },
 
   // --- Message input ---
