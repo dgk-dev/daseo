@@ -17,6 +17,7 @@ const TEMPLATE_DIR = path.join(__dirname, "android-assistant-entry");
 const KOTLIN_TEMPLATES = ["DaseoQuickAsk.kt.template", "DaseoAssistantServices.kt.template"];
 const ASSISTANT_PROCESS = ":assistant";
 const ALIAS_NAME = ".DaseoAssistActivity";
+const TRAMPOLINE_NAME = ".DaseoQuickAskTrampolineActivity";
 const VOICE_INTERACTION_XML = "daseo_voice_interaction_service";
 const RECOGNITION_SERVICE_XML = "daseo_recognition_service";
 const SHORTCUTS_XML = "daseo_shortcuts";
@@ -109,6 +110,21 @@ function addAssistantEntryToManifest(manifest) {
         category: [{ $: { "android:name": "android.intent.category.DEFAULT" } }],
       },
     ],
+  });
+
+  // Daseo delta 69: the side-button session opens this invisible hop with the system's assistant
+  // launch; it brings Daseo to the front and handles the lock screen (see the Kotlin template).
+  application.activity = upsertByName(application.activity ?? [], {
+    $: {
+      "android:name": TRAMPOLINE_NAME,
+      "android:exported": "false",
+      "android:process": ASSISTANT_PROCESS,
+      "android:theme": "@android:style/Theme.Translucent.NoTitleBar",
+      "android:excludeFromRecents": "true",
+      "android:noHistory": "true",
+      "android:taskAffinity": "",
+      "android:showWhenLocked": "true",
+    },
   });
 
   let services = application.service ?? [];

@@ -19,6 +19,8 @@ import android.os.SystemClock
  */
 object DaseoQuickAsk {
   const val URL = "paseo://quick-ask"
+  /** Logcat tag for the side-button path; `phone_logs` reads it without wireless debugging. */
+  const val LOG_TAG = "DaseoQuickAsk"
   /** Added when Daseo was already on screen: the app then dictates into the session in view. */
   const val FOREGROUND_URL = "$URL?from=foreground"
   private const val ASSISTANT_PROCESS_SUFFIX = ":assistant"

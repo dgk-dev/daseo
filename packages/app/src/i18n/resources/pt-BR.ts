@@ -89,10 +89,6 @@ export const ptBR: TranslationResources = {
       fallback: "Mensagem...",
       terminal: "Prompt",
     },
-    quickAsk: {
-      countdown: "Enviando em {{seconds}} s · toque para editar",
-      cancelAccessibilityLabel: "Cancelar envio automático",
-    },
     input: {
       accessibilityLabel: "Enviar mensagem ao agente...",
       terminalAccessibilityLabel: "Terminal prompt",
@@ -365,7 +361,6 @@ export const ptBR: TranslationResources = {
       cancel: "Cancelar ditado",
       retry: "Tentar ditado novamente",
       insert: "Inserir transcrição",
-      insertAndSend: "Inserir transcrição e enviar",
       failed: "Falha no ditado: {{error}}",
       failedRetry: "Falha no ditado. Toque para tentar novamente.",
     },

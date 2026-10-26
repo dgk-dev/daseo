@@ -2363,6 +2363,20 @@ export class DaemonClient {
     });
   }
 
+  /** Daseo delta 70: deletes the workspace if nothing was ever done in it; see the response reason. */
+  async discardEmptyWorkspace(
+    workspaceId: string,
+  ): Promise<{ discarded: boolean; reason: string | null }> {
+    const payload = await this.sendCorrelatedSessionRequest({
+      message: {
+        type: "workspace.discard_empty.request",
+        workspaceId,
+      },
+      responseType: "workspace.discard_empty.response",
+    });
+    return { discarded: payload.discarded, reason: payload.reason };
+  }
+
   async archiveWorkspace(
     workspaceId: string,
     requestId?: string,

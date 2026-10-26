@@ -57,7 +57,6 @@ import { MOTION_DURATION_MS, MOTION_EASING_CSS } from "@/styles/motion";
 import type { MessageInputKeyboardActionKind } from "@/keyboard/actions";
 import { isImeComposingKeyboardEvent } from "@/utils/keyboard-ime";
 import { isWeb } from "@/constants/platform";
-import { QuickAskCountdownRow } from "@/composer/quick-ask/countdown-row";
 import { useComposerQuickAsk } from "@/composer/quick-ask/use-quick-ask-voice";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useComposerHeightMirror } from "./height-mirror";
@@ -556,7 +555,6 @@ function MessageInputOverlay({
   dictationError,
   onCancelRecording,
   onAcceptRecording,
-  onAcceptAndSendRecording,
   onRetryFailedRecording,
   onDiscardFailedRecording,
   onRealtimeVoiceStop,
@@ -579,7 +577,6 @@ function MessageInputOverlay({
   dictationError: string | null;
   onCancelRecording: () => Promise<void>;
   onAcceptRecording: () => Promise<void>;
-  onAcceptAndSendRecording: () => Promise<void>;
   onRetryFailedRecording: () => void;
   onDiscardFailedRecording: () => void;
   onRealtimeVoiceStop: () => void;
@@ -595,7 +592,6 @@ function MessageInputOverlay({
         errorText={dictationStatus === "failed" ? (dictationError ?? undefined) : undefined}
         onCancel={onCancelRecording}
         onAccept={onAcceptRecording}
-        onAcceptAndSend={onAcceptAndSendRecording}
         onRetry={dictationStatus === "failed" ? onRetryFailedRecording : undefined}
         onDiscard={dictationStatus === "failed" ? onDiscardFailedRecording : undefined}
       />
@@ -1279,9 +1275,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           ? runMessageInputKeyboardAction(action, {
               focusInput: () => textInputRef.current?.focus(),
               isDictationRecording: isDictationActive,
-              markTranscriptForSend: () => {
-                sendAfterTranscriptRef.current = true;
-              },
               confirmDictation,
               cancelDictation,
               startDictation: startDictationIfAvailable,
@@ -1293,9 +1286,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       getNativeElement: () => (isWeb ? getTextInputNativeElement(textInputRef.current) : null),
     }));
     const inputHeightRef = useRef(MIN_INPUT_HEIGHT);
-    const sendAfterTranscriptRef = useRef(false);
     const quickAskTranscriptRef = useRef<((text: string) => void) | null>(null);
-    const quickAskCancelRef = useRef<(() => void) | null>(null);
     const serverInfo = useSessionStore(
       useCallback(
         (state) => {
@@ -1361,35 +1352,14 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
 
     const handleDictationTranscript = useCallback(
       (text: string, _meta: { requestId: string }) => {
-        const autoSend = sendAfterTranscriptRef.current && isSubmitOwner();
-        sendAfterTranscriptRef.current = false;
-        applyDictationTranscript(text, {
-          value: valueRef.current,
-          defaultSendBehavior,
-          isAgentRunning,
-          onQueue,
-          onSubmit,
-          replaceText,
-          attachments,
-          cwd,
-          autoSend,
-        });
+        applyDictationTranscript(text, { value: valueRef.current, replaceText });
         if (!isWeb && text) {
-          refocusAfterRemountRef.current = !autoSend && isPaneFocusedRef.current;
+          refocusAfterRemountRef.current = isPaneFocusedRef.current;
           setNativeInputGeneration((generation) => generation + 1);
         }
         quickAskTranscriptRef.current?.(text);
       },
-      [
-        replaceText,
-        onSubmit,
-        onQueue,
-        attachments,
-        cwd,
-        isAgentRunning,
-        defaultSendBehavior,
-        isSubmitOwner,
-      ],
+      [replaceText],
     );
 
     const handleDictationError = useCallback(
@@ -1461,13 +1431,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const showOverlay = showDictationOverlay || showRealtimeOverlay;
     const surfacePresentation = resolveComposerSurfacePresentation(showOverlay);
 
-    useEffect(() => {
-      if (isDictating || isDictationProcessing) {
-        return;
-      }
-      sendAfterTranscriptRef.current = false;
-    }, [dictationStatus, isDictating, isDictationProcessing]);
-
     const startDictationIfAvailable = useCallback(
       () =>
         startDictationIfAvailableImpl({
@@ -1502,12 +1465,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     }, [cancelDictation]);
 
     const handleAcceptRecording = useCallback(async () => {
-      sendAfterTranscriptRef.current = false;
-      await confirmDictation();
-    }, [confirmDictation]);
-
-    const handleAcceptAndSendRecording = useCallback(async () => {
-      sendAfterTranscriptRef.current = true;
       await confirmDictation();
     }, [confirmDictation]);
 
@@ -1628,7 +1585,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       handleSendMessage,
     ]);
 
-    const quickAskVoice = useComposerQuickAsk({
+    useComposerQuickAsk({
       request: props.quickAsk,
       isPaneFocused,
       disabled,
@@ -1643,9 +1600,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       confirmDictation: handleAcceptRecording,
       cancelDictation,
       textInputRef,
-      send: handleDefaultSendAction,
       transcriptRef: quickAskTranscriptRef,
-      cancelRef: quickAskCancelRef,
     });
 
     const handleAlternateSendAction = useCallback(() => {
@@ -1840,7 +1795,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
 
         valueRef.current = nextValue;
         onChangeText(nextValue);
-        quickAskCancelRef.current?.();
       },
       [isSubmitOwner, onChangeText],
     );
@@ -1853,7 +1807,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       isInputFocusedRef.current = true;
       setIsInputFocused(true);
       onFocusChange?.(true);
-      quickAskCancelRef.current?.();
     }, [isSubmitOwner, onFocusChange]);
 
     const handleInputBlur = useCallback(() => {
@@ -1958,10 +1911,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           pointerEvents={surfacePresentation.input.pointerEvents}
         >
           {attachmentSlot}
-          <QuickAskCountdownRow
-            remainingMs={quickAskVoice.countdownRemainingMs}
-            onCancel={quickAskVoice.cancelCountdown}
-          />
           {/* Text input */}
           <ComposerTextSurface
             readOnly={readOnly}
@@ -2060,7 +2009,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
             dictationError={dictationError}
             onCancelRecording={handleCancelRecording}
             onAcceptRecording={handleAcceptRecording}
-            onAcceptAndSendRecording={handleAcceptAndSendRecording}
             onRetryFailedRecording={handleRetryFailedRecording}
             onDiscardFailedRecording={handleDiscardFailedRecording}
             onRealtimeVoiceStop={handleRealtimeVoiceStop}

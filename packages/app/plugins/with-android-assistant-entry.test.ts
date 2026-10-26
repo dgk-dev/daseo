@@ -68,6 +68,13 @@ describe("withAndroidAssistantEntry", () => {
 
     const mainActivity = byName(application.activity, ".MainActivity") as ManifestNode;
     expect(JSON.stringify(mainActivity["meta-data"])).toContain("@xml/daseo_shortcuts");
+    const trampoline = byName(application.activity, ".DaseoQuickAskTrampolineActivity");
+    expect(trampoline?.$).toMatchObject({
+      "android:exported": "false",
+      "android:process": ":assistant",
+      "android:showWhenLocked": "true",
+      "android:excludeFromRecents": "true",
+    });
   });
 
   it("is idempotent across repeated prebuilds", () => {

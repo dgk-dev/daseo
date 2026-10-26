@@ -86,10 +86,6 @@ export const en = {
       fallback: "Message...",
       terminal: "Prompt",
     },
-    quickAsk: {
-      countdown: "Sending in {{seconds}} s · tap to edit",
-      cancelAccessibilityLabel: "Cancel automatic send",
-    },
     input: {
       accessibilityLabel: "Message agent...",
       terminalAccessibilityLabel: "Terminal prompt",
@@ -360,7 +356,6 @@ export const en = {
       cancel: "Cancel dictation",
       retry: "Retry dictation",
       insert: "Insert transcription",
-      insertAndSend: "Insert transcription and send",
       failed: "Dictation failed: {{error}}",
       failedRetry: "Dictation failed. Tap retry.",
     },

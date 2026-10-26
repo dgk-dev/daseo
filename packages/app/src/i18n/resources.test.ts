@@ -385,7 +385,6 @@ describe("translation resources", () => {
     expect(en.message.dictation.cancel).toBe("Cancel dictation");
     expect(en.message.dictation.retry).toBe("Retry dictation");
     expect(en.message.dictation.insert).toBe("Insert transcription");
-    expect(en.message.dictation.insertAndSend).toBe("Insert transcription and send");
     expect(en.message.dictation.failed).toBe("Dictation failed: {{error}}");
     expect(en.message.dictation.failedRetry).toBe("Dictation failed. Tap retry.");
     expect(en.message.question.submit).toBe("Submit");

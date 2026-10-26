@@ -89,10 +89,6 @@ export const ja: TranslationResources = {
       fallback: "メッセージ...",
       terminal: "Prompt",
     },
-    quickAsk: {
-      countdown: "{{seconds}} 秒後に送信 · タップして編集",
-      cancelAccessibilityLabel: "自動送信をキャンセル",
-    },
     input: {
       accessibilityLabel: "エージェントにメッセージ...",
       terminalAccessibilityLabel: "Terminal prompt",
@@ -364,7 +360,6 @@ export const ja: TranslationResources = {
       cancel: "音声入力をキャンセル",
       retry: "音声入力を再試行",
       insert: "文字起こしを挿入",
-      insertAndSend: "文字起こしを挿入して送信",
       failed: "音声入力に失敗しました: {{error}}",
       failedRetry: "音声入力に失敗しました。再試行をタップしてください。",
     },

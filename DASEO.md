@@ -1223,6 +1223,42 @@ acceptLanguages)`, so the header is now `en-US,en-KR;q=0.9,ko-KR;q=0.8`. `--lang
     `packages/app/modules/daseo-debug/`. Takes effect with the next release, daemon restart, and
     app build.
 
+69. **The side button always brings Daseo to the front** — the owner's report on 2026-10-26:
+    sometimes the long press gave the green microphone dot and no Daseo. The session called
+    `startActivity` in `onShow`, which runs before the session window is visible, so Android
+    judged it a background launch. A blocked launch into Daseo's existing task delivers the
+    intent without moving the task to front (`MOVE_TO_FRONT_AVOID_LEGACY`, `mDoResume=false`). A
+    sleeping-top or paused Daseo then ran the quick ask invisibly: 2026-10-26 06:42:19 an empty
+    workspace and, 7 s later, a microphone permission error. Now the session disables its own
+    window and calls `startAssistantActivity`, the system launch AOSP starts with BAL allowed
+    (`ActivityTaskManagerService.startAssistantActivity`). It opens
+    `DaseoQuickAskTrampolineActivity`: translucent, `:assistant` process, `showWhenLocked`,
+    excluded from Recents. That activity opens Daseo as a foreground activity. On the lock
+    screen it first asks for the unlock and opens nothing if that is cancelled.
+    `onLaunchVoiceAssistFromKeyguard` goes through `showSession` for the same path. The quick
+    ask also waits for `AppState` "active" before it starts the microphone. Each step logs
+    under the `DaseoQuickAsk` tag for `phone_logs`. Key files:
+    `packages/app/plugins/android-assistant-entry/`, `packages/app/plugins/with-android-assistant-entry.js`,
+    `packages/app/src/composer/quick-ask/use-quick-ask-voice.ts`.
+
+70. **Dictation never sends, and a workspace left without a message is deleted** — the owner's
+    rules on 2026-10-26. Every transcript lands in the composer, and only the send button sends:
+    - The overlay keeps cancel and one confirm (check). The insert-and-send arrow is gone.
+    - The keyboard confirm no longer sends.
+    - Quick ask has no countdown and no "tap to edit" row.
+
+    When the owner switches from a workspace to another one, the app asks
+    `workspace.discard_empty.request` if the workspace has nothing in it. That means no agent,
+    no terminal or browser tab, and no typed or sending draft. It never applies to the
+    project checkout, a pinned workspace, or one renamed by hand. Screens outside a workspace
+    do not count as leaving. The daemon re-checks the same rules plus archived agents and, for
+    a Paseo-owned worktree, uncommitted or unpushed changes. It then removes the record: a
+    worktree goes through the archive path first so its directory goes too. No archive entry
+    remains. In a workspace that stays, empty new-agent tabs close on leaving, unless the tab
+    is the last one. Gated by `server_info.features.discardEmptyWorkspace`. Key files:
+    `packages/app/src/workspace/discard-empty-on-leave.tsx`, `packages/server/src/server/session.ts`
+    (`handleWorkspaceDiscardEmptyRequest`), `packages/app/src/composer/input/state.ts`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

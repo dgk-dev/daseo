@@ -89,10 +89,6 @@ export const ru: TranslationResources = {
       fallback: "Сообщение...",
       terminal: "Prompt",
     },
-    quickAsk: {
-      countdown: "Отправка через {{seconds}} с · нажмите, чтобы изменить",
-      cancelAccessibilityLabel: "Отменить автоотправку",
-    },
     input: {
       accessibilityLabel: "Агент сообщений...",
       terminalAccessibilityLabel: "Terminal prompt",
@@ -364,7 +360,6 @@ export const ru: TranslationResources = {
       cancel: "Отменить диктовку",
       retry: "Повторить диктовку",
       insert: "Вставить транскрипцию",
-      insertAndSend: "Вставьте транскрипцию и отправьте",
       failed: "Диктовка не удалась:{{error}}",
       failedRetry: "Диктант не удался. Нажмите «Повторить».",
     },

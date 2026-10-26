@@ -1,6 +1,7 @@
 // Daseo delta 64: the voice half of quick ask. A quick-ask draft starts the composer's own
-// dictation (the daemon's pipeline), confirms it once the speaker stops, puts the transcript in
-// the composer, and sends after a short visible countdown that one tap cancels.
+// dictation (the daemon's pipeline), confirms it once the speaker stops, and leaves the
+// transcript in the composer with the keyboard up. It never sends: delta 70 made every
+// dictation end in the composer, and the owner sends with the send button.
 
 /** Dictation meter level that counts as speech: `((dBFS + 80) / 80)²`, so 0.25 ≈ −40 dBFS. */
 export const QUICK_ASK_SPEECH_LEVEL = 0.25;
@@ -8,8 +9,6 @@ export const QUICK_ASK_SPEECH_LEVEL = 0.25;
 export const QUICK_ASK_SILENCE_MS = 1500;
 /** Listening with no speech this long gives up and leaves the keyboard for typing. */
 export const QUICK_ASK_NO_SPEECH_MS = 8000;
-/** The visible, cancellable wait between the transcript and the send. */
-export const QUICK_ASK_SEND_COUNTDOWN_MS = 1500;
 /** How long to wait for the host to report dictation ready, and for recording to begin. */
 export const QUICK_ASK_DICTATION_START_MS = 4000;
 /**
@@ -28,8 +27,7 @@ export type QuickAskVoicePhase =
       lastSpeechAt: number | null;
     }
   | { kind: "transcribing" }
-  | { kind: "countdown"; sendAt: number }
-  | { kind: "done"; outcome: "sent" | "typing" };
+  | { kind: "done"; outcome: "typing" };
 
 export type QuickAskVoiceEvent =
   | { type: "tick"; now: number; dictationReady: boolean }
@@ -37,14 +35,9 @@ export type QuickAskVoiceEvent =
   | { type: "level"; level: number; now: number }
   /** Recording stopped; `processing` is true while the daemon is still transcribing. */
   | { type: "recordingStopped"; processing: boolean }
-  | { type: "transcript"; text: string; now: number }
-  | { type: "cancelCountdown" };
+  | { type: "transcript"; text: string; now: number };
 
-export type QuickAskVoiceEffect =
-  | "startDictation"
-  | "confirmDictation"
-  | "cancelDictation"
-  | "send";
+export type QuickAskVoiceEffect = "startDictation" | "confirmDictation" | "cancelDictation";
 
 export interface QuickAskVoiceStep {
   phase: QuickAskVoicePhase;
@@ -94,18 +87,14 @@ function stepListening(
     return stay(event.processing ? { kind: "transcribing" } : TYPING);
   }
   if (event.type === "transcript") {
-    return stepTranscript(event);
+    return stepTranscript();
   }
   return stay(phase);
 }
 
-function stepTranscript(
-  event: Extract<QuickAskVoiceEvent, { type: "transcript" }>,
-): QuickAskVoiceStep {
-  if (!event.text.trim()) {
-    return stay(TYPING);
-  }
-  return stay({ kind: "countdown", sendAt: event.now + QUICK_ASK_SEND_COUNTDOWN_MS });
+/** A transcript (or an empty one) ends the quick ask; the text stays in the composer. */
+function stepTranscript(): QuickAskVoiceStep {
+  return stay(TYPING);
 }
 
 export function stepQuickAskVoice(
@@ -138,33 +127,14 @@ export function stepQuickAskVoice(
       return stepListening(phase, event);
     case "transcribing":
       if (event.type === "transcript") {
-        return stepTranscript(event);
+        return stepTranscript();
       }
       if (event.type === "recordingStopped" && !event.processing) {
         // Processing ended without a transcript: nothing was recognized, or it failed.
         return stay(TYPING);
       }
       return stay(phase);
-    case "countdown":
-      if (event.type === "cancelCountdown") {
-        return stay(TYPING);
-      }
-      if (event.type === "tick" && event.now >= phase.sendAt) {
-        return { phase: { kind: "done", outcome: "sent" }, effects: ["send"] };
-      }
-      return stay(phase);
     case "done":
       return stay(phase);
   }
-}
-
-/** Time left before the send, for the countdown label; null outside the countdown. */
-export function quickAskCountdownRemainingMs(
-  phase: QuickAskVoicePhase,
-  now: number,
-): number | null {
-  if (phase.kind !== "countdown") {
-    return null;
-  }
-  return Math.max(0, phase.sendAt - now);
 }

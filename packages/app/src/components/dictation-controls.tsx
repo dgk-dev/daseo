@@ -2,7 +2,7 @@ import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { useMemo } from "react";
 import { View, Text, Pressable } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
-import { X, ArrowUp, RefreshCcw, Check, Mic, Pencil } from "lucide-react-native";
+import { X, RefreshCcw, Check, Mic } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import { VolumeMeter } from "./volume-meter";
 import { FOOTER_HEIGHT } from "@/constants/layout";
@@ -17,8 +17,8 @@ interface DictationControlsProps {
   status: DictationStatus;
   onStart: () => void;
   onCancel: () => void;
+  /** Stops recording and puts the transcript in the composer. Dictation never sends (delta 70). */
   onAccept: () => void;
-  onAcceptAndSend: () => void;
   onRetry?: () => void;
   onDiscard?: () => void;
   disabled?: boolean;
@@ -39,7 +39,6 @@ export function DictationControls({
   onStart,
   onCancel,
   onAccept,
-  onAcceptAndSend,
   onRetry,
   onDiscard,
   disabled = false,
@@ -112,22 +111,13 @@ export function DictationControls({
           </Pressable>
         ) : null}
         {!actionsDisabled && !isFailed ? (
-          <>
-            <Pressable
-              onPress={onAccept}
-              accessibilityLabel={t("message.dictation.insert")}
-              style={[styles.actionButton, styles.actionButtonSecondary]}
-            >
-              <Check size={theme.iconSize.sm} color={theme.colors.foreground} />
-            </Pressable>
-            <Pressable
-              onPress={onAcceptAndSend}
-              accessibilityLabel={t("message.dictation.insertAndSend")}
-              style={[styles.actionButton, styles.actionButtonConfirm]}
-            >
-              <ArrowUp size={theme.iconSize.sm} color={theme.colors.surface0} />
-            </Pressable>
-          </>
+          <Pressable
+            onPress={onAccept}
+            accessibilityLabel={t("message.dictation.insert")}
+            style={[styles.actionButton, styles.actionButtonConfirm]}
+          >
+            <Check size={theme.iconSize.sm} color={theme.colors.surface0} />
+          </Pressable>
         ) : null}
       </View>
     </View>
@@ -147,7 +137,6 @@ export function DictationOverlay({
   errorText,
   onCancel,
   onAccept,
-  onAcceptAndSend,
   onRetry,
   onDiscard,
 }: Omit<DictationControlsProps, "onStart" | "disabled" | "transcript"> & { errorText?: string }) {
@@ -236,28 +225,14 @@ export function DictationOverlay({
           </Pressable>
         ) : null}
         {!actionsDisabled && !isFailed ? (
-          <>
-            <Pressable
-              onPress={onAccept}
-              accessibilityRole="button"
-              accessibilityLabel={t("message.dictation.insert")}
-              style={[overlayStyles.actionButton, OVERLAY_ACCEPT_BUTTON_BG]}
-            >
-              <Pencil
-                size={theme.iconSize.lg}
-                color={theme.colors.accentForeground}
-                strokeWidth={2.5}
-              />
-            </Pressable>
-            <Pressable
-              onPress={onAcceptAndSend}
-              accessibilityRole="button"
-              accessibilityLabel={t("message.dictation.insertAndSend")}
-              style={overlayConfirmButtonStyle}
-            >
-              <ArrowUp size={theme.iconSize.lg} color={theme.colors.accent} strokeWidth={2.5} />
-            </Pressable>
-          </>
+          <Pressable
+            onPress={onAccept}
+            accessibilityRole="button"
+            accessibilityLabel={t("message.dictation.insert")}
+            style={overlayConfirmButtonStyle}
+          >
+            <Check size={theme.iconSize.lg} color={theme.colors.accent} strokeWidth={2.5} />
+          </Pressable>
         ) : null}
       </View>
     </View>
@@ -400,5 +375,3 @@ const overlayStyles = StyleSheet.create((theme) => ({
     justifyContent: "center",
   },
 }));
-
-const OVERLAY_ACCEPT_BUTTON_BG = { backgroundColor: "rgba(255, 255, 255, 0.25)" };

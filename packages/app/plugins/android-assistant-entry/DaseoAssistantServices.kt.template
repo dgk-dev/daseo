@@ -1,8 +1,11 @@
 package __PACKAGE__
 
+import android.app.Activity
+import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import android.speech.RecognitionService
 import android.speech.SpeechRecognizer
 import android.service.voice.VoiceInteractionService
@@ -24,8 +27,11 @@ class DaseoVoiceInteractionService : VoiceInteractionService() {
     )
   }
 
+  // Daseo delta 69: from the lock screen go through the session too, so the launch takes the
+  // system's assistant path (allowed to come to the front) instead of a plain service start.
   override fun onLaunchVoiceAssistFromKeyguard() {
-    startActivity(DaseoQuickAsk.launchIntent(this))
+    Log.i(DaseoQuickAsk.LOG_TAG, "side button on lock screen: showing the session")
+    showSession(Bundle(), 0)
   }
 }
 
@@ -33,11 +39,88 @@ class DaseoVoiceInteractionSessionService : VoiceInteractionSessionService() {
   override fun onNewSession(args: Bundle?): VoiceInteractionSession = DaseoQuickAskSession(this)
 }
 
+/**
+ * Daseo delta 69. `onShow` runs before the session window is visible, so a plain
+ * `startActivity` from here counts as a background launch. Android then often delivers the
+ * quick-ask link to Daseo's existing task without bringing it to the front: the microphone
+ * starts and nothing appears. `startAssistantActivity` is the system's own assistant launch,
+ * which may come to the front; it opens the invisible trampoline below, which then opens Daseo
+ * as a foreground activity would. The session draws no window of its own.
+ */
 class DaseoQuickAskSession(context: Context) : VoiceInteractionSession(context) {
+  override fun onPrepareShow(args: Bundle?, showFlags: Int) {
+    super.onPrepareShow(args, showFlags)
+    setUiEnabled(false)
+  }
+
   override fun onShow(args: Bundle?, showFlags: Int) {
     super.onShow(args, showFlags)
-    context.startActivity(DaseoQuickAsk.launchIntent(context))
+    val intent = DaseoQuickAskTrampolineActivity.intent(context)
+    try {
+      startAssistantActivity(intent)
+      Log.i(DaseoQuickAsk.LOG_TAG, "side button: started the trampoline as assistant activity")
+    } catch (error: RuntimeException) {
+      Log.w(DaseoQuickAsk.LOG_TAG, "side button: assistant launch failed, plain start", error)
+      context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
     hide()
+  }
+}
+
+/**
+ * Daseo delta 69: an invisible, lock-screen-capable hop between the assistant launch and Daseo.
+ * Started from the system's assistant path, it is a foreground activity, so its own start of
+ * Daseo brings Daseo's task to the front. On the lock screen it asks for the unlock first and
+ * opens Daseo only when that succeeds; a cancelled unlock opens nothing, so Daseo never runs
+ * a quick ask (and its microphone) behind the lock screen.
+ */
+class DaseoQuickAskTrampolineActivity : Activity() {
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+    val keyguard = getSystemService(KeyguardManager::class.java)
+    if (keyguard == null || !keyguard.isKeyguardLocked) {
+      openDaseo()
+      return
+    }
+    Log.i(DaseoQuickAsk.LOG_TAG, "trampoline: locked, asking for the unlock")
+    keyguard.requestDismissKeyguard(
+        this,
+        object : KeyguardManager.KeyguardDismissCallback() {
+          override fun onDismissSucceeded() {
+            openDaseo()
+          }
+
+          override fun onDismissCancelled() {
+            Log.i(DaseoQuickAsk.LOG_TAG, "trampoline: unlock cancelled, nothing opened")
+            finishQuietly()
+          }
+
+          override fun onDismissError() {
+            Log.w(DaseoQuickAsk.LOG_TAG, "trampoline: unlock request failed, nothing opened")
+            finishQuietly()
+          }
+        },
+    )
+  }
+
+  private fun openDaseo() {
+    Log.i(DaseoQuickAsk.LOG_TAG, "trampoline: opening Daseo")
+    startActivity(DaseoQuickAsk.launchIntent(this))
+    finishQuietly()
+  }
+
+  @Suppress("DEPRECATION")
+  private fun finishQuietly() {
+    finish()
+    overridePendingTransition(0, 0)
+  }
+
+  companion object {
+    fun intent(context: Context): Intent =
+        Intent().setClassName(
+            context.packageName,
+            "${context.packageName}.DaseoQuickAskTrampolineActivity",
+        )
   }
 }
 

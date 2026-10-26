@@ -89,10 +89,6 @@ export const zhCN: TranslationResources = {
       fallback: "输入消息...",
       terminal: "Prompt",
     },
-    quickAsk: {
-      countdown: "{{seconds}} 秒后发送 · 点按以编辑",
-      cancelAccessibilityLabel: "取消自动发送",
-    },
     input: {
       accessibilityLabel: "给 Agent 发消息...",
       terminalAccessibilityLabel: "Terminal prompt",
@@ -360,7 +356,6 @@ export const zhCN: TranslationResources = {
       cancel: "取消听写",
       retry: "重试听写",
       insert: "插入转写",
-      insertAndSend: "插入转写并发送",
       failed: "听写失败：{{error}}",
       failedRetry: "听写失败。点按重试。",
     },

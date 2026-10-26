@@ -2477,6 +2477,9 @@ export class Session {
         return this.handleWorkspaceRecoveryInspectRequest(msg);
       case "workspace.recovery.restore.request":
         return this.handleWorkspaceRecoveryRestoreRequest(msg);
+      // Daseo delta 70; kept out of the workspace dispatcher, which is at its complexity limit.
+      case "workspace.discard_empty.request":
+        return this.handleWorkspaceDiscardEmptyRequest(msg);
       default:
         return undefined;
     }
@@ -6546,6 +6549,133 @@ export class Session {
         },
       });
     }
+  }
+
+  /**
+   * Daseo delta 70: deletes a workspace the owner opened and left without a message. Nothing is
+   * archived; the workspace simply stops existing. Anything that counts as work keeps it: an
+   * agent (archived ones too), a terminal, uncommitted or unpushed changes in a Paseo-owned
+   * worktree, or being the project's checkout, pinned, or renamed by hand.
+   */
+  private async handleWorkspaceDiscardEmptyRequest(
+    request: Extract<SessionInboundMessage, { type: "workspace.discard_empty.request" }>,
+  ): Promise<void> {
+    const respond = (discarded: boolean, reason: string | null) =>
+      this.emit({
+        type: "workspace.discard_empty.response",
+        payload: {
+          requestId: request.requestId,
+          workspaceId: request.workspaceId,
+          discarded,
+          reason,
+        },
+      });
+    try {
+      const reason = await this.findReasonToKeepWorkspace(request.workspaceId);
+      if (reason) {
+        respond(false, reason);
+        return;
+      }
+      const workspace = await this.workspaceRegistry.get(request.workspaceId);
+      if (!workspace) {
+        respond(false, "not_found");
+        return;
+      }
+      if (workspace.kind === "worktree" && workspace.isPaseoOwnedWorktree) {
+        // The archive path owns worktree directory removal; the record is deleted right after.
+        await this.archiveEmptyWorktreeWorkspace(workspace.workspaceId, request.requestId);
+      }
+      await this.workspaceRegistry.remove(workspace.workspaceId);
+      this.sessionLogger.info(
+        { workspaceId: workspace.workspaceId, kind: workspace.kind, cwd: workspace.cwd },
+        "Empty workspace discarded",
+      );
+      respond(true, null);
+    } catch (error) {
+      this.sessionLogger.warn(
+        { err: error, workspaceId: request.workspaceId },
+        "Failed to discard empty workspace",
+      );
+      respond(false, getErrorMessage(error));
+    }
+  }
+
+  private async findReasonToKeepWorkspace(workspaceId: string): Promise<string | null> {
+    const workspace = await this.workspaceRegistry.get(workspaceId);
+    if (!workspace || workspace.archivedAt) {
+      return "not_found";
+    }
+    // The project's own checkout, a pinned workspace, or one the owner renamed is kept on purpose.
+    if (workspace.kind === "local_checkout") {
+      return "main_checkout";
+    }
+    if (workspace.pinnedAt) {
+      return "pinned";
+    }
+    if (workspace.titleSource === "manual") {
+      return "renamed";
+    }
+    const storedAgents = (await this.agentStorage.list()).filter(
+      (record) => record.workspaceId === workspaceId,
+    );
+    const liveAgents = this.agentManager
+      .listAgents()
+      .filter((agent) => agent.workspaceId === workspaceId);
+    if (storedAgents.length > 0 || liveAgents.length > 0) {
+      return "has_agents";
+    }
+    if (this.terminalManager) {
+      const terminalManager = this.terminalManager;
+      const terminalLists = await Promise.all(
+        terminalManager
+          .listDirectories()
+          .map((cwd) => terminalManager.getTerminals(cwd, { workspaceId }).catch(() => [])),
+      );
+      if (terminalLists.some((terminals) => terminals.some((t) => t.workspaceId === workspaceId))) {
+        return "has_terminals";
+      }
+    }
+    if (workspace.kind === "worktree" && workspace.isPaseoOwnedWorktree) {
+      const gitOptions = { cwd: workspace.cwd, timeout: 15_000, logger: this.sessionLogger };
+      const status = await runGitCommand(["status", "--porcelain"], gitOptions);
+      if (status.stdout.trim()) {
+        return "has_changes";
+      }
+      if (workspace.baseBranch) {
+        const ahead = await runGitCommand(
+          ["rev-list", "--count", `${workspace.baseBranch}..HEAD`],
+          gitOptions,
+        );
+        if (Number.parseInt(ahead.stdout.trim(), 10) > 0) {
+          return "has_changes";
+        }
+      }
+    }
+    return null;
+  }
+
+  private async archiveEmptyWorktreeWorkspace(workspaceId: string, requestId: string) {
+    await archiveByScope(
+      {
+        paseoHome: this.paseoHome,
+        paseoWorktreesBaseRoot: this.worktreesRoot,
+        github: this.github,
+        workspaceGitService: this.workspaceGitService,
+        agentManager: this.agentManager,
+        agentStorage: this.agentStorage,
+        findWorkspaceIdForCwd: (cwd) => this.findWorkspaceIdForCwd(cwd),
+        getWorkspace: (id) => this.workspaceRegistry.get(id),
+        listActiveWorkspaces: () => this.listActiveWorkspaceRefs(),
+        archiveWorkspaceRecord: (id) => this.archiveWorkspaceRecord(id),
+        emitWorkspaceUpdatesForWorkspaceIds: (ids) => this.emitWorkspaceUpdatesForWorkspaceIds(ids),
+        markWorkspaceArchiving: (ids, archivingAt) => this.markWorkspaceArchiving(ids, archivingAt),
+        clearWorkspaceArchiving: (ids) => this.clearWorkspaceArchiving(ids),
+        killTerminalsForWorkspace: (id) => this.terminalController.killTerminalsForWorkspace(id),
+        stopWorkspaceSetup: (id) => this.workspaceSetupRuntime.stop(id),
+        sessionLogger: this.sessionLogger,
+      },
+      { scope: { kind: "workspace", workspaceId }, requestId },
+    );
   }
 
   private async handleWorkspaceClearAttentionRequest(

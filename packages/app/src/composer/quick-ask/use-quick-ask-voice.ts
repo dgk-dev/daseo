@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
-import { Keyboard } from "react-native";
+import { AppState, Keyboard } from "react-native";
 import { isNative } from "@/constants/platform";
 import {
   initialQuickAskVoicePhase,
-  quickAskCountdownRemainingMs,
   stepQuickAskVoice,
   type QuickAskVoiceEffect,
   type QuickAskVoiceEvent,
@@ -27,13 +26,10 @@ export interface QuickAskVoiceInput {
   confirmDictation: () => Promise<void>;
   cancelDictation: () => Promise<void>;
   focusInput: () => void;
-  send: () => void;
   onFinished: () => void;
 }
 
 export interface QuickAskVoiceOutput {
-  countdownRemainingMs: number | null;
-  cancelCountdown: () => void;
   /** Called by the input when a dictation transcript lands in the composer. */
   onTranscript: (text: string) => void;
 }
@@ -55,13 +51,12 @@ function focusWithKeyboard(focusInput: () => void): () => void {
   return () => clearInterval(timer);
 }
 
-/** Daseo delta 64: drives one quick ask (dictate → countdown → send) on top of the composer. */
+/** Daseo delta 64: drives one quick ask (dictate into the composer) on top of the composer. */
 export function useQuickAskVoice(input: QuickAskVoiceInput): QuickAskVoiceOutput {
   const inputRef = useRef(input);
   inputRef.current = input;
   const phaseRef = useRef<QuickAskVoicePhase | null>(null);
   const stopKeyboardRetryRef = useRef<() => void>(() => {});
-  const [countdownRemainingMs, setCountdownRemainingMs] = useState<number | null>(null);
 
   const runEffects = useCallback((effects: QuickAskVoiceEffect[]) => {
     const current = inputRef.current;
@@ -69,7 +64,6 @@ export function useQuickAskVoice(input: QuickAskVoiceInput): QuickAskVoiceOutput
       if (effect === "startDictation") void current.startDictation();
       if (effect === "confirmDictation") void current.confirmDictation();
       if (effect === "cancelDictation") void current.cancelDictation();
-      if (effect === "send") current.send();
     }
   }, []);
 
@@ -82,7 +76,6 @@ export function useQuickAskVoice(input: QuickAskVoiceInput): QuickAskVoiceOutput
       const step = stepQuickAskVoice(phase, event);
       phaseRef.current = step.phase;
       runEffects(step.effects);
-      setCountdownRemainingMs(quickAskCountdownRemainingMs(step.phase, Date.now()));
       if (step.phase.kind === "done") {
         if (step.phase.outcome === "typing") {
           stopKeyboardRetryRef.current();
@@ -128,7 +121,6 @@ export function useQuickAskVoice(input: QuickAskVoiceInput): QuickAskVoiceOutput
       if (phase && phase.kind !== "done") {
         stopKeyboardRetryRef.current();
         phaseRef.current = { kind: "done", outcome: "typing" };
-        setCountdownRemainingMs(null);
         inputRef.current.onFinished();
       }
     };
@@ -156,10 +148,6 @@ export function useQuickAskVoice(input: QuickAskVoiceInput): QuickAskVoiceOutput
     }
   }, [dispatch, input.isRecording, input.volume]);
 
-  const cancelCountdown = useCallback(() => {
-    dispatch({ type: "cancelCountdown" });
-  }, [dispatch]);
-
   const onTranscript = useCallback(
     (text: string) => {
       dispatch({ type: "transcript", text, now: Date.now() });
@@ -167,7 +155,7 @@ export function useQuickAskVoice(input: QuickAskVoiceInput): QuickAskVoiceOutput
     [dispatch],
   );
 
-  return { countdownRemainingMs, cancelCountdown, onTranscript };
+  return { onTranscript };
 }
 
 export interface ComposerQuickAskInput {
@@ -185,18 +173,40 @@ export interface ComposerQuickAskInput {
   confirmDictation: () => Promise<void>;
   cancelDictation: () => Promise<void>;
   textInputRef: MutableRefObject<{ focus: () => void } | null>;
-  send: () => void;
-  /** The input calls these from its transcript and edit handlers. */
+  /** The input calls this from its transcript handler. */
   transcriptRef: MutableRefObject<((text: string) => void) | null>;
-  cancelRef: MutableRefObject<(() => void) | null>;
+}
+
+/**
+ * Daseo delta 70: true while Daseo is actually on screen. Android can hand the quick-ask link
+ * to Daseo while it stays behind the lock screen or another app; the microphone then waits
+ * until the owner sees Daseo, so it never records invisibly.
+ */
+function useAppIsActive(): boolean {
+  const [active, setActive] = useState(() => AppState.currentState === "active");
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      setActive(state === "active");
+    });
+    return () => subscription.remove();
+  }, []);
+  return active;
 }
 
 /** The composer's side of quick ask: readiness, controls, and the input's callback refs. */
 export function useComposerQuickAsk(input: ComposerQuickAskInput): QuickAskVoiceOutput {
   const request = input.request ?? null;
+  const appIsActive = useAppIsActive();
+  const waitingForScreen = request !== null && !appIsActive;
+  useEffect(() => {
+    if (waitingForScreen) {
+      console.info("[quick-ask] Daseo is not on screen yet; the microphone waits for it");
+    }
+  }, [waitingForScreen]);
   const voice = useQuickAskVoice({
     active:
       request !== null &&
+      appIsActive &&
       input.isPaneFocused &&
       !input.disabled &&
       !input.readOnly &&
@@ -209,10 +219,8 @@ export function useComposerQuickAsk(input: ComposerQuickAskInput): QuickAskVoice
     confirmDictation: input.confirmDictation,
     cancelDictation: input.cancelDictation,
     focusInput: () => input.textInputRef.current?.focus(),
-    send: input.send,
     onFinished: () => request?.onFinished(),
   });
   input.transcriptRef.current = request ? voice.onTranscript : null;
-  input.cancelRef.current = request ? voice.cancelCountdown : null;
   return voice;
 }

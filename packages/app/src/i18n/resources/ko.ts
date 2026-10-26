@@ -89,10 +89,6 @@ export const ko: TranslationResources = {
       fallback: "메시지...",
       terminal: "Prompt",
     },
-    quickAsk: {
-      countdown: "{{seconds}}초 후 보냄 · 눌러서 고치기",
-      cancelAccessibilityLabel: "자동 보내기 취소",
-    },
     input: {
       accessibilityLabel: "에이전트에게 메시지...",
       terminalAccessibilityLabel: "Terminal prompt",
@@ -362,7 +358,6 @@ export const ko: TranslationResources = {
       cancel: "받아쓰기 취소",
       retry: "받아쓰기 다시 시도",
       insert: "전사 삽입",
-      insertAndSend: "전사 삽입 후 보내기",
       failed: "받아쓰기 실패: {{error}}",
       failedRetry: "받아쓰기에 실패했습니다. 다시 시도하려면 누르세요.",
     },

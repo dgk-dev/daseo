@@ -1641,6 +1641,7 @@ export class VoiceAssistantWebSocketServer {
         sideQuestion: true,
         // Local fork (delta 61): the app reports its own errors into daemon.log.
         clientDiagnostics: true,
+        discardEmptyWorkspace: true,
         // Local fork (delta 46): send/create requests accept chunk-uploaded images.
         imageUploads: true,
         // COMPAT(checkoutForgeSetAutoMerge): added in v0.1.106, remove old

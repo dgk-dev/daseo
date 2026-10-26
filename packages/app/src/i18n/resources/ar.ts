@@ -89,10 +89,6 @@ export const ar: TranslationResources = {
       fallback: "رسالة...",
       terminal: "Prompt",
     },
-    quickAsk: {
-      countdown: "الإرسال خلال {{seconds}} ث · اضغط للتعديل",
-      cancelAccessibilityLabel: "إلغاء الإرسال التلقائي",
-    },
     input: {
       accessibilityLabel: "وكيل الرسائل...",
       terminalAccessibilityLabel: "Terminal prompt",
@@ -361,7 +357,6 @@ export const ar: TranslationResources = {
       cancel: "إلغاء الإملاء",
       retry: "أعد محاولة الإملاء",
       insert: "إدراج النسخ",
-      insertAndSend: "أدخل النسخ وأرسل",
       failed: "فشل الإملاء:{{error}}",
       failedRetry: "فشل الإملاء. اضغط على إعادة المحاولة.",
     },

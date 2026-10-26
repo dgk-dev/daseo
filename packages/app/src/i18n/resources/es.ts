@@ -89,10 +89,6 @@ export const es: TranslationResources = {
       fallback: "Mensaje...",
       terminal: "Prompt",
     },
-    quickAsk: {
-      countdown: "Enviando en {{seconds}} s · toca para editar",
-      cancelAccessibilityLabel: "Cancelar envío automático",
-    },
     input: {
       accessibilityLabel: "Agente de mensajes...",
       terminalAccessibilityLabel: "Terminal prompt",
@@ -365,7 +361,6 @@ export const es: TranslationResources = {
       cancel: "Cancelar dictado",
       retry: "Reintentar el dictado",
       insert: "Insertar transcripción",
-      insertAndSend: "Insertar transcripción y enviar",
       failed: "Fallo en el dictado:{{error}}",
       failedRetry: "El dictado falló. Toca reintentar.",
     },

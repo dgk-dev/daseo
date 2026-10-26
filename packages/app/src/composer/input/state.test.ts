@@ -22,7 +22,6 @@ function createDictationKeyboard({ startsRecording }: { startsRecording: boolean
       runMessageInputKeyboardAction("dictation-toggle", {
         focusInput: () => undefined,
         isDictationRecording: () => isRecording,
-        markTranscriptForSend: () => actions.push("send transcript"),
         startDictation: () => {
           actions.push("start");
           isRecording = startsRecording;
@@ -151,7 +150,7 @@ describe("dictation keyboard behavior", () => {
     keyboard.pressDictationShortcut();
     keyboard.pressDictationShortcut();
 
-    expect(keyboard.actions).toEqual(["start", "send transcript", "confirm", "start"]);
+    expect(keyboard.actions).toEqual(["start", "confirm", "start"]);
   });
 
   it("can retry when starting dictation does not enter the recording state", () => {
@@ -165,25 +164,15 @@ describe("dictation keyboard behavior", () => {
 });
 
 describe("dictation transcript behavior", () => {
-  it("publishes an auto-sent transcript to the composer before submitting it", () => {
+  it("puts the transcript after the typed text and never sends it", () => {
     const actions: string[] = [];
 
     applyDictationTranscript("spoken prompt", {
       value: "typed context",
-      defaultSendBehavior: "steer",
-      isAgentRunning: false,
-      onQueue: undefined,
       replaceText: (text) => actions.push(`replace:${text}`),
-      onSubmit: (payload) => actions.push(`submit:${payload.text}`),
-      attachments: [],
-      cwd: "/repo",
-      autoSend: true,
     });
 
-    expect(actions).toEqual([
-      "replace:typed context spoken prompt",
-      "submit:typed context spoken prompt",
-    ]);
+    expect(actions).toEqual(["replace:typed context spoken prompt"]);
   });
 });
 

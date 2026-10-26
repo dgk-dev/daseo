@@ -2468,6 +2468,15 @@ export const WorkspaceCreateRequestSchema = z.object({
   ]),
 });
 
+// Daseo delta 70: the app leaves a workspace that never got a message. The daemon deletes it
+// (no archive record) only when it still has no agent, no terminal, and, for a Paseo-owned
+// worktree, no change; otherwise it answers discarded: false and keeps it.
+export const WorkspaceDiscardEmptyRequestSchema = z.object({
+  type: z.literal("workspace.discard_empty.request"),
+  workspaceId: z.string(),
+  requestId: z.string(),
+});
+
 export const WorkspaceClearAttentionRequestSchema = z.object({
   type: z.literal("workspace.clear_attention.request"),
   workspaceId: z.union([z.string(), z.array(z.string())]),
@@ -3087,6 +3096,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ArchiveWorkspaceRequestSchema,
   WorkspaceCreateRequestSchema,
   WorkspaceClearAttentionRequestSchema,
+  WorkspaceDiscardEmptyRequestSchema,
   FileExplorerRequestSchema,
   FileSubscribeRequestSchema,
   FileUnsubscribeRequestSchema,
@@ -3315,6 +3325,8 @@ export const ServerInfoStatusPayloadSchema = z
         sideQuestion: z.boolean().optional(),
         // Local fork (delta 61): client.diagnostics.report.request lands app errors in daemon.log.
         clientDiagnostics: z.boolean().optional(),
+        // Local fork (delta 70): workspace.discard_empty.request deletes a workspace nobody used.
+        discardEmptyWorkspace: z.boolean().optional(),
         // Local fork (delta 46): send/create requests accept `imageUploads`.
         imageUploads: z.boolean().optional(),
         // COMPAT(directorySync): added in v0.3.x, remove gate after 2027-02-12.
@@ -4407,6 +4419,20 @@ export const WorkspaceCreateResponseSchema = z.object({
     error: z.string().nullable(),
     errorCode: z.string().optional(),
     requestId: z.string(),
+  }),
+});
+
+export const WorkspaceDiscardEmptyResponseSchema = z.object({
+  type: z.literal("workspace.discard_empty.response"),
+  payload: z.object({
+    requestId: z.string(),
+    workspaceId: z.string(),
+    discarded: z.boolean(),
+    /**
+     * Why it was kept: not_found, main_checkout, pinned, renamed, has_agents, has_terminals,
+     * has_changes, or an error text.
+     */
+    reason: z.string().nullable(),
   }),
 });
 
@@ -6297,6 +6323,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ClearAgentAttentionResponseMessageSchema,
   WorkspaceCreateResponseSchema,
   WorkspaceClearAttentionResponseSchema,
+  WorkspaceDiscardEmptyResponseSchema,
   SendAgentMessageResponseMessageSchema,
   AgentCommandReceiptGetResponseMessageSchema,
   AgentCommandReceiptResolveResponseMessageSchema,
@@ -6834,6 +6861,7 @@ export type ProjectGithubCloneRequest = z.infer<typeof ProjectGithubCloneRequest
 export type ProjectGithubCloneProtocol = z.infer<typeof ProjectGithubCloneProtocolSchema>;
 export type ArchiveWorkspaceRequest = z.infer<typeof ArchiveWorkspaceRequestSchema>;
 export type WorkspaceClearAttentionRequest = z.infer<typeof WorkspaceClearAttentionRequestSchema>;
+export type WorkspaceDiscardEmptyResponse = z.infer<typeof WorkspaceDiscardEmptyResponseSchema>;
 export type FileExplorerRequest = z.infer<typeof FileExplorerRequestSchema>;
 export type FileExplorerResponse = z.infer<typeof FileExplorerResponseSchema>;
 export type FileVersion = z.infer<typeof FileVersionSchema>;

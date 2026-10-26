@@ -3,11 +3,9 @@ import {
   QUICK_ASK_DICTATION_START_MS,
   QUICK_ASK_MAX_LISTEN_MS,
   QUICK_ASK_NO_SPEECH_MS,
-  QUICK_ASK_SEND_COUNTDOWN_MS,
   QUICK_ASK_SILENCE_MS,
   QUICK_ASK_SPEECH_LEVEL,
   initialQuickAskVoicePhase,
-  quickAskCountdownRemainingMs,
   stepQuickAskVoice,
   type QuickAskVoiceEffect,
   type QuickAskVoiceEvent,
@@ -40,7 +38,7 @@ const loud = (now: number): QuickAskVoiceEvent => ({
 });
 
 describe("quick-ask voice", () => {
-  it("dictates, confirms after silence, counts down and sends once", () => {
+  it("dictates, confirms after silence, and leaves the transcript in the composer unsent", () => {
     const listening = [tick(0), { type: "recordingStarted", now: 100 } as const];
     const spoken = [loud(400), loud(1200), { type: "level", level: 0.05, now: 1300 } as const];
     const beforeSilence = run([...listening, ...spoken, tick(1200 + QUICK_ASK_SILENCE_MS - 1)]);
@@ -51,28 +49,12 @@ describe("quick-ask voice", () => {
     expect(confirmed.phase).toEqual({ kind: "transcribing" });
     expect(confirmed.effects).toEqual(["startDictation", "confirmDictation"]);
 
-    const sent = run(
-      [
-        { type: "transcript", text: "오늘 일정 알려줘", now: 3000 },
-        tick(3000 + QUICK_ASK_SEND_COUNTDOWN_MS - 1),
-        tick(3000 + QUICK_ASK_SEND_COUNTDOWN_MS),
-        tick(3000 + QUICK_ASK_SEND_COUNTDOWN_MS + 500),
-      ],
+    const landed = run(
+      [{ type: "transcript", text: "오늘 일정 알려줘", now: 3000 }, tick(10_000)],
       confirmed.phase,
     );
-    expect(sent.phase).toEqual({ kind: "done", outcome: "sent" });
-    expect(sent.effects).toEqual(["send"]);
-  });
-
-  it("shows the time left during the countdown and a tap cancels without sending", () => {
-    const countdown = run([{ type: "transcript", text: "질문", now: 1000 }], {
-      kind: "transcribing",
-    }).phase;
-    expect(quickAskCountdownRemainingMs(countdown, 1600)).toBe(QUICK_ASK_SEND_COUNTDOWN_MS - 600);
-    const cancelled = run([{ type: "cancelCountdown" }, tick(10_000)], countdown);
-    expect(cancelled.phase).toEqual({ kind: "done", outcome: "typing" });
-    expect(cancelled.effects).toEqual([]);
-    expect(quickAskCountdownRemainingMs(cancelled.phase, 10_000)).toBeNull();
+    expect(landed.phase).toEqual({ kind: "done", outcome: "typing" });
+    expect(landed.effects).toEqual([]);
   });
 
   it("gives up listening after the no-speech window and keeps the draft for typing", () => {
@@ -130,7 +112,7 @@ describe("quick-ask voice", () => {
     expect(neverRecorded.phase).toEqual({ kind: "done", outcome: "typing" });
   });
 
-  it("does not send an empty transcript or a recording the owner cancelled", () => {
+  it("ends in typing for an empty transcript or a recording the owner cancelled", () => {
     expect(
       run([{ type: "transcript", text: "  ", now: 1 }], { kind: "transcribing" }).phase,
     ).toEqual({ kind: "done", outcome: "typing" });
@@ -147,7 +129,7 @@ describe("quick-ask voice", () => {
       kind: "done",
       outcome: "typing",
     });
-    // The overlay's own accept: still processing, the transcript then counts down as usual.
+    // The overlay's own accept: still processing, the transcript then lands in the composer.
     const accepted = run(
       [
         { type: "recordingStopped", processing: true },
@@ -155,6 +137,6 @@ describe("quick-ask voice", () => {
       ],
       listening,
     );
-    expect(accepted.phase).toEqual({ kind: "countdown", sendAt: 50 + QUICK_ASK_SEND_COUNTDOWN_MS });
+    expect(accepted.phase).toEqual({ kind: "done", outcome: "typing" });
   });
 });

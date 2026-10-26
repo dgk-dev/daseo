@@ -91,10 +91,6 @@ export const fr: TranslationResources = {
       fallback: "Message...",
       terminal: "Prompt",
     },
-    quickAsk: {
-      countdown: "Envoi dans {{seconds}} s · touchez pour modifier",
-      cancelAccessibilityLabel: "Annuler l’envoi automatique",
-    },
     input: {
       accessibilityLabel: "Agent de messagerie...",
       terminalAccessibilityLabel: "Terminal prompt",
@@ -366,7 +362,6 @@ export const fr: TranslationResources = {
       cancel: "Annuler la dictée",
       retry: "Réessayer la dictée",
       insert: "Insérer la transcription",
-      insertAndSend: "Insérer la transcription et envoyer",
       failed: "Échec de la dictée:{{error}}",
       failedRetry: "La dictée a échoué. Appuyez sur réessayer.",
     },

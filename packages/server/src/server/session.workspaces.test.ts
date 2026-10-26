@@ -9476,3 +9476,102 @@ test("workspace.create.request reports an archived explicit project", async () =
     errorCode: "archived_project",
   });
 });
+
+function emptyWorkspaceFixture(
+  overrides: Partial<Parameters<typeof createPersistedWorkspaceRecord>[0]> = {},
+) {
+  return createPersistedWorkspaceRecord({
+    workspaceId: "wks_empty",
+    projectId: REPO_CWD,
+    cwd: REPO_CWD,
+    kind: "directory",
+    displayName: "repo",
+    createdAt: "2026-10-26T08:00:00.000Z",
+    updatedAt: "2026-10-26T08:00:00.000Z",
+    ...overrides,
+  });
+}
+
+test("discard empty workspace deletes a workspace with no agent and no terminal", async () => {
+  const emitted: SessionOutboundMessage[] = [];
+  const workspace = emptyWorkspaceFixture();
+  const removed: string[] = [];
+  const session = createSessionForWorkspaceTests({ onMessage: (message) => emitted.push(message) });
+  session.workspaceRegistry.get = async (id: string) =>
+    id === workspace.workspaceId && !removed.includes(id) ? workspace : null;
+  session.workspaceRegistry.remove = async (id: string) => {
+    removed.push(id);
+  };
+  session.agentStorage.list = async () => [];
+
+  await session.handleMessage({
+    type: "workspace.discard_empty.request",
+    workspaceId: workspace.workspaceId,
+    requestId: "req-discard",
+  });
+
+  expect(removed).toEqual([workspace.workspaceId]);
+  expect(findByType(emitted, "workspace.discard_empty.response").payload).toEqual({
+    requestId: "req-discard",
+    workspaceId: workspace.workspaceId,
+    discarded: true,
+    reason: null,
+  });
+});
+
+test("discard empty workspace keeps a workspace that has an agent, a pin, or is the checkout", async () => {
+  const cases: Array<{
+    workspace: ReturnType<typeof emptyWorkspaceFixture>;
+    agents: StoredAgentRecord[];
+    reason: string;
+  }> = [
+    {
+      workspace: emptyWorkspaceFixture(),
+      agents: [
+        {
+          ...makeStoredAgent({
+            id: "agent-1",
+            cwd: REPO_CWD,
+            updatedAt: "2026-10-26T08:00:00.000Z",
+          }),
+          workspaceId: "wks_empty",
+        },
+      ],
+      reason: "has_agents",
+    },
+    {
+      workspace: emptyWorkspaceFixture({ pinnedAt: "2026-10-26T08:01:00.000Z" }),
+      agents: [],
+      reason: "pinned",
+    },
+    {
+      workspace: emptyWorkspaceFixture({ kind: "local_checkout" }),
+      agents: [],
+      reason: "main_checkout",
+    },
+  ];
+  for (const { workspace, agents, reason } of cases) {
+    const emitted: SessionOutboundMessage[] = [];
+    const removed: string[] = [];
+    const session = createSessionForWorkspaceTests({
+      onMessage: (message) => emitted.push(message),
+    });
+    session.workspaceRegistry.get = async () => workspace;
+    session.workspaceRegistry.remove = async (id: string) => {
+      removed.push(id);
+    };
+    session.agentStorage.list = async () => agents;
+
+    await session.handleMessage({
+      type: "workspace.discard_empty.request",
+      workspaceId: workspace.workspaceId,
+      requestId: "req-keep",
+    });
+
+    expect(removed).toEqual([]);
+    expect(findByType(emitted, "workspace.discard_empty.response").payload).toMatchObject({
+      discarded: false,
+      reason,
+    });
+  }
+});
