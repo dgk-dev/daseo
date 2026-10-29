@@ -1569,8 +1569,13 @@ describe("PiRpcAgentSession", () => {
   test("a process exit during interrupt cancels the turn and resumes the saved session next time", async () => {
     const { pi, session, events } = await createSession();
     const runtime = pi.latestSession();
+    runtime.holdNextPrompt();
     const { turnId } = await session.startTurn("stuck tool");
     runtime.abort = async () => {
+      await runtime.failHeldPrompt(new Error("Pi RPC process is closed"));
+      await flushTurnScheduling();
+      expect(events.eventTypes()).not.toContain("turn_failed");
+      expect(events.turnCanceledEvents()).toHaveLength(0);
       runtime.emit({ type: "process_exit", error: "Pi RPC process exited with signal SIGKILL" });
     };
 

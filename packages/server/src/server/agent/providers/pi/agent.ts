@@ -2020,6 +2020,11 @@ export class PiRpcAgentSession implements AgentSession {
         if (this.activeTurnId !== turnId) {
           return;
         }
+        if (this.interruptingTurnId === turnId) {
+          // Closing the RPC pipe rejects pending prompts before the process exits.
+          // The interrupt acknowledgement or process-exit event must settle this turn.
+          return;
+        }
         this.activeTurnId = null;
         this.deferredPromptWhileCompacting = null;
         this.clearTurnInputCorrelations();
