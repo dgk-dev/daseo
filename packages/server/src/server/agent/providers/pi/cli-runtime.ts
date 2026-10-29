@@ -34,13 +34,15 @@ const DEFAULT_COMMANDS_RPC_NAME = "get_commands";
  * Pi RPC timeout policy:
  * - Prompt acceptance and explicit compaction: no wall-clock timeout. Pi may run
  *   automatic LLM-backed compaction before acknowledging a prompt.
- * - Other control-plane calls (`get_state`, `abort`, …): default 30s.
+ * - Abort: 1s, then terminate the owned process tree and confirm exit.
+ * - Other control-plane calls (`get_state`, …): default 30s.
  *
  * Requests without a wall-clock timeout still complete on response, process
  * death, or session close (`JsonlRpcProcess.failAll` / `close`).
  */
 const PI_PROMPT_REQUEST_TIMEOUT_MS = JSONL_RPC_NO_TIMEOUT;
 const PI_COMPACT_REQUEST_TIMEOUT_MS = JSONL_RPC_NO_TIMEOUT;
+const PI_ABORT_REQUEST_TIMEOUT_MS = 1_000;
 
 export interface PiCliRuntimeOptions {
   logger: Logger;
@@ -88,21 +90,25 @@ export class PiCliRuntime implements PiRuntime {
       await process.close(input.signal.reason);
       input.signal.throwIfAborted();
     }
-    return new PiCliRuntimeSession(process, this.commandsRpcName);
+    return new PiCliRuntimeSession(process, this.commandsRpcName, this.options.logger);
   }
 }
 
 class PiCliRuntimeSession implements PiRuntimeSession {
   private readonly subscribers = new Set<(event: PiRuntimeEvent) => void>();
+  private exited = false;
+  private aborting: Promise<void> | null = null;
 
   constructor(
     private readonly process: JsonlRpcProcess,
     private readonly commandsRpcName: string,
+    private readonly logger: Logger,
   ) {
     process.onMessage((message) => {
       this.emit(message as PiRuntimeEvent);
     });
     process.onExit(({ error }) => {
+      this.exited = true;
       this.emit({ type: "process_exit", error: error.message });
     });
   }
@@ -174,7 +180,27 @@ class PiCliRuntimeSession implements PiRuntimeSession {
   }
 
   async abort(): Promise<void> {
-    await this.request({ type: "abort" });
+    this.aborting ??= this.abortOrTerminate().finally(() => {
+      this.aborting = null;
+    });
+    await this.aborting;
+  }
+
+  private async abortOrTerminate(): Promise<void> {
+    try {
+      await this.request({ type: "abort" }, PI_ABORT_REQUEST_TIMEOUT_MS);
+    } catch (error) {
+      this.logger.warn(
+        { err: error, pid: this.process.pid },
+        "Pi abort was not acknowledged; terminating its runtime",
+      );
+      await this.close();
+      if (!this.exited) {
+        throw new Error("Pi abort failed and process termination was not confirmed", {
+          cause: error,
+        });
+      }
+    }
   }
 
   async getState(): Promise<PiSessionState> {

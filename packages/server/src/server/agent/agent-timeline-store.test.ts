@@ -2,6 +2,25 @@ import { describe, expect, it } from "vitest";
 import { InMemoryAgentTimelineStore } from "./agent-timeline-store.js";
 
 describe("InMemoryAgentTimelineStore", () => {
+  it("bounds legacy tool results when restoring rows or items without mutating the source", () => {
+    const store = new InMemoryAgentTimelineStore();
+    const item = {
+      type: "tool_call" as const,
+      callId: "large",
+      name: "mcp",
+      status: "completed" as const,
+      error: null,
+      detail: { type: "unknown" as const, input: {}, output: "x".repeat(2 * 1024 * 1024) },
+    };
+    store.initialize("rows", { rows: [{ seq: 7, timestamp: "2026-01-01T00:00:00Z", item }] });
+    store.initialize("items", { items: [item] });
+    for (const id of ["rows", "items"]) {
+      expect(JSON.stringify(store.fetch(id)).length).toBeLessThan(66 * 1024);
+    }
+    expect(item.detail.output.length).toBe(2 * 1024 * 1024);
+    expect(store.fetch("rows").rows[0].seq).toBe(7);
+  });
+
   it("clamps an overshooting before cursor into the bounded tail window", () => {
     const store = new InMemoryAgentTimelineStore();
     store.initialize("agent-1", {

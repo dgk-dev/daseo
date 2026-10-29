@@ -120,6 +120,75 @@ function writePiResponse(
 }
 
 describe("PiCliRuntime", () => {
+  test("kills a real child that ignores abort and SIGTERM before reporting success", async () => {
+    const source = `
+      process.on('SIGTERM', () => {});
+      require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+        const command = JSON.parse(line);
+        if (command.type === 'get_state') process.stdout.write(JSON.stringify({
+          type: 'response', id: command.id, command: command.type, success: true, data: {}
+        }) + '\\n');
+      });
+      setInterval(() => {}, 1000);
+    `;
+    const runtime = new PiCliRuntime({
+      logger: pino({ level: "silent" }),
+      command: [process.execPath, "-e", source, "--"],
+    });
+    const session = await runtime.startSession({ cwd: process.cwd() });
+    try {
+      await session.getState();
+      const pid = session.processId;
+      expect(pid).toBeTypeOf("number");
+      await session.abort();
+      expect(() => process.kill(pid!, 0)).toThrow(/ESRCH/);
+    } finally {
+      await session.close();
+    }
+  }, 10_000);
+
+  test("terminates an unresponsive abort before acknowledging cancellation", async () => {
+    vi.useFakeTimers();
+    const child = createPiChild();
+    const session = await createRuntime(child).startSession({ cwd: "/workspace/project" });
+    const exits: string[] = [];
+    session.onEvent((event) => {
+      if (event.type === "process_exit") exits.push(event.type);
+    });
+    try {
+      const abort = session.abort().then(
+        () => "stopped",
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(child.killedSignals).toEqual(["SIGTERM"]);
+      await expect(abort).resolves.toBe("stopped");
+      expect(exits).toEqual(["process_exit"]);
+    } finally {
+      vi.useRealTimers();
+      await session.close();
+    }
+  });
+
+  test("never acknowledges an abort when even process termination is unconfirmed", async () => {
+    vi.useFakeTimers();
+    const child = createPiChild();
+    child.kill = (signal) => {
+      child.killedSignals.push(signal);
+      return true;
+    };
+    const session = await createRuntime(child).startSession({ cwd: "/workspace/project" });
+    try {
+      const rejection = expect(session.abort()).rejects.toThrow("termination was not confirmed");
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(child.killedSignals).toEqual(["SIGTERM", "SIGKILL"]);
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+      await session.close();
+    }
+  });
+
   test("starts pi in rpc mode and resolves command responses", async () => {
     const child = createPiChild();
     replyToCommands(child, (command) =>

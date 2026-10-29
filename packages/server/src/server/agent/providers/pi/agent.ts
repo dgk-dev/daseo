@@ -3113,6 +3113,10 @@ export class PiRpcAgentSession implements AgentSession {
     this.clearPendingSettlement();
     this.activeTurnStarted = false;
     this.clearNoTurnBuffers();
+    if (this.interruptingTurnId === turnId) {
+      this.emit({ type: "turn_canceled", provider: this.provider, turnId, reason: "interrupted" });
+      return;
+    }
     this.emit({
       type: "turn_failed",
       provider: this.provider,

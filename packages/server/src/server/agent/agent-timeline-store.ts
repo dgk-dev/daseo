@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { lastAssistantRun } from "@getpaseo/protocol/wait-noted";
+import { limitAgentTimelineItemContent } from "./agent-timeline-content.js";
 import type { AgentTimelineItem, AssistantTurnOutcome } from "./agent-sdk-types.js";
 import type {
   AgentTimelineFetchOptions,
@@ -146,7 +147,7 @@ export class InMemoryAgentTimelineStore {
   initialize(agentId: string, options?: SeedAgentTimelineOptions): void {
     const timestamp = options?.timestamp ?? new Date().toISOString();
     const rows = options?.rows?.length
-      ? options.rows.map(cloneRow)
+      ? options.rows.map((row) => ({ ...row, item: limitAgentTimelineItemContent(row.item) }))
       : this.buildRowsFromItems(options?.items ?? [], options?.nextSeq ?? 1, timestamp);
     const nextSeq = options?.nextSeq ?? (rows.length ? rows[rows.length - 1].seq + 1 : 1);
     this.states.set(agentId, {
@@ -394,7 +395,7 @@ export class InMemoryAgentTimelineStore {
       const row: AgentTimelineRow = {
         seq: nextSeq,
         timestamp,
-        item,
+        item: limitAgentTimelineItemContent(item),
       };
       nextSeq += 1;
       return row;

@@ -2,6 +2,12 @@ import type { AgentTimelineItem } from "./agent-sdk-types.js";
 
 const TOOL_CALL_CONTENT_MAX_LENGTH = 64 * 1024;
 
+function limitGenericPayload(value: unknown): unknown {
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  if (text === undefined || text.length <= TOOL_CALL_CONTENT_MAX_LENGTH) return value;
+  return `${text.slice(0, TOOL_CALL_CONTENT_MAX_LENGTH)}\n[Display truncated; full result remains in the provider session.]`;
+}
+
 function limitFailedShellError(item: AgentTimelineItem): AgentTimelineItem {
   if (
     item.type !== "tool_call" ||
@@ -45,6 +51,16 @@ function limitPlainText(item: AgentTimelineItem): AgentTimelineItem {
 export function limitAgentTimelineItemContent(item: AgentTimelineItem): AgentTimelineItem {
   item = limitFailedShellError(item);
   item = limitPlainText(item);
+  if (item.type === "tool_call" && item.detail.type === "unknown") {
+    return {
+      ...item,
+      detail: {
+        ...item.detail,
+        input: limitGenericPayload(item.detail.input),
+        output: limitGenericPayload(item.detail.output),
+      },
+    };
+  }
   if (
     item.type !== "tool_call" ||
     item.detail.type !== "shell" ||
