@@ -19,6 +19,8 @@ export type PaseoToolDetailSection =
 
 interface ToolDetailSpec {
   promptField?: string;
+  // Another input key the tool accepts for the same prompt; shown exactly like promptField.
+  promptAlias?: string;
   inputOrder?: readonly string[];
   outputFields?: readonly string[];
 }
@@ -122,6 +124,7 @@ const TOOL_SPECS: Readonly<Record<string, ToolDetailSpec>> = {
   rename_workspace: { inputOrder: ["title", "workspaceId"] },
   create_agent: {
     promptField: "initialPrompt",
+    promptAlias: "prompt",
     inputOrder: AGENT_FIELDS,
     outputFields: ["agentId", "status", "currentModeId", "cwd"],
   },
@@ -335,6 +338,13 @@ function parseJsonText(value: unknown): unknown {
   }
 }
 
+function withPromptAlias(input: unknown, spec: ToolDetailSpec): unknown {
+  if (!spec.promptField || !spec.promptAlias || !isRecord(input)) return input;
+  if (input[spec.promptField] !== undefined || input[spec.promptAlias] === undefined) return input;
+  const { [spec.promptAlias]: prompt, ...rest } = input;
+  return { ...rest, [spec.promptField]: prompt };
+}
+
 function unwrapMcpResult(output: unknown): unknown {
   if (!isRecord(output)) return output;
 
@@ -361,15 +371,16 @@ export function buildPaseoToolDetailSections(
   if (!leafName) return null;
 
   const spec = TOOL_SPECS[leafName] ?? {};
+  const detailInput = withPromptAlias(input, spec);
   const sections: PaseoToolDetailSection[] = [];
-  if (spec.promptField && isRecord(input)) {
-    const prompt = input[spec.promptField];
+  if (spec.promptField && isRecord(detailInput)) {
+    const prompt = detailInput[spec.promptField];
     if (typeof prompt === "string" && prompt.length > 0) {
       sections.push({ kind: "prose", title: "Prompt", text: prompt });
     }
   }
 
-  const inputFields = fieldsFromValue(input, spec.inputOrder, spec.promptField);
+  const inputFields = fieldsFromValue(detailInput, spec.inputOrder, spec.promptField);
   if (inputFields.length > 0) {
     sections.push({ kind: "fields", title: "Details", fields: inputFields });
   }

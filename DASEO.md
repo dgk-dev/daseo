@@ -1304,6 +1304,25 @@ acceptLanguages)`, so the header is now `en-US,en-KR;q=0.9,ko-KR;q=0.8`. `--lang
     `~/paseo-builds/preview/working-indicator.html`. Key files:
     `packages/app/src/components/message.tsx` (`RunningToolCaret`) and
     `packages/app/e2e/browser/tool-call-running-caret.spec.ts`.
+74. **An agent's `create_agent` call succeeds on the first try** — the owner's report on
+    2026-11-01 that research-worker launches "often" failed. A 30-day audit of Pi sessions
+    (2026-10-02..11-01, 716 create calls) found the failures were spelling mismatches, not
+    transport errors: 155 worker launches sent `prompt` (`send_agent_prompt` and
+    `create_schedule` name the field that way), 18 sent an agent-scoped `cwd`, which routed to
+    the legacy placement and failed with a raw schema dump, 5 sent a title over 60 characters,
+    3 sent a Pi model id without the `pi/` provider, and 1 sent `settings.model`. Clients such
+    as Pi's MCP adapter validate arguments against the advertised schema before sending, so
+    the advertised input accepts these spellings and the handler maps them onto the canonical
+    args before the strict parse: `prompt` becomes `initialPrompt` (both differing is an
+    error), a longer title is cut to 60, `settings.model` completes a bare provider, a value
+    whose prefix is not a registered provider gets the one provider that lists it as a model
+    id, and an agent-scoped `cwd` runs the subagent there inside the caller's workspace. The
+    result also carries its JSON as text, as the MCP spec asks of structured results, so a
+    caller that parses text keeps the new agent's id. The tool-call detail shows a `prompt`
+    exactly like `initialPrompt`. Key files: `normalizeCreateAgentInput` in
+    `packages/server/src/server/agent/tools/paseo-tools.ts`, the "spellings models carry over"
+    tests in `packages/server/src/server/agent/mcp-server.test.ts`, and `promptAlias` in
+    `packages/protocol/src/paseo-tool-call-detail.ts`.
 
 ## Local reliability contracts
 

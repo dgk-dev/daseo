@@ -151,6 +151,9 @@ export interface PaseoToolHostDependencies {
   logger: Logger;
 }
 
+// create_agent titles name the agent's tab, so they stay short; longer ones are cut, not rejected.
+const MAX_CREATE_AGENT_TITLE_CHARS = 60;
+
 function parseTimestamp(value: string | null | undefined): number {
   if (!value) {
     return 0;
@@ -996,7 +999,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       .string()
       .trim()
       .min(1, "Title is required")
-      .max(60, "Title must be 60 characters or fewer")
+      .max(MAX_CREATE_AGENT_TITLE_CHARS, "Title must be 60 characters or fewer")
       .describe("Short descriptive title (<= 60 chars) summarizing the agent's focus."),
     provider: ProviderModelInputSchema.describe(
       "Required provider/model pair, for example codex/gpt-5.4.",
@@ -1107,8 +1110,47 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       .optional()
       .describe("Legacy GitHub PR number. Prefer workspace.source.target.githubPrNumber."),
   };
+  // The advertised create_agent input also accepts the spellings models carry over from sibling
+  // tools, so a launch succeeds on the first call. Pi sessions 2026-10-02..11-01: 155 worker
+  // launches sent `prompt` (send_agent_prompt and create_schedule name the field that way), 5 sent a
+  // title over 60 characters, and 1 sent settings.model (update_agent and inspect_provider take it).
+  // Clients validate arguments against this schema before sending, so it must not reject them;
+  // normalizeCreateAgentInput maps them onto the canonical args before the strict parse.
+  const advertisedCreateAgentFields = {
+    title: z
+      .string()
+      .trim()
+      .min(1, "Title is required")
+      .describe(
+        "Short descriptive title (<= 60 chars) summarizing the agent's focus. Longer titles are cut to 60.",
+      ),
+    provider: ProviderOrProviderModelInputSchema.describe(
+      "Required provider/model pair, for example codex/gpt-5.4.",
+    ),
+    settings: CreateAgentSettingsInputSchema.extend({
+      model: z
+        .string()
+        .optional()
+        .describe("Model ID. Used only when provider has no /model part; prefer provider/model."),
+    })
+      .strict()
+      .optional()
+      .describe("Initial runtime settings for the new agent."),
+    initialPrompt: z
+      .string()
+      .trim()
+      .min(1, "initialPrompt is required")
+      .optional()
+      .describe(
+        "Required first task to run immediately after creation. `prompt` is accepted as the same field; pass one of them.",
+      ),
+    prompt: z.string().trim().min(1).optional().describe("Same as initialPrompt."),
+  };
   const createAgentInputSchema = z
-    .object(callerAgentId ? agentToAgentInputSchema : canonicalTopLevelInputSchema)
+    .object({
+      ...(callerAgentId ? agentToAgentInputSchema : canonicalTopLevelInputSchema),
+      ...advertisedCreateAgentFields,
+    })
     .passthrough();
   const agentToAgentCreateAgentArgsSchema = z.object(agentToAgentInputSchema).strict();
   const legacyAgentToAgentCreateAgentArgsSchema = z.object(legacyAgentToAgentInputSchema).strict();
@@ -1450,7 +1492,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       },
     },
     async (args: unknown) => {
-      const resolvedArgs = await resolveCreateAgentToolArgs(args);
+      const resolvedArgs = await resolveCreateAgentToolArgs(await normalizeCreateAgentInput(args));
       const { parsedArgs, worktree } = resolvedArgs;
       let requestedBackground: boolean;
       let notifyOnFinish: boolean;
@@ -1523,7 +1565,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           const validJson = ensureValidJson(responseData);
 
           const response = {
-            content: [],
+            content: createAgentResultText(validJson),
             structuredContent: validJson,
           };
           return response;
@@ -1539,24 +1581,28 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         callerAgentId && notifyOnFinish && initialPromptStarted
           ? "You will get notified when the created agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives."
           : undefined;
-      const response = {
-        content: [],
-        structuredContent: ensureValidJson({
-          agentId: currentSnapshot.id,
-          type: snapshot.provider,
-          status: currentSnapshot.lifecycle,
-          cwd: currentSnapshot.cwd,
-          ...(currentSnapshot.workspaceId ? { workspaceId: currentSnapshot.workspaceId } : {}),
-          currentModeId: currentSnapshot.currentModeId,
-          availableModes: currentSnapshot.availableModes,
-          lastMessage: null,
-          permission: null,
-          ...(guidance ? { guidance } : {}),
-        }),
-      };
-      return response;
+      const structuredContent = ensureValidJson({
+        agentId: currentSnapshot.id,
+        type: snapshot.provider,
+        status: currentSnapshot.lifecycle,
+        cwd: currentSnapshot.cwd,
+        ...(currentSnapshot.workspaceId ? { workspaceId: currentSnapshot.workspaceId } : {}),
+        currentModeId: currentSnapshot.currentModeId,
+        availableModes: currentSnapshot.availableModes,
+        lastMessage: null,
+        permission: null,
+        ...(guidance ? { guidance } : {}),
+      });
+      return { content: createAgentResultText(structuredContent), structuredContent };
     },
   );
+
+  // create_agent also returns its result as JSON text, as the MCP spec asks of tools with structured
+  // content. Callers that parse the text (two worker launches on 2026-10-15 and 10-22) otherwise
+  // lose the id of an agent that is already running and launch it again.
+  function createAgentResultText(structuredContent: unknown): PaseoToolResult["content"] {
+    return [{ type: "text", text: JSON.stringify(structuredContent) }];
+  }
 
   type ResolvedCreateAgentToolArgs =
     | {
@@ -1581,6 +1627,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       if (hasLegacyCreateAgentPlacement(args)) {
         // COMPAT(nestedCreateAgentPlacement): accept the old relationship/workspace shape without
         // advertising it to models. Added in v0.2.0; remove after 2027-01-17.
+        // normalizeCreateAgentInput routes an agent-scoped `cwd` through this shape; give that
+        // its own path before removing the shim.
         const parsed = legacyAgentToAgentCreateAgentArgsSchema.parse(args);
         const { cwd, workspaceId, worktree } = await resolveCreateAgentWorkspace(parsed.workspace, {
           prompt: parsed.initialPrompt,
@@ -1644,6 +1692,114 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       workspaceId,
       worktree: undefined,
     };
+  }
+
+  // Maps accepted alternative spellings onto the canonical create_agent args (see
+  // advertisedCreateAgentFields). An agent-scoped `cwd` becomes the runtime cwd inside the caller's
+  // workspace: the legacy placement it used to trigger requires relationship and workspace, so 18
+  // worker launches 2026-10-20..30 failed with a raw schema dump instead.
+  async function normalizeCreateAgentInput(args: unknown): Promise<unknown> {
+    if (!args || typeof args !== "object" || Array.isArray(args)) {
+      return args;
+    }
+    const input = applyCreateAgentPromptAlias(args as Record<string, unknown>);
+    if (typeof input.title === "string" && input.title.length > MAX_CREATE_AGENT_TITLE_CHARS) {
+      input.title = input.title.slice(0, MAX_CREATE_AGENT_TITLE_CHARS).trim();
+    }
+    applyCreateAgentSettingsModel(input);
+    if (typeof input.provider === "string") {
+      input.provider = await resolveCreateAgentProvider(input.provider);
+    }
+    return placeAgentScopedCreateAgentCwd(input);
+  }
+
+  function applyCreateAgentPromptAlias(args: Record<string, unknown>): Record<string, unknown> {
+    const { prompt, ...input } = args;
+    if (prompt !== undefined) {
+      if (input.initialPrompt !== undefined && input.initialPrompt !== prompt) {
+        throw new Error("Pass the first task once, as initialPrompt (prompt is the same field)");
+      }
+      input.initialPrompt = prompt;
+    }
+    return input;
+  }
+
+  function applyCreateAgentSettingsModel(input: Record<string, unknown>): void {
+    if (!input.settings || typeof input.settings !== "object" || !("model" in input.settings)) {
+      return;
+    }
+    const { model, ...settings } = input.settings as Record<string, unknown>;
+    if (typeof model === "string" && model.trim()) {
+      input.provider = mergeSettingsModelIntoProvider(input.provider, model.trim());
+    }
+    input.settings = settings;
+  }
+
+  function placeAgentScopedCreateAgentCwd(input: Record<string, unknown>): Record<string, unknown> {
+    if (
+      !callerAgentId ||
+      input.cwd === undefined ||
+      input.relationship !== undefined ||
+      input.workspace !== undefined
+    ) {
+      return input;
+    }
+    const { cwd, workspaceId, ...rest } = input;
+    return {
+      ...rest,
+      relationship: { kind: "subagent" },
+      workspace:
+        typeof workspaceId === "string" && workspaceId
+          ? { kind: "existing", workspaceId, cwd }
+          : { kind: "current", cwd },
+    };
+  }
+
+  function mergeSettingsModelIntoProvider(provider: unknown, model: string): unknown {
+    if (typeof provider !== "string" || !provider.trim()) {
+      return provider;
+    }
+    const providerValue = provider.trim();
+    if (!providerValue.includes("/")) {
+      return `${providerValue}/${model}`;
+    }
+    if (resolveRequiredProviderModel(providerValue).model !== model) {
+      throw new Error(
+        `settings.model ${model} conflicts with provider ${providerValue}; pass only provider as provider/model`,
+      );
+    }
+    return providerValue;
+  }
+
+  // Some model ids contain "/" themselves (Pi lists pi-codex/gpt-6-luna), so a bare model id reads
+  // as provider "pi-codex". When the part before the first "/" is not a registered provider and
+  // exactly one provider lists the whole value as a model id, that provider is meant.
+  async function resolveCreateAgentProvider(value: string): Promise<string> {
+    const providerValue = value.trim();
+    const slashIndex = providerValue.indexOf("/");
+    const registered = providerSnapshotManager.listRegisteredProviderIds();
+    if (slashIndex <= 0 || registered.includes(providerValue.slice(0, slashIndex))) {
+      return providerValue;
+    }
+    const entries = await providerSnapshotManager.listProviders({ wait: true });
+    const owners = entries
+      .filter((entry) =>
+        entry.models?.some(
+          (model) => model.id === providerValue || model.aliases?.includes(providerValue),
+        ),
+      )
+      .map((entry) => entry.provider);
+    if (owners.length === 1) {
+      return `${owners[0]}/${providerValue}`;
+    }
+    if (owners.length > 1) {
+      throw new Error(
+        `Model ${providerValue} is listed by ${owners.join(", ")}; pass provider as <provider>/${providerValue}`,
+      );
+    }
+    throw new Error(
+      `Provider ${providerValue.slice(0, slashIndex)} is not configured. Pass provider as <provider>/<model> with one of: ${registered.join(", ")}`,
+    );
   }
 
   function hasLegacyCreateAgentPlacement(args: unknown): boolean {

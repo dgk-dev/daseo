@@ -3,6 +3,23 @@ import { describe, expect, it } from "vitest";
 import { buildPaseoToolDetailSections } from "./paseo-tool-call-detail.js";
 
 describe("Paseo tool-call detail presentation", () => {
+  it("shows a create_agent prompt sent as prompt like initialPrompt", () => {
+    const input = { provider: "codex/gpt-5.4", title: "Greeter" };
+    expect(
+      buildPaseoToolDetailSections(
+        "paseo.create_agent",
+        { ...input, prompt: "Say hello back." },
+        { agentId: "agt_123", status: "idle" },
+      ),
+    ).toEqual(
+      buildPaseoToolDetailSections(
+        "paseo.create_agent",
+        { ...input, initialPrompt: "Say hello back." },
+        { agentId: "agt_123", status: "idle" },
+      ),
+    );
+  });
+
   it.each(["mcp__paseo__create_agent", "paseo.create_agent", "paseo_remote.create_agent"])(
     "shares one create-agent mapping for %s",
     (toolName) => {

@@ -1139,8 +1139,17 @@ describe("create_agent MCP tool", () => {
   });
   const ensureWorkspaceForCreate = async () => "workspace-created";
 
-  it("requires a concise title no longer than 60 characters", async () => {
-    const { agentManager, agentStorage } = createTestDeps();
+  it("requires a title and cuts one longer than 60 characters to 60", async () => {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    spies.agentManager.createAgent.mockResolvedValue({
+      id: "long-title-agent",
+      provider: "codex",
+      cwd: existingCwd,
+      lifecycle: "idle",
+      currentModeId: null,
+      availableModes: [],
+      config: { title: "x".repeat(60) },
+    } as ManagedAgent);
     const server = await createAgentMcpServer({
       agentManager,
       agentStorage,
@@ -1160,27 +1169,21 @@ describe("create_agent MCP tool", () => {
     expect(missingTitle.success).toBe(false);
     expect(missingTitle.error.issues[0].path).toEqual(["title"]);
 
-    const tooLong = await tool.inputSchema.safeParseAsync({
-      ...detachedDirectoryWorkspace(existingCwd),
-      settings: { modeId: "default" },
+    await invokeToolWithParsedInput(tool, {
+      title: `research worker: ${"x".repeat(50)}`,
       provider: "codex/gpt-5.4",
-      title: "x".repeat(61),
       initialPrompt: "test",
+      background: true,
     });
-    expect(tooLong.success).toBe(false);
-    expect(tooLong.error.issues[0].path).toEqual(["title"]);
 
-    const ok = await tool.inputSchema.safeParseAsync({
-      ...detachedDirectoryWorkspace(existingCwd),
-      settings: { modeId: "default" },
-      provider: "codex/gpt-5.4",
-      title: "Short title",
-      initialPrompt: "test",
-    });
-    expect(ok.success).toBe(true);
+    expect(spies.agentManager.createAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ title: `research worker: ${"x".repeat(43)}` }),
+      undefined,
+      { workspaceId: "workspace-created" },
+    );
   });
 
-  it("requires initialPrompt", async () => {
+  it("requires initialPrompt or its prompt spelling", async () => {
     const { agentManager, agentStorage } = createTestDeps();
     const server = await createAgentMcpServer({
       agentManager,
@@ -1190,18 +1193,21 @@ describe("create_agent MCP tool", () => {
       logger,
     });
     const tool = registeredTool(server, "create_agent");
-    const parsed = await tool.inputSchema.safeParseAsync({
-      ...detachedDirectoryWorkspace(existingCwd),
-      settings: { modeId: "default" },
-      provider: "codex/gpt-5.4",
-      title: "Short title",
-    });
-    expect(parsed.success).toBe(false);
-    expect(
-      parsed.error.issues.some(
-        (issue: { path: Array<string | number> }) => issue.path[0] === "initialPrompt",
-      ),
-    ).toBe(true);
+
+    await expect(
+      invokeToolWithParsedInput(tool, {
+        provider: "codex/gpt-5.4",
+        title: "Short title",
+      }),
+    ).rejects.toThrow(/initialPrompt/);
+    await expect(
+      invokeToolWithParsedInput(tool, {
+        provider: "codex/gpt-5.4",
+        title: "Short title",
+        initialPrompt: "one task",
+        prompt: "another task",
+      }),
+    ).rejects.toThrow("Pass the first task once, as initialPrompt (prompt is the same field)");
   });
 
   it("creates a fresh local workspace for canonical top-level creation", async () => {
@@ -1484,14 +1490,17 @@ describe("create_agent MCP tool", () => {
       ),
     ).toBe(true);
 
-    const providerWithoutModel = await tool.inputSchema.safeParseAsync({
-      ...detachedDirectoryWorkspace(existingCwd),
-      settings: { modeId: "default" },
-      title: "Short title",
-      provider: "codex",
-      initialPrompt: "test",
-    });
-    expect(providerWithoutModel.success).toBe(false);
+    // A bare provider passes the advertised schema so settings.model can complete it; without
+    // one the strict parse still requires provider/model.
+    await expect(
+      invokeToolWithParsedInput(tool, {
+        ...detachedDirectoryWorkspace(existingCwd),
+        settings: { modeId: "default" },
+        title: "Short title",
+        provider: "codex",
+        initialPrompt: "test",
+      }),
+    ).rejects.toThrow(/provider must be provider\/model/);
 
     const providerWithEmptyModel = await tool.inputSchema.safeParseAsync({
       ...detachedDirectoryWorkspace(existingCwd),
@@ -3124,6 +3133,196 @@ describe("create_agent MCP tool", () => {
     expect(response.structuredContent.guidance).toBe(
       "You will get notified when the created agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives.",
     );
+  });
+
+  describe("spellings models carry over from sibling tools", () => {
+    const parentAgent = {
+      id: "parent-agent",
+      cwd: existingCwd,
+      workspaceId: "wks_parent",
+      provider: "codex",
+      currentModeId: "full-access",
+    } as ManagedAgent;
+    const childAgent = {
+      id: "child-agent",
+      provider: "codex",
+      cwd: existingCwd,
+      workspaceId: "wks_parent",
+      lifecycle: "idle",
+      currentModeId: null,
+      availableModes: [],
+      config: { title: "Child" },
+    } as ManagedAgent;
+
+    function agentById(agentId: string): ManagedAgent | null {
+      if (agentId === "parent-agent") return parentAgent;
+      if (agentId === "child-agent") return childAgent;
+      return null;
+    }
+
+    async function createCallerServer(providerSnapshotManager = createOpenCodeManager().manager) {
+      const deps = createTestDeps();
+      deps.spies.agentManager.getAgent.mockImplementation(agentById);
+      deps.spies.agentManager.createAgent.mockResolvedValue(childAgent);
+      const server = await createAgentMcpServer({
+        agentManager: deps.agentManager,
+        agentStorage: deps.agentStorage,
+        providerSnapshotManager,
+        callerAgentId: "parent-agent",
+        logger,
+      });
+      return { ...deps, tool: registeredTool(server, "create_agent") };
+    }
+
+    it("advertises prompt beside initialPrompt and no title length cap", async () => {
+      const { tool } = await createCallerServer();
+      const jsonSchema = z.toJSONSchema(tool.inputSchema, { io: "input" }) as {
+        required?: string[];
+        properties: Record<string, { maxLength?: number; properties?: Record<string, unknown> }>;
+      };
+
+      expect(jsonSchema.required).toEqual(expect.arrayContaining(["title", "provider"]));
+      expect(jsonSchema.required).not.toContain("initialPrompt");
+      expect(jsonSchema.properties.prompt).toBeDefined();
+      expect(jsonSchema.properties.title.maxLength).toBeUndefined();
+      expect(jsonSchema.properties.settings.properties?.model).toBeDefined();
+    });
+
+    it("accepts prompt as initialPrompt", async () => {
+      const { agentManager, agentStorage, spies } = createTestDeps();
+      spies.agentManager.createAgent.mockResolvedValue({ ...childAgent, id: "top-level-agent" });
+      const ensureWorkspace = vi.fn(ensureWorkspaceForCreate);
+      const server = await createAgentMcpServer({
+        agentManager,
+        agentStorage,
+        providerSnapshotManager: createOpenCodeManager().manager,
+        ensureWorkspaceForCreate: ensureWorkspace,
+        logger,
+      });
+
+      await invokeToolWithParsedInput(registeredTool(server, "create_agent"), {
+        title: "Top-level agent",
+        provider: "codex/gpt-5.4",
+        prompt: "Do work",
+        background: true,
+      });
+
+      expect(ensureWorkspace).toHaveBeenCalledWith(existingCwd, { prompt: "Do work" });
+    });
+
+    it("creates a subagent from a prompt-spelled worker launch", async () => {
+      const { tool, spies } = await createCallerServer();
+
+      const response = await invokeToolWithParsedInput(tool, {
+        title: "research worker: angle",
+        provider: "codex/gpt-5.4",
+        settings: { thinkingOptionId: "high" },
+        prompt: "#nomem\nResearch one angle.",
+        notifyOnFinish: true,
+      });
+
+      expect(response.structuredContent.agentId).toBe("child-agent");
+      expect(spies.agentManager.createAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: "codex", model: "gpt-5.4", thinkingOptionId: "high" }),
+        undefined,
+        expect.objectContaining({ workspaceId: "wks_parent" }),
+      );
+    });
+
+    it("runs a subagent with a cwd in the caller's workspace", async () => {
+      const baseDir = await mkdtemp(join(tmpdir(), "paseo-mcp-test-"));
+      const appDir = join(baseDir, "apps", "office");
+      await mkdir(appDir, { recursive: true });
+      const { tool, spies } = await createCallerServer();
+      parentAgent.cwd = baseDir;
+      try {
+        await invokeToolWithParsedInput(tool, {
+          title: "research worker: office angle",
+          provider: "codex/gpt-5.4",
+          initialPrompt: "Do work",
+          notifyOnFinish: true,
+          cwd: appDir,
+        });
+
+        expect(spies.agentManager.createAgent).toHaveBeenCalledWith(
+          expect.objectContaining({ cwd: appDir }),
+          undefined,
+          expect.objectContaining({ workspaceId: "wks_parent" }),
+        );
+      } finally {
+        parentAgent.cwd = existingCwd;
+        await rm(baseDir, { recursive: true, force: true });
+      }
+    });
+
+    it("prefixes the provider that lists a bare model id containing a slash", async () => {
+      const { manager, stub } = createOpenCodeManager();
+      stub.listProviders.mockResolvedValue([
+        {
+          ...buildSnapshotEntry({ provider: "opencode", label: "OpenCode" }),
+          models: [{ provider: "opencode", id: "openrouter/some-model", label: "Some" }],
+        },
+      ]);
+      const { tool, spies } = await createCallerServer(manager);
+
+      await invokeToolWithParsedInput(tool, {
+        title: "research worker: angle",
+        provider: "openrouter/some-model",
+        initialPrompt: "Do work",
+      });
+
+      expect(spies.agentManager.createAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: "opencode", model: "openrouter/some-model" }),
+        undefined,
+        expect.objectContaining({ workspaceId: "wks_parent" }),
+      );
+      await expect(
+        invokeToolWithParsedInput(tool, {
+          title: "research worker: angle",
+          provider: "nowhere/some-model",
+          initialPrompt: "Do work",
+        }),
+      ).rejects.toThrow(
+        "Provider nowhere is not configured. Pass provider as <provider>/<model> with one of: claude, codex, opencode",
+      );
+    });
+
+    it("folds settings.model into a provider without a model", async () => {
+      const { tool, spies } = await createCallerServer();
+
+      await invokeToolWithParsedInput(tool, {
+        title: "Implementer",
+        provider: "codex",
+        settings: { model: "gpt-5.4", thinkingOptionId: "high" },
+        initialPrompt: "Implement the plan",
+      });
+
+      expect(spies.agentManager.createAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: "codex", model: "gpt-5.4", thinkingOptionId: "high" }),
+        undefined,
+        expect.objectContaining({ workspaceId: "wks_parent" }),
+      );
+      await expect(
+        invokeToolWithParsedInput(tool, {
+          title: "Implementer",
+          provider: "codex/gpt-5.4",
+          settings: { model: "gpt-5.5" },
+          initialPrompt: "Implement the plan",
+        }),
+      ).rejects.toThrow("settings.model gpt-5.5 conflicts with provider codex/gpt-5.4");
+    });
+
+    it("returns the result as JSON text as well as structured content", async () => {
+      const { tool } = await createCallerServer();
+
+      const response = await invokeToolWithParsedInput(tool, {
+        title: "Child",
+        provider: "codex/gpt-5.4",
+        initialPrompt: "Do work",
+      });
+
+      expect(JSON.parse(expectSingleTextContent(response))).toEqual(response.structuredContent);
+    });
   });
 
   it("creates detached caller agents without a parent label", async () => {
