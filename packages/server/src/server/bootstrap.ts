@@ -127,6 +127,8 @@ import { createPaseoWorktree as createRegisteredPaseoWorktree } from "./paseo-wo
 import { createWorkspaceProvisioningService } from "./session/workspace-provisioning/workspace-provisioning-service.js";
 import { createPaseoWorktreeWorkflow } from "./worktree-session.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
+import { PreviewLinkService, type PreviewLinkSettings } from "./file-preview/service.js";
+import { createPreviewLinkRouteHandler, PREVIEW_LINK_ROUTE } from "./file-preview/route.js";
 import type { OpenAiSpeechProviderConfig } from "./speech/providers/openai/config.js";
 import type { AzureSpeechProviderConfig } from "./speech/providers/azure/config.js";
 import type { LocalSpeechProviderConfig } from "./speech/providers/local/config.js";
@@ -441,6 +443,8 @@ export interface PaseoDaemonConfig {
     publicBaseUrl: string | null;
     standaloneListen: string | null;
   };
+  /** Daseo delta 75: tailnet preview links; null or absent turns the feature off. */
+  previewLinks?: PreviewLinkSettings | null;
   webUi?: {
     enabled: boolean;
     distDir: string | null;
@@ -595,6 +599,11 @@ export async function createPaseoDaemon(
   const elapsed = () => `${(performance.now() - bootstrapStart).toFixed(0)}ms`;
   const daemonVersion = config.daemonVersion ?? resolveDaemonVersion(import.meta.url);
   const initialMutableConfig = createInitialMutableDaemonConfig(config);
+  const previewLinkService = new PreviewLinkService({
+    paseoHome: config.paseoHome,
+    settings: config.previewLinks ?? null,
+    logger,
+  });
   const daemonConfigStore = new DaemonConfigStore(config.paseoHome, initialMutableConfig, logger, {
     relayEnabledMutable: config.relayEnabledMutable ?? true,
     startupPersisted: config.configReload?.startupPersisted,
@@ -605,6 +614,9 @@ export async function createPaseoDaemon(
           cli: config.configReload?.cli,
           relayEnabledFallback: config.configReload?.relayEnabledFallback,
         });
+        // Delta 75: preview links are not part of the mutable config the app edits, but
+        // `paseo daemon reload` turns them on or off without a restart.
+        previewLinkService.configure(reloaded.previewLinks ?? null);
         return {
           mutable: createInitialMutableDaemonConfig(reloaded),
           overrideControlledPaths: reloaded.configReload?.overrideControlledPaths ?? [],
@@ -707,6 +719,22 @@ export async function createPaseoDaemon(
   // Registered service hosts proxy directly; known service namespaces without a
   // route return 404 and never reach daemon APIs.
   app.use(serviceProxy.middleware());
+
+  // Daseo delta 75: tailnet preview links. Mounted ahead of the Host allowlist and the daemon
+  // password: Tailscale Serve forwards the tailnet hostname as Host, and the browser opening the
+  // link has no password. The route checks Host itself (the allowlist or the preview host) and
+  // the token is the credential, as with /api/terminal-activity.
+  app.get(
+    PREVIEW_LINK_ROUTE,
+    createPreviewLinkRouteHandler({
+      service: previewLinkService,
+      isHostAllowed: (host) =>
+        listenTarget.type !== "tcp" ||
+        isHostnameAllowed(host, configuredHostnames) ||
+        (host !== undefined && host === previewLinkService.publicHost()),
+      logger,
+    }),
+  );
 
   // Host allowlist / DNS rebinding protection (vite-like semantics).
   // For non-TCP (unix sockets), skip host validation.
@@ -1403,6 +1431,7 @@ export async function createPaseoDaemon(
     browserToolsEnabled: browserToolsPolicy.isEnabled(),
     browserToolsBroker,
     clientDebugBroker,
+    previewLinks: previewLinkService,
     paseoHome: config.paseoHome,
     worktreesRoot: config.worktreesRoot,
     callerAgentId: runtime.callerAgentId,
@@ -1729,6 +1758,7 @@ export async function createPaseoDaemon(
               workspaceSetupRuntime,
               pluginRuntime,
               clientDebugBroker,
+              previewLinkService,
             );
             relayRuntime = createRelayRuntime({
               config: {

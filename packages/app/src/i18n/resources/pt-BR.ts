@@ -1738,6 +1738,15 @@ export const ptBR: TranslationResources = {
       notFound: "Arquivo não encontrado: {{path}}",
       failedToLoad: "Falha ao carregar arquivo",
       failedToLoadPreview: "Falha ao carregar prévia do arquivo",
+      actions: {
+        menu: "Ações do arquivo",
+        openElsewhere: "Abrir em outro app",
+        share: "Compartilhar",
+        copyLink: "Copiar link",
+        linkCopiedLabel: "Link de prévia",
+        openFailed: "Não foi possível abrir o arquivo",
+        linkFailed: "Não foi possível criar o link: {{message}}",
+      },
       editor: {
         fileSize: "Tamanho {{size}}",
         lines: "{{count}} linhas",

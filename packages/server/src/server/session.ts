@@ -188,6 +188,7 @@ import type { HubRelationshipManagement } from "./hub/relationship-controller.js
 import { HubExecutionController } from "./hub/execution-controller.js";
 import type { HubExecutionAgents } from "./hub/daemon-executions.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
+import type { PreviewLinkService } from "./file-preview/service.js";
 import type { PushNotifications } from "./push/index.js";
 import {
   archivePersistedWorkspaceRecord,
@@ -461,6 +462,8 @@ export interface SessionOptions {
   onDeviceRevoked?: (deviceId: string) => void;
   logger: pino.Logger;
   downloadTokenStore: DownloadTokenStore;
+  /** Daseo delta 75: tailnet preview links (`fs.preview_link.create.request`). */
+  previewLinks?: PreviewLinkService | null;
   pushNotifications: PushNotifications;
   paseoHome: string;
   worktreesRoot?: string;
@@ -816,6 +819,7 @@ export class Session {
       onDeviceRevoked,
       logger,
       downloadTokenStore,
+      previewLinks,
       pushNotifications,
       paseoHome,
       worktreesRoot,
@@ -889,6 +893,7 @@ export class Session {
         hasBinaryChannel: () => this.onBinaryMessage !== null,
       },
       downloadTokenStore,
+      previewLinks,
       paseoHome,
       logger: this.sessionLogger,
     });
@@ -2463,6 +2468,8 @@ export class Session {
         return this.handleProjectIconGetRequest(msg.projectId, msg.requestId);
       case "file_download_token_request":
         return this.workspaceFilesSession.handleFileDownloadTokenRequest(msg);
+      case "fs.preview_link.create.request":
+        return this.workspaceFilesSession.handlePreviewLinkCreateRequest(msg);
       case "file.upload.request":
         this.workspaceFilesSession.handleFileUploadRequest(msg);
         return undefined;

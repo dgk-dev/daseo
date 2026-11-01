@@ -16,11 +16,13 @@ import type {
   FileSubscribeRequest,
   FileUnsubscribeRequest,
   FileWriteRequest,
+  PreviewLinkCreateRequest,
   SessionInboundMessage,
   SessionOutboundMessage,
 } from "../../messages.js";
 import { FileUploadStore } from "../../file-upload/index.js";
 import type { DownloadTokenStore } from "../../file-download/token-store.js";
+import type { PreviewLinkService } from "../../file-preview/service.js";
 import {
   createExplorerEntry,
   deleteExplorerEntry,
@@ -50,6 +52,7 @@ export interface WorkspaceFilesSessionHost {
 export interface WorkspaceFilesSessionOptions {
   host: WorkspaceFilesSessionHost;
   downloadTokenStore: DownloadTokenStore;
+  previewLinks?: PreviewLinkService | null;
   paseoHome: string;
   logger: pino.Logger;
   fileObserver?: FileObserver;
@@ -65,6 +68,7 @@ export interface WorkspaceFilesSessionOptions {
 export class WorkspaceFilesSession {
   private readonly host: WorkspaceFilesSessionHost;
   private readonly downloadTokenStore: DownloadTokenStore;
+  private readonly previewLinks: PreviewLinkService | null;
   private readonly logger: pino.Logger;
   private readonly fileUploads: FileUploadStore;
   private readonly fileObserver: FileObserver;
@@ -73,6 +77,7 @@ export class WorkspaceFilesSession {
   constructor(options: WorkspaceFilesSessionOptions) {
     this.host = options.host;
     this.downloadTokenStore = options.downloadTokenStore;
+    this.previewLinks = options.previewLinks ?? null;
     this.logger = options.logger;
     this.fileUploads = new FileUploadStore({ paseoHome: options.paseoHome });
     this.fileObserver = options.fileObserver ?? workspaceFileObserver;
@@ -454,5 +459,49 @@ export class WorkspaceFilesSession {
         },
       });
     }
+  }
+
+  // Daseo delta 75: the app's "copy link" asks for the same tailnet link the agent tool makes.
+  async handlePreviewLinkCreateRequest(request: PreviewLinkCreateRequest): Promise<void> {
+    const { requestId } = request;
+    const result = this.previewLinks
+      ? await this.previewLinks
+          .createLink({ path: request.path, ...(request.cwd ? { cwd: request.cwd } : {}) })
+          .catch((error: unknown) => ({
+            ok: false as const,
+            code: "failed",
+            message: getErrorMessage(error),
+          }))
+      : {
+          ok: false as const,
+          code: "not_configured",
+          message: "Preview links are not available on this host.",
+        };
+    if (!result.ok) {
+      this.logger.debug({ code: result.code, path: request.path }, "Preview link refused");
+      this.host.emit({
+        type: "fs.preview_link.create.response",
+        payload: {
+          requestId,
+          url: null,
+          expiresAt: null,
+          fileName: null,
+          mimeType: null,
+          error: { code: result.code, message: result.message },
+        },
+      });
+      return;
+    }
+    this.host.emit({
+      type: "fs.preview_link.create.response",
+      payload: {
+        requestId,
+        url: result.url,
+        expiresAt: result.expiresAt,
+        fileName: result.fileName,
+        mimeType: result.mimeType,
+        error: null,
+      },
+    });
   }
 }

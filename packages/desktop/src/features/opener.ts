@@ -88,7 +88,20 @@ export function getSystemOpenKind(input: {
   return SYSTEM_OPEN_FILE_EXTENSIONS.has(extension) ? "file" : null;
 }
 
-export async function openLocalPath(value: unknown): Promise<LocalPathOpenResult> {
+function wantsReveal(options: unknown): boolean {
+  return (
+    typeof options === "object" &&
+    options !== null &&
+    (options as { reveal?: unknown }).reveal === true
+  );
+}
+
+// `reveal` comes from a transcript link with a line reference (`report.pdf:3`): the owner meant a
+// place in the file, which no Mac app opens to, so the file is selected in Finder (delta 62).
+export async function openLocalPath(
+  value: unknown,
+  options?: unknown,
+): Promise<LocalPathOpenResult> {
   if (typeof value !== "string") {
     return "not-handled";
   }
@@ -107,7 +120,7 @@ export async function openLocalPath(value: unknown): Promise<LocalPathOpenResult
     isDirectory,
     isBundle: isDirectory && existsSync(path.join(filePath, "Contents", "Info.plist")),
   });
-  if (!kind) {
+  if (!kind || (kind === "file" && wantsReveal(options))) {
     shell.showItemInFolder(filePath);
     return "revealed";
   }
@@ -120,7 +133,9 @@ export async function openLocalPath(value: unknown): Promise<LocalPathOpenResult
 }
 
 export function registerOpenerHandlers(): void {
-  ipcMain.handle("paseo:opener:openLocalPath", (_event, value: unknown) => openLocalPath(value));
+  ipcMain.handle("paseo:opener:openLocalPath", (_event, value: unknown, options: unknown) =>
+    openLocalPath(value, options),
+  );
   ipcMain.handle("paseo:opener:openUrl", async (_event, url: unknown) => {
     if (!isAllowedExternalUrl(url)) {
       throw new Error("Unsupported external URL");

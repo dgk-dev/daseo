@@ -1687,6 +1687,15 @@ export const zhCN: TranslationResources = {
       notFound: "未找到文件：{{path}}",
       failedToLoad: "加载文件失败",
       failedToLoadPreview: "加载文件预览失败",
+      actions: {
+        menu: "文件操作",
+        openElsewhere: "用其他应用打开",
+        share: "分享",
+        copyLink: "复制链接",
+        linkCopiedLabel: "预览链接",
+        openFailed: "无法打开文件",
+        linkFailed: "无法创建链接：{{message}}",
+      },
       editor: {
         fileSize: "文件大小 {{size}}",
         lines: "{{count}} 行",

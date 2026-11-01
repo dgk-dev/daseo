@@ -28,6 +28,15 @@ export async function openDownloadedFile(input: {
       // No viewer for this type, or the launcher refused: fall through to the share sheet.
     }
   }
+  await shareDownloadedFile(input);
+}
+
+/** Daseo delta 75: the file pane's "share" action hands the downloaded file to the share sheet. */
+export async function shareDownloadedFile(input: {
+  uri: string;
+  mimeType: string | null;
+  dialogTitle: string;
+}): Promise<void> {
   if (await Sharing.isAvailableAsync()) {
     await Sharing.shareAsync(input.uri, {
       ...(input.mimeType ? { mimeType: input.mimeType } : {}),

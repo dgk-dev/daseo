@@ -1,7 +1,7 @@
 import { useCallback, useMemo } from "react";
 import { isNative } from "@/constants/platform";
 import { useHosts, useHostRuntimeClient } from "@/runtime/host-runtime";
-import { useDownloadStore } from "@/stores/download-store";
+import { useDownloadStore, type DownloadHandoff } from "@/stores/download-store";
 import type { InlinePathTarget } from "./parse";
 
 function splitPath(path: string): { directory: string; name: string } | null {
@@ -18,10 +18,12 @@ function splitPath(path: string): { directory: string; name: string } | null {
  * opened in another app, instead of in a Daseo file pane. The daemon scopes a download to
  * one directory, so the file's own directory is the scope; that covers paths outside the
  * workspace too (a report under ~/Downloads, say). A folder or a missing path answers false.
+ * Delta 75: the file pane's "open in another app" and "share" actions use the same download;
+ * `handoff` picks the Android view intent or the share sheet.
  */
 export function useOpenFileExternally(input: {
   serverId: string;
-}): ((target: InlinePathTarget) => Promise<boolean>) | undefined {
+}): ((target: InlinePathTarget, handoff?: DownloadHandoff) => Promise<boolean>) | undefined {
   const client = useHostRuntimeClient(input.serverId);
   const hosts = useHosts();
   const daemonProfile = useMemo(
@@ -31,7 +33,7 @@ export function useOpenFileExternally(input: {
   const startDownload = useDownloadStore((state) => state.startDownload);
 
   const open = useCallback(
-    async (target: InlinePathTarget): Promise<boolean> => {
+    async (target: InlinePathTarget, handoff: DownloadHandoff = "open"): Promise<boolean> => {
       if (!client) {
         return false;
       }
@@ -54,6 +56,7 @@ export function useOpenFileExternally(input: {
         fileName: token.fileName ?? split.name,
         path: split.name,
         daemonProfile,
+        afterDownload: handoff,
         requestFileDownloadToken: async () => token,
       });
       return true;

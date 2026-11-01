@@ -188,6 +188,10 @@ const RELOADABLE_PATHS = [
   "pluginsEnabled",
 ] as const;
 
+// Applied by the reload source itself rather than through the mutable config (Daseo delta 75:
+// preview links are daemon-only settings the app never edits).
+const SOURCE_APPLIED_PATHS = ["daemon.previewLinks"] as const;
+
 const PERSISTED_TO_MUTABLE_PATH = new Map<string, string>([
   ["daemon.relay.enabled", "relay.enabled"],
   ["daemon.mcp.enabled", "mcp.enabled"],
@@ -409,10 +413,16 @@ export class DaemonConfigStore {
         )
       );
     });
+    const sourceAppliedPaths = SOURCE_APPLIED_PATHS.filter(
+      (owner) =>
+        changedSinceLastApply.some((path) => pathBelongsTo(path, owner)) &&
+        !resolved.overrideControlledPaths.some((overridden) => pathBelongsTo(overridden, owner)),
+    );
     const restartRequiredPaths = compactOwnedPaths(
       diffPaths(this.startupPersisted, persisted).filter((path) => {
         if (path === "$schema" || path === "version") return false;
         if (RELOADABLE_PATHS.some((owner) => pathBelongsTo(path, owner))) return false;
+        if (SOURCE_APPLIED_PATHS.some((owner) => pathBelongsTo(path, owner))) return false;
         return !resolved.overrideControlledPaths.some((owner) => pathBelongsTo(path, owner));
       }),
       [],
@@ -425,7 +435,7 @@ export class DaemonConfigStore {
     this.lastKnownPersisted = persisted;
 
     return {
-      appliedPaths: [...appliedPaths].sort(),
+      appliedPaths: [...appliedPaths, ...sourceAppliedPaths].sort(),
       restartRequiredPaths,
       overrideControlledPaths,
     };

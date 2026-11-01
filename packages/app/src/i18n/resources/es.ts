@@ -1752,6 +1752,15 @@ export const es: TranslationResources = {
       notFound: "Archivo no encontrado: {{path}}",
       failedToLoad: "No se pudo cargar el archivo",
       failedToLoadPreview: "No se pudo cargar la vista previa del archivo",
+      actions: {
+        menu: "Acciones del archivo",
+        openElsewhere: "Abrir en otra app",
+        share: "Compartir",
+        copyLink: "Copiar enlace",
+        linkCopiedLabel: "Enlace de vista previa",
+        openFailed: "No se pudo abrir el archivo",
+        linkFailed: "No se pudo crear el enlace: {{message}}",
+      },
       editor: {
         fileSize: "Tamaño {{size}}",
         lines: "{{count}} líneas",

@@ -1743,6 +1743,15 @@ export const ru: TranslationResources = {
       notFound: "Файл не найден: {{path}}",
       failedToLoad: "Не удалось загрузить файл",
       failedToLoadPreview: "Не удалось загрузить предварительный просмотр файла.",
+      actions: {
+        menu: "Действия с файлом",
+        openElsewhere: "Открыть в другом приложении",
+        share: "Поделиться",
+        copyLink: "Копировать ссылку",
+        linkCopiedLabel: "Ссылка для просмотра",
+        openFailed: "Не удалось открыть файл",
+        linkFailed: "Не удалось создать ссылку: {{message}}",
+      },
       editor: {
         fileSize: "Размер файла {{size}}",
         lines: "Строк: {{count}}",

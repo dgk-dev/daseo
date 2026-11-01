@@ -107,6 +107,39 @@ describe("desktop opener", () => {
     expect(shell.openPath).toHaveBeenCalledTimes(1);
   });
 
+  it("reveals a document with a line reference instead of opening it", async () => {
+    vi.mocked(shell.openPath).mockClear();
+    vi.mocked(shell.showItemInFolder).mockClear();
+    const root = await mkdtemp(path.join(tmpdir(), "daseo-opener-"));
+    await writeFile(path.join(root, "report.pdf"), "");
+
+    expect(await openLocalPath(path.join(root, "report.pdf"), { reveal: true })).toBe("revealed");
+    expect(shell.showItemInFolder).toHaveBeenCalledWith(path.join(root, "report.pdf"));
+    expect(shell.openPath).not.toHaveBeenCalled();
+
+    // A folder has no line to land on; it still opens in Finder.
+    expect(await openLocalPath(root, { reveal: true })).toBe("opened");
+    expect(shell.openPath).toHaveBeenCalledWith(root);
+    expect(await openLocalPath(path.join(root, "missing.pdf"), { reveal: true })).toBe(
+      "not-handled",
+    );
+  });
+
+  it("passes the reveal option through the IPC handler", async () => {
+    vi.mocked(shell.openPath).mockClear();
+    vi.mocked(shell.showItemInFolder).mockClear();
+    registerOpenerHandlers();
+    const handler = vi.mocked(ipcMain.handle).mock.calls.find(([channel]) => {
+      return channel === "paseo:opener:openLocalPath";
+    })?.[1] as (event: unknown, value: unknown, options: unknown) => Promise<string>;
+    const root = await mkdtemp(path.join(tmpdir(), "daseo-opener-"));
+    await writeFile(path.join(root, "notes.html"), "");
+
+    expect(await handler({}, path.join(root, "notes.html"), { reveal: true })).toBe("revealed");
+    expect(shell.openPath).not.toHaveBeenCalled();
+    expect(await handler({}, path.join(root, "notes.html"), undefined)).toBe("opened");
+  });
+
   it("reveals a document in Finder when its app refuses to open it", async () => {
     vi.mocked(shell.openPath).mockClear();
     vi.mocked(shell.showItemInFolder).mockClear();

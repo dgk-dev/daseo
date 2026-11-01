@@ -1724,6 +1724,15 @@ export const ja: TranslationResources = {
       notFound: "ファイルが見つかりません: {{path}}",
       failedToLoad: "ファイルの読み込みに失敗しました",
       failedToLoadPreview: "ファイルプレビューの読み込みに失敗しました",
+      actions: {
+        menu: "ファイル操作",
+        openElsewhere: "別のアプリで開く",
+        share: "共有",
+        copyLink: "リンクをコピー",
+        linkCopiedLabel: "プレビューリンク",
+        openFailed: "ファイルを開けませんでした",
+        linkFailed: "リンクを作成できませんでした: {{message}}",
+      },
       editor: {
         fileSize: "ファイルサイズ {{size}}",
         lines: "{{count}} 行",

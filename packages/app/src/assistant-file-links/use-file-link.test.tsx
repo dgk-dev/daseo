@@ -16,6 +16,25 @@ vi.mock("@/utils/open-external-url", () => ({
   openExternalUrl: vi.fn(async () => {}),
 }));
 
+const desktopMock = vi.hoisted(() => ({
+  isLocalDaemon: false,
+  openLocalPath: null as
+    | null
+    | ((
+        path: string,
+        options?: { reveal?: boolean },
+      ) => Promise<"opened" | "revealed" | "not-handled">),
+}));
+
+vi.mock("@/hooks/use-is-local-daemon", () => ({
+  useIsLocalDaemon: () => desktopMock.isLocalDaemon,
+}));
+
+vi.mock("@/desktop/host", () => ({
+  getDesktopHost: () =>
+    desktopMock.openLocalPath ? { opener: { openLocalPath: desktopMock.openLocalPath } } : null,
+}));
+
 const SOURCE = {
   href: "http://dumm.md",
   text: "dumm.md",
@@ -72,7 +91,12 @@ function createToast(): ToastApi {
   };
 }
 
-function createWrapper(input: { client: TestClient; openedFiles: OpenedFile[]; toast?: ToastApi }) {
+function createWrapper(input: {
+  client: TestClient;
+  openedFiles: OpenedFile[];
+  toast?: ToastApi;
+  openFileExternally?: (target: InlinePathTarget) => Promise<boolean>;
+}) {
   const queryClient = createQueryClient();
   return function Wrapper({ children }: { children: ReactNode }) {
     const openWorkspaceFile = useCallback(
@@ -89,6 +113,7 @@ function createWrapper(input: { client: TestClient; openedFiles: OpenedFile[]; t
           serverId="server-1"
           workspaceRoot="/Users/test/project"
           onOpenWorkspaceFile={openWorkspaceFile}
+          openFileExternally={input.openFileExternally}
           toast={input.toast}
         >
           {children}
@@ -445,3 +470,93 @@ describe("useFileLink", () => {
 });
 
 const WorkspaceSwitchContext = React.createContext<(workspaceRoot: string) => void>(() => {});
+
+describe("useFileLink dispatch (Daseo delta 75)", () => {
+  const inlineCode = (text: string) => ({ href: text, text, sourceType: "inline-code" as const });
+
+  it("opens text and images in the phone's file pane and hands everything else to another app", async () => {
+    const openedFiles: OpenedFile[] = [];
+    const externallyOpened: string[] = [];
+    const openFileExternally = vi.fn(async (target: InlinePathTarget) => {
+      externallyOpened.push(target.path);
+      return true;
+    });
+    const wrapper = createWrapper({
+      client: { getDirectorySuggestions: vi.fn(async () => resolvedSuggestions([])) },
+      openedFiles,
+      openFileExternally,
+    });
+
+    const inApp = [
+      "/tmp/plan.md",
+      "/tmp/page.html",
+      "/tmp/data.csv",
+      "/tmp/a.ts:12",
+      "/tmp/shot.png",
+    ];
+    const external = ["/tmp/report.pdf", "/tmp/memo.docx", "/tmp/문서.hwp", "/tmp/clip.mp4"];
+    for (const text of [...inApp, ...external]) {
+      const { result } = renderHook(() => useFileLink(inlineCode(text)), { wrapper });
+      act(() => {
+        result.current.onPress();
+      });
+    }
+
+    await waitFor(() => {
+      expect(openedFiles).toHaveLength(inApp.length);
+      expect(externallyOpened).toHaveLength(external.length);
+    });
+    expect(openedFiles.map((entry) => entry.target.path).sort()).toEqual(
+      ["/tmp/plan.md", "/tmp/page.html", "/tmp/data.csv", "/tmp/a.ts", "/tmp/shot.png"].sort(),
+    );
+    expect(externallyOpened.sort()).toEqual([...external].sort());
+  });
+
+  it("keeps the file pane for an external kind the daemon cannot download (a folder, a missing file)", async () => {
+    const openedFiles: OpenedFile[] = [];
+    const wrapper = createWrapper({
+      client: { getDirectorySuggestions: vi.fn(async () => resolvedSuggestions([])) },
+      openedFiles,
+      openFileExternally: vi.fn(async () => false),
+    });
+    const { result } = renderHook(() => useFileLink(inlineCode("/tmp/missing.pdf")), { wrapper });
+    act(() => {
+      result.current.onPress();
+    });
+    await waitFor(() => {
+      expect(openedFiles).toHaveLength(1);
+    });
+    expect(openedFiles[0]?.target.path).toBe("/tmp/missing.pdf");
+  });
+
+  it("asks the Mac opener to reveal a path with a line reference", async () => {
+    const calls: Array<{ path: string; reveal: boolean | undefined }> = [];
+    desktopMock.isLocalDaemon = true;
+    desktopMock.openLocalPath = async (path, options) => {
+      calls.push({ path, reveal: options?.reveal });
+      return options?.reveal ? "revealed" : "opened";
+    };
+    try {
+      const openedFiles: OpenedFile[] = [];
+      const wrapper = createWrapper({
+        client: { getDirectorySuggestions: vi.fn(async () => resolvedSuggestions([])) },
+        openedFiles,
+      });
+      for (const text of ["/tmp/notes.md:12", "/tmp/report.pdf"]) {
+        const { result } = renderHook(() => useFileLink(inlineCode(text)), { wrapper });
+        act(() => {
+          result.current.onPress();
+        });
+      }
+      await waitFor(() => {
+        expect(calls).toHaveLength(2);
+      });
+      expect(calls).toContainEqual({ path: "/tmp/notes.md", reveal: true });
+      expect(calls).toContainEqual({ path: "/tmp/report.pdf", reveal: false });
+      expect(openedFiles).toEqual([]);
+    } finally {
+      desktopMock.isLocalDaemon = false;
+      desktopMock.openLocalPath = null;
+    }
+  });
+});

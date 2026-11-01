@@ -940,6 +940,25 @@ describe("DaemonConfigStore reload", () => {
     expect(store.get().git).toEqual({ maxProcessesPerSecond: 12, maxProcessConcurrency: 3 });
   });
 
+  test("reports preview links as applied by the reload source, not as restart-only", () => {
+    const { paseoHome, store, persisted } = createReloadableStore();
+    writeConfig(paseoHome, {
+      ...persisted,
+      daemon: {
+        ...persisted.daemon,
+        previewLinks: { baseUrl: "https://mac.example.ts.net/f", ttlDays: 30 },
+      },
+    });
+
+    expect(store.reload()).toEqual({
+      appliedPaths: ["daemon.previewLinks"],
+      restartRequiredPaths: [],
+      overrideControlledPaths: [],
+    });
+    // Nothing changed since the last reload, so nothing is reported again.
+    expect(store.reload().appliedPaths).toEqual([]);
+  });
+
   test("classifies every leaf when a parent subtree is added", () => {
     const { paseoHome, store } = createReloadableStore({
       initialPersisted: { version: 1 },

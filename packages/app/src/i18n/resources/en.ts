@@ -1719,6 +1719,15 @@ export const en = {
       notFound: "File not found: {{path}}",
       failedToLoad: "Failed to load file",
       failedToLoadPreview: "Failed to load file preview",
+      actions: {
+        menu: "File actions",
+        openElsewhere: "Open in another app",
+        share: "Share",
+        copyLink: "Copy link",
+        linkCopiedLabel: "Preview link",
+        openFailed: "Couldn't open the file",
+        linkFailed: "Couldn't make a link: {{message}}",
+      },
       editor: {
         fileSize: "File size {{size}}",
         lines: "{{count}} lines",

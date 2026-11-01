@@ -1756,6 +1756,15 @@ export const fr: TranslationResources = {
       notFound: "Fichier introuvable : {{path}}",
       failedToLoad: "Échec du chargement du fichier",
       failedToLoadPreview: "Échec du chargement de l'aperçu du fichier",
+      actions: {
+        menu: "Actions du fichier",
+        openElsewhere: "Ouvrir dans une autre app",
+        share: "Partager",
+        copyLink: "Copier le lien",
+        linkCopiedLabel: "Lien d'aperçu",
+        openFailed: "Impossible d'ouvrir le fichier",
+        linkFailed: "Impossible de créer le lien : {{message}}",
+      },
       editor: {
         fileSize: "Taille {{size}}",
         lines: "{{count}} lignes",

@@ -3,7 +3,7 @@ import { File as FSFile, Paths } from "expo-file-system";
 import * as LegacyFileSystem from "expo-file-system/legacy";
 import type { HostProfile } from "@/types/host-connection";
 import { buildDaemonWebSocketUrl } from "@/utils/daemon-endpoints";
-import { openDownloadedFile } from "@/utils/open-downloaded-file";
+import { openDownloadedFile, shareDownloadedFile } from "@/utils/open-downloaded-file";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { isWeb } from "@/constants/platform";
 import { i18n } from "@/i18n/i18next";
@@ -37,6 +37,8 @@ interface DownloadState {
     fileName: string;
     path: string;
     daemonProfile: HostProfile | undefined;
+    /** What happens on the phone once the file is down: "open" (default) or the share sheet. */
+    afterDownload?: DownloadHandoff;
     requestFileDownloadToken: (path: string) => Promise<{
       token: string | null;
       fileName: string | null;
@@ -52,6 +54,8 @@ interface DownloadState {
   dismissAllCompleted: () => void;
 }
 
+export type DownloadHandoff = "open" | "share";
+
 function generateDownloadId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
@@ -66,6 +70,7 @@ export const useDownloadStore = create<DownloadState>()((set, get) => ({
     fileName,
     path,
     daemonProfile,
+    afterDownload = "open",
     requestFileDownloadToken,
   }) => {
     const id = generateDownloadId();
@@ -146,7 +151,8 @@ export const useDownloadStore = create<DownloadState>()((set, get) => ({
 
       get().completeDownload(id);
 
-      await openDownloadedFile({
+      const handoff = afterDownload === "share" ? shareDownloadedFile : openDownloadedFile;
+      await handoff({
         uri: result.uri,
         mimeType: tokenResponse.mimeType ?? null,
         dialogTitle: resolvedFileName

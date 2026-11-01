@@ -1055,8 +1055,12 @@ remote-keyboard.ts,index.tsx}`, `packages/desktop/src/features/browser-automatio
     the workspace work) and opened with an Android "view" intent on a content URI (the chooser when
     several apps qualify; `expo-intent-launcher`, new dependency), falling back to the share sheet
     when nothing handles the type and on iOS; the file-explorer download uses the same opener. A
-    folder or a missing path on the phone keeps the in-app explorer. URLs already opened in the
-    default browser (Mac) and the system browser (phone). Key files:
+    folder or a missing path on the phone keeps the in-app explorer. Delta 75 (owner's call
+    2026-11-01) narrows the phone half: text, source, data, markdown, HTML, and the images the
+    app decodes open in the file pane again, because One UI has no stock viewer for md, csv,
+    json, or code and those taps ended in an empty chooser; everything else still leaves the app
+    as described here. URLs already opened in the default browser (Mac) and the system browser
+    (phone). Key files:
     `packages/desktop/src/features/opener.ts`, `packages/app/src/assistant-file-links/{use-file-link,
 use-open-file-externally}.ts`, `packages/app/src/utils/open-downloaded-file.ts`,
     `packages/app/src/stores/download-store.ts`.
@@ -1323,6 +1327,50 @@ acceptLanguages)`, so the header is now `en-US,en-KR;q=0.9,ko-KR;q=0.8`. `--lang
     `packages/server/src/server/agent/tools/paseo-tools.ts`, the "spellings models carry over"
     tests in `packages/server/src/server/agent/mcp-server.test.ts`, and `promptAlias` in
     `packages/protocol/src/paseo-tool-call-detail.ts`.
+75. **Files open where the phone can show them, and every file has a tailnet link** — the
+    owner's call on 2026-11-01 ("모바일에서도 미리보기를 최대한", "폰에서 보는거 싹다 궁극적으로
+    개선"). Delta 62 sent every file on the phone to an Android app, and One UI 8 has no stock
+    viewer for the files agents write most, so md, csv, json, and code ended in an empty chooser or
+    a share sheet.
+    - **Phone routing by extension, before any download** (`assistant-file-links/native-open-route.ts`).
+      Markdown, HTML, plain text, logs, data (csv, tsv, json, jsonl, ndjson, yaml, toml, sql, …),
+      and source open in the file pane: markdown rendered, HTML in the sandboxed WebView, the rest
+      highlighted. png, jpg, gif, and webp open in the zoomable image view. Everything else keeps
+      delta 62: pdf, office, HWP, iWork, media, archives, databases, and unknown extensions. SVG,
+      HEIC, BMP, TIFF, and ICO stay external too: the daemon reads only png/jpg/gif/webp/svg as
+      images and React Native cannot decode SVG, so the pane would show nothing where the gallery
+      or Chrome shows the picture. A folder or missing path still lands in the pane or explorer.
+    - **File pane actions on the phone** (`file-pane/file-actions.tsx`; the `.web.tsx` twin renders
+      nothing, so web and the Mac app are unchanged): a `…` menu in the pane bar with "다른 앱으로
+      열기" (the delta 62 download and view intent), "공유" (the same download into the share
+      sheet), and "링크 복사" when the host has preview links.
+    - **Tailnet preview links.** The daemon serves `GET /f/<token>/<name>` inline: Chrome renders
+      PDF, HTML, images, video (Range requests), audio, and text; markdown becomes a self-contained
+      HTML page (`file-preview/markdown-page.ts`); office, HWP, and archives download and Android
+      offers an app. Tokens are 128-bit, reusable, 30 days by default, and persisted as hashes in
+      `~/.paseo/preview-links.json`. A link is issued only for a regular file under home or temp
+      space and the check repeats on every request. The route sits before the daemon password and
+      accepts the allowlisted hosts plus the preview host (threat model in `SECURITY.md`). Two ways
+      in: the agent tool `preview_link` (`{ path }` → `{ url, expiresAt, fileName, mimeType }`), and
+      the app's "링크 복사" over `fs.preview_link.create.request`, gated on
+      `server_info.features.previewLinks` (true only when a base URL is set).
+    - **Setup on this Mac.** `~/.paseo/config.json` carries
+      `"previewLinks": { "baseUrl": "https://mac.tail29eaf5.ts.net/f", "ttlDays": 30 }` under
+      `daemon` (env `PASEO_PREVIEW_LINKS_BASE_URL` / `PASEO_PREVIEW_LINKS_TTL_DAYS` win), applied by
+      `paseo daemon reload` without a restart. The config schema is strict, so a daemon older than
+      this delta refuses to start with the key in place: remove it before rolling back. Tailscale
+      Serve mounts the route tailnet-only with
+      `Tailscale serve --bg --set-path=/f http://127.0.0.1:6767/f` (the CLI is
+      `/Applications/Tailscale.app/Contents/MacOS/Tailscale`; rollback `serve --set-path=/f off`).
+      The `/` mount for the APK folder stays as it is.
+    - **Mac fix.** A link with a line reference (`report.pdf:3`, `notes.md:12`) now reaches the
+      Electron opener as `reveal`, so it is selected in Finder as delta 62 says instead of opening
+      in its app.
+    - **Key files:** `packages/server/src/server/file-preview/`,
+      `packages/app/src/assistant-file-links/native-open-route.ts`, `use-file-link.ts` and
+      `use-open-file-externally.ts` beside it, `packages/app/src/file-pane/file-actions.tsx`,
+      `packages/desktop/src/features/opener.ts`, and the daemon test
+      `packages/server/src/server/daemon-e2e/preview-links.e2e.test.ts`.
 
 ## Local reliability contracts
 

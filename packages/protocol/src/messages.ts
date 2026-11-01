@@ -2645,6 +2645,15 @@ export const FileDownloadTokenRequestSchema = z.object({
   requestId: z.string(),
 });
 
+// Daseo delta 75: a reusable tailnet https link to one file (the app's "copy link"). `path` is
+// absolute, `~/`, or relative to `cwd`. Sent only to daemons advertising `previewLinks`.
+export const PreviewLinkCreateRequestSchema = z.object({
+  type: z.literal("fs.preview_link.create.request"),
+  requestId: z.string(),
+  path: z.string(),
+  cwd: z.string().optional(),
+});
+
 export const FileUploadRequestSchema = z.object({
   type: z.literal("file.upload.request"),
   fileName: z.string().min(1),
@@ -3108,6 +3117,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ProjectIconRequestSchema,
   ProjectIconGetRequestSchema,
   FileDownloadTokenRequestSchema,
+  PreviewLinkCreateRequestSchema,
   FileUploadRequestSchema,
   ClearAgentAttentionMessageSchema,
   ClientHeartbeatMessageSchema,
@@ -3327,6 +3337,9 @@ export const ServerInfoStatusPayloadSchema = z
         clientDiagnostics: z.boolean().optional(),
         // Local fork (delta 70): workspace.discard_empty.request deletes a workspace nobody used.
         discardEmptyWorkspace: z.boolean().optional(),
+        // Local fork (delta 75): fs.preview_link.create.request issues tailnet preview links;
+        // true only when the host has a preview base URL configured.
+        previewLinks: z.boolean().optional(),
         // Local fork (delta 46): send/create requests accept `imageUploads`.
         imageUploads: z.boolean().optional(),
         // COMPAT(directorySync): added in v0.3.x, remove gate after 2027-02-12.
@@ -5740,6 +5753,19 @@ export const FileDownloadTokenResponseSchema = z.object({
   }),
 });
 
+export const PreviewLinkCreateResponseSchema = z.object({
+  type: z.literal("fs.preview_link.create.response"),
+  payload: z.object({
+    requestId: z.string(),
+    url: z.string().nullable(),
+    expiresAt: z.string().nullable(),
+    fileName: z.string().nullable(),
+    mimeType: z.string().nullable(),
+    /** `code` is an open string (`not_configured`, `outside_scope`, `not_a_file`, …). */
+    error: z.object({ code: z.string(), message: z.string() }).nullable(),
+  }),
+});
+
 export const FileUploadResponseSchema = z.object({
   type: z.literal("file.upload.response"),
   payload: z.object({
@@ -6415,6 +6441,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ProjectIconResponseSchema,
   ProjectIconGetResponseSchema,
   FileDownloadTokenResponseSchema,
+  PreviewLinkCreateResponseSchema,
   FileUploadResponseSchema,
   ListProviderModelsResponseMessageSchema,
   ListProviderModesResponseMessageSchema,
@@ -6888,6 +6915,8 @@ export type ProjectIconGetResponse = z.infer<typeof ProjectIconGetResponseSchema
 export type ProjectIcon = z.infer<typeof ProjectIconSchema>;
 export type FileDownloadTokenRequest = z.infer<typeof FileDownloadTokenRequestSchema>;
 export type FileDownloadTokenResponse = z.infer<typeof FileDownloadTokenResponseSchema>;
+export type PreviewLinkCreateRequest = z.infer<typeof PreviewLinkCreateRequestSchema>;
+export type PreviewLinkCreateResponse = z.infer<typeof PreviewLinkCreateResponseSchema>;
 export type FileUploadRequest = z.infer<typeof FileUploadRequestSchema>;
 export type FileUploadResponse = z.infer<typeof FileUploadResponseSchema>;
 export type RestartServerRequestMessage = z.infer<typeof RestartServerRequestMessageSchema>;

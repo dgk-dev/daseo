@@ -87,6 +87,8 @@ import {
 import { registerBrowserTools } from "../../browser-tools/tools.js";
 import type { ClientDebugBroker } from "../../client-debug/broker.js";
 import { registerClientDebugTools } from "../../client-debug/tools.js";
+import type { PreviewLinkService } from "../../file-preview/service.js";
+import { registerPreviewLinkTools } from "../../file-preview/tools.js";
 import type { BrowserToolsBroker } from "../../browser-tools/broker.js";
 import type {
   PaseoToolCatalog,
@@ -133,6 +135,8 @@ export interface PaseoToolHostDependencies {
   browserToolsBroker?: BrowserToolsBroker | null;
   /** Daseo delta 68: phone logs over the app's own connection. */
   clientDebugBroker?: ClientDebugBroker | null;
+  /** Daseo delta 75: tailnet https links to local files (`preview_link`). */
+  previewLinks?: PreviewLinkService | null;
   paseoHome?: string;
   worktreesRoot?: string;
   /**
@@ -1266,6 +1270,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       broker: options.clientDebugBroker,
       ...(options.paseoHome ? { paseoHome: options.paseoHome } : {}),
     });
+  }
+
+  if (options.previewLinks) {
+    registerPreviewLinkTools({ registerTool, service: options.previewLinks });
   }
 
   if (options.browserToolsEnabled && options.browserToolsBroker) {

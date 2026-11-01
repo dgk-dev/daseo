@@ -572,6 +572,10 @@ function FilePanePresentation({
   navigationRevision: number;
   imagePreviewUri: string | null;
 }) {
+  const actionsTarget = useMemo(
+    () => (readTarget ? { serverId, cwd: readTarget.cwd, path: readTarget.path } : null),
+    [readTarget, serverId],
+  );
   if (!client && readTarget) {
     return (
       <View style={styles.container} testID="workspace-file-pane">
@@ -625,6 +629,7 @@ function FilePanePresentation({
           lineCount={lineCount}
           mode={previewMode}
           onModeChange={onPreviewModeChange}
+          actionsTarget={actionsTarget}
         />
       ) : null}
       <FilePreviewBody

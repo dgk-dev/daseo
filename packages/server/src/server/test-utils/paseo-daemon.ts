@@ -47,6 +47,8 @@ interface TestPaseoDaemonOptions {
   webUi?: PaseoDaemonConfig["webUi"];
   trustedProxies?: PaseoDaemonConfig["trustedProxies"];
   agentProfiles?: AgentProfile[];
+  hostnames?: PaseoDaemonConfig["hostnames"];
+  previewLinks?: PaseoDaemonConfig["previewLinks"];
 }
 
 export interface TestPaseoDaemon {
@@ -171,7 +173,7 @@ async function prepareTestDaemonConfig(
     daemonVersion: options.daemonVersion,
     desktopManaged: options.desktopManaged,
     corsAllowedOrigins: options.corsAllowedOrigins ?? [],
-    hostnames: true,
+    hostnames: options.hostnames ?? true,
     mcpEnabled: options.mcpEnabled ?? true,
     staticDir,
     mcpDebug: options.mcpDebug ?? false,
@@ -197,6 +199,7 @@ async function prepareTestDaemonConfig(
     dictationFinalTimeoutMs: options.dictationFinalTimeoutMs,
     downloadTokenTtlMs: options.downloadTokenTtlMs,
     agentProfiles: options.agentProfiles,
+    previewLinks: options.previewLinks,
   };
   return { config, paseoHomeRoot, paseoHome, staticDir };
 }

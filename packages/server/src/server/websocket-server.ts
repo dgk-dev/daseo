@@ -98,6 +98,7 @@ import {
 } from "@getpaseo/protocol/browser-automation/capabilities";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
 import { getClientDebugCapability, type ClientDebugBroker } from "./client-debug/broker.js";
+import type { PreviewLinkService } from "./file-preview/service.js";
 import { BrowserStreamHub, createBrokerStreamStarter } from "./browser-tools/stream-hub.js";
 import type { DaemonRuntimeConfig } from "./session/daemon/daemon-session.js";
 import { DirectorySyncService } from "./directory-sync/index.js";
@@ -633,6 +634,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly browserToolsRegistrations = new Map<string, BrowserToolsRegistration>();
   // Daseo delta 68: apps that answer `client.debug.collect.request`, by client id.
   private readonly clientDebugBroker: ClientDebugBroker | null;
+  private readonly previewLinks: PreviewLinkService | null;
   private readonly clientDebugRegistrations = new Map<string, () => void>();
   private acceptingConnections = true;
   private readonly advertiseDaemonStatusRpc: boolean;
@@ -685,6 +687,7 @@ export class VoiceAssistantWebSocketServer {
     workspaceSetupRuntime: WorkspaceSetupRuntime = new WorkspaceSetupRuntime(),
     pluginRuntime?: SessionOptions["pluginRuntime"],
     clientDebugBroker?: ClientDebugBroker | null,
+    previewLinks?: PreviewLinkService | null,
   ) {
     this.logger = logger.child({ module: "websocket-server" });
     this.workspaceSetupRuntime = workspaceSetupRuntime;
@@ -698,6 +701,7 @@ export class VoiceAssistantWebSocketServer {
     this.daemonRuntimeConfig = daemonRuntimeConfig;
     this.browserToolsBroker = browserToolsBroker ?? null;
     this.clientDebugBroker = clientDebugBroker ?? null;
+    this.previewLinks = previewLinks ?? null;
     this.browserStreamHub = this.browserToolsBroker
       ? new BrowserStreamHub(createBrokerStreamStarter(this.browserToolsBroker), this.logger)
       : null;
@@ -1433,6 +1437,7 @@ export class VoiceAssistantWebSocketServer {
         );
       },
       downloadTokenStore: this.downloadTokenStore,
+      previewLinks: this.previewLinks,
       pushNotifications: this.pushNotifications,
       paseoHome: this.paseoHome,
       worktreesRoot: this.worktreesRoot,
@@ -1642,6 +1647,8 @@ export class VoiceAssistantWebSocketServer {
         // Local fork (delta 61): the app reports its own errors into daemon.log.
         clientDiagnostics: true,
         discardEmptyWorkspace: true,
+        // Local fork (delta 75): tailnet preview links, only when a base URL is configured.
+        previewLinks: this.previewLinks?.isConfigured() === true,
         // Local fork (delta 46): send/create requests accept chunk-uploaded images.
         imageUploads: true,
         // COMPAT(checkoutForgeSetAutoMerge): added in v0.1.106, remove old

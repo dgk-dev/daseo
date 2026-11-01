@@ -4,3 +4,9 @@ export async function openDownloadedFile(_input: {
   mimeType: string | null;
   dialogTitle: string;
 }): Promise<void> {}
+
+export async function shareDownloadedFile(_input: {
+  uri: string;
+  mimeType: string | null;
+  dialogTitle: string;
+}): Promise<void> {}

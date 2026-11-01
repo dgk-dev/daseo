@@ -5,6 +5,7 @@ import { useStableEvent } from "@/hooks/use-stable-event";
 import type { OpenFileDisposition } from "@/workspace/file-open";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { getDesktopHost } from "@/desktop/host";
+import { nativeOpenRoute } from "./native-open-route";
 import type { InlinePathTarget } from "./parse";
 import {
   useAssistantFileLinkResolverContext,
@@ -345,7 +346,12 @@ async function dispatchFileTarget(input: {
   if (await openInMacApp(input.target, current.isLocalDaemon === true)) {
     return;
   }
-  if (current.openFileExternally && (await current.openFileExternally(input.target))) {
+  // Delta 75: on the phone, text and images open in the file pane; only the rest leaves the app.
+  if (
+    current.openFileExternally &&
+    nativeOpenRoute(input.target.path) === "external" &&
+    (await current.openFileExternally(input.target))
+  ) {
     return;
   }
   current.onOpenWorkspaceFile?.(input.target, input.disposition);
@@ -354,7 +360,9 @@ async function dispatchFileTarget(input: {
 // Daseo delta 56: on the Mac app, a folder opens in Finder and a page, PDF, image, or document in
 // its Mac app; the desktop main process decides. Delta 62: every other existing path, and a path
 // with a line reference, is revealed in Finder — the owner wants nothing to open in a Daseo tab.
-// Only a path from a remote daemon keeps the file pane: it may not exist on this machine.
+// The line reference travels to the opener as `reveal`, so `report.pdf:3` is selected in Finder
+// rather than opened in its app. Only a path from a remote daemon keeps the file pane: it may not
+// exist on this machine.
 async function openInMacApp(target: InlinePathTarget, isLocalDaemon: boolean): Promise<boolean> {
   if (!isLocalDaemon) {
     return false;
@@ -364,7 +372,7 @@ async function openInMacApp(target: InlinePathTarget, isLocalDaemon: boolean): P
     return false;
   }
   try {
-    const result = await openLocalPath(target.path);
+    const result = await openLocalPath(target.path, { reveal: target.lineStart !== undefined });
     return result === "opened" || result === "revealed";
   } catch {
     return false;

@@ -1708,6 +1708,15 @@ export const ar: TranslationResources = {
       notFound: "الملف غير موجود: {{path}}",
       failedToLoad: "فشل تحميل الملف",
       failedToLoadPreview: "فشل تحميل معاينة الملف",
+      actions: {
+        menu: "إجراءات الملف",
+        openElsewhere: "فتح في تطبيق آخر",
+        share: "مشاركة",
+        copyLink: "نسخ الرابط",
+        linkCopiedLabel: "رابط المعاينة",
+        openFailed: "تعذر فتح الملف",
+        linkFailed: "تعذر إنشاء الرابط: {{message}}",
+      },
       editor: {
         fileSize: "حجم الملف {{size}}",
         lines: "{{count}} سطر",

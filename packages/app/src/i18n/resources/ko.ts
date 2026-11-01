@@ -1718,6 +1718,15 @@ export const ko: TranslationResources = {
       notFound: "파일을 찾을 수 없습니다: {{path}}",
       failedToLoad: "파일을 불러오지 못했습니다",
       failedToLoadPreview: "파일 미리보기를 불러오지 못했습니다",
+      actions: {
+        menu: "파일 동작",
+        openElsewhere: "다른 앱으로 열기",
+        share: "공유",
+        copyLink: "링크 복사",
+        linkCopiedLabel: "미리보기 링크",
+        openFailed: "파일을 열 수 없습니다",
+        linkFailed: "링크를 만들 수 없습니다: {{message}}",
+      },
       editor: {
         fileSize: "파일 크기 {{size}}",
         lines: "{{count}} 라인",

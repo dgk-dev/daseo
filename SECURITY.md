@@ -83,6 +83,17 @@ Native builds narrow this gap rather than closing it outright. The WebView refus
 
 If you don't trust a page, read it in `Source`, which executes nothing. Source is available as an editable view on supported web hosts and a read-only view everywhere else.
 
+## Tailnet preview links (Daseo)
+
+`GET /f/<token>/<name>` serves one file to a browser that has no daemon password, so it sits in front of the password middleware and the token is the only credential. Expose it only through a private network: Daseo mounts it with Tailscale Serve (tailnet-only), never Funnel or a public reverse proxy, and the Serve mount forwards `/f` alone, not the rest of the daemon. The route accepts the allowlisted hosts plus the host of `daemon.previewLinks.baseUrl`.
+
+- Tokens are 128 random bits, reusable until they expire (30 days by default). `~/.paseo/preview-links.json` (mode `0600`) stores only their SHA-256 hashes, so a copy of the file opens nothing.
+- A link is issued only for a regular file under the home directory or the OS temp directory, judged by its real path (a symlink cannot point out). The check runs again on every request, so a file later replaced by an escaping symlink stops being served.
+- The name in the URL must match the issued file, so a relative reference inside a served page cannot reach another file under the same token.
+- Markdown is rendered with raw HTML escaped, under a CSP that allows no script and an opaque-origin sandbox. A served HTML or SVG file runs in a CSP sandbox with an opaque origin: its scripts run, but cannot read other preview links or anything else on the tailnet host. Every response is `inline` with `nosniff` and `Referrer-Policy: no-referrer`.
+
+Anyone holding a link on the tailnet can read that file until it expires. There is no per-link revocation: moving or deleting the file ends its links, and removing `baseUrl` (then `paseo daemon reload`) stops serving all of them.
+
 ## Agent authentication
 
 Paseo wraps agent CLIs (Claude Code, Codex, OpenCode) but does not manage their authentication. Each agent provider handles its own credentials. Paseo never stores or transmits provider API keys. Agents run in your user context with your existing credentials.

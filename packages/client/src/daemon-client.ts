@@ -24,6 +24,7 @@ import type {
   CreateAgentRequestMessage,
   CreatePaseoWorktreeRequest,
   FileDownloadTokenResponse,
+  PreviewLinkCreateResponse,
   FileUploadResponse,
   FileExplorerResponse,
   FileVersion,
@@ -489,6 +490,7 @@ export interface FileUploadInput {
 }
 export type FileUploadResult = FileUploadResponse["payload"];
 type FileDownloadTokenPayload = FileDownloadTokenResponse["payload"];
+export type PreviewLinkCreatePayload = PreviewLinkCreateResponse["payload"];
 type ListProviderFeaturesPayload = ListProviderFeaturesResponseMessage["payload"];
 type ListProviderModelsPayload = ListProviderModelsResponseMessage["payload"];
 type ListProviderModesPayload = ListProviderModesResponseMessage["payload"];
@@ -4649,6 +4651,25 @@ export class DaemonClient {
         path,
       },
       responseType: "file_download_token_response",
+    });
+  }
+
+  /**
+   * Daseo delta 75: a reusable tailnet https link to one file. Gate on
+   * `server_info.features.previewLinks`; a refused link answers with `error`, never throws.
+   */
+  async createPreviewLink(input: {
+    path: string;
+    cwd?: string;
+    requestId?: string;
+  }): Promise<PreviewLinkCreatePayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"fs.preview_link.create.response">({
+      requestId: input.requestId,
+      message: {
+        type: "fs.preview_link.create.request",
+        path: input.path,
+        ...(input.cwd ? { cwd: input.cwd } : {}),
+      },
     });
   }
 

@@ -24,6 +24,7 @@ import { resolveSpeechConfig } from "./speech/speech-config-resolver.js";
 import type { RequestedSpeechProviders } from "./speech/speech-types.js";
 import { mergeHostnames, parseHostnamesEnv, type HostnamesConfig } from "./hostnames.js";
 import { resolveGitProcessPolicy } from "../utils/git-process-scheduler.js";
+import type { PreviewLinkSettings } from "./file-preview/service.js";
 
 const DEFAULT_PORT = 6767;
 const DEFAULT_RELAY_ENDPOINT = "relay.paseo.sh:443";
@@ -367,6 +368,37 @@ function resolveServiceProxyConfig(
   return { publicBaseUrl, standaloneListen };
 }
 
+const DEFAULT_PREVIEW_LINK_TTL_DAYS = 30;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Daseo delta 75: env wins over config.json, like the service proxy's public base URL.
+function resolvePreviewLinksConfig(
+  env: NodeJS.ProcessEnv,
+  persisted: ReturnType<typeof loadPersistedConfig>,
+): PreviewLinkSettings | null {
+  const rawBaseUrl =
+    env.PASEO_PREVIEW_LINKS_BASE_URL ?? persisted.daemon?.previewLinks?.baseUrl ?? null;
+  if (rawBaseUrl === null || rawBaseUrl.trim() === "") {
+    return null;
+  }
+  let baseUrl: string;
+  try {
+    baseUrl = new URL(rawBaseUrl.trim()).toString().replace(/\/+$/, "");
+  } catch {
+    throw new Error(`Invalid preview links base URL: ${rawBaseUrl}`);
+  }
+  const envTtlDays =
+    env.PASEO_PREVIEW_LINKS_TTL_DAYS !== undefined
+      ? Number(env.PASEO_PREVIEW_LINKS_TTL_DAYS)
+      : undefined;
+  if (envTtlDays !== undefined && (!Number.isInteger(envTtlDays) || envTtlDays <= 0)) {
+    throw new Error(`Invalid PASEO_PREVIEW_LINKS_TTL_DAYS: ${env.PASEO_PREVIEW_LINKS_TTL_DAYS}`);
+  }
+  const ttlDays =
+    envTtlDays ?? persisted.daemon?.previewLinks?.ttlDays ?? DEFAULT_PREVIEW_LINK_TTL_DAYS;
+  return { baseUrl, ttlMs: ttlDays * DAY_MS };
+}
+
 interface ResolvedWebUi {
   enabled: boolean;
   distDir: string | null;
@@ -581,6 +613,7 @@ export function resolveConfigFromPersisted(
     enabledFallback: relayEnabledFallback,
   });
   const serviceProxy = resolveServiceProxyConfig(env, persisted);
+  const previewLinks = resolvePreviewLinksConfig(env, persisted);
   const webUi = resolveWebUiConfig(paseoHome, env, cli, persisted);
 
   const { openai, speech } = resolveSpeechConfig({
@@ -627,6 +660,7 @@ export function resolveConfigFromPersisted(
     relayUseTls: relay.useTls,
     relayPublicUseTls: relay.publicUseTls,
     serviceProxy,
+    previewLinks,
     webUi,
     appBaseUrl,
     auth: resolveAuthConfig(env, persisted),
@@ -752,6 +786,9 @@ function resolveServiceAndWebUiOverridePaths(
   if (env.PASEO_SERVICE_PROXY_PUBLIC_BASE_URL !== undefined || serviceProxyEnabled === false) {
     paths.push("daemon.serviceProxy.publicBaseUrl");
   }
+
+  if (env.PASEO_PREVIEW_LINKS_BASE_URL !== undefined) paths.push("daemon.previewLinks.baseUrl");
+  if (env.PASEO_PREVIEW_LINKS_TTL_DAYS !== undefined) paths.push("daemon.previewLinks.ttlDays");
 
   if (cli?.webUiEnabled !== undefined || parseBooleanEnv(env.PASEO_WEB_UI_ENABLED) !== undefined) {
     paths.push("features.webUi.enabled");

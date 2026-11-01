@@ -5,6 +5,7 @@ import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import type { Theme } from "@/styles/theme";
 import { FileConflictAlert, type FileConflictAlertState } from "./conflict-alert";
+import { FileActions } from "./file-actions";
 import type { FileEditorStatus } from "./editor/model";
 
 const ThemedSpinner = withUnistyles(LoadingSpinner);
@@ -19,6 +20,7 @@ export function FilePanelBar({
   cursor,
   vimMode,
   conflict,
+  actionsTarget,
 }: {
   size: number;
   lineCount?: number;
@@ -28,6 +30,8 @@ export function FilePanelBar({
   cursor?: { line: number; column: number };
   vimMode?: string | null;
   conflict?: FileConflictAlertState;
+  /** Delta 75: the file the phone's actions menu acts on; web and the Mac render no menu. */
+  actionsTarget?: { serverId: string; cwd: string; path: string } | null;
 }) {
   const { t } = useTranslation();
   const previewModes = [
@@ -104,6 +108,13 @@ export function FilePanelBar({
             onValueChange={onModeChange}
             testID="file-preview-mode"
             options={previewModes}
+          />
+        ) : null}
+        {actionsTarget ? (
+          <FileActions
+            serverId={actionsTarget.serverId}
+            cwd={actionsTarget.cwd}
+            path={actionsTarget.path}
           />
         ) : null}
       </View>

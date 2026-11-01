@@ -309,6 +309,15 @@ export const PersistedConfigSchema = z
           })
           .strict()
           .optional(),
+        // Daseo delta 75: tailnet preview links. `baseUrl` is the public prefix Tailscale Serve
+        // forwards to the daemon's `/f`; absent turns the feature off.
+        previewLinks: z
+          .object({
+            baseUrl: z.url().optional(),
+            ttlDays: z.number().int().positive().max(3650).optional(),
+          })
+          .strict()
+          .optional(),
         auth: DaemonAuthSchema.optional(),
       })
       .strict()
