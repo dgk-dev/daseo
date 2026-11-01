@@ -83,13 +83,46 @@ const IN_APP_TEXT_EXTENSIONS = new Set([
   "zsh",
 ]);
 
-/** The lowercase extension of a path's last segment; a dotfile's name counts (`.env` → `env`). */
-export function fileExtension(filePath: string): string | null {
-  const name =
+// Text files that carry no extension. Delta 62 sent them to an `application/octet-stream`
+// view intent nothing handles, so they ended in a share sheet; the daemon reads them as text
+// because its sniff looks at the bytes, not the name.
+const IN_APP_EXTENSIONLESS_NAMES = new Set([
+  "makefile",
+  "gnumakefile",
+  "dockerfile",
+  "containerfile",
+  "readme",
+  "license",
+  "licence",
+  "copying",
+  "notice",
+  "authors",
+  "changelog",
+  "changes",
+  "todo",
+  "procfile",
+  "gemfile",
+  "rakefile",
+  "brewfile",
+  "podfile",
+  "justfile",
+  "vagrantfile",
+  "jenkinsfile",
+  "codeowners",
+]);
+
+function baseName(filePath: string): string {
+  return (
     filePath
       .replace(/[\\/]+$/, "")
       .split(/[\\/]/)
-      .pop() ?? "";
+      .pop() ?? ""
+  );
+}
+
+/** The lowercase extension of a path's last segment; a dotfile's name counts (`.env` → `env`). */
+export function fileExtension(filePath: string): string | null {
+  const name = baseName(filePath);
   const dot = name.lastIndexOf(".");
   if (dot < 0 || dot === name.length - 1) {
     return null;
@@ -98,9 +131,14 @@ export function fileExtension(filePath: string): string | null {
 }
 
 export function nativeOpenRoute(filePath: string): NativeOpenRoute {
+  const name = baseName(filePath).toLowerCase();
+  // Dotfiles are configuration text: `.gitignore`, `.zshrc`, `.npmrc`, and every `.env.<stage>`.
+  if (/^\.[^.]+$/.test(name) || name.startsWith(".env.")) {
+    return "in-app";
+  }
   const extension = fileExtension(filePath);
   if (!extension) {
-    return "external";
+    return IN_APP_EXTENSIONLESS_NAMES.has(name) ? "in-app" : "external";
   }
   if (IN_APP_TEXT_EXTENSIONS.has(extension) || IN_APP_IMAGE_EXTENSIONS.has(extension)) {
     return "in-app";

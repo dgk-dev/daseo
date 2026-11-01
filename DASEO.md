@@ -1340,6 +1340,10 @@ acceptLanguages)`, so the header is now `en-US,en-KR;q=0.9,ko-KR;q=0.8`. `--lang
       HEIC, BMP, TIFF, and ICO stay external too: the daemon reads only png/jpg/gif/webp/svg as
       images and React Native cannot decode SVG, so the pane would show nothing where the gallery
       or Chrome shows the picture. A folder or missing path still lands in the pane or explorer.
+      Dotfiles (`.gitignore`, `.zshrc`, every `.env.<stage>`) and well-known text names without an
+      extension (`Makefile`, `Dockerfile`, `README`, `LICENSE`, `CHANGELOG`, `Procfile`, …) open in
+      the pane too; any other extensionless name stays external. This rule shipped in the 0.5.86
+      APK; the Mac app stays 0.5.85 for this delta, since it never uses the phone route.
     - **File pane actions on the phone** (`file-pane/file-actions.tsx`; the `.web.tsx` twin renders
       nothing, so web and the Mac app are unchanged): a `…` menu in the pane bar with "다른 앱으로
       열기" (the delta 62 download and view intent), "공유" (the same download into the share

@@ -63,9 +63,35 @@ describe("nativeOpenRoute", () => {
     }
   });
 
+  it("keeps dotfiles and extensionless text files in the app", () => {
+    for (const path of [
+      "/repo/.gitignore",
+      "~/.zshrc",
+      "/repo/.npmrc",
+      "/repo/.editorconfig",
+      "/repo/.prettierrc",
+      "/repo/.env",
+      "/repo/.env.local",
+      "/repo/.env.production.local",
+      "/repo/Makefile",
+      "/repo/Dockerfile",
+      "/repo/README",
+      "/repo/LICENSE",
+      "/repo/CHANGELOG",
+      "/repo/Procfile",
+      "/repo/Gemfile",
+      "/repo/Rakefile",
+      "/repo/justfile",
+      "/repo/.github/CODEOWNERS",
+    ]) {
+      expect(nativeOpenRoute(path), path).toBe("in-app");
+    }
+  });
+
   it("sends unknown and missing extensions to another app", () => {
     expect(nativeOpenRoute("/a/file.xyz")).toBe("external");
-    expect(nativeOpenRoute("/a/Makefile")).toBe("external");
+    expect(nativeOpenRoute("/a/some-binary")).toBe("external");
+    expect(nativeOpenRoute("/a/.cache.bin")).toBe("external");
     expect(nativeOpenRoute("/a/folder/")).toBe("external");
     expect(nativeOpenRoute("/a/trailing.")).toBe("external");
   });
