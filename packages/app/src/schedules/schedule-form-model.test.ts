@@ -336,7 +336,7 @@ describe("schedule form model", () => {
       selectedProjectOptionId: "",
       selectedModelDisplay: null,
       selectedThinkingDisplay: null,
-      archiveOnFinish: true,
+      archiveOnFinish: false,
       isolation: "local",
       effectiveIsolation: "local",
       providerResolutionByServerId: {},

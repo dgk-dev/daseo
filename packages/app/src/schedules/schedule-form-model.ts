@@ -682,7 +682,8 @@ function buildInitialState(snapshot: ScheduleFormSnapshot): ScheduleFormState {
     modelSelectorProviders: [],
     modeOptions: [],
     availableThinkingOptions: [],
-    archiveOnFinish: config?.archiveOnFinish ?? true,
+    // Delta 76: new schedules keep their run sessions unless the owner turns archiving on.
+    archiveOnFinish: config?.archiveOnFinish ?? false,
     isolation: resolveInitialIsolation({ config, preferences: snapshot.defaults.preferences }),
     effectiveIsolation: "local",
     submitArchiveOnFinish: undefined,

@@ -147,11 +147,14 @@ function countCompletedRuns(schedule: StoredSchedule): number {
   return schedule.runs.filter((run) => run.status !== "running").length;
 }
 
+// Delta 76: a scheduled run's session stays after it finishes unless the schedule
+// says `archiveOnFinish: true`. The owner reads what a run did from its session; an
+// archived one hides that (2026-11-02). A run that produced no agent still archives.
 function shouldArchiveScheduleRunWorkspace(input: {
   agentId: string | null;
   archiveOnFinish?: boolean;
 }): boolean {
-  return input.agentId === null || (input.archiveOnFinish ?? true);
+  return input.agentId === null || (input.archiveOnFinish ?? false);
 }
 
 function shouldCompleteSchedule(schedule: StoredSchedule, now: Date): boolean {

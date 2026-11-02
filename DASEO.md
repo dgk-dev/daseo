@@ -1375,6 +1375,17 @@ acceptLanguages)`, so the header is now `en-US,en-KR;q=0.9,ko-KR;q=0.8`. `--lang
       `use-open-file-externally.ts` beside it, `packages/app/src/file-pane/file-actions.tsx`,
       `packages/desktop/src/features/opener.ts`, and the daemon test
       `packages/server/src/server/daemon-e2e/preview-links.e2e.test.ts`.
+76. **A scheduled run keeps its session** — the owner's call on 2026-11-02 ("세션들 다 기본값
+    남았으면": an archived run hides what it did and how it ended). Upstream archives a
+    new-agent run's workspace at its first idle unless the schedule sets `archiveOnFinish:
+false`; that default is now `false` in the daemon (`schedule/service.ts`
+    `shouldArchiveScheduleRunWorkspace`) and in the schedule form's initial state. A run that
+    produced no agent still archives its empty workspace; `archiveOnFinish: true` still archives
+    as before, and the `Archive on finish` switch in the form sets it explicitly. The seven
+    schedules active on 2026-11-02 were set to `false` over `schedule/update` the same day
+    (the MCP `create_schedule`/`update_schedule` tools and the CLI carry no archive flag; the
+    app form and the RPC do). Tests: `service.test.ts` "a schedule that says nothing about
+    archiving keeps its run session", `schedule-form-model.test.ts` create defaults.
 
 ## Local reliability contracts
 

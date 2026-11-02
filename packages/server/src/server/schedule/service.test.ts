@@ -940,6 +940,57 @@ describe("ScheduleService", () => {
     ]);
   });
 
+  test("a schedule that says nothing about archiving keeps its run session (delta 76)", async () => {
+    const {
+      workspaceRegistry,
+      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
+      createArchiveWorkspace,
+    } = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
+      archiveWorkspace: createArchiveWorkspace({
+        agentManager: manager,
+        agentStorage,
+      }),
+      now: () => now,
+    });
+
+    const created = await service.create({
+      prompt: "default keeps the session",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: {
+        type: "new-agent",
+        config: {
+          provider: "claude",
+          model: "test-model",
+          cwd: tempDir,
+          isolation: "local",
+        },
+      },
+      maxRuns: 1,
+    });
+
+    await service.tick();
+
+    const inspected = await service.inspect(created.id);
+    expect(inspected.runs).toHaveLength(1);
+    const agent = await agentStorage.get(inspected.runs[0]!.agentId!);
+    expect(agent?.archivedAt ?? null).toBeNull();
+    expect(await workspaceRegistry.list()).toEqual([
+      expect.objectContaining({ workspaceId: agent?.workspaceId, cwd: tempDir, archivedAt: null }),
+    ]);
+  });
+
   test("archiveOnFinish=true archives the run workspace through workspace archive", async () => {
     const {
       workspaceRegistry,
@@ -982,6 +1033,8 @@ describe("ScheduleService", () => {
           model: "test-model",
           cwd: tempDir,
           isolation: "local",
+          // Delta 76: archiving is opt-in; the default keeps the session.
+          archiveOnFinish: true,
         },
       },
       maxRuns: 1,
@@ -1301,7 +1354,10 @@ describe("ScheduleService", () => {
     const created = await service.create({
       prompt: "check the deploy",
       cadence: { type: "every", everyMs: 60_000 },
-      target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
+      target: {
+        type: "new-agent",
+        config: { provider: "claude", cwd: tempDir, archiveOnFinish: true },
+      },
       maxRuns: 1,
     });
     await service.tick();
@@ -1507,7 +1563,10 @@ describe("ScheduleService", () => {
     const created = await service.create({
       prompt: "fail and fail cleanup",
       cadence: { type: "every", everyMs: 60_000 },
-      target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
+      target: {
+        type: "new-agent",
+        config: { provider: "claude", cwd: tempDir, archiveOnFinish: true },
+      },
       maxRuns: 1,
     });
     await service.tick();
@@ -1877,6 +1936,7 @@ describe("ScheduleService", () => {
           provider: "claude",
           model: "test-model",
           cwd: tempDir,
+          archiveOnFinish: true,
         },
       },
       maxRuns: 1,
@@ -1988,6 +2048,7 @@ describe("ScheduleService", () => {
           provider: "claude",
           model: "test-model",
           cwd: tempDir,
+          archiveOnFinish: true,
         },
       },
       maxRuns: 1,
@@ -2046,6 +2107,7 @@ describe("ScheduleService", () => {
           provider: "claude",
           model: "test-model",
           cwd: tempDir,
+          archiveOnFinish: true,
         },
       },
       maxRuns: 1,
@@ -2335,7 +2397,7 @@ describe("ScheduleService", () => {
       cadence: { type: "every", everyMs: 60_000 },
       target: {
         type: "new-agent",
-        config: { provider: "claude", cwd: tempDir },
+        config: { provider: "claude", cwd: tempDir, archiveOnFinish: true },
       },
       runOnCreate: false,
     });
