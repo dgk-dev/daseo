@@ -16,7 +16,7 @@ test.describe("provider usage settings", () => {
             providerId: "claude",
             displayName: "Claude",
             status: "available",
-            planLabel: "Max 20x",
+            planLabel: "Ultra",
             windows: [{ id: "session", label: "Session", usedPct: 7 }],
           },
           {

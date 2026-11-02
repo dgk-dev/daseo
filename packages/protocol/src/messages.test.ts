@@ -239,7 +239,7 @@ describe("provider usage list message contract", () => {
             providerId: "claude",
             displayName: "Claude",
             status: "available",
-            planLabel: "Max 20x",
+            planLabel: "Ultra",
             windows: [
               {
                 id: "session",

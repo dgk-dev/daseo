@@ -240,7 +240,7 @@ describe("ProviderUsageService", () => {
               providerId: "claude",
               displayName: "Claude",
               status: "available",
-              planLabel: "Max 20x",
+              planLabel: "Ultra",
               windows: [{ id: "session", label: "Session", usedPct: calls }],
             };
           },
@@ -286,7 +286,7 @@ describe("ProviderUsageService", () => {
       providerId: "claude",
       displayName: "Claude",
       status: "available",
-      planLabel: "Max 20x",
+      planLabel: "Ultra",
       windows: [{ id: "session", label: "Session", usedPct: 12 }],
     });
 
@@ -483,6 +483,24 @@ describe("real provider usage fetchers", () => {
       "https://api.anthropic.com/api/oauth/usage",
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
+  });
+
+  it("labels the old Max 20x and Max 5x credentials by their current names, Ultra and Max", async () => {
+    fetchApi = mockFetch(
+      new Map([
+        ["https://api.anthropic.com/api/oauth/usage", () => jsonResponse(makeClaudeResponse({}))],
+      ]),
+    );
+
+    writeClaudeCredentials(claudeHome, "at_valid", "rt_test", "max", "default_claude_max_20x");
+    expect(findProvider(await service().listUsage(), "claude")).toMatchObject({
+      planLabel: "Ultra",
+    });
+
+    writeClaudeCredentials(claudeHome, "at_valid", "rt_test", "max", "default_claude_max_5x");
+    expect(findProvider(await service().listUsage(), "claude")).toMatchObject({
+      planLabel: "Max",
+    });
   });
 
   it("accepts a null Claude resets_at when a window has no scheduled reset", async () => {

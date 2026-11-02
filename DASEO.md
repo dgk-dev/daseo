@@ -1386,6 +1386,14 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
     (the MCP `create_schedule`/`update_schedule` tools and the CLI carry no archive flag; the
     app form and the RPC do). Tests: `service.test.ts` "a schedule that says nothing about
     archiving keeps its run session", `schedule-form-model.test.ts` create defaults.
+77. **Claude plans carry their current names** — the owner's request on 2026-11-02. Anthropic
+    renamed Max 20x to Ultra and Max 5x to Max on 2026-10-30, but the OAuth credential still
+    says `subscriptionType: "max"` with the old tier (`default_claude_max_20x`), so the provider
+    usage card read "Max 20x". `buildClaudePlan` in
+    `packages/server/src/services/quota-fetcher/providers/claude.ts` maps `max` + `20x` to
+    `Ultra` and `max` + `5x` to `Max`; every other plan keeps upstream's `<Type> <tier>` label.
+    Test: `service.test.ts` "labels the old Max 20x and Max 5x credentials by their current
+    names".
 
 ## Local reliability contracts
 

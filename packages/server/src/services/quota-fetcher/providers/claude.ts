@@ -101,8 +101,12 @@ function buildClaudePlan(
   rateLimitTier: string | undefined,
 ): string | null {
   if (!subscriptionType) return null;
-  const label = subscriptionType.charAt(0).toUpperCase() + subscriptionType.slice(1);
   const tier = rateLimitTier?.split("_").pop();
+  // Daseo delta 77: Anthropic renamed Max 20x to Ultra and Max 5x to Max on 2026-10-30, but
+  // the OAuth credential still says subscriptionType "max" with the old tier suffix.
+  if (subscriptionType === "max" && tier === "20x") return "Ultra";
+  if (subscriptionType === "max" && tier === "5x") return "Max";
+  const label = subscriptionType.charAt(0).toUpperCase() + subscriptionType.slice(1);
   return tier ? `${label} ${tier}` : label;
 }
 
