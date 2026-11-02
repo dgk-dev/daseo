@@ -50,6 +50,13 @@ renderer-side `did-attach` identity maps to the correct main-process guest, that
 tabs share cookies and local storage through one persistent session, and that the data is
 still present after the first Electron process exits and the second starts.
 
+The passkeys group (`PASEO_CAPTURE_HARNESS_GROUP=passkeys`) wires the compiled passkey hub to
+real guests the way `main.ts` does and serves a `localhost` page that calls
+`navigator.credentials.create()` and `get()`: a site with no stored passkey fails in milliseconds,
+a passkey the page registers lands in the store encrypted and signs in from a second guest and
+after a navigation with a rising counter, and `browser_passkeys status` and `delete` run through
+the production service.
+
 The frames-network group (`PASEO_CAPTURE_HARNESS_GROUP=frames-network`) serves a page with a
 same-origin and a cross-origin iframe from two local ports. It runs the compiled automation
 service against the guest and checks that the snapshot nests the same-origin frame's content

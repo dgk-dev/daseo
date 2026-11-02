@@ -426,6 +426,11 @@ function deviceEmulationHost(): DeviceEmulationHost {
   };
 }
 
+/** The tab's CDP command queue, shared by every feature that talks to its debugger. */
+export function getPaseoBrowserCdpQueue(contentsId: number): CdpSessionQueue {
+  return getCdpQueue(contentsId);
+}
+
 function getCdpQueue(contentsId: number): CdpSessionQueue {
   const existing = cdpQueuesByContentsId.get(contentsId);
   if (existing) {

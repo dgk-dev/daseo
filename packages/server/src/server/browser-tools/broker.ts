@@ -541,7 +541,8 @@ function getBrowserIdForCommand(command: BrowserAutomationCommand): string | nul
   if (command.command === "list_tabs" || command.command === "new_tab") {
     return null;
   }
-  return command.args.browserId;
+  // passkeys list/delete need no tab; status names one.
+  return command.args.browserId ?? null;
 }
 
 function describeBrowserHost(host: RegisteredBrowserHost): string {

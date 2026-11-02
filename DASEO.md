@@ -1395,6 +1395,32 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
     Test: `service.test.ts` "labels the old Max 20x and Max 5x credentials by their current
     names".
 
+78. **Passkeys work in the browser, served by an agent-owned software authenticator** — the
+    owner's request on 2026-11-02 after a ChatGPT sign-in asked for a passkey and nothing
+    happened. Measured: Electron enables no platform authenticator, so a page's
+    `navigator.credentials.get()` hung with no dialog past its own timeout; the macOS passkey
+    sheet (iCloud Keychain, 1Password) is out of reach because Chromium gates it on Apple's
+    `com.apple.developer.web-browser.public-key-credential` entitlement and Electron 45's
+    `platformPasskeys` serves only an app's own associated domain. Every browser webview and
+    popup now gets Chromium's CDP virtual authenticator (`WebAuthn.enable` +
+    `addVirtualAuthenticator`: ctap2, internal transport, resident keys, user verification,
+    backup flags) re-installed on every main-frame commit, because Chromium drops the
+    environment on each navigation (measured). Credentials a site registers arrive through
+    `WebAuthn.credentialAdded` and are kept in `userData/browser-passkeys.json` (0600, private
+    keys `safeStorage`-encrypted) and added to every other open tab; `credentialAsserted`
+    updates the counter everywhere so no tab signs with a stale count; the browser profile
+    session's `select-webauthn-account` picks the stored passkey used most recently (Electron
+    cancels a discoverable get() without that answer). A site with no stored passkey fails in a
+    few ms with `NotAllowedError` instead of hanging, so the agent takes the password or code
+    route. New MCP tool `browser_passkeys` (`list` / `status` / `delete`; never the keys).
+    `PASEO_BROWSER_PASSKEYS=0` turns it off. Key files:
+    `packages/desktop/src/features/browser-automation/passkeys.ts`, the `passkeys` branch in
+    `service.ts`, `configureBrowserPasskeys` in `packages/desktop/src/main.ts`,
+    `packages/protocol/src/browser-automation/rpc-schemas.ts`, `browser_passkeys` in
+    `packages/server/src/server/browser-tools/tools.ts`. Tests: `passkeys.test.ts`, protocol and
+    tools tests, and the real-Electron `passkeys` capture-harness group (register, sign in from
+    another guest and after a navigation, status, delete).
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

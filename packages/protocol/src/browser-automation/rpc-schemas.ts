@@ -51,6 +51,7 @@ export const BROWSER_AUTOMATION_COMMAND_NAMES = [
   "read",
   "find",
   "styles",
+  "passkeys",
 ] as const;
 
 export const BrowserAutomationCommandNameSchema = z.enum(BROWSER_AUTOMATION_COMMAND_NAMES);
@@ -67,6 +68,7 @@ const BrowserAutomationTabTargetSchema = z
   .strict();
 
 const BrowserAutomationRefSchema = z.string().regex(/^@e\d+$/);
+const BrowserAutomationBase64UrlSchema = z.string().regex(/^[A-Za-z0-9_-]+$/);
 const BrowserAutomationMouseButtonSchema = z.enum(["left", "right", "middle"]);
 const BrowserAutomationInputModifierSchema = z.enum(["Alt", "Control", "Meta", "Shift"]);
 const BrowserAutomationHttpUrlSchema = z
@@ -399,6 +401,24 @@ export const BrowserAutomationStylesCommandSchema = z.object({
   }),
 });
 
+export const BrowserAutomationPasskeysActionSchema = z.enum(["list", "status", "delete"]);
+
+// Daseo delta 78: the browser's agent-owned software passkeys (list / status / delete).
+export const BrowserAutomationPasskeysCommandSchema = z.object({
+  command: z.literal("passkeys"),
+  args: z
+    .object({
+      action: BrowserAutomationPasskeysActionSchema.default("list"),
+      /** `status` reports on this tab's site; `list` and `delete` need no tab. */
+      browserId: BrowserAutomationBrowserIdSchema.optional(),
+      /** base64url credential id, as `browser_passkeys list` shows it; required by `delete`. */
+      credentialId: z.string().min(1).optional(),
+      /** `list` only: keep passkeys whose relying party is this host or a parent of it. */
+      rpId: z.string().min(1).optional(),
+    })
+    .strict(),
+});
+
 export const BrowserAutomationCommandSchema = z.discriminatedUnion("command", [
   BrowserAutomationListTabsCommandSchema,
   BrowserAutomationNewTabCommandSchema,
@@ -429,6 +449,7 @@ export const BrowserAutomationCommandSchema = z.discriminatedUnion("command", [
   BrowserAutomationReadCommandSchema,
   BrowserAutomationFindCommandSchema,
   BrowserAutomationStylesCommandSchema,
+  BrowserAutomationPasskeysCommandSchema,
 ]);
 
 export const BrowserAutomationTabInfoSchema = z.object({
@@ -804,6 +825,42 @@ export const BrowserAutomationStylesResultSchema = z.object({
   truncated: z.boolean(),
 });
 
+export const BrowserAutomationPasskeyInfoSchema = z.object({
+  /** base64url, equal to `PublicKeyCredential.id` on the page. Never the private key. */
+  credentialId: BrowserAutomationBase64UrlSchema,
+  rpId: z.string(),
+  userName: z.string().optional(),
+  userDisplayName: z.string().optional(),
+  createdAt: z.string(),
+  lastUsedAt: z.string().optional(),
+  /** Page URL the site registered it from. */
+  createdOnUrl: z.string().optional(),
+  signCount: z.number().int().nonnegative(),
+});
+
+export const BrowserAutomationPasskeysResultSchema = z.object({
+  command: z.literal("passkeys"),
+  action: BrowserAutomationPasskeysActionSchema,
+  passkeys: z.array(BrowserAutomationPasskeyInfoSchema),
+  /** Present for `status`. */
+  tab: z
+    .object({
+      browserId: BrowserAutomationBrowserIdSchema,
+      /** Host of the tab's current page; absent for non-HTTP pages. */
+      host: z.string().optional(),
+      /** Whether the software authenticator is installed in the tab right now. */
+      installed: z.boolean(),
+    })
+    .optional(),
+  /** Present for `delete`: whether a stored passkey was removed. */
+  deleted: z.boolean().optional(),
+  storage: z.object({
+    path: z.string(),
+    /** Private keys are encrypted at rest with the OS keychain-backed key. */
+    encrypted: z.boolean(),
+  }),
+});
+
 export const BrowserAutomationResultSchema = z.discriminatedUnion("command", [
   BrowserAutomationListTabsResultSchema,
   BrowserAutomationNewTabResultSchema,
@@ -834,6 +891,7 @@ export const BrowserAutomationResultSchema = z.discriminatedUnion("command", [
   BrowserAutomationReadResultSchema,
   BrowserAutomationFindResultSchema,
   BrowserAutomationStylesResultSchema,
+  BrowserAutomationPasskeysResultSchema,
 ]);
 
 export const BrowserAutomationErrorSchema = z.object({
@@ -919,6 +977,12 @@ export type BrowserAutomationStylesCommandArgs = z.infer<
 >["args"];
 export type BrowserAutomationStyleRule = z.infer<typeof BrowserAutomationStyleRuleSchema>;
 export type BrowserAutomationStylesResult = z.infer<typeof BrowserAutomationStylesResultSchema>;
+export type BrowserAutomationPasskeysAction = z.infer<typeof BrowserAutomationPasskeysActionSchema>;
+export type BrowserAutomationPasskeysCommandArgs = z.infer<
+  typeof BrowserAutomationPasskeysCommandSchema
+>["args"];
+export type BrowserAutomationPasskeyInfo = z.infer<typeof BrowserAutomationPasskeyInfoSchema>;
+export type BrowserAutomationPasskeysResult = z.infer<typeof BrowserAutomationPasskeysResultSchema>;
 export type BrowserAutomationResizeCommandArgs = z.infer<
   typeof BrowserAutomationResizeCommandSchema
 >["args"];

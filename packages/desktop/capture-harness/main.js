@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const http = require("node:http");
+const os = require("node:os");
 const path = require("node:path");
 const { isDeepStrictEqual } = require("node:util");
 const { app, BrowserWindow, ipcMain, Menu, nativeImage, screen, session } = require("electron");
@@ -3223,6 +3224,293 @@ function networkArgs(browserId, action) {
   return { browserId, action, maxEntries: 50, includeBodies: false, includeRequestBodies: false };
 }
 
+// Delta 78 browser passkeys, through the production hub, CDP adapter, and automation service
+// against real guests: a site with no stored passkey fails at once, a passkey a site registers is
+// stored encrypted and signs in from another guest and after a navigation, and delete revokes it.
+const PASSKEY_PAGE = `<!doctype html><html><head><title>Passkey target</title></head><body>
+  <h1>Passkey target</h1>
+  <script>
+    const rnd = () => crypto.getRandomValues(new Uint8Array(32));
+    window.__create = async () => {
+      try {
+        const cred = await navigator.credentials.create({ publicKey: {
+          challenge: rnd(), rp: { id: 'localhost', name: 'harness' },
+          user: { id: new TextEncoder().encode('user-1'), name: 'alice@example.com', displayName: 'Alice' },
+          pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
+          authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
+          timeout: 10000,
+        }});
+        return { ok: true, id: cred.id };
+      } catch (e) { return { ok: false, name: e.name }; }
+    };
+    window.__get = async () => {
+      const t0 = performance.now();
+      try {
+        const a = await Promise.race([
+          navigator.credentials.get({ publicKey: {
+            challenge: rnd(), rpId: 'localhost', userVerification: 'preferred', timeout: 10000, allowCredentials: [],
+          }}),
+          // A request with no authenticator environment never settles; the harness must.
+          new Promise((_, reject) => setTimeout(() => reject(new DOMException('harness timeout', 'HarnessTimeoutError')), 8000)),
+        ]);
+        const data = new Uint8Array(a.response.authenticatorData);
+        const counter = ((data[33] << 24) | (data[34] << 16) | (data[35] << 8) | data[36]) >>> 0;
+        return { ok: true, id: a.id, counter, ms: Math.round(performance.now() - t0) };
+      } catch (e) { return { ok: false, name: e.name, ms: Math.round(performance.now() - t0) }; }
+    };
+  </script></body></html>`;
+
+async function startPasskeyServer() {
+  const server = http.createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(PASSKEY_PAGE);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  // WebAuthn needs https or literally "localhost".
+  return { server, url: `http://localhost:${server.address().port}/` };
+}
+
+function createPasskeyAutomation(guest, browserId) {
+  const { executeAutomationCommand } = require(PRODUCTION_BROWSER_AUTOMATION_SERVICE_PATH);
+  const { adaptWebContents } = require(PRODUCTION_BROWSER_AUTOMATION_IPC_PATH);
+  const { BrowserSnapshotEngine } = require(PRODUCTION_BROWSER_SNAPSHOT_ENGINE_PATH);
+  const workspaceId = "passkeys-harness-workspace";
+  const tab = adaptWebContents(guest);
+  const registry = {
+    listRegisteredBrowserIds: () => [browserId],
+    listRegisteredBrowserIdsForWorkspace: () => [browserId],
+    getTabContents: (candidate) => (candidate === browserId ? tab : null),
+    getBrowserWorkspaceId: (candidate) => (candidate === browserId ? workspaceId : null),
+    getWorkspaceActiveBrowserId: () => null,
+    isBrowserInputFocused: () => false,
+    getBrowserTargetMetadata: () => ({ kind: "tab" }),
+  };
+  const snapshotEngine = new BrowserSnapshotEngine();
+  let requestCounter = 0;
+  return async (label, command) => {
+    const response = await executeAutomationCommand(
+      {
+        type: "browser.automation.execute.request",
+        requestId: `passkeys-${(requestCounter += 1)}`,
+        workspaceId,
+        cwd: OUT_DIR,
+        command,
+      },
+      registry,
+      { snapshotEngine },
+    );
+    if (!response.ok) fail(`${label} failed: ${JSON.stringify(response)}`);
+    return response.result;
+  };
+}
+
+function createPasskeyHarnessHub() {
+  const passkeys = require(path.join(PRODUCTION_BROWSER_AUTOMATION_DIR, "passkeys.js"));
+  const { CdpSessionQueue } = require(
+    path.join(PRODUCTION_BROWSER_AUTOMATION_DIR, "cdp-session-queue.js"),
+  );
+  const storeDir = fs.mkdtempSync(path.join(os.tmpdir(), "paseo-passkeys-harness-"));
+  const storePath = path.join(storeDir, "browser-passkeys.json");
+  // Reversible stand-in for safeStorage: the harness Electron has no stable keychain identity.
+  const cipher = {
+    isEncryptionAvailable: () => true,
+    encryptString: (plain) => Buffer.from(`sealed:${plain}`, "utf8"),
+    decryptString: (sealed) => sealed.toString("utf8").replace(/^sealed:/, ""),
+  };
+  const store = new passkeys.PasskeyStore(storePath, cipher);
+  const hub = new passkeys.PaseoBrowserPasskeys({
+    store,
+    log: (message, detail) => console.log(message, JSON.stringify(detail ?? {})),
+  });
+  passkeys.setPaseoBrowserPasskeys(hub);
+  return {
+    hub,
+    store,
+    storePath,
+    attach: (contents) => {
+      hub.bindSession(contents.session);
+      hub.attach(contents, new CdpSessionQueue());
+    },
+    dispose: () => {
+      passkeys.setPaseoBrowserPasskeys(null);
+      fs.rmSync(storeDir, { recursive: true, force: true });
+    },
+  };
+}
+
+function passkeyCheck(checks, name, problems, detail) {
+  if (problems.length > 0)
+    fail(`passkeys ${name} (${problems.join("; ")}): ${JSON.stringify(detail)}`);
+  pass(`passkeys ${name}`);
+  checks.push({ group: "passkeys", check: name, pass: true });
+}
+
+function passkeyProblems(pairs) {
+  return pairs
+    .filter(([actual, wanted]) => actual !== wanted)
+    .map(([a, w]) => `${JSON.stringify(a)} != ${JSON.stringify(w)}`);
+}
+
+async function verifyPasskeyRegistration({ checks, first, harness, page }) {
+  const emptyGet = await page(first, "__get()");
+  passkeyCheck(
+    checks,
+    "a site with no stored passkey fails at once instead of hanging",
+    passkeyProblems([
+      [emptyGet.ok, false],
+      [emptyGet.name, "NotAllowedError"],
+      [emptyGet.ms < 2000, true],
+    ]),
+    emptyGet,
+  );
+  const created = await page(first, "__create()");
+  const deadline = Date.now() + 3000;
+  while (harness.store.list().length === 0 && Date.now() < deadline) await delay(50);
+  const stored = harness.store.list()[0];
+  passkeyCheck(
+    checks,
+    "a passkey the site registers is stored with its account",
+    passkeyProblems([
+      [created.ok, true],
+      [stored?.credentialId, created.id],
+      [stored?.rpId, "localhost"],
+      [stored?.userName, "alice@example.com"],
+    ]),
+    { created, stored: stored && { ...stored, privateKey: "<omitted>" } },
+  );
+  const onDisk = fs.readFileSync(harness.storePath, "utf8");
+  const mode = fs.statSync(harness.storePath).mode & 0o777;
+  passkeyCheck(
+    checks,
+    "the private key is encrypted at rest",
+    passkeyProblems([
+      [JSON.parse(onDisk).encrypted, true],
+      [onDisk.includes(harness.store.privateKeyOf(stored)), false],
+      [mode, 0o600],
+    ]),
+    { mode: mode.toString(8) },
+  );
+  return { created, stored };
+}
+
+async function verifyPasskeyReuse({ checks, first, second, harness, page, url, created }) {
+  const secondGet = await page(second, "__get()");
+  passkeyCheck(
+    checks,
+    "another guest signs in with the stored passkey, no prompt",
+    passkeyProblems([
+      [secondGet.ok, true],
+      [secondGet.id, created.id],
+      [secondGet.ms < 2000, true],
+    ]),
+    secondGet,
+  );
+  // A query string makes this a real cross-document navigation (a same-URL load is folded
+  // into a reload). loadURL resolves on did-finish-load, a moment before isLoading() turns
+  // false, so waiting for another load event afterwards would wait forever.
+  await withTimeout(first.loadURL(`${url}?again=1`), "first guest second loadURL", 10000);
+  const loadDeadline = Date.now() + 5000;
+  while (first.isLoading() && Date.now() < loadDeadline) await delay(20);
+  await withTimeout(harness.hub.settle(first.id), "first guest reinstall settle", 10000);
+  const afterNavigation = await withTimeout(page(first, "__get()"), "get after navigation", 12000);
+  passkeyCheck(
+    checks,
+    "the authenticator survives a navigation and the counter keeps rising",
+    passkeyProblems([
+      [afterNavigation.ok, true],
+      [afterNavigation.counter > secondGet.counter, true],
+    ]),
+    { afterNavigation, secondGet },
+  );
+}
+
+async function verifyPasskeyTool({ checks, second, harness, page, created, stored }) {
+  const browserId = "44444444-4444-4444-8444-444444444444";
+  const run = createPasskeyAutomation(second, browserId);
+  const status = await run("passkeys status", {
+    command: "passkeys",
+    args: { action: "status", browserId },
+  });
+  passkeyCheck(
+    checks,
+    "browser_passkeys status reports the tab's site and stored passkey",
+    passkeyProblems([
+      [status.tab.installed, true],
+      [status.tab.host, "localhost"],
+      [status.passkeys.length, 1],
+      [status.passkeys[0]?.credentialId, created.id],
+      [status.storage.encrypted, true],
+      [JSON.stringify(status).includes(harness.store.privateKeyOf(stored)), false],
+    ]),
+    status,
+  );
+  const deleted = await run("passkeys delete", {
+    command: "passkeys",
+    args: { action: "delete", credentialId: created.id },
+  });
+  const afterDelete = await page(second, "__get()");
+  const listed = await run("passkeys list", { command: "passkeys", args: { action: "list" } });
+  passkeyCheck(
+    checks,
+    "delete revokes the passkey in the store and in the live guest",
+    passkeyProblems([
+      [deleted.deleted, true],
+      [listed.passkeys.length, 0],
+      [afterDelete.ok, false],
+      [afterDelete.name, "NotAllowedError"],
+    ]),
+    { deleted, listed, afterDelete },
+  );
+}
+
+async function runPasskeysGroup() {
+  const harness = createPasskeyHarnessHub();
+  const { server, url } = await startPasskeyServer();
+  const handle = createInactiveHarnessWindow({
+    width: 1000,
+    height: 700,
+    backgroundColor: "#202020",
+    webPreferences: { webviewTag: true, contextIsolation: true, nodeIntegration: false },
+  });
+  const { win } = handle;
+  installHarnessWebviewGuards(win);
+  const tracker = trackAttachedGuests(win, { disableGuestBackgroundThrottlingAtAttach: true });
+  // The production wiring: bind the picker to the guest session and attach every guest.
+  win.webContents.on("did-attach-webview", (_event, contents) => harness.attach(contents));
+  const checks = [];
+  const page = (guest, code) => guest.executeJavaScript(code, true);
+  const openGuest = async () => {
+    const { guest } = await appendPermanentWebview({
+      win,
+      tracker,
+      state: { id: "p1-overflow-1x1" },
+      sourceUrl: url,
+    });
+    await waitForGuestLoad(guest);
+    await harness.hub.settle(guest.id);
+    return guest;
+  };
+  try {
+    await withTimeout(
+      win.loadFile(path.join(ROOT, "index.html"), {
+        query: { webviewCount: "0", permanentParkingState: "p1-overflow-1x1" },
+      }),
+      "passkeys harness window loadFile",
+    );
+    await waitForInactiveReveal(handle, "passkeys harness window");
+    const first = await openGuest();
+    const { created, stored } = await verifyPasskeyRegistration({ checks, first, harness, page });
+    const second = await openGuest();
+    await verifyPasskeyReuse({ checks, first, second, harness, page, url, created });
+    await verifyPasskeyTool({ checks, second, harness, page, created, stored });
+    return checks;
+  } finally {
+    harness.dispose();
+    if (!win.isDestroyed()) win.close();
+    await closeServer(server);
+  }
+}
+
 // Delta 33 tab lifecycle, through the production IPC handler, lifecycle, CDP adapter, and
 // automation service against a real parked guest. Unlike the Playwright desktop E2E, nothing here
 // enables DevTools focus emulation, which pins a page visible and so unfreezable.
@@ -3710,6 +3998,7 @@ async function main() {
       "frames-network",
       "debugging",
       "tab-lifecycle",
+      "passkeys",
     ].includes(HARNESS_GROUP)
   ) {
     fail(`unknown harness group ${HARNESS_GROUP}`);
@@ -3722,6 +4011,16 @@ async function main() {
       `${JSON.stringify({ generatedAt: new Date().toISOString(), tabLifecycleResults }, null, 2)}\n`,
     );
     pass(`capture harness tab-lifecycle complete output=${OUT_DIR}`);
+    return;
+  }
+
+  if (HARNESS_GROUP === "passkeys") {
+    const passkeysResults = await runPasskeysGroup();
+    await fsp.writeFile(
+      path.join(OUT_DIR, "results.json"),
+      `${JSON.stringify({ generatedAt: new Date().toISOString(), passkeysResults }, null, 2)}\n`,
+    );
+    pass(`capture harness passkeys complete output=${OUT_DIR}`);
     return;
   }
 

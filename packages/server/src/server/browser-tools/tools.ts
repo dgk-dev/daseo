@@ -19,6 +19,7 @@ import {
   type BrowserAutomationNetworkLogEntry,
   type BrowserAutomationNetworkResult,
   type BrowserAutomationReadResult,
+  type BrowserAutomationPasskeysResult,
   type BrowserAutomationStylesResult,
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import type { BrowserToolsBroker } from "./broker.js";
@@ -1094,6 +1095,43 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
       return browserToolResult({ payload, context: { ...context, browserId } });
     },
   );
+
+  registerTool(
+    "browser_passkeys",
+    {
+      title: "Browser passkeys",
+      description:
+        "Passkeys in the Paseo browser. Every tab carries an agent-owned software authenticator: a site's passkey sign-in (navigator.credentials.get) completes at once with no Touch ID or phone when this store holds a passkey for the site, and a passkey a site registers (create) is saved here, encrypted, and served to every later tab. A site with no stored passkey gets an immediate NotAllowedError instead of a hanging prompt, so take its password, code, or 'other method' option (browser_login fills saved passwords), or register a passkey for it once while signed in and later sign-ins need nothing. action list (default) shows stored passkeys with credentialId, site and account, never keys; status says whether the tab's current site has one and whether the authenticator is installed in that tab; delete removes one by credentialId.",
+      inputSchema: {
+        action: z.enum(["list", "status", "delete"]).default("list"),
+        browserId: BrowserAutomationBrowserIdSchema.optional(),
+        credentialId: z.string().trim().min(1).optional(),
+        rpId: z.string().trim().min(1).optional(),
+      },
+    },
+    async ({ action, browserId, credentialId, rpId }) => {
+      const context = resolveBrowserToolContext(options);
+      const payload = await options.broker.execute({
+        agentId: context.agentId,
+        cwd: context.cwd,
+        ...(context.workspaceId ? { workspaceId: context.workspaceId } : {}),
+
+        command: {
+          command: "passkeys",
+          args: {
+            action,
+            ...(browserId ? { browserId } : {}),
+            ...(credentialId ? { credentialId } : {}),
+            ...(rpId ? { rpId } : {}),
+          },
+        },
+      });
+      return browserToolResult({
+        payload,
+        context: { ...context, ...(browserId ? { browserId } : {}) },
+      });
+    },
+  );
 }
 
 function resolveBrowserToolContext(options: RegisterBrowserToolsOptions): {
@@ -1403,6 +1441,45 @@ function describeReadSource(
   return requestedScope === "main" ? "whole page (no main content detected)" : "whole page";
 }
 
+function summarizeBrowserPasskeys(result: BrowserAutomationPasskeysResult): string {
+  const lines: string[] = [];
+  if (result.action === "status" && result.tab) {
+    const site = result.tab.host
+      ? `this tab's site ${result.tab.host}`
+      : "this tab (not an HTTP page)";
+    lines.push(
+      result.tab.installed
+        ? `Software passkey authenticator is installed in the tab.`
+        : `Software passkey authenticator is not installed in the tab (install failed or pending).`,
+    );
+    lines.push(
+      result.passkeys.length === 0
+        ? `No stored passkey for ${site}: a passkey prompt there fails at once, so use the site's password, code, or other sign-in method.`
+        : `${result.passkeys.length} stored passkey${result.passkeys.length === 1 ? "" : "s"} for ${site}; its passkey sign-in completes without any prompt.`,
+    );
+  } else if (result.action === "delete") {
+    lines.push(result.deleted ? "Passkey deleted." : "No stored passkey had that credentialId.");
+  }
+  if (result.action !== "status" || result.passkeys.length > 0) {
+    lines.push(
+      result.passkeys.length === 0
+        ? "No stored passkeys."
+        : `${result.passkeys.length} stored passkey${result.passkeys.length === 1 ? "" : "s"}:`,
+    );
+    for (const passkey of result.passkeys) {
+      const account = passkey.userName ?? passkey.userDisplayName ?? "(no account name)";
+      const used = passkey.lastUsedAt ? `last used ${passkey.lastUsedAt}` : "never used";
+      lines.push(
+        `  ${passkey.rpId}  ${account}  credentialId=${passkey.credentialId}  created ${passkey.createdAt}, ${used}`,
+      );
+    }
+  }
+  lines.push(
+    `Store: ${result.storage.path} (${result.storage.encrypted ? "private keys encrypted with the OS keychain-backed key" : "not encrypted: OS encryption unavailable"}).`,
+  );
+  return lines.join("\n");
+}
+
 function summarizeBrowserStyles(result: BrowserAutomationStylesResult): string {
   const lines = [`Styles of ${result.element} (${result.ref}), highest precedence first:`];
   if (result.rules.length === 0) {
@@ -1576,6 +1653,10 @@ function summarizeBrowserDiagnosticsSuccess(
 
   if (result.command === "network") {
     return summarizeBrowserNetwork(result);
+  }
+
+  if (result.command === "passkeys") {
+    return summarizeBrowserPasskeys(result);
   }
 
   if (result.command !== "logs") {

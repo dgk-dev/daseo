@@ -27,6 +27,7 @@ import {
   nativeImage,
   net,
   protocol,
+  safeStorage,
   screen,
   session,
   webContents,
@@ -122,9 +123,16 @@ import { runDesktopStartup } from "./desktop-startup.js";
 import { autoUpdateInstalledSkills } from "./integrations/skills/index.js";
 import {
   adaptWebContents,
+  getPaseoBrowserCdpQueue,
   preparePersistentBrowserDialogMonitoring,
   registerBrowserAutomationIpc,
 } from "./features/browser-automation/ipc.js";
+import {
+  PaseoBrowserPasskeys,
+  PasskeyStore,
+  getPaseoBrowserPasskeys,
+  setPaseoBrowserPasskeys,
+} from "./features/browser-automation/passkeys.js";
 import { wasPaseoBrowserRecentlyAutomated } from "./features/browser-automation/activity.js";
 import {
   disableFocusOnNavigation,
@@ -496,6 +504,10 @@ function installBrowserWindowOpenHandler(input: {
 
           preparePaseoBrowserWebContents(popupContents);
           adaptWebContents(popupContents);
+          getPaseoBrowserPasskeys()?.attach(
+            popupContents,
+            getPaseoBrowserCdpQueue(popupContents.id),
+          );
           preparePersistentBrowserDialogMonitoring(popupContents);
           registerBrowserWebviewNavigationGuards(popupContents);
           popupContents.on("context-menu", (_event, params) => {
@@ -1261,6 +1273,7 @@ async function createWindow(
   mainWindow.webContents.on("did-attach-webview", (_event, contents) => {
     preparePaseoBrowserWebContents(contents, { discardable: true });
     adaptWebContents(contents);
+    getPaseoBrowserPasskeys()?.attach(contents, getPaseoBrowserCdpQueue(contents.id));
     contents.once("destroyed", () => {
       pendingBrowserWindowOpenRequests.delete(contents.id);
       browserPopupTargets.closeRootByWebContents(contents.id);
@@ -1424,6 +1437,35 @@ async function runCliPassthroughIfRequested(): Promise<boolean> {
 
 // Delta 33: idle browser tabs step down to throttled and frozen unless the desktop settings file
 // sets browser.suspendIdleTabs to false. A tab with a download in progress is never frozen.
+// Delta 78: every browser tab carries an agent-owned software passkey authenticator, so a
+// site's passkey sign-in completes at once and a passkey a site registers is kept for later
+// tabs. Private keys rest in userData encrypted with the OS keychain-backed key.
+// PASEO_BROWSER_PASSKEYS=0 turns it off; the tool then reports browser_unsupported.
+function configureBrowserPasskeys(): void {
+  if (process.env.PASEO_BROWSER_PASSKEYS === "0") {
+    log.info("[browser-passkeys] disabled by PASEO_BROWSER_PASSKEYS=0");
+    return;
+  }
+  try {
+    const store = new PasskeyStore(
+      path.join(app.getPath("userData"), "browser-passkeys.json"),
+      safeStorage,
+    );
+    const hub = new PaseoBrowserPasskeys({
+      store,
+      log: (message, detail) => log.info(message, detail),
+    });
+    hub.bindSession(session.fromPartition(PASEO_BROWSER_PROFILE_PARTITION));
+    setPaseoBrowserPasskeys(hub);
+    log.info("[browser-passkeys] ready", {
+      stored: store.list().length,
+      encrypted: store.isEncrypted,
+    });
+  } catch (error) {
+    log.warn("[browser-passkeys] unavailable", error);
+  }
+}
+
 async function configureBrowserTabLifecycle(): Promise<void> {
   try {
     const settings = await getDesktopSettingsStore().get();
@@ -1466,6 +1508,7 @@ async function bootstrap(): Promise<void> {
     platform: userAgentDataPlatform(process.platform),
   });
   await configureBrowserTabLifecycle();
+  configureBrowserPasskeys();
 
   const appDistDir = getAppDistDir();
   protocol.handle(APP_SCHEME, (request) => {

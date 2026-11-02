@@ -11,6 +11,7 @@ import type {
   BrowserAutomationExecuteRequest,
   BrowserAutomationFindCommandArgs,
   BrowserAutomationNetworkLogEntry,
+  BrowserAutomationPasskeysCommandArgs,
   BrowserAutomationReadCommandArgs,
   BrowserAutomationResizeCommandArgs,
   BrowserAutomationStylesCommandArgs,
@@ -25,6 +26,7 @@ import { planStreamInputCdpSteps } from "./stream-input.js";
 import { FullPageCaptureUnsupportedError } from "./full-page-capture.js";
 import type { TabLoadingInfo } from "./load-tracker.js";
 import type { NetworkCaptureControl } from "./network-capture.js";
+import { getPaseoBrowserPasskeys, hostOf } from "./passkeys.js";
 import { capReadContent, parseReadScriptResult } from "./read.js";
 import { buildReadScript } from "./read-script.js";
 import { BrowserSnapshotEngine } from "./snapshot-engine.js";
@@ -680,7 +682,86 @@ const commandHandlers: Record<BrowserAutomationCommand["command"], CommandHandle
     const stylesCommand = command as Extract<BrowserAutomationCommand, { command: "styles" }>;
     return executeStyles(requestId, workspaceId, stylesCommand.args, registry, snapshotEngine);
   },
+  passkeys: ({ command, requestId, workspaceId, registry }) => {
+    const passkeysCommand = command as Extract<BrowserAutomationCommand, { command: "passkeys" }>;
+    return executePasskeys(requestId, workspaceId, passkeysCommand.args, registry);
+  },
 };
+
+// Daseo delta 78: the browser's agent-owned software passkeys.
+async function executePasskeys(
+  requestId: string,
+  workspaceId: string | undefined,
+  args: BrowserAutomationPasskeysCommandArgs,
+  registry: BrowserRegistry,
+): Promise<AutomationCommandPayload> {
+  const hub = getPaseoBrowserPasskeys();
+  if (!hub) {
+    return fail(
+      requestId,
+      "browser_unsupported",
+      "Browser passkeys are not available in this browser host.",
+    );
+  }
+  if (args.action === "delete") {
+    if (!args.credentialId) {
+      return fail(requestId, "browser_unsupported", "browser_passkeys delete needs credentialId.");
+    }
+    const deleted = await hub.delete(args.credentialId);
+    return {
+      requestId,
+      ok: true,
+      result: {
+        command: "passkeys",
+        action: "delete",
+        passkeys: hub.listInfo(),
+        deleted,
+        storage: hub.storage(),
+      },
+    };
+  }
+  if (args.action === "status") {
+    if (!args.browserId) {
+      return fail(requestId, "browser_unsupported", "browser_passkeys status needs browserId.");
+    }
+    const target = resolveTabTarget({
+      requestId,
+      workspaceId,
+      browserId: args.browserId,
+      registry,
+    });
+    if ("ok" in target) {
+      return target;
+    }
+    await hub.settle(target.contents.id);
+    const host = hostOf(target.contents.getURL());
+    return {
+      requestId,
+      ok: true,
+      result: {
+        command: "passkeys",
+        action: "status",
+        passkeys: host ? hub.listInfo(host) : [],
+        tab: {
+          browserId: target.browserId,
+          ...(host ? { host } : {}),
+          installed: hub.isInstalled(target.contents.id),
+        },
+        storage: hub.storage(),
+      },
+    };
+  }
+  return {
+    requestId,
+    ok: true,
+    result: {
+      command: "passkeys",
+      action: "list",
+      passkeys: hub.listInfo(args.rpId),
+      storage: hub.storage(),
+    },
+  };
+}
 
 async function executeResizeEmulation(
   requestId: string,

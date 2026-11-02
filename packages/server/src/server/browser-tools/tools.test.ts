@@ -686,6 +686,7 @@ describe("registerBrowserTools", () => {
       "browser_resize",
       "browser_close_tab",
       "browser_styles",
+      "browser_passkeys",
     ]);
   });
 
@@ -789,6 +790,79 @@ describe("registerBrowserTools", () => {
         "- 2026-10-21T12:00:00.000Z warning: deprecated API (https://a.test/app.js:12)",
         "Network:",
         "- 500 POST https://a.test/api (fetch, 57ms, 789B) start=1234",
+      ].join("\n"),
+    });
+  });
+
+  test("passkeys status tells the agent whether the site's passkey sign-in will work", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-passkeys",
+      ok: true,
+      result: {
+        command: "passkeys",
+        action: "status",
+        passkeys: [
+          {
+            credentialId: "sPZ3IokjIrg4qoUzz7mCEXfH9NRTc3-DGVL6f9WjGF4",
+            rpId: "chatgpt.com",
+            userName: "dgk@dfcorp.co.kr",
+            createdAt: "2026-11-02T03:00:00.000Z",
+            lastUsedAt: "2026-11-02T04:00:00.000Z",
+            signCount: 3,
+          },
+        ],
+        tab: { browserId: BROWSER_ID, host: "auth.chatgpt.com", installed: true },
+        storage: {
+          path: "/Users/me/Library/Application Support/Paseo/browser-passkeys.json",
+          encrypted: true,
+        },
+      },
+    });
+
+    const response = await harness.execute("browser_passkeys", {
+      action: "status",
+      browserId: BROWSER_ID,
+    });
+
+    expect(harness.broker.calls.at(-1)?.command).toEqual({
+      command: "passkeys",
+      args: { action: "status", browserId: BROWSER_ID },
+    });
+    expect(response.content[0]).toEqual({
+      type: "text",
+      text: [
+        "Software passkey authenticator is installed in the tab.",
+        "1 stored passkey for this tab's site auth.chatgpt.com; its passkey sign-in completes without any prompt.",
+        "1 stored passkey:",
+        "  chatgpt.com  dgk@dfcorp.co.kr  credentialId=sPZ3IokjIrg4qoUzz7mCEXfH9NRTc3-DGVL6f9WjGF4  created 2026-11-02T03:00:00.000Z, last used 2026-11-02T04:00:00.000Z",
+        "Store: /Users/me/Library/Application Support/Paseo/browser-passkeys.json (private keys encrypted with the OS keychain-backed key).",
+      ].join("\n"),
+    });
+  });
+
+  test("passkeys list with nothing stored says so and defaults the action", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-passkeys",
+      ok: true,
+      result: {
+        command: "passkeys",
+        action: "list",
+        passkeys: [],
+        storage: { path: "/tmp/browser-passkeys.json", encrypted: false },
+      },
+    });
+    const response = await harness.execute("browser_passkeys", {});
+    expect(harness.broker.calls.at(-1)?.command).toEqual({
+      command: "passkeys",
+      args: { action: "list" },
+    });
+    expect(response.content[0]).toEqual({
+      type: "text",
+      text: [
+        "No stored passkeys.",
+        "Store: /tmp/browser-passkeys.json (not encrypted: OS encryption unavailable).",
       ].join("\n"),
     });
   });

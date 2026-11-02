@@ -1127,3 +1127,57 @@ describe("browser automation execute RPC schemas", () => {
     });
   });
 });
+
+describe("browser passkeys command (Daseo delta 78)", () => {
+  test("list needs no tab and defaults the action", () => {
+    const parsed = BrowserAutomationExecuteRequestSchema.parse({
+      type: "browser.automation.execute.request",
+      requestId: "req-passkeys",
+      command: { command: "passkeys", args: {} },
+    });
+    expect(parsed.command).toEqual({ command: "passkeys", args: { action: "list" } });
+  });
+
+  test("status carries the tab, delete the credential id, and a result lists no private key", () => {
+    const status = BrowserAutomationExecuteRequestSchema.parse({
+      type: "browser.automation.execute.request",
+      requestId: "req-passkeys",
+      command: { command: "passkeys", args: { action: "status", browserId: BROWSER_ID } },
+    });
+    expect(status.command).toEqual({
+      command: "passkeys",
+      args: { action: "status", browserId: BROWSER_ID },
+    });
+    const result = BrowserAutomationExecuteResponseSchema.parse({
+      type: "browser.automation.execute.response",
+      requestId: "req-passkeys",
+      payload: {
+        requestId: "req-passkeys",
+        ok: true,
+        result: {
+          command: "passkeys",
+          action: "delete",
+          deleted: true,
+          passkeys: [
+            {
+              credentialId: "sPZ3IokjIrg4qoUzz7mCEXfH9NRTc3-DGVL6f9WjGF4",
+              rpId: "chatgpt.com",
+              userName: "dgk@dfcorp.co.kr",
+              createdAt: "2026-11-02T03:00:00.000Z",
+              signCount: 3,
+            },
+          ],
+          storage: { path: "/tmp/browser-passkeys.json", encrypted: true },
+        },
+      },
+    });
+    expect(result.payload.ok).toBe(true);
+    expect(
+      BrowserAutomationExecuteRequestSchema.safeParse({
+        type: "browser.automation.execute.request",
+        requestId: "req-passkeys",
+        command: { command: "passkeys", args: { action: "delete", privateKey: "x" } },
+      }).success,
+    ).toBe(false);
+  });
+});
