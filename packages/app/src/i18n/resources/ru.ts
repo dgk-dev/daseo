@@ -270,9 +270,25 @@ export const ru: TranslationResources = {
     tooManyMatches: "Слишком много совпадений — уточните запрос",
     hostLoadFailed: "{{host}}: Не удалось загрузить историю",
     searchPlaceholder: "Поиск по истории",
+    includeSubagents: "Включать субагентов",
     actions: {
       loadMore: "Загрузить больше",
       clearSearch: "Очистить поиск",
+      aiSearch: "Поиск с ИИ",
+      aiSearching: "Поиск...",
+      aiOrder: "Порядок ИИ",
+    },
+    snippet: {
+      you: "Вы:",
+      agent: "Агент:",
+      related: "Похоже:",
+    },
+    status: {
+      indexing: "Индексация истории {{indexed}}/{{total}} · результаты могут быть неполными",
+      semanticDownloading: "Подготовка поиска по смыслу {{percent}}%",
+      semanticIndexing: "Чтение сеансов для поиска по смыслу {{embedded}}/{{total}}",
+      semanticFailed: "Поиск по смыслу недоступен · только совпадения слов",
+      aiFailed: "Поиск с ИИ не удался · показан обычный порядок",
     },
   },
   agentList: {

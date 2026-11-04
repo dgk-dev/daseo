@@ -56,6 +56,7 @@ function rowFileName(seq: number): string {
 export class FileBackedAgentTimelineStore implements AgentTimelineStore {
   private readonly cache = new Map<string, CachedTimelineState>();
   private readonly mutationTails = new Map<string, Promise<void>>();
+  private readonly committedChangeListeners = new Set<(agentId: string) => void>();
 
   constructor(private readonly baseDir: string) {
     ensurePrivateDirectory(baseDir);
@@ -80,6 +81,7 @@ export class FileBackedAgentTimelineStore implements AgentTimelineStore {
       result = cloneRow(row);
     });
     if (!result) throw new Error(`Failed to append timeline row for '${agentId}'`);
+    this.notifyCommittedChange(agentId);
     return result;
   }
 
@@ -129,6 +131,7 @@ export class FileBackedAgentTimelineStore implements AgentTimelineStore {
     await previous.catch(() => undefined);
     this.cache.delete(agentId);
     await fs.rm(this.agentDirectory(agentId), { recursive: true, force: true });
+    this.notifyCommittedChange(agentId);
   }
 
   async bulkInsert(agentId: string, rows: readonly AgentTimelineRow[]): Promise<void> {
@@ -144,6 +147,7 @@ export class FileBackedAgentTimelineStore implements AgentTimelineStore {
       state.nextSeq = Math.max(state.nextSeq, (state.rows.at(-1)?.seq ?? 0) + 1);
       await this.writeState(agentId, state);
     });
+    this.notifyCommittedChange(agentId);
   }
 
   async updateCommittedRow(agentId: string, row: AgentTimelineRow): Promise<void> {
@@ -156,6 +160,29 @@ export class FileBackedAgentTimelineStore implements AgentTimelineStore {
       state.rows[index] = cloneRow(parsed);
       await this.writeRow(agentId, parsed);
     });
+  }
+
+  /**
+   * Daseo delta 79: called after committed rows reach disk or the timeline is
+   * deleted, so derived indexes (History search) can catch up on that agent
+   * alone. Row enrichment (`updateCommittedRow`) does not notify; it never
+   * changes message text.
+   */
+  onCommittedChange(listener: (agentId: string) => void): () => void {
+    this.committedChangeListeners.add(listener);
+    return () => {
+      this.committedChangeListeners.delete(listener);
+    };
+  }
+
+  private notifyCommittedChange(agentId: string): void {
+    for (const listener of this.committedChangeListeners) {
+      try {
+        listener(agentId);
+      } catch {
+        // A derived index must never fail a timeline write.
+      }
+    }
   }
 
   private async queueMutation(

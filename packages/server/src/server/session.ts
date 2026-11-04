@@ -33,6 +33,7 @@ import type { BinaryFrame } from "@getpaseo/protocol/binary-frames/index";
 import { CursorError } from "./pagination/cursor.js";
 import { SortablePager, type SortSpec } from "./pagination/sortable-pager.js";
 import { describeAgentHistoryMatches, rankAgentHistoryCandidates } from "./agent-history-search.js";
+import type { HistorySearchService } from "./history-search/history-search-service.js";
 import type { SpeechToTextProvider, TextToSpeechProvider } from "./speech/speech-provider.js";
 import type { TurnDetectionProvider } from "./speech/turn-detection-provider.js";
 import {
@@ -68,7 +69,7 @@ import { loadPersistedConfig } from "./persisted-config.js";
 import { releaseWorkspaceServicePortPlan } from "./workspace-service-port-registry.js";
 import { getErrorMessage, getErrorMessageOr } from "@getpaseo/protocol/error-utils";
 import { getAgentStatusPriority } from "@getpaseo/protocol/agent-state-bucket";
-import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
+import { getParentAgentIdFromLabels, isDelegatedAgent } from "@getpaseo/protocol/agent-labels";
 import type { WorkspaceGitRuntimeSnapshot, WorkspaceGitService } from "./workspace-git-service.js";
 import type { ProjectUpdate } from "./workspace-reconciliation-service.js";
 import {
@@ -464,6 +465,8 @@ export interface SessionOptions {
   downloadTokenStore: DownloadTokenStore;
   /** Daseo delta 75: tailnet preview links (`fs.preview_link.create.request`). */
   previewLinks?: PreviewLinkService | null;
+  /** Daseo delta 79: History content search; absent keeps title-only search. */
+  historySearch?: HistorySearchService | null;
   pushNotifications: PushNotifications;
   paseoHome: string;
   worktreesRoot?: string;
@@ -738,6 +741,7 @@ export class Session {
   private readonly renameCurrentBranch: typeof renameCurrentBranchDefault;
   private readonly workspaceGitService: WorkspaceGitService;
   private readonly workspaceAutoName: WorkspaceAutoName;
+  private readonly historySearch: HistorySearchService | null | undefined;
   private readonly gitMutation: GitMutationService;
   private readonly workspaceProvisioning: WorkspaceProvisioningService;
   private readonly workspaceRecovery: WorkspaceRecoveryService;
@@ -820,6 +824,7 @@ export class Session {
       logger,
       downloadTokenStore,
       previewLinks,
+      historySearch,
       pushNotifications,
       paseoHome,
       worktreesRoot,
@@ -897,6 +902,7 @@ export class Session {
       paseoHome,
       logger: this.sessionLogger,
     });
+    this.historySearch = historySearch;
     this.agentManager = agentManager;
     this.agentStorage = agentStorage;
     this.agentCommandReceiptStore = resolveAgentCommandReceiptStore({
@@ -1990,6 +1996,7 @@ export class Session {
       this.dispatchAgentTimelineMessage(msg, source) ??
       this.dispatchHubExecutionMessage(msg) ??
       this.dispatchAgentLifecycleMessage(msg) ??
+      this.dispatchAgentHistoryMessage(msg) ??
       this.dispatchAgentConfigMessage(msg) ??
       this.dispatchCheckoutMessage(msg) ??
       this.dispatchWorkspaceRecoveryMessage(msg) ??
@@ -2225,6 +2232,18 @@ export class Session {
       return this.hubExecutionController?.controlExecution(msg);
     }
     return undefined;
+  }
+
+  // Daseo delta 79: History search status and AI re-rank.
+  private dispatchAgentHistoryMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    switch (msg.type) {
+      case "agent.history.get_search_status.request":
+        return this.handleAgentHistorySearchStatus(msg);
+      case "agent.history.ai_rank.request":
+        return this.handleAgentHistoryAiRank(msg);
+      default:
+        return undefined;
+    }
   }
 
   private dispatchAgentLifecycleMessage(msg: SessionInboundMessage): Promise<void> | undefined {
@@ -4666,6 +4685,12 @@ export class Session {
       includeArchived: filter?.includeArchived,
       includeUnavailablePersisted: request.type === "fetch_agent_history_request",
     });
+    // Daseo delta 79: History lists sessions the owner started. Agents another
+    // agent created (research workers, delegated implementers) are most of the
+    // records and stay out unless asked for, in the list and in search alike.
+    if (request.type === "fetch_agent_history_request" && request.includeSubagents !== true) {
+      agents = agents.filter((agent) => !isDelegatedAgent(agent));
+    }
     const activePlacementsByWorkspaceId =
       scope === "active" ? await this.buildActiveProjectPlacementsByWorkspaceId() : null;
     if (activePlacementsByWorkspaceId) {
@@ -4779,11 +4804,31 @@ export class Session {
       filter,
     });
 
-    const ranked = rankAgentHistoryCandidates(search, allEntries, (left, right) =>
-      this.agentsPager.compare(left.agent, right.agent, sort),
-    );
-
     const limit = page?.limit ?? 200;
+    const compareTies = (left: FetchAgentsResponseEntry, right: FetchAgentsResponseEntry) =>
+      this.agentsPager.compare(left.agent, right.agent, sort);
+    if (this.historySearch) {
+      const results = await this.historySearch.search({
+        query: search,
+        candidates: allEntries,
+        compareTies,
+        describeLimit: limit,
+      });
+      return {
+        entries: results.slice(0, limit).map((result) =>
+          Object.assign({}, result.candidate, {
+            searchScore: result.searchScore,
+            searchMatches: result.searchMatches,
+            searchSources: result.searchSources,
+            ...(result.searchSnippet ? { searchSnippet: result.searchSnippet } : {}),
+          }),
+        ),
+        pageInfo: { nextCursor: null, prevCursor: null, hasMore: false },
+        searchTruncated: results.length > limit,
+      };
+    }
+
+    const ranked = rankAgentHistoryCandidates(search, allEntries, compareTies);
     // Ranges are derived only for the rows that will be rendered; ranking
     // itself never needs them.
     const entries = ranked.slice(0, limit).map((result) =>
@@ -5504,6 +5549,56 @@ export class Session {
         },
       });
     }
+  }
+
+  private async handleAgentHistorySearchStatus(
+    request: Extract<SessionInboundMessage, { type: "agent.history.get_search_status.request" }>,
+  ): Promise<void> {
+    if (!this.historySearch) {
+      this.emit({
+        type: "rpc_error",
+        payload: {
+          requestId: request.requestId,
+          requestType: request.type,
+          error: "History content search is not available on this host",
+          code: "unavailable",
+        },
+      });
+      return;
+    }
+    this.emit({
+      type: "agent.history.get_search_status.response",
+      payload: { requestId: request.requestId, status: this.historySearch.status() },
+    });
+  }
+
+  private async handleAgentHistoryAiRank(
+    request: Extract<SessionInboundMessage, { type: "agent.history.ai_rank.request" }>,
+  ): Promise<void> {
+    const respond = (agentIds: string[] | null, error: { code: string; message: string } | null) =>
+      this.emit({
+        type: "agent.history.ai_rank.response",
+        payload: { requestId: request.requestId, agentIds, error },
+      });
+    if (!this.historySearch) {
+      respond(null, { code: "unavailable", message: "AI search is not available on this host" });
+      return;
+    }
+    const agentIds = [...new Set(request.agentIds)];
+    const payloads = await Promise.all(
+      agentIds.map((agentId) => this.getAgentPayloadById(agentId)),
+    );
+    const candidates = payloads.flatMap((payload) =>
+      payload ? [{ agentId: payload.id, title: payload.title, updatedAt: payload.updatedAt }] : [],
+    );
+    const outcome = await this.historySearch.aiRank({ query: request.query, candidates });
+    if (!outcome.ok) {
+      respond(null, { code: outcome.code, message: outcome.message });
+      return;
+    }
+    // Ids the daemon could not resolve keep their requested place at the end.
+    const ranked = new Set(outcome.agentIds);
+    respond([...outcome.agentIds, ...agentIds.filter((agentId) => !ranked.has(agentId))], null);
   }
 
   private async handleFetchAgentHistory(

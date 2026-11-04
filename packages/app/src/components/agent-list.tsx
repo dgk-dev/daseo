@@ -22,7 +22,8 @@ import { getProviderIcon } from "@/components/provider-icons";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 import { useArchiveAgent } from "@/hooks/use-archive-agent";
 import { HighlightedText } from "@/components/ui/highlighted-text";
-import type { AgentSearchMatch } from "@getpaseo/protocol/messages";
+import type { AgentSearchMatch, AgentSearchSnippet } from "@getpaseo/protocol/messages";
+import { useTimelineJumpStore } from "@/stores/timeline-jump-store";
 import type { MatchRange } from "@getpaseo/protocol/search/text-match";
 
 interface AgentListProps {
@@ -41,6 +42,13 @@ interface AgentListProps {
    * typo tiers match characters the eye would not find on its own.
    */
   searchMatchesByAgentKey?: Record<string, AgentSearchMatch[]>;
+  /**
+   * Daseo delta 79: the message that explains each search result, keyed like
+   * the matches. The row shows it under the title and opens the session there.
+   */
+  searchSnippetsByAgentKey?: Record<string, AgentSearchSnippet>;
+  /** Which signals found each row; a row found only by meaning says so. */
+  searchSourcesByAgentKey?: Record<string, string[]>;
   /**
    * Renders one flat list in the given order instead of grouping by day. Day
    * headings claim the list is chronological, which is a lie once the caller
@@ -222,9 +230,42 @@ function SessionRowTrailingAttention({
   );
 }
 
+function SessionRowSnippet({
+  snippet,
+  sources,
+  testID,
+}: {
+  snippet: AgentSearchSnippet;
+  sources?: readonly string[];
+  testID: string;
+}) {
+  const { t } = useTranslation();
+  const relatedOnly =
+    snippet.ranges.length === 0 &&
+    sources?.includes("semantic") === true &&
+    !sources.includes("content");
+  let label = t("sessions.snippet.agent");
+  if (relatedOnly) label = t("sessions.snippet.related");
+  else if (snippet.role === "user") label = t("sessions.snippet.you");
+  return (
+    <View style={styles.snippetRow}>
+      <Text style={styles.snippetLabel}>{label}</Text>
+      <HighlightedText
+        text={snippet.text}
+        ranges={snippet.ranges}
+        style={styles.snippetText}
+        numberOfLines={2}
+        testID={testID}
+      />
+    </View>
+  );
+}
+
 function SessionRow({
   agent,
   searchMatches,
+  searchSnippet,
+  searchSources,
   isMobile,
   selectedAgentId,
   showAttentionIndicator,
@@ -234,6 +275,8 @@ function SessionRow({
 }: {
   agent: AggregatedAgent;
   searchMatches?: readonly AgentSearchMatch[];
+  searchSnippet?: AgentSearchSnippet;
+  searchSources?: readonly string[];
   isMobile: boolean;
   selectedAgentId?: string;
   showAttentionIndicator: boolean;
@@ -352,6 +395,13 @@ function SessionRow({
             ) : null}
           </View>
         ) : null}
+        {searchSnippet ? (
+          <SessionRowSnippet
+            snippet={searchSnippet}
+            sources={searchSources}
+            testID={`agent-row-snippet-${agent.serverId}-${agent.id}`}
+          />
+        ) : null}
       </View>
       {!isMobile ? (
         <View style={styles.rowColumns}>
@@ -398,6 +448,8 @@ export function AgentList({
   showAttentionIndicator = true,
   showHostColumn = false,
   searchMatchesByAgentKey,
+  searchSnippetsByAgentKey,
+  searchSourcesByAgentKey,
   flat = false,
 }: AgentListProps) {
   const { theme } = useUnistyles();
@@ -422,6 +474,12 @@ export function AgentList({
 
       const serverId = agent.serverId;
       const agentId = agent.id;
+      const anchorSeq = searchSnippetsByAgentKey?.[`${serverId}:${agentId}`]?.anchorSeq;
+      if (anchorSeq !== undefined) {
+        useTimelineJumpStore.getState().request({ serverId, agentId, seq: anchorSeq });
+      } else {
+        useTimelineJumpStore.getState().clear();
+      }
 
       onAgentSelect?.();
       navigateToAgent({
@@ -431,7 +489,7 @@ export function AgentList({
         pin: true,
       });
     },
-    [isActionSheetVisible, onAgentSelect],
+    [isActionSheetVisible, onAgentSelect, searchSnippetsByAgentKey],
   );
 
   const handleAgentLongPress = useCallback(
@@ -509,6 +567,8 @@ export function AgentList({
         <SessionRow
           agent={item.agent}
           searchMatches={searchMatchesByAgentKey?.[item.key]}
+          searchSnippet={searchSnippetsByAgentKey?.[item.key]}
+          searchSources={searchSourcesByAgentKey?.[item.key]}
           isMobile={isMobile}
           selectedAgentId={selectedAgentId}
           showAttentionIndicator={showAttentionIndicator}
@@ -523,6 +583,8 @@ export function AgentList({
       handleAgentPress,
       isMobile,
       searchMatchesByAgentKey,
+      searchSnippetsByAgentKey,
+      searchSourcesByAgentKey,
       selectedAgentId,
       showAttentionIndicator,
       showHostColumn,
@@ -684,6 +746,29 @@ const styles = StyleSheet.create((theme) => ({
   },
   rowTrailing: {
     marginLeft: theme.spacing[2],
+  },
+  snippetRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: theme.spacing[1],
+    marginTop: theme.spacing[0.5],
+    // Keeps two-line snippets off the desktop columns that sit beside them.
+    marginRight: {
+      xs: 0,
+      md: theme.spacing[4],
+    },
+  },
+  snippetLabel: {
+    flexShrink: 0,
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foregroundMuted,
+    opacity: 0.7,
+  },
+  snippetText: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foregroundMuted,
   },
   rowSelected: {
     backgroundColor: theme.colors.surface2,

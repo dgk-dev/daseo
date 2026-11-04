@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { AgentTimelinePromptIndexPayload } from "@getpaseo/client/internal/daemon-client";
 import { isWeb } from "@/constants/platform";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
-import { planTimelinePromptJump } from "@/timeline/timeline-sync-plan";
 import type { StreamItem } from "@/types/stream";
 import type { StreamViewportHandle } from "../strategy";
+import { useTimelineSeqJump } from "../use-timeline-seq-jump";
 import {
   createActivePromptPublisher,
   resolveActivePromptSeq,
@@ -16,13 +16,6 @@ import {
 
 const NO_PROMPTS: ChatOutlinePrompt[] = [];
 const NO_STREAM_ITEMS: StreamItem[] = [];
-
-interface PendingPromptJump {
-  requestId: number;
-  seq: number;
-  fetchSettled: boolean;
-  hasScrolled: boolean;
-}
 
 export interface UseChatOutlineInput {
   agentId: string;
@@ -53,10 +46,8 @@ export function useChatOutline({
   onJumpError,
 }: UseChatOutlineInput): ChatOutline {
   const [index, setIndex] = useState<AgentTimelinePromptIndexPayload | null>(null);
-  const [pendingJump, setPendingJump] = useState<PendingPromptJump | null>(null);
   const [activePrompt] = useState(createActivePromptPublisher);
   const readingRowIdRef = useRef<string | null>(null);
-  const nextJumpRequestIdRef = useRef(0);
   const nextIndexRequestIdRef = useRef(0);
   const loadedItems = useMemo(() => [...tail, ...(head ?? NO_STREAM_ITEMS)], [head, tail]);
   const prompts = enabled ? (index?.prompts ?? NO_PROMPTS) : NO_PROMPTS;
@@ -121,8 +112,6 @@ export function useChatOutline({
   });
 
   useEffect(() => {
-    nextJumpRequestIdRef.current += 1;
-    setPendingJump(null);
     readingRowIdRef.current = null;
     activePrompt.publish(null);
   }, [activePrompt, agentId, timelineEpoch]);
@@ -133,47 +122,16 @@ export function useChatOutline({
     publishActivePrompt();
   }, [loadedItems, prompts, publishActivePrompt]);
 
-  useEffect(() => {
-    if (pendingJump === null) return;
-    const target = loadedItems.find((item) => item.timelineCursor?.seq === pendingJump.seq);
-    if (target && !pendingJump.hasScrolled) {
-      viewportRef.current?.scrollToMessage?.(target.id);
-      setPendingJump((current) => {
-        if (current?.requestId !== pendingJump.requestId) return current;
-        return { ...current, hasScrolled: true };
-      });
-      return;
-    }
-    if (pendingJump.fetchSettled) setPendingJump(null);
-  }, [loadedItems, pendingJump, viewportRef]);
-
-  const jumpToPrompt = useCallback(
-    (seq: number) => {
-      nextJumpRequestIdRef.current += 1;
-      setPendingJump(null);
-      const loaded = loadedItems.find((item) => item.timelineCursor?.seq === seq);
-      if (loaded) {
-        viewportRef.current?.scrollToMessage?.(loaded.id);
-        return;
-      }
-      if (!index) return;
-      const requestId = nextJumpRequestIdRef.current;
-      setPendingJump({ requestId, seq, fetchSettled: false, hasScrolled: false });
-      void getHostRuntimeStore()
-        .fetchAgentTimeline(serverId, agentId, planTimelinePromptJump({ epoch: index.epoch, seq }))
-        .catch((error: unknown) => {
-          console.warn("Failed to load a Chat outline window", error);
-          onJumpError();
-        })
-        .finally(() => {
-          setPendingJump((current) => {
-            if (current?.requestId !== requestId) return current;
-            return { ...current, fetchSettled: true };
-          });
-        });
-    },
-    [agentId, index, loadedItems, onJumpError, serverId, viewportRef],
-  );
+  // Jumps go to rows the index names, so they wait for the index's epoch.
+  const jumpToPrompt = useTimelineSeqJump({
+    agentId,
+    serverId,
+    epoch: index?.epoch ?? null,
+    resetKey: timelineEpoch,
+    loadedItems,
+    viewportRef,
+    onJumpError,
+  });
 
   return { prompts, activePrompt, jumpToPrompt, reportReadingPosition };
 }

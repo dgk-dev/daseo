@@ -266,9 +266,25 @@ export const zhCN: TranslationResources = {
     tooManyMatches: "匹配过多 — 请缩小搜索范围",
     hostLoadFailed: "{{host}}：无法加载历史",
     searchPlaceholder: "搜索历史",
+    includeSubagents: "包含子代理",
     actions: {
       loadMore: "加载更多",
       clearSearch: "清除搜索",
+      aiSearch: "AI 搜索",
+      aiSearching: "搜索中...",
+      aiOrder: "AI 排序",
+    },
+    snippet: {
+      you: "我：",
+      agent: "回答：",
+      related: "相关：",
+    },
+    status: {
+      indexing: "正在索引历史 {{indexed}}/{{total}} · 结果可能不完整",
+      semanticDownloading: "正在准备语义搜索 {{percent}}%",
+      semanticIndexing: "正在为语义搜索读取会话 {{embedded}}/{{total}}",
+      semanticFailed: "语义搜索不可用 · 仅显示词语匹配的结果",
+      aiFailed: "AI 搜索失败 · 显示常规顺序",
     },
   },
   agentList: {

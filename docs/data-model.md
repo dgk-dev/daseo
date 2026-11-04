@@ -51,6 +51,10 @@ $PASEO_HOME/
 ├── agent-command-receipts.json          # Idempotent mobile command admission receipts
 ├── timelines/
 │   └── {agentId}/                       # Private canonical rows + stable cursor epoch
+├── search/
+│   └── history-index.sqlite             # Derived History search index (delete to rebuild)
+├── models/
+│   └── history-search/                  # Local embedding model for History search
 ├── paseo.pid                            # Daemon PID lock file
 ├── daemon.log                           # Default log file (path configurable)
 ├── agents/
@@ -495,6 +499,12 @@ The daemon writes an `in_flight` receipt before dispatching a command that carri
 **Path:** `$PASEO_HOME/timelines/{agentId}/`
 
 Each canonical row is an individually atomic, mode-`0600` JSON file; `state.json` retains the cursor epoch and next sequence. Assistant rows may carry the optional terminal `turnOutcome`, so cold clients and daemon restarts preserve which logical answer completed even when provider history has no terminal event. Internal turn correlation is stored with the row but is not exposed as a client contract.
+
+## 8a. History search index
+
+**Path:** `$PASEO_HOME/search/history-index.sqlite`
+
+The one SQLite file in the daemon, and the one store that is a cache rather than a record: it holds the owner's messages and the assistant's answers of every root session (FTS5 trigram) plus embedding vectors, all derived from section 8 and from Pi session files. A missing or unreadable file, or a schema version change, rebuilds it in the background; nothing migrates. It needs `node:sqlite` (Node 22.5+, Electron's runtime has it); without it History keeps title-only search. Why it exists and how it ranks: DASEO.md delta 79.
 
 ## 9. Daemon update trial
 

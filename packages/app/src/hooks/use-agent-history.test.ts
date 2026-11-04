@@ -139,6 +139,49 @@ function historyEntry(input: {
   };
 }
 
+describe("fetchAgentHistoryPage (Daseo delta 79)", () => {
+  it("asks for sub-agents only when included, and keeps each row's snippet and sources", async () => {
+    const entry = historyEntry({
+      id: "history-1",
+      cwd: "/repo",
+      updatedAt: "2026-04-02T10:00:00.000Z",
+      title: "작업 03",
+      searchScore: 20.5,
+    });
+    const client = createClient([
+      historyPayload({
+        entries: [
+          {
+            ...entry,
+            searchSnippet: {
+              role: "assistant",
+              text: "…Railway 키를 교체했습니다",
+              ranges: [{ start: 1, length: 7 }],
+              seq: 5,
+              anchorSeq: 2,
+            },
+            searchSources: ["content", "semantic"],
+          },
+        ],
+      }),
+    ]);
+
+    const page = await fetchAgentHistoryPage({
+      client,
+      serverId: "server-1",
+      cursor: null,
+      search: "railway",
+      includeSubagents: true,
+    });
+    await fetchAgentHistoryPage({ client, serverId: "server-1", cursor: null, search: "railway" });
+
+    expect(client.calls[0]).toMatchObject({ search: "railway", includeSubagents: true });
+    expect(client.calls[1]).not.toHaveProperty("includeSubagents");
+    expect(page.searchSnippetsByAgentKey["server-1:history-1"]).toMatchObject({ anchorSeq: 2 });
+    expect(page.searchSourcesByAgentKey["server-1:history-1"]).toEqual(["content", "semantic"]);
+  });
+});
+
 describe("fetchAgentHistoryPage", () => {
   it("builds the all-host query key independent of host order", () => {
     expect(allAgentHistoryQueryKey(["server-b", "server-a"])).toEqual(

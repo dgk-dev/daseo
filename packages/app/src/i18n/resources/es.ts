@@ -271,9 +271,27 @@ export const es: TranslationResources = {
     tooManyMatches: "Demasiadas coincidencias: acota la búsqueda",
     hostLoadFailed: "{{host}}: No se pudo cargar el historial",
     searchPlaceholder: "Buscar en el historial",
+    includeSubagents: "Incluir subagentes",
     actions: {
       loadMore: "Cargar más",
       clearSearch: "Borrar búsqueda",
+      aiSearch: "Buscar con IA",
+      aiSearching: "Buscando...",
+      aiOrder: "Orden de IA",
+    },
+    snippet: {
+      you: "Tú:",
+      agent: "Agente:",
+      related: "Relacionado:",
+    },
+    status: {
+      indexing:
+        "Indexando historial {{indexed}}/{{total}} · los resultados pueden estar incompletos",
+      semanticDownloading: "Preparando la búsqueda por significado {{percent}}%",
+      semanticIndexing: "Leyendo sesiones por significado {{embedded}}/{{total}}",
+      semanticFailed:
+        "La búsqueda por significado no está disponible · solo coincidencias de palabras",
+      aiFailed: "La búsqueda con IA falló · se muestra el orden habitual",
     },
   },
   agentList: {

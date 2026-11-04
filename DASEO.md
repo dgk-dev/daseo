@@ -1421,6 +1421,71 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
     tools tests, and the real-Electron `passkeys` capture-harness group (register, sign in from
     another guest and after a navigation, status, delete).
 
+79. **History finds sessions by what was said and what was meant, and leaves sub-agents out** —
+    the owner's request on 2026-11-04 after measuring that 1,689 of 2,488 agent records (68%) were
+    agents another agent created and that title-only search found 0 of 18 sessions described in a
+    sentence. Plan: `~/.pi/agent/plans/-Users-ddgk/2026-11-04-daseo-history-search.md`.
+    - **Sub-agents hidden.** History lists and searches only agents without
+      `paseo.parent-agent-id` unless the request sets `includeSubagents` (the "Include sub-agents"
+      switch). Absent means hidden for every client, so an older phone app also stops listing
+      workers; its parsing is unaffected. Detached agents and scheduled runs stay visible.
+    - **Message bodies.** An index (`$PASEO_HOME/search/history-index.sqlite`, `node:sqlite` FTS5
+      trigram) holds the owner's messages and the assistant's answers of every root session —
+      never tool output, reasoning, or `origin: "system"` prompts. Trigram cannot match 1–2
+      character tokens ("규칙"), so those fall back to a LIKE scan. Contiguous assistant rows are
+      joined into one message as the app renders them: some timelines stream one answer as
+      hundreds of chunk rows (the first real build held 532,674 "messages" averaging 20 chars;
+      joined, 24,280 averaging 463). Sessions from before Paseo timelines (152 on this Mac) are
+      read from the Pi session file in `persistence.nativeHandle` through `PiHistoryMapper`.
+      The first build runs in the background 5 s after start (799 roots, 138 s measured, 30,954
+      messages, 12.3 MB); queries take 1–100 ms including snippets. After
+      that each committed timeline change syncs only that agent and only the new rows
+      (`FileBackedAgentTimelineStore.onCommittedChange`). The file is a derived cache: delete it to
+      rebuild; a schema change rebuilds.
+    - **Meaning.** `multilingual-e5-small` (q8 ONNX, 384 dims, Hub revision `761b726d`, sha256
+      pinned) downloads once into `$PASEO_HOME/models/history-search/` and runs only in a separate
+      worker process (`Paseo History Search`, about 520 MB resident, started on demand, stopped
+      after 5 minutes idle, batches of 8, lowered CPU priority). Sessions are up to 12 evenly
+      sampled 1,000-char windows; a session scores as its best window. Runtime is
+      `onnxruntime-node` 1.21.0 + `@huggingface/tokenizers` directly rather than
+      `@huggingface/transformers` (which adds onnxruntime-web and sharp); token ids are identical
+      and single-text vectors match transformers.js at cosine 1.000000. `sherpa-onnx-node` has no
+      generic ONNX session, so it cannot host this model. `after-pack.js` keeps only the target's
+      `onnxruntime-node/bin/napi-v3/<platform>/<arch>`. Checked under Electron 41's own runtime
+      (`ELECTRON_RUN_AS_NODE`): ONNX Runtime loads and embeds, and `node:sqlite` has FTS5 trigram;
+      a packaged build was not made for this delta. Until the model is ready, search is keyword-only
+      and the screen says so.
+    - **Ranking.** Title (the existing ranker), body keyword (BM25, a message as the unit of term
+      frequency, OR across words), and semantic (top 30) are fused by reciprocal rank (k = 60).
+      `searchScore` is `1 / rrf` so multi-host merging still sorts ascending. Each result carries
+      `searchSnippet` (best message, marked ranges, `seq`, and `anchorSeq` = the user row that
+      starts its turn) and `searchSources`.
+    - **Opening at the message.** A row press records `anchorSeq` in
+      `stores/timeline-jump-store.ts`; the stream view loads that window and scrolls there
+      (`useTimelineSeqJump`, extracted from the chat outline). Only user rows carry timeline
+      positions in the app, so an answer opens at the prompt of its turn. Native gained
+      `scrollToMessage` (inverted FlatList, `viewPosition: 1`).
+    - **"AI로 찾기".** `agent.history.ai_rank.request` sends the top 20 to the metadata model
+      (Luna low, same selection as workspace auto-titles) with a card per session (title, date,
+      first owner message, last answer, matching passage). Only on the button, 20 s server timeout;
+      failure keeps the plain order with a one-line notice.
+    - **Status.** `agent.history.get_search_status.request` reports keyword `indexing n/N` and
+      semantic `downloading | indexing | ready | failed`; the screen polls it every 3 s only while a
+      query is typed and the index is still building, and refetches once it settles.
+    - **Gates.** `server_info.features.agentHistorySubagentFilter`, `agentHistoryContentSearch`
+      (false when `node:sqlite` is missing, Node < 22.5), `agentHistoryAiRank`. Env
+      `PASEO_HISTORY_SEARCH=0` turns content search off, `PASEO_HISTORY_SEMANTIC=0` keeps it
+      keyword-only; there is no config.json key, so a rollback never meets an unknown key. Test
+      daemons leave it unset and keep title-only search.
+    - **Key files:** `packages/server/src/server/history-search/`, `listFetchAgentsEntries` and
+      the two handlers in `session.ts`, `packages/app/src/hooks/use-agent-history*.ts`,
+      `screens/sessions-screen.tsx`, `components/agent-list.tsx`,
+      `agent-stream/use-timeline-seq-jump.ts`. Tests: `history-search/*.test.ts` (synthetic
+      18-topic fixture in `test-utils/`, never real transcripts), the real-model
+      `semantic/history-semantic.local.e2e.test.ts` (skipped unless the model is installed or
+      `PASEO_HISTORY_E2E_DOWNLOAD=1`), `messages.history-search.test.ts`, and the sub-agent case in
+      `session.workspaces.test.ts`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

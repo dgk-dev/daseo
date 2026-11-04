@@ -268,9 +268,25 @@ export const ko: TranslationResources = {
     tooManyMatches: "일치 항목이 너무 많습니다 — 검색 범위를 좁히세요",
     hostLoadFailed: "{{host}}: 기록을 불러오지 못했습니다",
     searchPlaceholder: "기록 검색",
+    includeSubagents: "하위 에이전트 포함",
     actions: {
       loadMore: "더 불러오기",
       clearSearch: "검색 지우기",
+      aiSearch: "AI로 찾기",
+      aiSearching: "찾는 중...",
+      aiOrder: "AI 순서",
+    },
+    snippet: {
+      you: "나:",
+      agent: "답변:",
+      related: "관련:",
+    },
+    status: {
+      indexing: "기록 색인 중 {{indexed}}/{{total}} · 결과가 일부만 보일 수 있습니다",
+      semanticDownloading: "의미 검색 준비 중 {{percent}}%",
+      semanticIndexing: "의미 검색용으로 읽는 중 {{embedded}}/{{total}}",
+      semanticFailed: "의미 검색을 쓸 수 없어 단어가 맞는 결과만 보입니다",
+      aiFailed: "AI로 찾지 못해 기본 순서로 보입니다",
     },
   },
   agentList: {

@@ -99,6 +99,7 @@ import {
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
 import { getClientDebugCapability, type ClientDebugBroker } from "./client-debug/broker.js";
 import type { PreviewLinkService } from "./file-preview/service.js";
+import type { HistorySearchService } from "./history-search/history-search-service.js";
 import { BrowserStreamHub, createBrokerStreamStarter } from "./browser-tools/stream-hub.js";
 import type { DaemonRuntimeConfig } from "./session/daemon/daemon-session.js";
 import { DirectorySyncService } from "./directory-sync/index.js";
@@ -635,6 +636,8 @@ export class VoiceAssistantWebSocketServer {
   // Daseo delta 68: apps that answer `client.debug.collect.request`, by client id.
   private readonly clientDebugBroker: ClientDebugBroker | null;
   private readonly previewLinks: PreviewLinkService | null;
+  // Daseo delta 79: History content search; null when this runtime cannot host it.
+  private readonly historySearch: HistorySearchService | null | undefined;
   private readonly clientDebugRegistrations = new Map<string, () => void>();
   private acceptingConnections = true;
   private readonly advertiseDaemonStatusRpc: boolean;
@@ -688,6 +691,7 @@ export class VoiceAssistantWebSocketServer {
     pluginRuntime?: SessionOptions["pluginRuntime"],
     clientDebugBroker?: ClientDebugBroker | null,
     previewLinks?: PreviewLinkService | null,
+    historySearch?: HistorySearchService | null,
   ) {
     this.logger = logger.child({ module: "websocket-server" });
     this.workspaceSetupRuntime = workspaceSetupRuntime;
@@ -702,6 +706,7 @@ export class VoiceAssistantWebSocketServer {
     this.browserToolsBroker = browserToolsBroker ?? null;
     this.clientDebugBroker = clientDebugBroker ?? null;
     this.previewLinks = previewLinks ?? null;
+    this.historySearch = historySearch;
     this.browserStreamHub = this.browserToolsBroker
       ? new BrowserStreamHub(createBrokerStreamStarter(this.browserToolsBroker), this.logger)
       : null;
@@ -1438,6 +1443,7 @@ export class VoiceAssistantWebSocketServer {
       },
       downloadTokenStore: this.downloadTokenStore,
       previewLinks: this.previewLinks,
+      historySearch: this.historySearch,
       pushNotifications: this.pushNotifications,
       paseoHome: this.paseoHome,
       worktreesRoot: this.worktreesRoot,
@@ -1651,6 +1657,11 @@ export class VoiceAssistantWebSocketServer {
         previewLinks: this.previewLinks?.isConfigured() === true,
         // Local fork (delta 46): send/create requests accept chunk-uploaded images.
         imageUploads: true,
+        // Local fork (delta 79): History hides sub-agents unless asked; content search and
+        // the AI re-rank exist only where the index could open.
+        agentHistorySubagentFilter: true,
+        agentHistoryContentSearch: Boolean(this.historySearch),
+        agentHistoryAiRank: this.historySearch?.aiRankAvailable === true,
         // COMPAT(checkoutForgeSetAutoMerge): added in v0.1.106, remove old
         // checkoutGithubSetAutoMerge fallback after 2026-12-28.
         checkoutForgeSetAutoMerge: true,

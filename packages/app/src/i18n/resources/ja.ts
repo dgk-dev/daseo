@@ -270,9 +270,25 @@ export const ja: TranslationResources = {
     tooManyMatches: "一致が多すぎます — 検索条件を絞ってください",
     hostLoadFailed: "{{host}}: 履歴を読み込めませんでした",
     searchPlaceholder: "履歴を検索",
+    includeSubagents: "サブエージェントを含める",
     actions: {
       loadMore: "さらに読み込む",
       clearSearch: "検索をクリア",
+      aiSearch: "AIで探す",
+      aiSearching: "検索中...",
+      aiOrder: "AIの順序",
+    },
+    snippet: {
+      you: "自分:",
+      agent: "回答:",
+      related: "関連:",
+    },
+    status: {
+      indexing: "履歴を索引中 {{indexed}}/{{total}} · 結果が一部のみの場合があります",
+      semanticDownloading: "意味検索を準備中 {{percent}}%",
+      semanticIndexing: "意味検索用に読み込み中 {{embedded}}/{{total}}",
+      semanticFailed: "意味検索は使えません · 語句が一致する結果のみ",
+      aiFailed: "AI検索に失敗しました · 通常の順序で表示しています",
     },
   },
   agentList: {

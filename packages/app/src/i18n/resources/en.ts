@@ -266,9 +266,25 @@ export const en = {
     tooManyMatches: "Too many matches — narrow your search",
     hostLoadFailed: "{{host}}: Could not load history",
     searchPlaceholder: "Search history",
+    includeSubagents: "Include sub-agents",
     actions: {
       loadMore: "Load more",
       clearSearch: "Clear search",
+      aiSearch: "AI search",
+      aiSearching: "Searching...",
+      aiOrder: "AI order",
+    },
+    snippet: {
+      you: "You:",
+      agent: "Agent:",
+      related: "Related:",
+    },
+    status: {
+      indexing: "Indexing history {{indexed}}/{{total}} · results may be incomplete",
+      semanticDownloading: "Preparing search by meaning {{percent}}%",
+      semanticIndexing: "Reading sessions for meaning {{embedded}}/{{total}}",
+      semanticFailed: "Search by meaning is unavailable · matching words only",
+      aiFailed: "AI search failed · showing the usual order",
     },
   },
   agentList: {

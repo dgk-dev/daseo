@@ -2817,6 +2817,84 @@ test("fetch_agent_history_request pages archived historical rows separately", as
   expect(session.agentUpdates.hasSubscription()).toBe(false);
 });
 
+test("fetch_agent_history_request leaves out agents another agent created unless asked", async () => {
+  const emitted: SessionOutboundMessage[] = [];
+  const session = createSessionForWorkspaceTests();
+  const historyCwd = path.resolve("/tmp/history-subagents");
+  const project = createPersistedProjectRecord({
+    projectId: "proj-subagents",
+    rootPath: historyCwd,
+    kind: "non_git",
+    displayName: "history-subagents",
+    createdAt: "2026-03-01T12:00:00.000Z",
+    updatedAt: "2026-03-01T12:00:00.000Z",
+  });
+  const workspace = createPersistedWorkspaceRecord({
+    workspaceId: "ws-subagents",
+    projectId: project.projectId,
+    cwd: historyCwd,
+    kind: "directory",
+    displayName: "history-subagents",
+    createdAt: "2026-03-01T12:00:00.000Z",
+    updatedAt: "2026-03-01T12:00:00.000Z",
+  });
+  session.emit = (message) => {
+    if (isSessionOutboundMessage(message)) emitted.push(message);
+  };
+  session.projectRegistry.get = async () => project;
+  session.workspaceRegistry.list = async () => [workspace];
+  session.workspaceRegistry.get = async () => workspace;
+  const agent = (id: string, title: string, labels: Record<string, string>) => ({
+    ...makeAgent({
+      id,
+      cwd: historyCwd,
+      workspaceId: "ws-subagents",
+      status: "idle",
+      updatedAt: "2026-03-01T12:00:00.000Z",
+    }),
+    title,
+    labels,
+  });
+  session.listAgentPayloads = async () => [
+    agent("root", "Billing research", {}),
+    agent("worker-1", "Billing research worker", { "paseo.parent-agent-id": "root" }),
+    agent("worker-2", "Billing implementer", { "paseo.parent-agent-id": "root" }),
+    // Detached agents lose the label and are History roots again.
+    agent("detached", "Billing follow-up", { surface: "workspace" }),
+  ];
+
+  const idsFor = async (request: Record<string, unknown>) => {
+    emitted.length = 0;
+    await session.handleMessage({
+      type: "fetch_agent_history_request",
+      requestId: "req-subagents",
+      page: { limit: 25 },
+      ...request,
+    } as Parameters<typeof session.handleMessage>[0]);
+    const response = emitted[0];
+    if (response?.type !== "fetch_agent_history_response") {
+      throw new Error(`Expected a history response, got ${response?.type}`);
+    }
+    return response.payload.entries.map((entry) => entry.agent.id).sort();
+  };
+
+  // An app that predates the flag sends none and also stops seeing workers.
+  expect(await idsFor({})).toEqual(["detached", "root"]);
+  expect(await idsFor({ search: "billing" })).toEqual(["detached", "root"]);
+  expect(await idsFor({ includeSubagents: true })).toEqual([
+    "detached",
+    "root",
+    "worker-1",
+    "worker-2",
+  ]);
+  expect(await idsFor({ includeSubagents: true, search: "billing" })).toEqual([
+    "detached",
+    "root",
+    "worker-1",
+    "worker-2",
+  ]);
+});
+
 test("fetch_agent_history_request ranks a search across the whole history, not one page", async () => {
   const emitted: SessionOutboundMessage[] = [];
   const session = createSessionForWorkspaceTests();

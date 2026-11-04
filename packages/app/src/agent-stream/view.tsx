@@ -76,6 +76,8 @@ import { resolveStreamRenderStrategy } from "./strategy-resolver";
 import { type StreamSegmentRenderers, type StreamViewportHandle } from "./strategy";
 import { ChatOutlineRail } from "@/agent-stream/chat-outline/rail";
 import { useChatOutline } from "@/agent-stream/chat-outline/use-chat-outline";
+import { useTimelineSeqJump } from "@/agent-stream/use-timeline-seq-jump";
+import { useTimelineJumpStore } from "@/stores/timeline-jump-store";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { useOpenFileExternally } from "@/assistant-file-links/use-open-file-externally";
 import { planTimelineTailFetch } from "@/timeline/timeline-sync-plan";
@@ -660,6 +662,42 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       viewportRef,
       onJumpError: handleTimelineHistoryLoadError,
     });
+    // Daseo delta 79: a History search result opens at the message that matched.
+    const loadedStreamItems = useMemo(
+      () => [...effectiveStreamItems, ...(effectiveStreamHead ?? [])],
+      [effectiveStreamHead, effectiveStreamItems],
+    );
+    const jumpToTimelineSeq = useTimelineSeqJump({
+      agentId,
+      serverId: resolvedServerId,
+      epoch: timelineEpoch,
+      resetKey: timelineEpoch,
+      loadedItems: loadedStreamItems,
+      viewportRef,
+      onJumpError: handleTimelineHistoryLoadError,
+    });
+    const hasPendingTimelineJump = useTimelineJumpStore(
+      (state) => state.pending?.serverId === resolvedServerId && state.pending.agentId === agentId,
+    );
+    useEffect(() => {
+      if (!hasPendingTimelineJump || !isActive || !timelineEpoch || !isAuthoritativeHistoryReady) {
+        return;
+      }
+      // After the frame that applies the initial bottom anchor, so the jump is the last word.
+      const frame = requestAnimationFrame(() => {
+        const seq = useTimelineJumpStore.getState().take(resolvedServerId, agentId);
+        if (seq !== null) jumpToTimelineSeq(seq);
+      });
+      return () => cancelAnimationFrame(frame);
+    }, [
+      agentId,
+      hasPendingTimelineJump,
+      isActive,
+      isAuthoritativeHistoryReady,
+      jumpToTimelineSeq,
+      resolvedServerId,
+      timelineEpoch,
+    ]);
 
     useImperativeHandle(
       ref,

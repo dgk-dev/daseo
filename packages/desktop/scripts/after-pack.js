@@ -57,6 +57,14 @@ function pruneNodePty(nodeModules, platform, arch) {
   }
 }
 
+// Daseo delta 79: onnxruntime-node (History search embeddings) ships every platform's
+// binaries (~200 MB); keep only the target's.
+function pruneOnnxruntimeNode(nodeModules, platform, arch) {
+  const binRoot = path.join(nodeModules, "onnxruntime-node", "bin", "napi-v3");
+  pruneChildrenExcept(binRoot, new Set([platform]));
+  pruneChildrenExcept(path.join(binRoot, platform), new Set([arch]));
+}
+
 function pruneSharpLibvips(nodeModules, platform, arch) {
   const prefix = `sharp-libvips-${platform}-${arch}`;
   const imgDir = path.join(nodeModules, "@img");
@@ -87,6 +95,7 @@ function pruneNativeModules(appOutDir, platform, arch) {
   pruneClaudeAgentSdk(nodeModules, platform, arch);
   pruneNodePty(nodeModules, platform, arch);
   pruneSharpLibvips(nodeModules, platform, arch);
+  pruneOnnxruntimeNode(nodeModules, platform, arch);
 
   const after = dirSizeSync(nodeModules);
   const savedMB = ((before - after) / 1024 / 1024).toFixed(1);

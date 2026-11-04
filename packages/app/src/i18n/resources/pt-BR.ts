@@ -271,9 +271,27 @@ export const ptBR: TranslationResources = {
     tooManyMatches: "Muitos resultados — refine a busca",
     hostLoadFailed: "{{host}}: Não foi possível carregar o histórico",
     searchPlaceholder: "Buscar no histórico",
+    includeSubagents: "Incluir subagentes",
     actions: {
       loadMore: "Carregar mais",
       clearSearch: "Limpar busca",
+      aiSearch: "Buscar com IA",
+      aiSearching: "Buscando...",
+      aiOrder: "Ordem da IA",
+    },
+    snippet: {
+      you: "Você:",
+      agent: "Agente:",
+      related: "Relacionado:",
+    },
+    status: {
+      indexing:
+        "Indexando o histórico {{indexed}}/{{total}} · os resultados podem estar incompletos",
+      semanticDownloading: "Preparando a busca por significado {{percent}}%",
+      semanticIndexing: "Lendo sessões por significado {{embedded}}/{{total}}",
+      semanticFailed:
+        "A busca por significado não está disponível · só correspondência de palavras",
+      aiFailed: "A busca com IA falhou · mostrando a ordem usual",
     },
   },
   agentList: {

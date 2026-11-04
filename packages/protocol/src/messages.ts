@@ -1202,7 +1202,14 @@ export const FetchAgentHistoryRequestMessageSchema = z.object({
   // A ranked free-text query over agent title, workspace name, branch, and
   // project name. Present only on history: agent subscriptions filter on
   // structure, not on relevance. Ranking replaces `sort` when it is set.
+  // Daemons advertising `agentHistoryContentSearch` also match what was said
+  // in the session (Daseo delta 79).
   search: z.string().optional(),
+  // Daseo delta 79: agents another agent created (`paseo.parent-agent-id`) are
+  // left out of history unless this is true. Absent means hidden for every
+  // client, so an older app also stops listing workers; daemons advertising
+  // `agentHistorySubagentFilter` honor it.
+  includeSubagents: z.boolean().optional(),
   sort: z
     .array(
       z.object({
@@ -1739,6 +1746,25 @@ export const AgentSideQuestionRequestMessageSchema = z.object({
   question: z.string().optional(),
   // Clears the agent's side thread instead of asking.
   clear: z.boolean().optional(),
+});
+
+// Daseo delta 79: progress of the host's history search index, polled by the
+// History screen while it is still building. Sent only to daemons advertising
+// `agentHistoryContentSearch`.
+export const AgentHistoryGetSearchStatusRequestMessageSchema = z.object({
+  type: z.literal("agent.history.get_search_status.request"),
+  requestId: z.string(),
+});
+
+// Daseo delta 79: re-order the best history matches with a small model. The
+// daemon reads each session's text itself; the client names only the agents,
+// in the order it currently shows them. Sent only to daemons advertising
+// `agentHistoryAiRank`.
+export const AgentHistoryAiRankRequestMessageSchema = z.object({
+  type: z.literal("agent.history.ai_rank.request"),
+  requestId: z.string(),
+  query: z.string(),
+  agentIds: z.array(z.string()).max(50),
 });
 
 export const SetAgentModeRequestMessageSchema = z.object({
@@ -2977,6 +3003,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   AudioPlayedMessageSchema,
   FetchAgentsRequestMessageSchema,
   FetchAgentHistoryRequestMessageSchema,
+  AgentHistoryGetSearchStatusRequestMessageSchema,
+  AgentHistoryAiRankRequestMessageSchema,
   FetchRecentProviderSessionsRequestMessageSchema,
   FetchWorkspacesRequestMessageSchema,
   ProjectListRequestMessageSchema,
@@ -3342,6 +3370,15 @@ export const ServerInfoStatusPayloadSchema = z
         previewLinks: z.boolean().optional(),
         // Local fork (delta 46): send/create requests accept `imageUploads`.
         imageUploads: z.boolean().optional(),
+        // Local fork (delta 79): history hides agents another agent created unless the
+        // request sets `includeSubagents`.
+        agentHistorySubagentFilter: z.boolean().optional(),
+        // Local fork (delta 79): history search matches message bodies (entries carry
+        // `searchSnippet`) and answers agent.history.get_search_status.request.
+        agentHistoryContentSearch: z.boolean().optional(),
+        // Local fork (delta 79): agent.history.ai_rank.request re-orders matches with a
+        // small model.
+        agentHistoryAiRank: z.boolean().optional(),
         // COMPAT(directorySync): added in v0.3.x, remove gate after 2027-02-12.
         directorySync: z.boolean().optional(),
         // COMPAT(checkoutForgeSetAutoMerge): added in v0.1.106, remove old
@@ -3850,6 +3887,49 @@ export const AgentSearchMatchSchema = z.object({
 
 export type AgentSearchMatch = z.infer<typeof AgentSearchMatchSchema>;
 
+// Daseo delta 79: the message that best explains why a session matched a
+// history search. `ranges` mark the query inside `text` (empty when the session
+// matched by meaning only). `seq` is the timeline row of the message and
+// `anchorSeq` the user prompt row that starts its turn, which is where the app
+// opens the session; both are absent for text read from a provider session
+// file that has no timeline. `role` is an open string (`user`, `assistant`).
+export const AgentSearchSnippetSchema = z.object({
+  role: z.string(),
+  text: z.string(),
+  ranges: z.array(
+    z.object({
+      start: z.number().int().nonnegative(),
+      length: z.number().int().positive(),
+    }),
+  ),
+  seq: z.number().int().positive().optional(),
+  anchorSeq: z.number().int().positive().optional(),
+});
+
+export type AgentSearchSnippet = z.infer<typeof AgentSearchSnippetSchema>;
+
+// Daseo delta 79: state of the host's history search index. States are open
+// strings so a later state never fails an older parser. Keyword: `indexing`,
+// `ready`, `unavailable`. Semantic: `disabled`, `downloading`, `indexing`,
+// `ready`, `failed`.
+export const AgentHistorySearchStatusSchema = z.object({
+  keyword: z.object({
+    state: z.string(),
+    indexedSessions: z.number().int().nonnegative(),
+    totalSessions: z.number().int().nonnegative(),
+  }),
+  semantic: z.object({
+    state: z.string(),
+    embeddedSessions: z.number().int().nonnegative(),
+    totalSessions: z.number().int().nonnegative(),
+    downloadedBytes: z.number().nonnegative().optional(),
+    totalBytes: z.number().nonnegative().optional(),
+    error: z.string().nullable().optional(),
+  }),
+});
+
+export type AgentHistorySearchStatus = z.infer<typeof AgentHistorySearchStatusSchema>;
+
 const AgentDirectoryResponseEntrySchema = z.object({
   agent: AgentSnapshotPayloadSchema,
   project: ProjectPlacementPayloadSchema,
@@ -3861,6 +3941,10 @@ const AgentDirectoryResponseEntrySchema = z.object({
   // anyway; sending it keeps the client from re-deriving a second opinion that
   // could disagree with the ranking it is explaining.
   searchMatches: z.array(AgentSearchMatchSchema).optional(),
+  // Daseo delta 79: the best-matching message and which signals found the
+  // session (`title`, `content`, `semantic`; open strings).
+  searchSnippet: AgentSearchSnippetSchema.optional(),
+  searchSources: z.array(z.string()).optional(),
   // COMPAT(directorySync): sequence of this latest directory projection.
   syncSeq: z.number().int().positive().optional(),
 });
@@ -4384,6 +4468,25 @@ export const AgentForkContextResponseMessageSchema = z.object({
     boundaryMessageId: z.string().nullable(),
     boundaryCursor: AgentTimelineCursorSchema.nullable().optional(),
     error: z.string().nullable(),
+  }),
+});
+
+export const AgentHistoryGetSearchStatusResponseMessageSchema = z.object({
+  type: z.literal("agent.history.get_search_status.response"),
+  payload: z.object({
+    requestId: z.string(),
+    status: AgentHistorySearchStatusSchema,
+  }),
+});
+
+export const AgentHistoryAiRankResponseMessageSchema = z.object({
+  type: z.literal("agent.history.ai_rank.response"),
+  payload: z.object({
+    requestId: z.string(),
+    // Every requested id, best first. Null when ranking failed; the client keeps
+    // its own order. `code` is an open string (`unavailable`, `timeout`, …).
+    agentIds: z.array(z.string()).nullable(),
+    error: z.object({ code: z.string(), message: z.string() }).nullable(),
   }),
 });
 
@@ -6321,6 +6424,8 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   AgentStatusMessageSchema,
   FetchAgentsResponseMessageSchema,
   FetchAgentHistoryResponseMessageSchema,
+  AgentHistoryGetSearchStatusResponseMessageSchema,
+  AgentHistoryAiRankResponseMessageSchema,
   FetchRecentProviderSessionsResponseMessageSchema,
   FetchWorkspacesResponseMessageSchema,
   ProjectAddResponseSchema,
@@ -6524,6 +6629,12 @@ export type FetchAgentsResponseMessage = z.infer<typeof FetchAgentsResponseMessa
 export type FetchAgentHistoryResponseMessage = z.infer<
   typeof FetchAgentHistoryResponseMessageSchema
 >;
+export type AgentHistoryGetSearchStatusResponseMessage = z.infer<
+  typeof AgentHistoryGetSearchStatusResponseMessageSchema
+>;
+export type AgentHistoryAiRankResponseMessage = z.infer<
+  typeof AgentHistoryAiRankResponseMessageSchema
+>;
 export type FetchRecentProviderSessionsResponseMessage = z.infer<
   typeof FetchRecentProviderSessionsResponseMessageSchema
 >;
@@ -6690,6 +6801,12 @@ export type ActivityLogPayload = z.infer<typeof ActivityLogPayloadSchema>;
 export type VoiceAudioChunkMessage = z.infer<typeof VoiceAudioChunkMessageSchema>;
 export type FetchAgentsRequestMessage = z.infer<typeof FetchAgentsRequestMessageSchema>;
 export type FetchAgentHistoryRequestMessage = z.infer<typeof FetchAgentHistoryRequestMessageSchema>;
+export type AgentHistoryGetSearchStatusRequestMessage = z.infer<
+  typeof AgentHistoryGetSearchStatusRequestMessageSchema
+>;
+export type AgentHistoryAiRankRequestMessage = z.infer<
+  typeof AgentHistoryAiRankRequestMessageSchema
+>;
 export type FetchRecentProviderSessionsRequestMessage = z.infer<
   typeof FetchRecentProviderSessionsRequestMessageSchema
 >;

@@ -25,6 +25,7 @@ import type { RequestedSpeechProviders } from "./speech/speech-types.js";
 import { mergeHostnames, parseHostnamesEnv, type HostnamesConfig } from "./hostnames.js";
 import { resolveGitProcessPolicy } from "../utils/git-process-scheduler.js";
 import type { PreviewLinkSettings } from "./file-preview/service.js";
+import type { HistorySearchSettings } from "./history-search/history-search-service.js";
 
 const DEFAULT_PORT = 6767;
 const DEFAULT_RELAY_ENDPOINT = "relay.paseo.sh:443";
@@ -399,6 +400,14 @@ function resolvePreviewLinksConfig(
   return { baseUrl, ttlMs: ttlDays * DAY_MS };
 }
 
+// Daseo delta 79: History search reads message bodies and, unless turned off,
+// ranks by meaning with a local model it downloads once. Environment only, so a
+// rollback never meets an unknown key in the strict config.json schema.
+function resolveHistorySearchConfig(env: NodeJS.ProcessEnv): HistorySearchSettings | null {
+  if (env.PASEO_HISTORY_SEARCH === "0") return null;
+  return { semantic: env.PASEO_HISTORY_SEMANTIC !== "0" };
+}
+
 interface ResolvedWebUi {
   enabled: boolean;
   distDir: string | null;
@@ -614,6 +623,7 @@ export function resolveConfigFromPersisted(
   });
   const serviceProxy = resolveServiceProxyConfig(env, persisted);
   const previewLinks = resolvePreviewLinksConfig(env, persisted);
+  const historySearch = resolveHistorySearchConfig(env);
   const webUi = resolveWebUiConfig(paseoHome, env, cli, persisted);
 
   const { openai, speech } = resolveSpeechConfig({
@@ -661,6 +671,7 @@ export function resolveConfigFromPersisted(
     relayPublicUseTls: relay.publicUseTls,
     serviceProxy,
     previewLinks,
+    historySearch,
     webUi,
     appBaseUrl,
     auth: resolveAuthConfig(env, persisted),

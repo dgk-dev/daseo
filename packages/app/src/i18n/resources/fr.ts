@@ -272,9 +272,26 @@ export const fr: TranslationResources = {
     tooManyMatches: "Trop de résultats — affinez la recherche",
     hostLoadFailed: "{{host}} : Impossible de charger l'historique",
     searchPlaceholder: "Rechercher dans l'historique",
+    includeSubagents: "Inclure les sous-agents",
     actions: {
       loadMore: "Charger plus",
       clearSearch: "Effacer la recherche",
+      aiSearch: "Recherche IA",
+      aiSearching: "Recherche...",
+      aiOrder: "Ordre IA",
+    },
+    snippet: {
+      you: "Vous :",
+      agent: "Agent :",
+      related: "Lié :",
+    },
+    status: {
+      indexing: "Indexation de l'historique {{indexed}}/{{total}} · résultats peut-être incomplets",
+      semanticDownloading: "Préparation de la recherche par le sens {{percent}} %",
+      semanticIndexing: "Lecture des séances par le sens {{embedded}}/{{total}}",
+      semanticFailed:
+        "La recherche par le sens est indisponible · correspondances de mots uniquement",
+      aiFailed: "La recherche IA a échoué · ordre habituel affiché",
     },
   },
   agentList: {

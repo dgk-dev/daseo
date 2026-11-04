@@ -371,6 +371,40 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
     bottomAnchorController.prepareForStickyContentChange();
   }, [bottomAnchorController, historyRows, segments.liveHead]);
 
+  // Daseo delta 79: History search results open at a message. The list is inverted, so the
+  // far edge (viewPosition 1) is the top of the screen, where the turn's prompt should sit.
+  const historyRowsRef = useRef(historyRows);
+  historyRowsRef.current = historyRows;
+  const scrollToIndexRetriesRef = useRef(0);
+  const scrollToMessage = useStableEvent((itemId: string) => {
+    const index = historyRowsRef.current.findIndex((item) => item.id === itemId);
+    if (index < 0) return;
+    bottomAnchorController.detachByUser();
+    scrollToIndexRetriesRef.current = 0;
+    flatListRef.current?.scrollToIndex({ index, viewPosition: 1, animated: false });
+    onNearBottomChange(false);
+  });
+  // Rows far from the window are unmeasured: land near the estimate, then retry once laid out.
+  const handleScrollToIndexFailed = useStableEvent(
+    (info: { index: number; averageItemLength: number }) => {
+      if (scrollToIndexRetriesRef.current >= 3) return;
+      scrollToIndexRetriesRef.current += 1;
+      flatListRef.current?.scrollToOffset({
+        offset: info.averageItemLength * info.index,
+        animated: false,
+      });
+      requestAnimationFrame(() => {
+        if (info.index < historyRowsRef.current.length) {
+          flatListRef.current?.scrollToIndex({
+            index: info.index,
+            viewPosition: 1,
+            animated: false,
+          });
+        }
+      });
+    },
+  );
+
   useEffect(() => {
     const handle: StreamViewportHandle = {
       scrollToBottom: (reason = "jump-to-bottom") => {
@@ -383,6 +417,7 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
         bottomAnchorController.prepareForStickyViewportChange();
         markNativeViewportSettling();
       },
+      scrollToMessage,
     };
     viewportRef.current = handle;
     return () => {
@@ -390,7 +425,7 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
         viewportRef.current = null;
       }
     };
-  }, [agentId, bottomAnchorController, markNativeViewportSettling, viewportRef]);
+  }, [agentId, bottomAnchorController, markNativeViewportSettling, scrollToMessage, viewportRef]);
 
   const isScrollEventNearBottom = useStableEvent(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -622,6 +657,7 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
       onMomentumScrollEnd={handleMomentumScrollEnd}
       scrollEventThrottle={16}
       onContentSizeChange={handleContentSizeChange}
+      onScrollToIndexFailed={handleScrollToIndexFailed}
       maintainVisibleContentPosition={maintainVisibleContentPosition}
       initialNumToRender={40}
       maxToRenderPerBatch={40}

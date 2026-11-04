@@ -267,9 +267,25 @@ export const ar: TranslationResources = {
     tooManyMatches: "نتائج كثيرة جدًا — ضيّق نطاق البحث",
     hostLoadFailed: "{{host}}: تعذر تحميل السجل",
     searchPlaceholder: "البحث في السجل",
+    includeSubagents: "تضمين الوكلاء الفرعيين",
     actions: {
       loadMore: "تحميل المزيد",
       clearSearch: "مسح البحث",
+      aiSearch: "بحث بالذكاء الاصطناعي",
+      aiSearching: "جارٍ البحث...",
+      aiOrder: "ترتيب الذكاء الاصطناعي",
+    },
+    snippet: {
+      you: "أنت:",
+      agent: "الوكيل:",
+      related: "ذو صلة:",
+    },
+    status: {
+      indexing: "فهرسة السجل {{indexed}}/{{total}} · قد تكون النتائج ناقصة",
+      semanticDownloading: "تجهيز البحث بالمعنى {{percent}}%",
+      semanticIndexing: "قراءة الجلسات للبحث بالمعنى {{embedded}}/{{total}}",
+      semanticFailed: "البحث بالمعنى غير متاح · مطابقة الكلمات فقط",
+      aiFailed: "فشل البحث بالذكاء الاصطناعي · يُعرض الترتيب المعتاد",
     },
   },
   agentList: {

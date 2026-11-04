@@ -128,6 +128,8 @@ import { createWorkspaceProvisioningService } from "./session/workspace-provisio
 import { createPaseoWorktreeWorkflow } from "./worktree-session.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
 import { PreviewLinkService, type PreviewLinkSettings } from "./file-preview/service.js";
+import { createDaemonHistorySearch } from "./history-search/create-daemon-history-search.js";
+import type { HistorySearchSettings } from "./history-search/history-search-service.js";
 import { createPreviewLinkRouteHandler, PREVIEW_LINK_ROUTE } from "./file-preview/route.js";
 import type { OpenAiSpeechProviderConfig } from "./speech/providers/openai/config.js";
 import type { AzureSpeechProviderConfig } from "./speech/providers/azure/config.js";
@@ -445,6 +447,8 @@ export interface PaseoDaemonConfig {
   };
   /** Daseo delta 75: tailnet preview links; null or absent turns the feature off. */
   previewLinks?: PreviewLinkSettings | null;
+  /** Daseo delta 79: History content search; null or absent turns it off. */
+  historySearch?: HistorySearchSettings | null;
   webUi?: {
     enabled: boolean;
     distDir: string | null;
@@ -1118,6 +1122,21 @@ export async function createPaseoDaemon(
     },
     logger,
   });
+  // Local fork (DASEO.md delta 79): History search over message bodies and meaning.
+  const historySearch = config.historySearch
+    ? await createDaemonHistorySearch({
+        settings: config.historySearch,
+        paseoHome: config.paseoHome,
+        agentManager,
+        agentStorage,
+        durableTimelineStore,
+        providerSnapshotManager,
+        readDaemonConfig: () => ({
+          metadataGeneration: daemonConfigStore.get().metadataGeneration,
+        }),
+        logger,
+      })
+    : null;
 
   setupAutoArchiveOnMerge({
     paseoHome: config.paseoHome,
@@ -1759,6 +1778,7 @@ export async function createPaseoDaemon(
               pluginRuntime,
               clientDebugBroker,
               previewLinkService,
+              historySearch,
             );
             relayRuntime = createRelayRuntime({
               config: {
@@ -1859,6 +1879,7 @@ export async function createPaseoDaemon(
     await providerSnapshotManager.shutdown();
     terminalManager.killAll();
     speechService.stop();
+    await historySearch?.stop().catch(() => undefined);
     await scheduleService.stop().catch(() => undefined);
     await relayRuntime?.stop().catch(() => undefined);
     if (wsServer) {

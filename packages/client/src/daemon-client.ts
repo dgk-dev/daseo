@@ -25,6 +25,8 @@ import type {
   CreatePaseoWorktreeRequest,
   FileDownloadTokenResponse,
   PreviewLinkCreateResponse,
+  AgentHistoryAiRankResponseMessage,
+  AgentHistoryGetSearchStatusResponseMessage,
   FileUploadResponse,
   FileExplorerResponse,
   FileVersion,
@@ -491,6 +493,8 @@ export interface FileUploadInput {
 export type FileUploadResult = FileUploadResponse["payload"];
 type FileDownloadTokenPayload = FileDownloadTokenResponse["payload"];
 export type PreviewLinkCreatePayload = PreviewLinkCreateResponse["payload"];
+export type AgentHistorySearchStatusPayload = AgentHistoryGetSearchStatusResponseMessage["payload"];
+export type AgentHistoryAiRankPayload = AgentHistoryAiRankResponseMessage["payload"];
 type ListProviderFeaturesPayload = ListProviderFeaturesResponseMessage["payload"];
 type ListProviderModelsPayload = ListProviderModelsResponseMessage["payload"];
 type ListProviderModesPayload = ListProviderModesResponseMessage["payload"];
@@ -2143,6 +2147,7 @@ export class DaemonClient {
       requestId: resolvedRequestId,
       ...(options?.filter ? { filter: options.filter } : {}),
       ...(options?.search ? { search: options.search } : {}),
+      ...(options?.includeSubagents ? { includeSubagents: true } : {}),
       ...(options?.sort ? { sort: options.sort } : {}),
       ...(options?.page ? { page: options.page } : {}),
     });
@@ -2159,6 +2164,41 @@ export class DaemonClient {
         }
         return msg.payload;
       },
+    });
+  }
+
+  /**
+   * Daseo delta 79: how far the host's history search index has come. Gate on
+   * `server_info.features.agentHistoryContentSearch`.
+   */
+  async getAgentHistorySearchStatus(input?: {
+    requestId?: string;
+  }): Promise<AgentHistorySearchStatusPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"agent.history.get_search_status.response">({
+      requestId: input?.requestId,
+      message: { type: "agent.history.get_search_status.request" },
+    });
+  }
+
+  /**
+   * Daseo delta 79: re-order history matches with a small model. Gate on
+   * `server_info.features.agentHistoryAiRank`; a failed ranking answers with
+   * `error` and null ids, never throws for model trouble.
+   */
+  async rankAgentHistoryWithAi(input: {
+    query: string;
+    agentIds: string[];
+    requestId?: string;
+    timeout?: number;
+  }): Promise<AgentHistoryAiRankPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"agent.history.ai_rank.response">({
+      requestId: input.requestId,
+      message: {
+        type: "agent.history.ai_rank.request",
+        query: input.query,
+        agentIds: input.agentIds,
+      },
+      ...(input.timeout ? { timeout: input.timeout } : {}),
     });
   }
 

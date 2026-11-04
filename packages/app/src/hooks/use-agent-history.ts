@@ -3,7 +3,7 @@ import type {
   FetchAgentHistoryOptions,
   FetchAgentHistoryPageInfo,
 } from "@getpaseo/client/internal/daemon-client";
-import type { AgentSearchMatch } from "@getpaseo/protocol/messages";
+import type { AgentSearchMatch, AgentSearchSnippet } from "@getpaseo/protocol/messages";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
@@ -33,6 +33,18 @@ export interface AgentHistoryResult {
   isSearchTruncated: boolean;
   /** Where the query matched each row, keyed by `serverId:agentId`. */
   searchMatchesByAgentKey: Record<string, AgentSearchMatch[]>;
+  /** Daseo delta 79: the message that explains each match, keyed like the matches. */
+  searchSnippetsByAgentKey: Record<string, AgentSearchSnippet>;
+  /** Daseo delta 79: which signals found each row (`title`, `content`, `semantic`). */
+  searchSourcesByAgentKey: Record<string, string[]>;
+  /** Every target host can hide and show sub-agents. */
+  isSubagentFilterSupported: boolean;
+  /** Every target host searches message bodies and reports index progress. */
+  isContentSearchSupported: boolean;
+  /** Every target host can re-rank matches with AI. */
+  isAiRankSupported: boolean;
+  /** The connected hosts this list was fetched from. */
+  targetServerIds: readonly string[];
   /** Hosts that failed while others succeeded. The list still renders. */
   hostErrors: AgentHistoryHostError[];
   refreshAll: () => Promise<void>;
@@ -51,6 +63,8 @@ export interface AgentHistoryPage {
   searchScoreByAgentKey: Record<string, number>;
   /** Where the query matched in each row, keyed like `searchScoreByAgentKey`. */
   searchMatchesByAgentKey: Record<string, AgentSearchMatch[]>;
+  searchSnippetsByAgentKey: Record<string, AgentSearchSnippet>;
+  searchSourcesByAgentKey: Record<string, string[]>;
   pageInfo: FetchAgentHistoryPageInfo;
   /** More matched this host's query than its page could hold. */
   isSearchTruncated: boolean;
@@ -83,6 +97,8 @@ interface AgentHistoryBatchPage {
   agents: AggregatedAgent[];
   searchScoreByAgentKey: Record<string, number>;
   searchMatchesByAgentKey: Record<string, AgentSearchMatch[]>;
+  searchSnippetsByAgentKey: Record<string, AgentSearchSnippet>;
+  searchSourcesByAgentKey: Record<string, string[]>;
   pageInfoByServerId: Record<string, FetchAgentHistoryPageInfo>;
   hostErrors: AgentHistoryHostError[];
   /** Set only under a query: more sessions matched than this page can hold. */
@@ -99,9 +115,11 @@ export async function fetchAgentHistoryPage(input: {
   serverId: string;
   cursor: string | null;
   search?: string;
+  includeSubagents?: boolean;
 }): Promise<AgentHistoryPage> {
   const payload = await input.client.fetchAgentHistory({
     ...(input.search ? { search: input.search } : {}),
+    ...(input.includeSubagents ? { includeSubagents: true } : {}),
     sort: AGENT_HISTORY_SORT,
     page: input.cursor
       ? { limit: AGENT_HISTORY_PAGE_LIMIT, cursor: input.cursor }
@@ -114,6 +132,8 @@ export async function fetchAgentHistoryPage(input: {
   });
   const searchScoreByAgentKey: Record<string, number> = {};
   const searchMatchesByAgentKey: Record<string, AgentSearchMatch[]> = {};
+  const searchSnippetsByAgentKey: Record<string, AgentSearchSnippet> = {};
+  const searchSourcesByAgentKey: Record<string, string[]> = {};
   for (const entry of payload.entries) {
     const key = agentHistoryRowKey({ serverId: input.serverId, id: entry.agent.id });
     if (entry.searchScore !== undefined) {
@@ -122,11 +142,19 @@ export async function fetchAgentHistoryPage(input: {
     if (entry.searchMatches && entry.searchMatches.length > 0) {
       searchMatchesByAgentKey[key] = entry.searchMatches;
     }
+    if (entry.searchSnippet) {
+      searchSnippetsByAgentKey[key] = entry.searchSnippet;
+    }
+    if (entry.searchSources && entry.searchSources.length > 0) {
+      searchSourcesByAgentKey[key] = entry.searchSources;
+    }
   }
 
   return {
     searchScoreByAgentKey,
     searchMatchesByAgentKey,
+    searchSnippetsByAgentKey,
+    searchSourcesByAgentKey,
     isSearchTruncated: payload.searchTruncated === true,
     agents: Array.from(agents.values(), (agent) => ({
       id: agent.id,
@@ -221,6 +249,7 @@ export async function fetchAgentHistoryBatch(input: {
   hosts: readonly AgentHistoryHost[];
   cursorByServerId: AgentHistoryCursorByServerId | null;
   search?: string;
+  includeSubagents?: boolean;
 }): Promise<AgentHistoryBatchPage> {
   const cursorByServerId = input.cursorByServerId ?? {};
   const hasCursorFilter = Object.keys(cursorByServerId).length > 0;
@@ -235,6 +264,7 @@ export async function fetchAgentHistoryBatch(input: {
         serverId: host.serverId,
         cursor: cursorByServerId[host.serverId] ?? null,
         ...(input.search ? { search: input.search } : {}),
+        ...(input.includeSubagents ? { includeSubagents: true } : {}),
       });
       return { host, page };
     }),
@@ -272,6 +302,14 @@ export async function fetchAgentHistoryBatch(input: {
     {},
     ...pages.map(({ page }) => page.searchMatchesByAgentKey),
   ) as Record<string, AgentSearchMatch[]>;
+  const searchSnippetsByAgentKey = Object.assign(
+    {},
+    ...pages.map(({ page }) => page.searchSnippetsByAgentKey),
+  ) as Record<string, AgentSearchSnippet>;
+  const searchSourcesByAgentKey = Object.assign(
+    {},
+    ...pages.map(({ page }) => page.searchSourcesByAgentKey),
+  ) as Record<string, string[]>;
   // Truncation has two independent sources: one host overflowed its own page,
   // or several hosts each fit but their union does not. Two hosts returning 150
   // matches apiece are both complete and still add up to more than the merge
@@ -285,6 +323,8 @@ export async function fetchAgentHistoryBatch(input: {
       : sortByLatestActivity(agents),
     searchScoreByAgentKey,
     searchMatchesByAgentKey,
+    searchSnippetsByAgentKey,
+    searchSourcesByAgentKey,
     pageInfoByServerId,
     hostErrors,
     ...(input.search ? { isSearchTruncated: truncated } : {}),
@@ -295,6 +335,8 @@ export function useAgentHistory(options: {
   serverId?: string | null;
   enabled?: boolean;
   search?: string;
+  /** Daseo delta 79: also list agents another agent created. */
+  includeSubagents?: boolean;
 }): AgentHistoryResult {
   const { t } = useTranslation();
   const daemons = useHosts();
@@ -351,12 +393,24 @@ export function useAgentHistory(options: {
     const trimmed = options.search?.trim() ?? "";
     return isSearchSupported ? trimmed : "";
   }, [isSearchSupported, options.search]);
+  // Daseo delta 79: one gate per capability, read the same way as search.
+  const isSubagentFilterSupported = useEveryTargetHostFeature(
+    targetServerIds,
+    "agentHistorySubagentFilter",
+  );
+  const isContentSearchSupported = useEveryTargetHostFeature(
+    targetServerIds,
+    "agentHistoryContentSearch",
+  );
+  const isAiRankSupported = useEveryTargetHostFeature(targetServerIds, "agentHistoryAiRank");
+  const includeSubagents = isSubagentFilterSupported && options.includeSubagents === true;
   const queryKey = useMemo(
     () => [
       ...(serverId ? agentHistoryQueryKey(serverId) : allAgentHistoryQueryKey(targetServerIds)),
       search,
+      includeSubagents,
     ],
-    [search, serverId, targetServerIds],
+    [includeSubagents, search, serverId, targetServerIds],
   );
   const serverLabelById = useMemo(
     () => new Map(daemons.map((daemon) => [daemon.serverId, daemon.label])),
@@ -383,6 +437,7 @@ export function useAgentHistory(options: {
         hosts: targetHosts,
         cursorByServerId: pageParam,
         ...(search ? { search } : {}),
+        ...(includeSubagents ? { includeSubagents: true } : {}),
       });
     },
   });
@@ -441,6 +496,22 @@ export function useAgentHistory(options: {
       ) as Record<string, AgentSearchMatch[]>,
     [data?.pages],
   );
+  const searchSnippetsByAgentKey = useMemo(
+    () =>
+      Object.assign(
+        {},
+        ...(data?.pages ?? []).map((page) => page.searchSnippetsByAgentKey),
+      ) as Record<string, AgentSearchSnippet>,
+    [data?.pages],
+  );
+  const searchSourcesByAgentKey = useMemo(
+    () =>
+      Object.assign(
+        {},
+        ...(data?.pages ?? []).map((page) => page.searchSourcesByAgentKey),
+      ) as Record<string, string[]>,
+    [data?.pages],
+  );
   const hostErrors = useMemo(
     () => collectAgentHistoryHostErrors({ pages: data?.pages ?? [], unreachableHosts }),
     [data?.pages, unreachableHosts],
@@ -459,8 +530,33 @@ export function useAgentHistory(options: {
     isSearchSupported,
     isSearchTruncated,
     searchMatchesByAgentKey,
+    searchSnippetsByAgentKey,
+    searchSourcesByAgentKey,
+    isSubagentFilterSupported,
+    isContentSearchSupported,
+    isAiRankSupported,
+    targetServerIds,
     hostErrors,
     refreshAll,
     loadMore,
   };
+}
+
+type AgentHistoryFeature =
+  | "agentHistorySubagentFilter"
+  | "agentHistoryContentSearch"
+  | "agentHistoryAiRank";
+
+function useEveryTargetHostFeature(
+  targetServerIds: readonly string[],
+  feature: AgentHistoryFeature,
+): boolean {
+  return useSessionStore(
+    useCallback(
+      (state) =>
+        targetServerIds.length > 0 &&
+        targetServerIds.every((id) => state.sessions[id]?.serverInfo?.features?.[feature] === true),
+      [feature, targetServerIds],
+    ),
+  );
 }
