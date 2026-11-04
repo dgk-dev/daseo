@@ -147,6 +147,37 @@ describe("base64url", () => {
   });
 });
 
+describe("PasskeyStore", () => {
+  test("opening the store and listing passkeys never asks the keychain-backed cipher", () => {
+    let asked = 0;
+    const countingCipher: PasskeyCipher = {
+      ...cipher,
+      isEncryptionAvailable: () => {
+        asked += 1;
+        return true;
+      },
+    };
+    const store = new PasskeyStore(filePath, countingCipher);
+    expect(store.list()).toEqual([]);
+    expect(asked).toBe(0);
+
+    store.add({
+      credentialId: SITE_CREDENTIAL_ID_URL,
+      rpId: "example.com",
+      privateKey: SITE_CREDENTIAL.privateKey,
+      signCount: 0,
+      createdAt: clock.toISOString(),
+    });
+    expect(asked).toBe(1);
+    expect(JSON.parse(readFileSync(filePath, "utf8"))).toMatchObject({ encrypted: true });
+
+    const reopened = new PasskeyStore(filePath, countingCipher);
+    expect(reopened.isEncrypted).toBe(true);
+    expect(reopened.list()).toHaveLength(1);
+    expect(asked).toBe(1);
+  });
+});
+
 describe("PaseoBrowserPasskeys", () => {
   test("installs a virtual authenticator in a tab and again after every navigation", async () => {
     const h = hub();

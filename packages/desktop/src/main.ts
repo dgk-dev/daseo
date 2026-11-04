@@ -1457,10 +1457,8 @@ function configureBrowserPasskeys(): void {
     });
     hub.bindSession(session.fromPartition(PASEO_BROWSER_PROFILE_PARTITION));
     setPaseoBrowserPasskeys(hub);
-    log.info("[browser-passkeys] ready", {
-      stored: store.list().length,
-      encrypted: store.isEncrypted,
-    });
+    // Not `store.isEncrypted`: that asks the keychain, which must not happen before a window.
+    log.info("[browser-passkeys] ready", { stored: store.list().length });
   } catch (error) {
     log.warn("[browser-passkeys] unavailable", error);
   }

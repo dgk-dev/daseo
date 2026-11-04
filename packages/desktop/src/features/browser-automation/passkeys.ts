@@ -51,18 +51,27 @@ export interface PasskeyCipher {
 
 export class PasskeyStore {
   private readonly file: StoreFile;
-  private readonly encrypted: boolean;
+  /**
+   * Whether `file.encrypted` is settled: true once the file was read from disk or the cipher
+   * was asked. The cipher is Electron's safeStorage, whose first call reaches the macOS
+   * keychain synchronously on the main thread and can wait on a keychain prompt; asked at
+   * startup it kept the app from opening a window (0.5.88 never activated). So it is asked only
+   * when a passkey is added or the storage mode is reported, never from the constructor.
+   */
+  private encryptionSettled: boolean;
 
   public constructor(
     public readonly filePath: string,
     private readonly cipher: PasskeyCipher | null,
   ) {
-    this.encrypted = cipher?.isEncryptionAvailable() === true;
-    this.file = this.read();
+    const loaded = this.read();
+    this.file = loaded.file;
+    this.encryptionSettled = loaded.fromDisk;
   }
 
   public get isEncrypted(): boolean {
-    return this.encrypted;
+    this.settleEncryption();
+    return this.file.encrypted;
   }
 
   public list(): StoredPasskey[] {
@@ -86,6 +95,7 @@ export class PasskeyStore {
     if (this.file.passkeys.some((existing) => existing.credentialId === passkey.credentialId)) {
       return false;
     }
+    this.settleEncryption();
     const stored: StoredPasskey = { ...passkey, privateKey: this.sealKey(passkey.privateKey) };
     this.file.passkeys.push(stored);
     this.write();
@@ -115,21 +125,30 @@ export class PasskeyStore {
     return this.cipher.encryptString(plainBase64).toString("base64");
   }
 
-  private read(): StoreFile {
+  private settleEncryption(): void {
+    if (this.encryptionSettled) return;
+    this.file.encrypted = this.cipher?.isEncryptionAvailable() === true;
+    this.encryptionSettled = true;
+  }
+
+  private read(): { file: StoreFile; fromDisk: boolean } {
     try {
       const parsed = JSON.parse(readFileSync(this.filePath, "utf8")) as Partial<StoreFile>;
       if (parsed.version === 1 && Array.isArray(parsed.passkeys)) {
         return {
-          version: 1,
-          encrypted: parsed.encrypted === true,
-          passkeys: parsed.passkeys.filter(isStoredPasskey),
+          file: {
+            version: 1,
+            encrypted: parsed.encrypted === true,
+            passkeys: parsed.passkeys.filter(isStoredPasskey),
+          },
+          fromDisk: true,
         };
       }
     } catch {
       // Missing or unreadable: start empty. An unreadable file is never overwritten with
       // an empty one until a passkey is added, and then the write is atomic.
     }
-    return { version: 1, encrypted: this.encrypted, passkeys: [] };
+    return { file: { version: 1, encrypted: false, passkeys: [] }, fromDisk: false };
   }
 
   private write(): void {

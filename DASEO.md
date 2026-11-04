@@ -1420,6 +1420,12 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
     `packages/server/src/server/browser-tools/tools.ts`. Tests: `passkeys.test.ts`, protocol and
     tools tests, and the real-Electron `passkeys` capture-harness group (register, sign in from
     another guest and after a navigation, status, delete).
+    The store never asks `safeStorage` at startup: its first call reaches the macOS keychain
+    synchronously on the main thread and can wait on a keychain prompt, and asked from
+    `configureBrowserPasskeys` (before any window) it kept 0.5.88 from opening a window, so the
+    GUI render smoke failed and 0.5.88 never activated (measured 2026-11-04 with `sample`: main
+    thread in `SecItemAdd` → `AuthorizationCopyRights`). The cipher is asked when a passkey is
+    added or the storage mode is reported; an existing file's `encrypted` flag is read from disk.
 
 79. **History finds sessions by what was said and what was meant, and leaves sub-agents out** —
     the owner's request on 2026-11-04 after measuring that 1,689 of 2,488 agent records (68%) were
