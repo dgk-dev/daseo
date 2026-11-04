@@ -1440,7 +1440,9 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       The first build runs in the background 5 s after start (799 roots, 138 s measured, 30,954
       messages, 12.3 MB); queries take 1–100 ms including snippets. After
       that each committed timeline change syncs only that agent and only the new rows
-      (`FileBackedAgentTimelineStore.onCommittedChange`). The file is a derived cache: delete it to
+      (`FileBackedAgentTimelineStore.onCommittedChange`), and a record write that changes whether an
+      agent is a root session (a detach rewrites labels and nothing else; a new agent exists before
+      its first row) syncs it too (`AgentStorage.onRecordChanged`). The file is a derived cache: delete it to
       rebuild; a schema change rebuilds.
     - **Meaning.** `multilingual-e5-small` (q8 ONNX, 384 dims, Hub revision `761b726d`, sha256
       pinned) downloads once into `$PASEO_HOME/models/history-search/` and runs only in a separate
@@ -1456,7 +1458,10 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       a packaged build was not made for this delta. Until the model is ready, search is keyword-only
       and the screen says so.
     - **Ranking.** Title (the existing ranker), body keyword (BM25, a message as the unit of term
-      frequency, OR across words), and semantic (top 30) are fused by reciprocal rank (k = 60).
+      frequency, OR across words), and semantic (top 30) are fused by reciprocal rank (k = 60). A search waits at most 1.5 s for the semantic list
+      (measured: warm query 2–3 ms, cold worker 508 ms, queued behind an 8-passage batch 584 ms); past
+      that it answers with title and keyword results (rows carry no `semantic` source) while the query
+      embedding finishes and warms the worker.
       `searchScore` is `1 / rrf` so multi-host merging still sorts ascending. Each result carries
       `searchSnippet` (best message, marked ranges, `seq`, and `anchorSeq` = the user row that
       starts its turn) and `searchSources`.

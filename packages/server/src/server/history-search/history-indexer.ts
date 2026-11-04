@@ -109,6 +109,16 @@ export class HistoryIndexer {
     this.debounceTimers.set(agentId, timer);
   }
 
+  /**
+   * The agent's record changed. Only a change in whether it is a root session
+   * needs a sync (a detached sub-agent becomes one; a new agent appears before
+   * its first timeline row); ordinary snapshot writes are skipped here.
+   */
+  notifyAgentRecordChanged(agentId: string, agent: IndexableAgent | null): void {
+    if ((agent !== null) === this.rootIds.has(agentId)) return;
+    this.notifyTimelineChanged(agentId);
+  }
+
   status(): HistoryIndexerStatus {
     const indexed = this.store
       .listSessions()

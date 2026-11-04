@@ -94,6 +94,8 @@ export function parseStoredAgentRecord(value: unknown): StoredAgentRecord {
   return STORED_AGENT_SCHEMA.parse(value);
 }
 
+export type RecordChangeListener = (agentId: string, record: StoredAgentRecord | null) => void;
+
 export class AgentStorage {
   private cache: Map<string, StoredAgentRecord> = new Map();
   private pathById: Map<string, string> = new Map();
@@ -106,6 +108,7 @@ export class AgentStorage {
   private baseDir: string;
   private loadPromise: Promise<StoredAgentRecord[]> | null = null;
   private logger: Logger;
+  private readonly recordChangeListeners = new Set<RecordChangeListener>();
 
   constructor(baseDir: string, logger: Logger) {
     this.baseDir = baseDir;
@@ -114,6 +117,29 @@ export class AgentStorage {
 
   async initialize(): Promise<void> {
     await this.load();
+  }
+
+  /**
+   * Daseo delta 79: called after a record is written (`record`) or removed
+   * (`null`), so derived indexes (History search) learn when an agent starts
+   * or stops being a root session — a detach, for one, rewrites labels and
+   * nothing else.
+   */
+  onRecordChanged(listener: RecordChangeListener): () => void {
+    this.recordChangeListeners.add(listener);
+    return () => {
+      this.recordChangeListeners.delete(listener);
+    };
+  }
+
+  private notifyRecordChanged(agentId: string, record: StoredAgentRecord | null): void {
+    for (const listener of this.recordChangeListeners) {
+      try {
+        listener(agentId, record);
+      } catch (error) {
+        this.logger.warn({ err: error, agentId }, "Agent record change listener failed");
+      }
+    }
   }
 
   async list(): Promise<StoredAgentRecord[]> {
@@ -204,6 +230,7 @@ export class AgentStorage {
     this.cache.set(agentId, record);
     this.indexOwner(record);
     this.pathById.set(agentId, nextPath);
+    this.notifyRecordChanged(agentId, record);
   }
 
   beginDelete(agentId: string): void {
@@ -235,6 +262,7 @@ export class AgentStorage {
     this.removeOwnerIndex(agentId);
     this.pathById.delete(agentId);
     this.pathsById.delete(agentId);
+    this.notifyRecordChanged(agentId, null);
   }
 
   async applySnapshot(

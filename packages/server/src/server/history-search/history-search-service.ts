@@ -63,6 +63,7 @@ export interface HistorySearchServiceOptions {
   timelinesDir?: string;
   ensureModel?: ConstructorParameters<typeof HistorySemanticIndex>[0]["ensureModel"];
   aiRankTimeoutMs?: number;
+  semanticBudgetMs?: number;
 }
 
 export type HistoryAiRankOutcome =
@@ -70,6 +71,14 @@ export type HistoryAiRankOutcome =
   | { ok: false; code: "unavailable" | "timeout" | "failed"; message: string };
 
 const DEFAULT_AI_RANK_TIMEOUT_MS = 20_000;
+/**
+ * How long one search waits for the semantic signal. Measured on this Mac: a
+ * warm worker answers a query in 2-3 ms, a cold start (fork + model load) in
+ * about 510 ms, and a query queued behind one 8-passage embedding batch in about
+ * 580 ms. 1.5 s covers either case with 2.5x headroom; anything slower (a crash
+ * and re-fork, several queued batches) is not worth stalling typing for.
+ */
+export const DEFAULT_SEMANTIC_BUDGET_MS = 1_500;
 
 export class HistorySearchService {
   private startTimer: ReturnType<typeof setTimeout> | null = null;
@@ -82,6 +91,7 @@ export class HistorySearchService {
     private readonly semantic: HistorySemanticIndex | null,
     private readonly aiRanker: HistoryAiRanker | null,
     private readonly aiRankTimeoutMs: number,
+    private readonly semanticBudgetMs: number,
     private readonly logger: pino.Logger,
   ) {}
 
@@ -115,6 +125,7 @@ export class HistorySearchService {
       semantic,
       options.aiRanker,
       options.aiRankTimeoutMs ?? DEFAULT_AI_RANK_TIMEOUT_MS,
+      options.semanticBudgetMs ?? DEFAULT_SEMANTIC_BUDGET_MS,
       logger,
     );
   }
@@ -155,6 +166,10 @@ export class HistorySearchService {
     this.indexer.notifyTimelineChanged(agentId);
   }
 
+  notifyAgentRecordChanged(agentId: string, agent: IndexableAgent | null): void {
+    this.indexer.notifyAgentRecordChanged(agentId, agent);
+  }
+
   status(): AgentHistorySearchStatus {
     const keyword = this.indexer.status();
     const semantic = this.semantic?.status() ?? {
@@ -193,7 +208,7 @@ export class HistorySearchService {
 
     const title = rankAgentHistoryCandidates(query, candidates, input.compareTies);
     const content = rankSessionsByContent({ store: this.store, tokens, candidateIds });
-    const semantic = (await this.semantic?.rank({ query, candidateIds })) ?? [];
+    const semantic = (await this.rankSemanticWithinBudget(query, candidateIds)) ?? [];
     const semanticById = new Map<string, SemanticMatch>(
       semantic.map((match) => [match.agentId, match]),
     );
@@ -232,6 +247,35 @@ export class HistorySearchService {
       if (snippet) result.searchSnippet = snippet;
       return result;
     });
+  }
+
+  /**
+   * The semantic list, or null when it is not ready within the budget. A cold
+   * or busy worker must never hold a History search: the response goes out
+   * with title and keyword results (rows then carry no `semantic` source), and
+   * the query embedding keeps running so the next keystroke finds the worker
+   * warm.
+   */
+  private async rankSemanticWithinBudget(
+    query: string,
+    candidateIds: ReadonlySet<string>,
+  ): Promise<SemanticMatch[] | null> {
+    if (!this.semantic) return null;
+    const ranking = this.semantic.rank({ query, candidateIds });
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const budget = new Promise<"skipped">((resolve) => {
+      timer = setTimeout(() => resolve("skipped"), this.semanticBudgetMs);
+    });
+    try {
+      const result = await Promise.race([ranking, budget]);
+      if (result === "skipped") {
+        this.logger.debug({ budgetMs: this.semanticBudgetMs }, "History search skipped semantic");
+        return null;
+      }
+      return result;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   private describe(input: {

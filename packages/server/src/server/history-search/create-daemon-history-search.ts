@@ -27,6 +27,8 @@ export async function createDaemonHistorySearch(input: {
   providerSnapshotManager: ProviderSnapshotManager;
   readDaemonConfig: () => StructuredGenerationDaemonConfig;
   logger: pino.Logger;
+  /** Tests start the first pass at once. */
+  startDelayMs?: number;
 }): Promise<HistorySearchService | null> {
   const logger = input.logger.child({ module: "history-search" });
   let service: HistorySearchService;
@@ -68,6 +70,9 @@ export async function createDaemonHistorySearch(input: {
     return null;
   }
   input.durableTimelineStore.onCommittedChange((agentId) => service.notifyTimelineChanged(agentId));
-  service.start({ delayMs: START_DELAY_MS });
+  input.agentStorage.onRecordChanged((agentId, record) =>
+    service.notifyAgentRecordChanged(agentId, record ? toIndexableAgent(record) : null),
+  );
+  service.start({ delayMs: input.startDelayMs ?? START_DELAY_MS });
   return service;
 }

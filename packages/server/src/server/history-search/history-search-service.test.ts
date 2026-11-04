@@ -5,7 +5,7 @@ import pino from "pino";
 import { afterEach, describe, expect, test } from "vitest";
 import type { AgentHistorySearchCandidate } from "../agent-history-search.js";
 import type { HistoryAiRanker } from "./history-ai-ranker.js";
-import { HistorySearchService } from "./history-search-service.js";
+import { DEFAULT_SEMANTIC_BUDGET_MS, HistorySearchService } from "./history-search-service.js";
 import type { HistoryEmbedder } from "./semantic/history-semantic-index.js";
 import {
   HISTORY_FIXTURE_QUERIES,
@@ -99,6 +99,7 @@ const fakeEmbedder: HistoryEmbedder = {
 async function createService(
   options: {
     semantic?: "ready" | "missing" | "off";
+    embedder?: HistoryEmbedder;
     aiRanker?: HistoryAiRanker | null;
     aiRankTimeoutMs?: number;
   } = {},
@@ -120,7 +121,7 @@ async function createService(
     listRootAgents: async () => roots,
     resolveRootAgent: async (agentId) => roots.find((root) => root.id === agentId) ?? null,
     semanticEnabled: semantic !== "off",
-    createEmbedder: () => fakeEmbedder,
+    createEmbedder: () => options.embedder ?? fakeEmbedder,
     ensureModel: async ({ modelsDir }) => {
       if (semantic === "missing") throw new Error("offline");
       return modelsDir;
@@ -247,6 +248,40 @@ describe("HistorySearchService", () => {
     // Matched by meaning only: a snippet to read, nothing to mark.
     expect(result?.searchSnippet?.ranges).toEqual([]);
     expect(result?.searchSnippet?.text.length).toBeGreaterThan(0);
+  });
+
+  test("answers within the semantic budget with keyword results when the query embedding is slow", async () => {
+    let slowQueries = 0;
+    const slowEmbedder: HistoryEmbedder = {
+      embedPassages: async (texts) => texts.map(conceptVector),
+      // A worker cold-starting from disk, re-forking after a crash, or busy behind passage
+      // batches: far longer than any search may wait.
+      embedQuery: (text) =>
+        new Promise((resolve) => {
+          slowQueries += 1;
+          setTimeout(() => resolve(conceptVector(text)), 4_000).unref();
+        }),
+      shutdown: () => undefined,
+    };
+    const service = await createService({ semantic: "ready", embedder: slowEmbedder });
+    expect(service.status().semantic.state).toBe("ready");
+
+    const startedAt = Date.now();
+    const results = await service.search({
+      query: "어린이집",
+      candidates: CANDIDATES,
+      compareTies,
+      describeLimit: 200,
+    });
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(slowQueries).toBe(1);
+    expect(elapsedMs).toBeGreaterThanOrEqual(DEFAULT_SEMANTIC_BUDGET_MS - 50);
+    expect(elapsedMs).toBeLessThan(DEFAULT_SEMANTIC_BUDGET_MS + 500);
+    expect(results[0]?.candidate.agent.id).toBe("daycare");
+    expect(results[0]?.searchSnippet?.ranges.length).toBeGreaterThan(0);
+    // The semantic signal was skipped, so no row claims it.
+    expect(results.every((result) => !result.searchSources.includes("semantic"))).toBe(true);
   });
 
   test("searches keyword-only and reports why when the model cannot be fetched", async () => {
