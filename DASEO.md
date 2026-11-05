@@ -1497,6 +1497,27 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       `PASEO_HISTORY_E2E_DOWNLOAD=1`), `messages.history-search.test.ts`, and the sub-agent case in
       `session.workspaces.test.ts`.
 
+80. **A report for the lead gets through, and one finish is one notice** — the owner's report on
+    2026-11-05: a phase-10 implementer ended its turn at 11:20 KST with "waiting for the lead's QA"
+    while its own HYM push-gate wait was still pending, delta 29 kept "finished" quiet, the lead
+    never heard, and the owner typed "GO" in the child's tab, skipping the lead's review. Separately,
+    a lead that sent seven follow-ups to a running implementer on 2026-11-04 received the same finish
+    notice seven times, because every `send_agent_prompt` with notify-on-finish added a watcher.
+    - **`[lead review]`.** When a child goes idle with background waits pending and its last
+      message has a line that is exactly `[lead review]` (any case), the caller gets a non-terminal
+      "is waiting for your review" notice with that message, once per distinct message, and the
+      watch continues. The later finish is delivered only if the child then says something other
+      than that report or `[wait noted]`; otherwise the watcher ends quietly and leaves the journal.
+      Without the marker delta 29 is unchanged (a child that ends its turn to let a build run stays
+      quiet). pi-local's delegate-implementation skill tells implementers to end every stop for the
+      lead with the marker.
+    - **One watcher per (child, caller).** A new watcher for the same pair stops the previous one
+      in memory (the journal entry is shared and stays).
+    - **Key files:** `packages/server/src/server/agent/agent-prompt.ts` (`asksForLeadReview`,
+      `liveFinishWatchers`, `reportReviewIfAsked`, `finishAfterReview`), tests in
+      `agent-prompt.test.ts` ("lead review and one watcher per pair"). Takes effect with the next
+      release and daemon restart.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

@@ -49,6 +49,7 @@ interface FinishNotificationScenarioOptions {
 
 interface FinishNotificationScenario {
   startWatchingChild(): void;
+  setChildLastAssistantMessage(message: string | null): void;
   requestChildPermission(requestId?: string): void;
   resolveChildPermission(requestId?: string): void;
   resolveChildPermissionFromState(requestId?: string): void;
@@ -66,7 +67,13 @@ interface FinishNotificationScenario {
 function createFinishNotificationScenario(
   options?: FinishNotificationScenarioOptions,
 ): FinishNotificationScenario {
-  let subscriber: ((event: AgentManagerEvent) => void) | null = null;
+  const subscribers = new Set<(event: AgentManagerEvent) => void>();
+  const subscriber = {
+    emit(event: AgentManagerEvent) {
+      for (const callback of subscribers) callback(event);
+    },
+  };
+  let lastAssistantMessage = options?.childLastAssistantMessage ?? null;
   let resolveParentPrompt: ((prompt: string) => void) | null = null;
   let parentPrompted = false;
   const parentPrompts: string[] = [];
@@ -93,13 +100,13 @@ function createFinishNotificationScenario(
     return null;
   });
   Reflect.set(agentManager, "subscribe", (callback: (event: AgentManagerEvent) => void) => {
-    subscriber = callback;
+    subscribers.add(callback);
     return () => {
-      subscriber = null;
+      subscribers.delete(callback);
     };
   });
   Reflect.set(agentManager, "getLastAssistantMessage", async () => {
-    return options?.childLastAssistantMessage ?? null;
+    return lastAssistantMessage;
   });
   Reflect.set(agentManager, "tryRunOutOfBand", () => false);
   Reflect.set(agentManager, "trySteerAgentRun", async () => false);
@@ -129,6 +136,9 @@ function createFinishNotificationScenario(
   });
 
   return {
+    setChildLastAssistantMessage(message: string | null) {
+      lastAssistantMessage = message;
+    },
     startWatchingChild() {
       setupFinishNotification({
         agentManager,
@@ -152,11 +162,11 @@ function createFinishNotificationScenario(
           content: "PASEO_PERMISSION_NOTIFY_QA_OK\n",
         },
       });
-      subscriber?.({
+      subscriber.emit({
         type: "agent_state",
         agent: childAgent,
       });
-      subscriber?.({
+      subscriber.emit({
         type: "agent_stream",
         agentId: "child-agent",
         event: {
@@ -168,7 +178,7 @@ function createFinishNotificationScenario(
     },
     resolveChildPermission(requestId = "permission-1") {
       childAgent.pendingPermissions.delete(requestId);
-      subscriber?.({
+      subscriber.emit({
         type: "agent_stream",
         agentId: "child-agent",
         event: {
@@ -181,13 +191,13 @@ function createFinishNotificationScenario(
     },
     resolveChildPermissionFromState(requestId = "permission-1") {
       childAgent.pendingPermissions.delete(requestId);
-      subscriber?.({ type: "agent_state", agent: childAgent });
+      subscriber.emit({ type: "agent_state", agent: childAgent });
     },
     resolveChildPermissionWhileIdle(requestId = "permission-1") {
       childAgent.pendingPermissions.delete(requestId);
       childAgent.lifecycle = "idle";
-      subscriber?.({ type: "agent_state", agent: childAgent });
-      subscriber?.({
+      subscriber.emit({ type: "agent_state", agent: childAgent });
+      subscriber.emit({
         type: "agent_stream",
         agentId: "child-agent",
         event: {
@@ -200,14 +210,14 @@ function createFinishNotificationScenario(
     },
     failChild() {
       childAgent.lifecycle = "error";
-      subscriber?.({ type: "agent_state", agent: childAgent });
+      subscriber.emit({ type: "agent_state", agent: childAgent });
     },
     runChild() {
       childAgent.lifecycle = "running";
-      subscriber?.({ type: "agent_state", agent: childAgent });
+      subscriber.emit({ type: "agent_state", agent: childAgent });
     },
     emitChildProgress() {
-      subscriber?.({
+      subscriber.emit({
         type: "agent_stream",
         agentId: "child-agent",
         event: { type: "turn_started", provider: "pi" },
@@ -215,14 +225,14 @@ function createFinishNotificationScenario(
     },
     finishChild(pendingBackgroundWaits = 0) {
       childAgent.lifecycle = "running";
-      subscriber?.({
+      subscriber.emit({
         type: "agent_state",
         agent: childAgent,
       });
 
       childAgent.pendingBackgroundWaits = pendingBackgroundWaits;
       childAgent.lifecycle = "idle";
-      subscriber?.({
+      subscriber.emit({
         type: "agent_state",
         agent: childAgent,
       });
@@ -241,13 +251,13 @@ function createFinishNotificationScenario(
       });
 
       childAgent.lifecycle = "running";
-      subscriber?.({
+      subscriber.emit({
         type: "agent_state",
         agent: childAgent,
       });
 
       childAgent.lifecycle = "closed";
-      subscriber?.({
+      subscriber.emit({
         type: "agent_state",
         agent: childAgent,
       });
@@ -745,4 +755,67 @@ test("an errored child is reported once and its later finish is reported too", a
   scenario.finishChild();
   await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(2));
   expect(scenario.parentPrompts()[1]).toContain("finished.");
+});
+
+describe("lead review and one watcher per pair (delta 80)", () => {
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  test("a report marked [lead review] reaches the caller while the child still holds a wait", async () => {
+    const scenario = createFinishNotificationScenario({
+      childLastAssistantMessage: "Round B is on the test skins.\n\n[lead review]",
+    });
+    scenario.startWatchingChild();
+    scenario.finishChild(1);
+    await flush();
+    await flush();
+    expect(scenario.parentPrompts()).toHaveLength(1);
+    expect(scenario.parentPrompts()[0]).toContain("is waiting for your review");
+    expect(scenario.parentPrompts()[0]).toContain("Round B is on the test skins.");
+
+    // The wait wakes it, it only acknowledges, and the waits are gone: nothing new to say.
+    scenario.setChildLastAssistantMessage("[wait noted]");
+    scenario.finishChild(0);
+    await flush();
+    await flush();
+    expect(scenario.parentPrompts()).toHaveLength(1);
+  });
+
+  test("after a review notice, a later new report is delivered as the finish", async () => {
+    const scenario = createFinishNotificationScenario({
+      childLastAssistantMessage: "Test round done.\n[Lead review]",
+    });
+    scenario.startWatchingChild();
+    scenario.finishChild(1);
+    await flush();
+    await flush();
+    scenario.setChildLastAssistantMessage("The HYM push gate failed; fixed and pushed again.");
+    scenario.finishChild(0);
+    await flush();
+    await flush();
+    expect(scenario.parentPrompts()).toHaveLength(2);
+    expect(scenario.parentPrompts()[1]).toContain("finished");
+    expect(scenario.parentPrompts()[1]).toContain("HYM push gate failed");
+  });
+
+  test("without the marker a child holding a wait stays quiet (delta 29 unchanged)", async () => {
+    const scenario = createFinishNotificationScenario({
+      childLastAssistantMessage: "Build is running; I will continue when it finishes.",
+    });
+    scenario.startWatchingChild();
+    scenario.finishChild(1);
+    await flush();
+    await flush();
+    expect(scenario.wasParentPrompted()).toBe(false);
+  });
+
+  test("a second watcher for the same child and caller replaces the first, so one finish is one notice", async () => {
+    const scenario = createFinishNotificationScenario({ childLastAssistantMessage: "Done." });
+    scenario.startWatchingChild();
+    scenario.startWatchingChild();
+    scenario.startWatchingChild();
+    scenario.finishChild(0);
+    await flush();
+    await flush();
+    expect(scenario.parentPrompts()).toHaveLength(1);
+  });
 });

@@ -296,7 +296,8 @@ type FinishNotificationReason =
   | "errored"
   | "needs permission"
   | "was closed"
-  | typeof STALL_NOTIFICATION_REASON;
+  | typeof STALL_NOTIFICATION_REASON
+  | typeof LEAD_REVIEW_NOTIFICATION_REASON;
 
 /**
  * Local fork (DASEO.md delta 54): a child that stays "running" with no event for this long is
@@ -307,6 +308,31 @@ type FinishNotificationReason =
 export const FINISH_WATCH_STALL_MS = 20 * 60_000;
 export const FINISH_WATCH_STALL_CHECK_MS = 60_000;
 const STALL_NOTIFICATION_REASON = "has shown no progress for 20 minutes";
+
+/**
+ * Local fork (DASEO.md delta 80): delta 29 keeps "finished" quiet while the child still holds
+ * background waits, because a child that ends its turn to let a build run is not done. A child can
+ * also end its turn with a report that waits on its caller (a QA gate, a decision) while one of its
+ * own waits is still pending; on 2026-11-05 a phase-10 implementer did exactly that, its lead never
+ * heard, and the owner answered "GO" in the child's tab, skipping the lead's review. A report that
+ * carries this marker on a line of its own is delivered at once, as a non-terminal notice, and the
+ * watch continues; the later finish is delivered only if the child says something new.
+ */
+export const LEAD_REVIEW_MARKER = "[lead review]";
+const LEAD_REVIEW_NOTIFICATION_REASON = "is waiting for your review";
+const WAIT_NOTED_REPLY = "[wait noted]";
+
+export function asksForLeadReview(message: string | null | undefined): boolean {
+  if (!message) return false;
+  return message.split(/\r?\n/).some((line) => line.trim().toLowerCase() === LEAD_REVIEW_MARKER);
+}
+
+/**
+ * Local fork (delta 80): one live watcher per (child, caller). Every send_agent_prompt with
+ * notifyOnFinish used to add another; a lead that sent seven follow-ups to a running implementer got
+ * the same finish notice seven times (2026-11-04, 14:21 KST), each one a paid turn.
+ */
+const liveFinishWatchers = new Map<string, () => void>();
 
 const FINISH_NOTIFICATION_MESSAGE_LIMIT = 4000;
 
@@ -324,6 +350,11 @@ function formatFinishNotificationBody(params: FinishNotificationBodyInput): stri
   if (params.reason === "errored") {
     sections.push(
       "Daseo keeps watching this agent: if it recovers and finishes, you will be notified again.",
+    );
+  }
+  if (params.reason === LEAD_REVIEW_NOTIFICATION_REASON) {
+    sections.push(
+      "It ended its turn with a report for you while it still holds background waits of its own. Daseo keeps watching: you are told again only if it says something new after they finish.",
     );
   }
   if (params.reason === STALL_NOTIFICATION_REASON) {
@@ -443,6 +474,10 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
   } = params;
   let hasSeenRunning = false;
   let stopped = false;
+  let reportedReview: string | null = null;
+  const watcherKey = `${childAgentId}\u0000${callerAgentId}`;
+  liveFinishWatchers.get(watcherKey)?.();
+  liveFinishWatchers.set(watcherKey, stop);
   const notifiedPermissionRequestIds = new Set<string>();
   let unsubscribe: (() => void) | null = null;
   let notificationQueue = Promise.resolve();
@@ -456,6 +491,7 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
     stopped = true;
     clearInterval(stallTimer);
     unsubscribe?.();
+    if (liveFinishWatchers.get(watcherKey) === stop) liveFinishWatchers.delete(watcherKey);
   }
 
   function noteProgress(): void {
@@ -519,6 +555,36 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
       });
   }
 
+  /** Idle with waits still pending: deliver a report that asks for the caller's review, once. */
+  async function reportReviewIfAsked(): Promise<void> {
+    const message = await agentManager.getLastAssistantMessage(childAgentId);
+    if (stopped || !asksForLeadReview(message) || message === reportedReview) return;
+    reportedReview = message;
+    notifySafely(LEAD_REVIEW_NOTIFICATION_REASON, { terminal: false });
+  }
+
+  /** The final idle after a review notice: deliver it only when the child said something new. */
+  async function finishAfterReview(): Promise<void> {
+    if (stopped) return;
+    stop();
+    const message = await agentManager.getLastAssistantMessage(childAgentId);
+    const trimmed = message?.trim() ?? "";
+    if (!trimmed || trimmed === WAIT_NOTED_REPLY || message === reportedReview) {
+      if (!finishWatcherJournal?.isFrozen()) {
+        finishWatcherJournal?.removeWatcher(childAgentId, callerAgentId);
+      }
+      return;
+    }
+    notificationQueue = notificationQueue
+      .then(() => notify("finished", true))
+      .catch((error) => {
+        logger.error(
+          { err: error, childAgentId, callerAgentId, reason: "finished" },
+          "Failed to notify caller agent",
+        );
+      });
+  }
+
   unsubscribe = agentManager.subscribe(
     (event) => {
       if (stopped) {
@@ -546,7 +612,24 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
         if (event.agent.lifecycle === "idle" && hasSeenRunning) {
           // Local fork: a child that ended its turn to wait on background waits is not finished;
           // the idle after its last wake turn is.
-          if ((event.agent.pendingBackgroundWaits ?? 0) > 0) return;
+          if ((event.agent.pendingBackgroundWaits ?? 0) > 0) {
+            void reportReviewIfAsked().catch((error) => {
+              logger.error(
+                { err: error, childAgentId, callerAgentId },
+                "Failed to read child report",
+              );
+            });
+            return;
+          }
+          if (reportedReview !== null) {
+            void finishAfterReview().catch((error) => {
+              logger.error(
+                { err: error, childAgentId, callerAgentId },
+                "Failed to finish after review",
+              );
+            });
+            return;
+          }
           notifySafely("finished");
           return;
         }
