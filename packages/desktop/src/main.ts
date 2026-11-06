@@ -1497,7 +1497,6 @@ async function bootstrap(): Promise<void> {
   // when they are created.
   applyPaseoBrowserProfileUserAgent(
     session,
-    app.getName(),
     rendererAcceptLanguages(app.getLocale(), app.getPreferredSystemLanguages()),
   );
   installPaseoBrowserClientHints(session, {

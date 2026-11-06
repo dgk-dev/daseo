@@ -57,19 +57,6 @@ interface UserAgentSession {
 }
 
 /**
- * Electron's default user agent carries `<app name>/<version>` and `Electron/<version>`
- * tokens after the Chrome token. Sites read them as an embedded or automated client, so
- * the browser profile presents the Chrome string it is built from. The Chrome version
- * token stays as is, and UA client hints already report only Chromium brands.
- */
-export function plainChromeUserAgent(userAgent: string, appName: string): string {
-  const escapedAppName = appName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return userAgent
-    .replace(new RegExp(`\\s${escapedAppName}/\\S+`, "g"), "")
-    .replace(/\sElectron\/\S+/g, "");
-}
-
-/**
  * The languages Electron puts in every WebContents' renderer preferences, which is where
  * `navigator.languages` comes from: the app locale, then the system's preferred languages
  * (electron_api_web_contents.cc). The network stack's Accept-Language defaults to the app locale
@@ -80,21 +67,24 @@ export function rendererAcceptLanguages(locale: string, preferredLanguages: stri
 }
 
 /**
- * Applies to the browser profile session only, so browser webviews and popups get the
- * plain Chrome user agent and an Accept-Language that matches `navigator.languages`, while
- * Paseo's own renderer keeps Electron's defaults. Must run before any browser webview is
- * created: existing WebContents keep the old value.
+ * Applies to the browser profile session only, so browser webviews and popups get an
+ * Accept-Language that matches `navigator.languages`, while Paseo's own renderer keeps
+ * Electron's defaults. Must run before any browser webview is created: existing WebContents
+ * keep the old value.
+ *
+ * The user agent stays Electron's own string, `Paseo/<v>` and `Electron/<v>` tokens included.
+ * A Chrome-looking string without them, next to client hints that carry no Google Chrome brand,
+ * makes Cloudflare Turnstile fail with 600010 and recreate the widget forever: on
+ * dash.cloudflare.com/login (Electron 41.10.6, macOS, 2026-11-06) the native string passed
+ * 5 of 5 fresh profiles and the stripped one failed 2 of 2. Google sign-in reached the password
+ * step with both.
  */
 export function applyPaseoBrowserProfileUserAgent(
   sessions: { fromPartition(partition: string): UserAgentSession },
-  appName: string,
   acceptLanguages: string,
 ): void {
   const profileSession = sessions.fromPartition(PASEO_BROWSER_PROFILE_PARTITION);
-  profileSession.setUserAgent(
-    plainChromeUserAgent(profileSession.getUserAgent(), appName),
-    acceptLanguages,
-  );
+  profileSession.setUserAgent(profileSession.getUserAgent(), acceptLanguages);
 }
 
 export interface UserAgentBrandVersion {

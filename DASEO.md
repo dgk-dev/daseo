@@ -318,12 +318,10 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     effect with the next release and daemon restart.
 26. **Browser harness details from the Aside comparison** — the trade-off-free parts of a
     2026-09-29 comparison with Aside's browser agent, each from a live measurement:
-    - The browser profile session (`persist:paseo-browser`, used by browser webviews and popups)
-      sends a plain Chrome user agent: the `Paseo/<version>` and `Electron/<version>` tokens are
-      removed, the Chrome version stays, and Paseo's own renderer keeps Electron's default. It is
-      set right after `app.whenReady()` because existing WebContents keep the old value; delta 65
-      makes the session's Accept-Language and client-hint headers agree with it. Key
-      files: `packages/desktop/src/features/browser-profile.ts` and `packages/desktop/src/main.ts`.
+    - (Reverted by delta 81.) The browser profile session sent a plain Chrome user agent with the
+      `Paseo/<version>` and `Electron/<version>` tokens removed; that is what made Cloudflare
+      Turnstile loop on 600010. The session's Accept-Language and client-hint headers (delta 65)
+      are still set right after `app.whenReady()`.
     - Snapshots mark `focused=true` on the element keyboard input goes to (followed into open
       shadow roots) and `disabled=true` on disabled controls, which still get no ref, so the agent
       sees why a button has none. Key file: `aria-snapshot-script.ts`.
@@ -1517,6 +1515,24 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       `liveFinishWatchers`, `reportReviewIfAsked`, `finishAfterReview`), tests in
       `agent-prompt.test.ts` ("lead review and one watcher per pair"). Takes effect with the next
       release and daemon restart.
+81. **The browser keeps Electron's own user agent, so Cloudflare's human check passes** — the
+    owner's report on 2026-11-06: signing in at dash.cloudflare.com in Daseo showed "There was a
+    problem with verification", the Turnstile widget failed with 600010 and was recreated about
+    every 1.2 s, and Sign in stayed disabled; debug.challenges.cloudflare.com still said "No
+    automation detected". Delta 26's plain Chrome string was the cause. A bare Electron 41.10.6
+    harness on the same Mac and network, fresh profile per run: the native string (with or without
+    the `Paseo/<v>` token) passed 5 of 5 (`cf_challenge_response` 752-773 chars, no 600010), the
+    stripped string failed 2 of 2 (600010 15-16 times, empty response). t3code PR #7110 measured
+    the same on Linux with Electron 41.5 and 44.1. Google sign-in reached the password step with
+    both strings; steps after the password were not checked. Ruled out: a dedicated worker reports
+    the same user agent as the page, and the harness had no debugger attached.
+    - The profile session keeps `session.getUserAgent()` and only passes delta 65's
+      Accept-Language list to `setUserAgent`. Client hints stay Chromium-only, matching an
+      Electron user agent. Device emulation still overrides per tab.
+    - **Key files:** `packages/desktop/src/features/browser-profile.ts`
+      (`applyPaseoBrowserProfileUserAgent`), `packages/desktop/src/main.ts`, test in
+      `browser-profile.test.ts`. Takes effect with the next release (the session is configured at
+      app start).
 
 ## Local reliability contracts
 

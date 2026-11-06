@@ -10,7 +10,6 @@ import {
   installPaseoBrowserClientHints,
   listPaseoBrowserProfileGuests,
   PASEO_BROWSER_PROFILE_PARTITION,
-  plainChromeUserAgent,
   readLegacyPaseoBrowserIds,
   rendererAcceptLanguages,
   requestHeadersWithClientHints,
@@ -24,19 +23,7 @@ const ELECTRON_DEFAULT_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Paseo/0.5.36 Chrome/146.0.7680.216 Electron/41.10.6 Safari/537.36";
 
 describe("browser profile user agent", () => {
-  test("drops the app and Electron tokens and keeps the Chrome version", () => {
-    expect(plainChromeUserAgent(ELECTRON_DEFAULT_USER_AGENT, "Paseo")).toBe(
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.216 Safari/537.36",
-    );
-  });
-
-  test("leaves a plain Chrome user agent unchanged", () => {
-    const chrome =
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.216 Safari/537.36";
-    expect(plainChromeUserAgent(chrome, "Paseo")).toBe(chrome);
-  });
-
-  test("sets the plain user agent and accept languages on the browser profile session only", () => {
+  test("keeps Electron's user agent and sets accept languages on the browser profile session only", () => {
     const set = new Map<string, [string, string | undefined]>();
     applyPaseoBrowserProfileUserAgent(
       {
@@ -46,14 +33,12 @@ describe("browser profile user agent", () => {
             set.set(partition, [userAgent, acceptLanguages]),
         }),
       },
-      "Paseo",
       "en-US,en-KR,ko-KR",
     );
     expect([...set.keys()]).toEqual([PASEO_BROWSER_PROFILE_PARTITION]);
     const [applied, acceptLanguages] = set.get(PASEO_BROWSER_PROFILE_PARTITION) ?? ["", ""];
-    expect(applied).not.toMatch(/Electron\//);
-    expect(applied).not.toMatch(/Paseo\//);
-    expect(applied).toContain("Chrome/146.0.7680.216");
+    // Turnstile on dash.cloudflare.com loops on 600010 once these tokens are removed.
+    expect(applied).toBe(ELECTRON_DEFAULT_USER_AGENT);
     expect(acceptLanguages).toBe("en-US,en-KR,ko-KR");
   });
 });
