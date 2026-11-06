@@ -1,4 +1,5 @@
 import { dialog, ipcMain, BrowserWindow } from "electron";
+import { createDialogDirectoryMemory } from "./dialog-directory-memory.js";
 
 interface AskOptions {
   title?: string;
@@ -28,6 +29,7 @@ function resolveDialogType(kind: AskOptions["kind"]): "warning" | "error" | "que
 }
 
 export function registerDialogHandlers(): void {
+  const openDialogDirectory = createDialogDirectoryMemory();
   ipcMain.handle("paseo:dialog:ask", async (event, message: string, options?: AskOptions) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     const result = await dialog.showMessageBox(win ?? BrowserWindow.getFocusedWindow()!, {
@@ -72,12 +74,13 @@ export function registerDialogHandlers(): void {
 
     const result = await dialog.showOpenDialog(win ?? BrowserWindow.getFocusedWindow()!, {
       title: options?.title,
-      defaultPath: options?.defaultPath,
+      defaultPath: openDialogDirectory.defaultPath(options?.defaultPath),
       properties,
       filters: options?.filters,
     });
 
     if (result.canceled) return null;
+    openDialogDirectory.remember(result.filePaths);
     return options?.multiple ? result.filePaths : (result.filePaths[0] ?? null);
   });
 }

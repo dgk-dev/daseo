@@ -21,6 +21,7 @@ import {
   autoUpdater as electronAutoUpdater,
   BaseWindow,
   BrowserWindow,
+  ClipboardItem,
   clipboard,
   Menu,
   ipcMain,
@@ -1055,11 +1056,12 @@ ipcMain.handle(
   },
 );
 
-ipcMain.handle("paseo:clipboard:read-image", (): string | null =>
-  readClipboardImageDataUrl(clipboard),
+ipcMain.handle(
+  "paseo:clipboard:read-image",
+  (): Promise<string | null> => readClipboardImageDataUrl(clipboard),
 );
 
-ipcMain.handle("paseo:browser:copy-element", (_event, payload: unknown): boolean => {
+ipcMain.handle("paseo:browser:copy-element", async (_event, payload: unknown): Promise<boolean> => {
   if (!payload || typeof payload !== "object") {
     return false;
   }
@@ -1084,19 +1086,15 @@ ipcMain.handle("paseo:browser:copy-element", (_event, payload: unknown): boolean
 
   // Writing from the main process avoids the renderer's navigator.clipboard
   // NotAllowedError, which fires when focus is inside the guest <webview>.
-  if (copyText && image) {
-    clipboard.write({ text: copyText, image });
-    return true;
+  // One ClipboardItem commits text and image atomically (Electron 44 clipboard API).
+  if (!copyText && !image) {
+    return false;
   }
-  if (image) {
-    clipboard.writeImage(image);
-    return true;
-  }
-  if (copyText) {
-    clipboard.writeText(copyText);
-    return true;
-  }
-  return false;
+  const items: Record<string, string | Blob> = {};
+  if (copyText) items["text/plain"] = copyText;
+  if (image) items["image/png"] = new Blob([new Uint8Array(image.toPNG())], { type: "image/png" });
+  await clipboard.write([new ClipboardItem(items)]);
+  return true;
 });
 
 protocol.registerSchemesAsPrivileged([

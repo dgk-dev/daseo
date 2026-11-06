@@ -32,6 +32,8 @@ class FakeTab implements PasskeyTabContents {
   private readonly debuggerListeners = new Map<string, Listener[]>();
   private attached = false;
   private nextAuthenticator = 1;
+  /** Internal authenticators alive in the tab's virtual environment, as Chromium in Electron 44 keeps them across navigations. */
+  public readonly liveAuthenticators = new Set<string>();
   public readonly debugger = {
     isAttached: () => this.attached,
     attach: () => {
@@ -43,7 +45,18 @@ class FakeTab implements PasskeyTabContents {
         throw new Error("WebAuthn domain unavailable");
       }
       if (command === "WebAuthn.addVirtualAuthenticator") {
-        return { authenticatorId: `auth-${this.id}-${this.nextAuthenticator++}` };
+        if (this.liveAuthenticators.size > 0) {
+          throw new Error("Chrome only supports one internal authenticator per environment");
+        }
+        const authenticatorId = `auth-${this.id}-${this.nextAuthenticator++}`;
+        this.liveAuthenticators.add(authenticatorId);
+        return { authenticatorId };
+      }
+      if (command === "WebAuthn.removeVirtualAuthenticator") {
+        const authenticatorId = String(params?.authenticatorId);
+        if (!this.liveAuthenticators.delete(authenticatorId)) {
+          throw new Error("Could not find a Virtual Authenticator matching the ID");
+        }
       }
       return {};
     },
@@ -86,6 +99,8 @@ class FakeTab implements PasskeyTabContents {
 
   public detachDebugger(): void {
     this.attached = false;
+    // Detaching disables the WebAuthn domain, which tears down the virtual environment.
+    this.liveAuthenticators.clear();
     for (const listener of this.debuggerListeners.get("detach") ?? []) listener();
   }
 
@@ -204,6 +219,63 @@ describe("PaseoBrowserPasskeys", () => {
     await settle(h, tab);
     expect(tab.commandsNamed("WebAuthn.addVirtualAuthenticator")).toHaveLength(2);
     expect(h.isInstalled(tab.id)).toBe(true);
+  });
+
+  test("a navigation that keeps the environment swaps the authenticator instead of failing", async () => {
+    const h = hub();
+    const tab = new FakeTab(1);
+    h.attach(tab, new CdpSessionQueue());
+    await settle(h, tab);
+    tab.emit("did-navigate");
+    await settle(h, tab);
+    expect(tab.commandsNamed("WebAuthn.removeVirtualAuthenticator")[0]?.params).toEqual({
+      authenticatorId: "auth-1-1",
+    });
+    expect([...tab.liveAuthenticators]).toEqual(["auth-1-2"]);
+    expect(h.isInstalled(tab.id)).toBe(true);
+  });
+
+  test("a navigation that dropped the environment still reinstalls", async () => {
+    const h = hub();
+    const tab = new FakeTab(1);
+    h.attach(tab, new CdpSessionQueue());
+    await settle(h, tab);
+    tab.liveAuthenticators.clear();
+    tab.emit("did-navigate");
+    await settle(h, tab);
+    expect([...tab.liveAuthenticators]).toEqual(["auth-1-2"]);
+    expect(h.isInstalled(tab.id)).toBe(true);
+  });
+
+  test("a half-loaded authenticator is removed so the next install has the slot", async () => {
+    const store = new PasskeyStore(filePath, cipher);
+    const h = hub(store);
+    const first = new FakeTab(1);
+    h.attach(first, new CdpSessionQueue());
+    await settle(h, first);
+    first.emitDebugger("WebAuthn.credentialAdded", {
+      authenticatorId: "auth-1-1",
+      credential: SITE_CREDENTIAL,
+    });
+    const tab = new FakeTab(2);
+    const send = tab.debugger.sendCommand;
+    let failNextCredential = true;
+    tab.debugger.sendCommand = async (command, params) => {
+      if (command === "WebAuthn.addCredential" && failNextCredential) {
+        failNextCredential = false;
+        tab.commands.push({ command, params });
+        throw new Error("credential rejected");
+      }
+      return send(command, params);
+    };
+    h.attach(tab, new CdpSessionQueue());
+    await settle(h, tab);
+    expect(h.isInstalled(tab.id)).toBe(false);
+    expect(tab.liveAuthenticators.size).toBe(0);
+    tab.emit("did-navigate");
+    await settle(h, tab);
+    expect(h.isInstalled(tab.id)).toBe(true);
+    expect([...tab.liveAuthenticators]).toEqual(["auth-2-2"]);
   });
 
   test("a passkey a site registers is stored encrypted and served to the other open tab", async () => {

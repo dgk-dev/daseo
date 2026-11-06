@@ -16,9 +16,12 @@ import { CdpSessionQueue } from "./cdp-session-queue.js";
 // (NotAllowedError in a few ms) instead of hanging; a passkey a site registers is persisted and
 // served to every later tab; a stored passkey signs in with no Touch ID or phone.
 //
-// Chromium drops the virtual authenticator environment on every cross-document navigation
-// (measured), so the installer re-runs on each main-frame commit. A discoverable-credential
-// get() needs the session's select-webauthn-account answer, otherwise Electron cancels it.
+// Chromium 146 (Electron 41) dropped the virtual authenticator environment on every
+// cross-document navigation; Chromium 152 (Electron 44) keeps it and allows one internal
+// authenticator per environment (both measured in the capture harness). So the installer re-runs
+// on each main-frame commit and first removes the tab's previous authenticator, which is gone
+// already on the older engine. A discoverable-credential get() needs the session's
+// select-webauthn-account answer, otherwise Electron cancels it.
 
 export interface StoredPasskey {
   /** base64url without padding, equal to PublicKeyCredential.id on the page. */
@@ -411,24 +414,43 @@ export class PaseoBrowserPasskeys {
     await state.queue.run(async () => {
       if (state.contents.isDestroyed() || generation !== state.generation) return;
       const { debugger: dbg } = state.contents;
+      let added: { authenticatorId: string } | null = null;
       try {
         if (!dbg.isAttached()) dbg.attach("1.3");
         await dbg.sendCommand("WebAuthn.enable", { enableUI: false });
-        const added = (await dbg.sendCommand("WebAuthn.addVirtualAuthenticator", {
+        const previous = state.authenticatorId;
+        state.authenticatorId = null;
+        state.loaded.clear();
+        if (previous !== null) {
+          // Rejects with "not found" when the navigation already dropped the environment.
+          await dbg
+            .sendCommand("WebAuthn.removeVirtualAuthenticator", { authenticatorId: previous })
+            .catch(() => undefined);
+        }
+        added = (await dbg.sendCommand("WebAuthn.addVirtualAuthenticator", {
           options: VIRTUAL_AUTHENTICATOR_OPTIONS,
         })) as { authenticatorId: string };
-        state.authenticatorId = added.authenticatorId;
-        state.loaded.clear();
+        const loaded = new Set<string>();
         for (const passkey of this.store.list()) {
           await dbg.sendCommand("WebAuthn.addCredential", {
             authenticatorId: added.authenticatorId,
             credential: toCdpCredential(passkey, this.store.privateKeyOf(passkey)),
           });
-          state.loaded.add(passkey.credentialId);
+          loaded.add(passkey.credentialId);
         }
+        state.authenticatorId = added.authenticatorId;
+        state.loaded = loaded;
       } catch (error) {
         state.authenticatorId = null;
         state.loaded.clear();
+        if (added && !state.contents.isDestroyed()) {
+          // A half-loaded authenticator would hold the environment's only internal slot.
+          await dbg
+            .sendCommand("WebAuthn.removeVirtualAuthenticator", {
+              authenticatorId: added.authenticatorId,
+            })
+            .catch(() => undefined);
+        }
         if (!state.contents.isDestroyed()) {
           this.log("[browser-passkeys] install failed", {
             contentsId: state.contents.id,

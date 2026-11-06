@@ -1402,8 +1402,10 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
     `platformPasskeys` serves only an app's own associated domain. Every browser webview and
     popup now gets Chromium's CDP virtual authenticator (`WebAuthn.enable` +
     `addVirtualAuthenticator`: ctap2, internal transport, resident keys, user verification,
-    backup flags) re-installed on every main-frame commit, because Chromium drops the
-    environment on each navigation (measured). Credentials a site registers arrive through
+    backup flags) re-installed on every main-frame commit. Chromium 146 (Electron 41) drops the
+    environment on each navigation; Chromium 152 (Electron 44) keeps it and refuses a second
+    internal authenticator, so each reinstall first removes the tab's previous one (delta 82).
+    Credentials a site registers arrive through
     `WebAuthn.credentialAdded` and are kept in `userData/browser-passkeys.json` (0600, private
     keys `safeStorage`-encrypted) and added to every other open tab; `credentialAsserted`
     updates the counter everywhere so no tab signs with a stale count; the browser profile
@@ -1533,6 +1535,39 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       (`applyPaseoBrowserProfileUserAgent`), `packages/desktop/src/main.ts`, test in
       `browser-profile.test.ts`. Takes effect with the next release (the session is configured at
       app start).
+
+82. **Electron 44** — the owner's call on 2026-11-06 to leave Electron 41, which reached end of
+    support. Daseo moves to the latest 44.x (44.10.2, Chromium 152) rather than 45, because
+    upstream Paseo ships 44.2.0 (#4322, 41.2.0 → 44.2.0 in one step) and 45 removes globals
+    from sandboxed preloads. Hand-ported from #4322: the main-process clipboard moves to
+    Electron 44's W3C `clipboard.read()`/`write([ClipboardItem])` (the old `readImage`,
+    `writeImage`, and object `write` are gone; text and image are written as one item), the
+    profile clear swaps the removed `websql` storage type for `shadercache`,
+    `minimumSystemVersion: "13.0.0"` (Electron 44 needs macOS 13), and the desktop test script
+    runs `install-electron` first (Electron 42 dropped the postinstall download; `require("electron")`
+    still downloads on first use). The updater diagnostics in #4322 are not carried: Daseo ships
+    no updater.
+    - **Fork-only changes the upgrade needed.** Electron 43 opens a file dialog without
+      `defaultPath` in Downloads instead of the folder last picked from; the open dialog now
+      remembers the last selection's folder for the app session (the first dialog after launch
+      starts in Downloads). Passkeys: the virtual authenticator now survives navigations (see
+      delta 78), so the reinstall removes the previous one and a half-loaded authenticator is
+      removed on failure; on 44 without this the `passkeys` harness group failed with "Chrome only
+      supports one internal authenticator per environment" and a tab kept serving stale counters.
+    - **Verified on 44.10.2:** capture-harness groups `permanent-parking`, `automation`,
+      `passkeys`, `frames-network`, `debugging`, `tab-lifecycle` pass; under
+      `ELECTRON_RUN_AS_NODE` ONNX Runtime loads the History model, `node:sqlite` FTS5 trigram
+      matches, and node-pty spawns. The `browser-profile` group times out on `did-attach` on 41.10.6
+      too, so it is not a 44 regression. The `automation` group's focused-iframe shortcut check
+      failed once in five 44 runs (zero in five on 41): the iframe receives the shortcut policy by an
+      asynchronous request after its preload starts, and the check presses the key right after the
+      frame loads.
+    - **Key files:** `packages/desktop/package.json`, `electron-builder.yml`, `src/main.ts`
+      (copy-element, clipboard image), `src/features/clipboard-image.ts`,
+      `src/features/dialog-directory-memory.ts`, `src/features/dialogs.ts`,
+      `src/window/window-manager.ts`, `src/features/browser-profile.ts`,
+      `src/features/browser-automation/passkeys.ts`, with their tests and
+      `src/daemon/desktop-packaging.test.ts`.
 
 ## Local reliability contracts
 
