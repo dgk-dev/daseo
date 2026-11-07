@@ -1569,6 +1569,19 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       `src/features/browser-automation/passkeys.ts`, with their tests and
       `src/daemon/desktop-packaging.test.ts`.
 
+83. **A Pi dialog that closes on its own closes in Daseo too** — the owner's report on
+    2026-11-07: after `/claude-auth login` finished through the browser, the "paste the
+    authorization code" card stayed on screen. Pi's RPC mode settles a dialog whose extension
+    AbortSignal fires, or whose timeout passes, inside Pi without telling the client, so the
+    request stayed in `pendingExtensionUiRequests`. pi-local now patches the installed Pi core
+    (`scripts/pi-core-patches.mjs`, applied by its bootstrap after every Pi install) to print
+    `{"type":"extension_ui_dismissed","id"}` at both settle points; the Pi provider deletes the
+    pending request and emits `permission_resolved` (deny, "Dismissed by Pi"), which removes the
+    card on every client. Stock Pi never sends the event, so nothing changes without the patch.
+    - **Key files:** `packages/server/src/server/agent/providers/pi/agent.ts`
+      (`handleExtensionUiDismissed`), test in `agent.test.ts`. Daemon-only; takes effect with
+      the next Mac release, no APK needed.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including
