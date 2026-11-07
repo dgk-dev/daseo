@@ -384,6 +384,30 @@ describe("PiRpcAgentSession", () => {
     });
   });
 
+  test("closes an extension UI request that Pi dismissed on its own", async () => {
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    fakeSession.emit({
+      type: "extension_ui_request",
+      id: "code-1",
+      method: "input",
+      title: "Paste the authorization code",
+      placeholder: "code",
+    });
+    await events.nextPermissionRequest();
+    expect(session.getPendingPermissions()).toHaveLength(1);
+
+    fakeSession.emit({ type: "extension_ui_dismissed", id: "code-1" });
+
+    await expect(events.nextPermissionResolution()).resolves.toMatchObject({
+      requestId: "code-1",
+      resolution: { behavior: "deny" },
+    });
+    expect(session.getPendingPermissions()).toEqual([]);
+    expect(fakeSession.extensionUiResponses).toEqual([]);
+  });
+
   test("bridges Pi RPC input and confirm extension UI responses", async () => {
     const { pi, session, events } = await createSession();
     const fakeSession = pi.latestSession();

@@ -2958,6 +2958,25 @@ export class PiRpcAgentSession implements AgentSession {
     });
   }
 
+  /**
+   * Pi settled a dialog on its own: the extension's AbortSignal fired or the dialog timed out
+   * (for example a login code prompt that the browser callback made unnecessary). Stock Pi RPC
+   * mode resolves such a dialog silently, so the request stayed pending here and its card stayed
+   * on screen. The pi-local runtime patch emits `extension_ui_dismissed`; close the card.
+   */
+  private handleExtensionUiDismissed(requestId: string | undefined): void {
+    if (!requestId || !this.pendingExtensionUiRequests.delete(requestId)) {
+      return;
+    }
+    this.emit({
+      type: "permission_resolved",
+      provider: this.provider,
+      requestId,
+      resolution: { behavior: "deny", message: "Dismissed by Pi" },
+      turnId: this.currentTurnIdForEvent(),
+    });
+  }
+
   private respondToCombinedAskUserFollowUp(
     event: Extract<PiRuntimeEvent, { type: "extension_ui_request" }>,
   ): boolean {
@@ -3008,6 +3027,10 @@ export class PiRpcAgentSession implements AgentSession {
   private handleRuntimeEvent(event: PiRuntimeEvent): void {
     if (isExtensionUiRequestEvent(event)) {
       this.handleExtensionUiRequest(event);
+      return;
+    }
+    if (event.type === "extension_ui_dismissed") {
+      this.handleExtensionUiDismissed(optionalString("id" in event ? event.id : undefined));
       return;
     }
     if (isProcessExitEvent(event)) {
