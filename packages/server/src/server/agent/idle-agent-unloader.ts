@@ -6,6 +6,15 @@ import type { AgentManager, ManagedAgent } from "./agent-manager.js";
 
 /** Daseo delta 33: default minutes an agent sits unused before its provider process is stopped. */
 export const DEFAULT_IDLE_UNLOAD_MINUTES = 60;
+/**
+ * Daseo delta 84: while macOS reports memory pressure, agents unused this long are stopped too.
+ * The normal 60 minutes stays because the Claude bridge's keep-warm request (53 minutes after the
+ * last request, from inside the Pi process) extends a large conversation's one-hour prompt cache,
+ * and it dies with the process; under pressure memory wins.
+ */
+export const DEFAULT_PRESSURE_IDLE_UNLOAD_MINUTES = 30;
+/** `kern.memorystatus_vm_pressure_level`: 1 normal, 2 warning, 4 critical. */
+const PRESSURE_WARNING_LEVEL = 2;
 const SWEEP_INTERVAL_MS = 60_000;
 
 export type IdleUnloadBlocker =
@@ -26,6 +35,10 @@ export interface IdleAgentUnloaderOptions {
   >;
   /** Read on every sweep so a config reload applies without a restart; 0 turns unloading off. */
   getIdleUnloadMinutes: () => number;
+  /** Shorter idle minutes used while macOS reports memory pressure; 0 or absent keeps the normal ones. */
+  getPressureIdleUnloadMinutes?: () => number;
+  /** macOS memory pressure level (1, 2, 4); null when unknown or not macOS. */
+  readMemoryPressureLevel?: () => Promise<number | null>;
   /** Agent ids that an active schedule or heartbeat targets. */
   listScheduleTargetAgentIds: () => Promise<ReadonlySet<string>>;
   /** Child pids of a process; null when the platform cannot tell. */
@@ -86,13 +99,29 @@ export class IdleAgentUnloader {
   }
 
   private async runSweep(): Promise<string[]> {
-    const idleMs = Math.max(0, this.options.getIdleUnloadMinutes()) * 60_000;
-    if (idleMs <= 0) {
+    const normalMs = Math.max(0, this.options.getIdleUnloadMinutes()) * 60_000;
+    if (normalMs <= 0) {
       return [];
     }
-    const candidates = this.options.agentManager
-      .listAgents()
-      .filter((agent) => this.quickBlocker(agent, idleMs) === null);
+    const agents = this.options.agentManager.listAgents();
+    let idleMs = normalMs;
+    let candidates = agents.filter((agent) => this.quickBlocker(agent, idleMs) === null);
+    const pressureMs = Math.max(0, this.options.getPressureIdleUnloadMinutes?.() ?? 0) * 60_000;
+    if (pressureMs > 0 && pressureMs < normalMs && this.options.readMemoryPressureLevel) {
+      const early = agents.filter((agent) => this.quickBlocker(agent, pressureMs) === null);
+      // The pressure level is read only when it could change the outcome.
+      if (early.length > candidates.length) {
+        const level = await this.options.readMemoryPressureLevel();
+        if (level !== null && level >= PRESSURE_WARNING_LEVEL) {
+          idleMs = pressureMs;
+          candidates = early;
+          this.options.logger.info(
+            { level, idleMinutes: pressureMs / 60_000, candidates: early.length },
+            "idle_agent_unloader.memory_pressure",
+          );
+        }
+      }
+    }
     if (candidates.length === 0) {
       return [];
     }
@@ -171,6 +200,23 @@ export class IdleAgentUnloader {
     }
     return null;
   }
+}
+
+export function readMemoryPressureLevel(): Promise<number | null> {
+  if (process.platform !== "darwin") {
+    return Promise.resolve(null);
+  }
+  return new Promise((resolve) => {
+    execFile(
+      "sysctl",
+      ["-n", "kern.memorystatus_vm_pressure_level"],
+      { timeout: 5_000 },
+      (error, stdout) => {
+        const level = Number.parseInt(String(stdout).trim(), 10);
+        resolve(error || !Number.isInteger(level) ? null : level);
+      },
+    );
+  });
 }
 
 export function listChildProcessIds(pid: number): Promise<number[] | null> {

@@ -344,6 +344,8 @@ export const PersistedConfigSchema = z
         catalogRefreshTimeoutMs: z.number().int().positive().max(2_147_483_647).optional(),
         // Local fork (delta 33): minutes an idle agent keeps its provider process; 0 keeps it.
         idleUnloadMinutes: z.number().int().min(0).max(10_080).optional(),
+        // Local fork (delta 84): shorter idle minutes while macOS reports memory pressure; 0 turns it off.
+        pressureIdleUnloadMinutes: z.number().int().min(0).max(10_080).optional(),
         metadataGeneration: AgentMetadataGenerationSchema.optional(),
       })
       .strict()

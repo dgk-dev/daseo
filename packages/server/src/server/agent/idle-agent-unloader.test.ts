@@ -49,7 +49,10 @@ function createUnloader(input: {
   scheduleTargets?: string[];
   children?: Record<number, number[] | null>;
   minutes?: number;
+  pressureMinutes?: number;
+  pressureLevel?: number | null;
 }) {
+  let pressureReads = 0;
   const unloaded: string[] = [];
   const byId = new Map(input.agents.map((agent) => [agent.id, agent]));
   const agentManager: IdleAgentUnloaderOptions["agentManager"] = {
@@ -67,14 +70,96 @@ function createUnloader(input: {
   const unloader = new IdleAgentUnloader({
     agentManager,
     getIdleUnloadMinutes: () => input.minutes ?? 60,
+    ...(input.pressureMinutes !== undefined
+      ? {
+          getPressureIdleUnloadMinutes: () => input.pressureMinutes ?? 0,
+          readMemoryPressureLevel: async () => {
+            pressureReads += 1;
+            return input.pressureLevel ?? 1;
+          },
+        }
+      : {}),
     listScheduleTargetAgentIds: async () => new Set(input.scheduleTargets ?? []),
     listChildProcessIds: async (pid) =>
       input.children && pid in input.children ? input.children[pid] : [],
     now: () => NOW,
     logger: createTestLogger(),
   });
-  return { unloader, unloaded };
+  return { unloader, unloaded, pressureReads: () => pressureReads };
 }
+
+describe("IdleAgentUnloader under memory pressure (delta 84)", () => {
+  const idle45 = () => fakeAgent({ id: "idle-45", quietMinutes: 45 });
+
+  it("keeps an agent idle 45 minutes while memory is normal", async () => {
+    const { unloader, pressureReads } = createUnloader({
+      agents: [idle45()],
+      pressureMinutes: 30,
+      pressureLevel: 1,
+    });
+    await expect(unloader.sweep()).resolves.toEqual([]);
+    expect(pressureReads()).toBe(1);
+  });
+
+  it.each([2, 4])("unloads an agent idle 45 minutes at pressure level %i", async (level) => {
+    const { unloader } = createUnloader({
+      agents: [idle45()],
+      pressureMinutes: 30,
+      pressureLevel: level,
+    });
+    await expect(unloader.sweep()).resolves.toEqual(["idle-45"]);
+  });
+
+  it("keeps an agent idle 20 minutes even under pressure, and every blocker still applies", async () => {
+    const { unloader } = createUnloader({
+      agents: [
+        fakeAgent({ id: "idle-20", quietMinutes: 20 }),
+        fakeAgent({ id: "waiting", quietMinutes: 45, backgroundWaits: 1 }),
+      ],
+      pressureMinutes: 30,
+      pressureLevel: 4,
+    });
+    await expect(unloader.sweep()).resolves.toEqual([]);
+  });
+
+  it("does not read the pressure level when it cannot change the outcome", async () => {
+    const none = createUnloader({
+      agents: [fakeAgent({ quietMinutes: 10 })],
+      pressureMinutes: 30,
+      pressureLevel: 4,
+    });
+    await expect(none.unloader.sweep()).resolves.toEqual([]);
+    expect(none.pressureReads()).toBe(0);
+    const allPastNormal = createUnloader({
+      agents: [fakeAgent({ quietMinutes: 61 })],
+      pressureMinutes: 30,
+      pressureLevel: 4,
+    });
+    await expect(allPastNormal.unloader.sweep()).resolves.toEqual(["agent-1"]);
+    expect(allPastNormal.pressureReads()).toBe(0);
+  });
+
+  it("treats an unknown level as normal, and 0 or a longer pressure time as off", async () => {
+    for (const setup of [
+      { pressureMinutes: 30, pressureLevel: null },
+      { pressureMinutes: 0, pressureLevel: 4 },
+      { pressureMinutes: 90, pressureLevel: 4 },
+    ]) {
+      const { unloader } = createUnloader({ agents: [idle45()], ...setup });
+      await expect(unloader.sweep()).resolves.toEqual([]);
+    }
+  });
+
+  it("never unloads when idle unloading is off, whatever the pressure", async () => {
+    const { unloader } = createUnloader({
+      agents: [fakeAgent({ quietMinutes: 600 })],
+      minutes: 0,
+      pressureMinutes: 30,
+      pressureLevel: 4,
+    });
+    await expect(unloader.sweep()).resolves.toEqual([]);
+  });
+});
 
 describe("IdleAgentUnloader", () => {
   it("unloads an agent idle for the configured minutes", async () => {

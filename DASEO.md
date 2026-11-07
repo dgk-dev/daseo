@@ -1581,6 +1581,23 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
     - **Key files:** `packages/server/src/server/agent/providers/pi/agent.ts`
       (`handleExtensionUiDismissed`), test in `agent.test.ts`. Daemon-only; takes effect with
       the next Mac release, no APK needed.
+84. **Under memory pressure, idle agents unload after 30 minutes instead of 60** — the owner's
+    2026-11-07 RAM review (24 GB Mac, 155 pressure warnings in 20 days). Lowering delta 33(d)'s
+    60 minutes to 30 everywhere was measured and rejected: a Pi resumed after 30-60 idle minutes
+    still read a median 94.8% of its prompt from cache (8 daemon-restart resumes vs 94.97% for
+    212 that stayed alive), but the Claude bridge's keep-warm request (53 minutes after the last
+    request, contexts over 100k) runs inside the Pi process and dies with it, so 30 minutes would
+    end every keep-warm and turn 60-113-minute returns into full cache rewrites, for about 0.2 GB
+    saved on average. So, like delta 43 for tabs, only while the macOS pressure level
+    (`kern.memorystatus_vm_pressure_level`) is 2 or 4 does the sweep use
+    `agents.pressureIdleUnloadMinutes` (default 30; 0 turns it off; ignored when not shorter than
+    `idleUnloadMinutes`, and nothing unloads when `idleUnloadMinutes` is 0). Every delta 33(d)
+    blocker still applies. The level is read only when some agent is idle between the two
+    thresholds; a pressure-driven sweep logs `idle_agent_unloader.memory_pressure`.
+    - **Key files:** `packages/server/src/server/agent/idle-agent-unloader.ts`
+      (`readMemoryPressureLevel`, `DEFAULT_PRESSURE_IDLE_UNLOAD_MINUTES`), `bootstrap.ts`,
+      `config.ts`, `persisted-config.ts`; tests in `idle-agent-unloader.test.ts`. Daemon-only;
+      takes effect with the next Mac release, no APK needed.
 
 ## Local reliability contracts
 

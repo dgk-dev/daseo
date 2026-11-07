@@ -683,6 +683,7 @@ export function resolveConfigFromPersisted(
     agentProviderSettings: extractAgentProviderSettings(providerOverrides),
     providerCatalogRefreshTimeoutMs: persisted.agents?.catalogRefreshTimeoutMs,
     idleUnloadMinutes: persisted.agents?.idleUnloadMinutes,
+    pressureIdleUnloadMinutes: persisted.agents?.pressureIdleUnloadMinutes,
     metadataGeneration: persisted.agents?.metadataGeneration,
     providerOverrides,
     log: resolveLogConfigFromEnv(env, persisted),

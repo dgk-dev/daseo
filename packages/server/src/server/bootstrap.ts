@@ -156,7 +156,12 @@ import {
 } from "./workspace-registry.js";
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { ScheduleService } from "./schedule/service.js";
-import { DEFAULT_IDLE_UNLOAD_MINUTES, IdleAgentUnloader } from "./agent/idle-agent-unloader.js";
+import {
+  DEFAULT_IDLE_UNLOAD_MINUTES,
+  DEFAULT_PRESSURE_IDLE_UNLOAD_MINUTES,
+  IdleAgentUnloader,
+  readMemoryPressureLevel,
+} from "./agent/idle-agent-unloader.js";
 import { setFinishWatcherJournal } from "./agent/agent-prompt.js";
 import { RestartRecoveryJournal } from "./agent/restart-recovery.js";
 import {
@@ -466,6 +471,8 @@ export interface PaseoDaemonConfig {
   providerCatalogRefreshTimeoutMs?: number;
   /** Local fork (delta 33): `agents.idleUnloadMinutes`, read at start; 0 turns unloading off. */
   idleUnloadMinutes?: number;
+  /** Local fork (delta 84): `agents.pressureIdleUnloadMinutes`, used under macOS memory pressure; 0 turns it off. */
+  pressureIdleUnloadMinutes?: number;
   metadataGeneration?: {
     providers?: Array<{
       provider: string;
@@ -1368,6 +1375,9 @@ export async function createPaseoDaemon(
   const idleAgentUnloader = new IdleAgentUnloader({
     agentManager,
     getIdleUnloadMinutes: () => config.idleUnloadMinutes ?? DEFAULT_IDLE_UNLOAD_MINUTES,
+    getPressureIdleUnloadMinutes: () =>
+      config.pressureIdleUnloadMinutes ?? DEFAULT_PRESSURE_IDLE_UNLOAD_MINUTES,
+    readMemoryPressureLevel,
     listScheduleTargetAgentIds: async () =>
       new Set(
         (await scheduleService.list()).flatMap((schedule) =>
