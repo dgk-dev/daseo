@@ -17,7 +17,9 @@ vi.mock("expo-modules-core", () => ({
 
 const { openExternalUrl } = await import("./open-external-url");
 
-const COUPANG_URL = "https://www.coupang.com/vp/products/8556671403";
+const COUPANG_URL = "https://www.coupang.com/vp/products/8556671403?itemId=1&vendorItemId=2";
+const COUPANG_SHARE_URL =
+  "https://link.coupang.com/re/CSHARESDP?pageKey=8556671403&itemId=1&vendorItemId=2";
 
 describe("openExternalUrl on native", () => {
   beforeEach(() => {
@@ -26,24 +28,35 @@ describe("openExternalUrl on native", () => {
     mocks.openUrlInPackage.mockReset();
   });
 
-  it("opens a Coupang link in the Coupang app and not in the browser", async () => {
+  it("opens a Coupang product link in the Coupang app as its share link", async () => {
     mocks.openUrlInPackage.mockResolvedValue(true);
 
     await openExternalUrl(COUPANG_URL);
 
     expect(mocks.openUrlInPackage).toHaveBeenCalledTimes(1);
-    expect(mocks.openUrlInPackage).toHaveBeenCalledWith(COUPANG_URL, "com.coupang.mobile");
+    expect(mocks.openUrlInPackage).toHaveBeenCalledWith(COUPANG_SHARE_URL, "com.coupang.mobile");
     expect(mocks.openURL).not.toHaveBeenCalled();
   });
 
-  it("falls back to the browser once when the app takes no such link", async () => {
+  it("falls back to the browser once with the original link when the app takes no such link", async () => {
     mocks.openUrlInPackage.mockResolvedValue(false);
 
     await openExternalUrl(COUPANG_URL);
 
     expect(mocks.openUrlInPackage).toHaveBeenCalledTimes(1);
+    expect(mocks.openUrlInPackage).toHaveBeenCalledWith(COUPANG_SHARE_URL, "com.coupang.mobile");
     expect(mocks.openURL).toHaveBeenCalledTimes(1);
     expect(mocks.openURL).toHaveBeenCalledWith(COUPANG_URL);
+  });
+
+  it("hands other Coupang links to the app unchanged", async () => {
+    const searchUrl = "https://www.coupang.com/np/search?q=tv";
+    mocks.openUrlInPackage.mockResolvedValue(true);
+
+    await openExternalUrl(searchUrl);
+
+    expect(mocks.openUrlInPackage).toHaveBeenCalledWith(searchUrl, "com.coupang.mobile");
+    expect(mocks.openURL).not.toHaveBeenCalled();
   });
 
   it("falls back to the browser once when the native call throws", async () => {

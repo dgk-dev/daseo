@@ -1605,6 +1605,15 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
     Coupang blocks the browser. On Android, `openExternalUrl` now first offers an http(s) link
     whose host is in `ANDROID_APP_LINK_PACKAGES` to that app: today only `coupang.com` and its
     subdomains → `com.coupang.mobile`. Add other shops to that table only.
+    - **Share-link rewrite.** On the Fold with 0.5.96 (owner, 2026-11-08 evening), `www`
+      `/vp/products/<id>` and `m` `/vm/products/<id>` links still opened the browser, while
+      `https://link.coupang.com/re/CSHARESDP?pageKey=<id>` opened the product in the app: the
+      app's filters take only `link.coupang.com`, the one host whose `assetlinks.json` lists
+      `com.coupang.mobile`. So `toAndroidAppUrl` turns those two product-page shapes into the
+      app's own share-link form, carrying `itemId` and `vendorItemId` when they are all digits,
+      and adds no `lptag` or other affiliate parameter. Other Coupang links go to the app as
+      they are. The browser fallback always gets the original URL, so a phone without the app
+      sees the normal product page, not a share redirect.
     - **Mechanism.** The local module `DaseoAppLinks` starts a VIEW intent with `setPackage`,
       `CATEGORY_BROWSABLE`, and `FLAG_ACTIVITY_NEW_TASK`. Naming the package lets the app's own
       link filter take the URL even without a verified App Link, and keeps the browser and the
@@ -1615,12 +1624,14 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       promise stays pending until the opened app returns.
     - **Not changed:** iOS (the module is Android-only), the Mac app and web (the `isWeb` branch),
       other links, and the file routing of delta 75.
-    - **Not verified here:** whether the Coupang app's manifest takes `/vp/products/` links (no
-      APK or ADB access). If it does not, the tap falls back to the browser as before.
-    - **Key files:** `packages/app/src/utils/android-app-links.ts` (table and resolver),
+    - **Not verified here:** the tap on a rewritten product link (no ADB access); the evidence is
+      the owner's tap on a hand-written share link. Search and category links are not
+      rewritten; since the app's filters take only `link.coupang.com`, expect them in the
+      browser.
+    - **Key files:** `packages/app/src/utils/android-app-links.ts` (table, resolver, rewrite),
       `open-in-android-app.ts`, `open-external-url.ts`, tests in `android-app-links.test.ts` and
-      `open-external-url.test.ts`, and `packages/app/modules/daseo-app-links/`. Takes effect with
-      the next APK; the Mac app is unaffected.
+      `open-external-url.test.ts`, and `packages/app/modules/daseo-app-links/`. Shipped in APK
+      0.5.96, share-link rewrite in 0.5.97; the Mac app is unaffected.
 
 ## Local reliability contracts
 
