@@ -1598,6 +1598,29 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       (`readMemoryPressureLevel`, `DEFAULT_PRESSURE_IDLE_UNLOAD_MINUTES`), `bootstrap.ts`,
       `config.ts`, `persisted-config.ts`; tests in `idle-agent-unloader.test.ts`. Daemon-only;
       takes effect with the next Mac release, no APK needed.
+85. **Coupang links open in the Coupang app on the phone** — the owner's report on 2026-11-08:
+    tapping a Coupang product link (`https://www.coupang.com/vp/products/<id>`) in an agent
+    answer opened the default browser, and Coupang answered with its block page ("입력하신
+    페이지주소는 사용권한이 제한된 페이지입니다") from the phone's mobile-carrier IP. The link was right;
+    Coupang blocks the browser. On Android, `openExternalUrl` now first offers an http(s) link
+    whose host is in `ANDROID_APP_LINK_PACKAGES` to that app: today only `coupang.com` and its
+    subdomains → `com.coupang.mobile`. Add other shops to that table only.
+    - **Mechanism.** The local module `DaseoAppLinks` starts a VIEW intent with `setPackage`,
+      `CATEGORY_BROWSABLE`, and `FLAG_ACTIVITY_NEW_TASK`. Naming the package lets the app's own
+      link filter take the URL even without a verified App Link, and keeps the browser and the
+      chooser out. When the app is missing or has no activity for the link
+      (`ActivityNotFoundException`), or the call fails, the link goes once to `Linking.openURL`,
+      the browser path from before. `expo-intent-launcher` cannot do this: it applies
+      `packageName` only together with an activity class name, and its `startActivityForResult`
+      promise stays pending until the opened app returns.
+    - **Not changed:** iOS (the module is Android-only), the Mac app and web (the `isWeb` branch),
+      other links, and the file routing of delta 75.
+    - **Not verified here:** whether the Coupang app's manifest takes `/vp/products/` links (no
+      APK or ADB access). If it does not, the tap falls back to the browser as before.
+    - **Key files:** `packages/app/src/utils/android-app-links.ts` (table and resolver),
+      `open-in-android-app.ts`, `open-external-url.ts`, tests in `android-app-links.test.ts` and
+      `open-external-url.test.ts`, and `packages/app/modules/daseo-app-links/`. Takes effect with
+      the next APK; the Mac app is unaffected.
 
 ## Local reliability contracts
 

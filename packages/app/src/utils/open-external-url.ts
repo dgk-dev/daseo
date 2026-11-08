@@ -1,6 +1,7 @@
 import * as Linking from "expo-linking";
 import { getDesktopHost } from "@/desktop/host";
 import { isWeb } from "@/constants/platform";
+import { openInAndroidApp } from "./open-in-android-app";
 
 const ALLOWED_EXTERNAL_URL_PROTOCOLS = new Set(["http:", "https:"]);
 
@@ -32,6 +33,10 @@ export async function openExternalUrl(url: string): Promise<void> {
   }
 
   if (!isAllowedExternalUrl(url)) {
+    return;
+  }
+
+  if (await openInAndroidApp(url)) {
     return;
   }
 
