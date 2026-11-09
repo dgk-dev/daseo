@@ -35,11 +35,13 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
    paint. Each pane has an independent viewer ID and workspace-scoped control path; hidden or
    backgrounded panes unsubscribe, frame sequence rejects stale delivery, and failed startup
    uses bounded backoff before exposing a manual Retry control while retaining the last frame.
-   Feature flag `serverInfo.features.browserRemoteStream`. Key files:
+   The phone draws frames with expo-image so the shown frame stays until the next is decoded
+   (delta 90). Feature flag `serverInfo.features.browserRemoteStream`. Key files:
    `packages/protocol/src/binary-frames/browser-stream.ts`,
    `packages/server/src/server/browser-tools/stream-hub.ts`,
    `packages/desktop/src/features/browser-automation/{screencast,stream-input}.ts`,
-   `packages/app/src/desktop/browser/pane/index.tsx` and `remote-stream-retry.ts` (native viewer).
+   `packages/app/src/desktop/browser/pane/index.tsx`, `remote-stream-watch.ts`,
+   `remote-stream-frame.tsx`, and `remote-stream-retry.ts` (native viewer).
 2. **Bidirectional browser workspace sync** — `browser.remote.open/list/close` RPCs let
    phones open real desktop tabs, continuously discover tabs created by Mac UI or agent
    browser tools, refresh URL/title/navigation/loading state, and close the authoritative
@@ -1049,12 +1051,14 @@ remote-keyboard.ts,index.tsx}`, `packages/desktop/src/features/browser-automatio
     path — source, text, logs, bundles, scripts, and a path with a line number — is now selected in
     Finder (`shell.showItemInFolder`, result `revealed`) instead of opening a file pane; scripts and
     bundles are still never launched. A document whose app refuses it is revealed too. Only a path
-    that does not exist, or one from a remote daemon, keeps the file pane. Phone: a file path is
+    from a remote daemon keeps the file pane; since delta 90 a path that does not exist gives a
+    toast instead. Phone: a file path is
     downloaded from the daemon (download token scoped to the file's own directory, so paths outside
     the workspace work) and opened with an Android "view" intent on a content URI (the chooser when
     several apps qualify; `expo-intent-launcher`, new dependency), falling back to the share sheet
     when nothing handles the type and on iOS; the file-explorer download uses the same opener. A
-    folder or a missing path on the phone keeps the in-app explorer. Delta 75 (owner's call
+    folder on the phone expands Files down to it, and a missing path gives a toast (delta 90).
+    Delta 75 (owner's call
     2026-11-01) narrows the phone half: text, source, data, markdown, HTML, and the images the
     app decodes open in the file pane again, because One UI has no stock viewer for md, csv,
     json, or code and those taps ended in an empty chooser; everything else still leaves the app
@@ -1338,7 +1342,8 @@ acceptLanguages)`, so the header is now `en-US,en-KR;q=0.9,ko-KR;q=0.8`. `--lang
       delta 62: pdf, office, HWP, iWork, media, archives, databases, and unknown extensions. SVG,
       HEIC, BMP, TIFF, and ICO stay external too: the daemon reads only png/jpg/gif/webp/svg as
       images and React Native cannot decode SVG, so the pane would show nothing where the gallery
-      or Chrome shows the picture. A folder or missing path still lands in the pane or explorer.
+      or Chrome shows the picture. A folder expands Files and a missing path gives a toast
+      (delta 90).
       Dotfiles (`.gitignore`, `.zshrc`, every `.env.<stage>`) and well-known text names without an
       extension (`Makefile`, `Dockerfile`, `README`, `LICENSE`, `CHANGELOG`, `Procfile`, …) open in
       the pane too; any other extensionless name stays external. This rule shipped in the 0.5.86
@@ -1905,6 +1910,47 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       `components/message.tsx` (tool rows), `components/sidebar/sidebar-section-rule.tsx`,
       `screens/workspace/workspace-status-line.tsx`.
 
+90. **The phone's browser view holds its picture, and every path an agent names opens or says
+    why not** — the owner's report on 2026-11-10 ("폰에서 브라우저 보면 깜빡임이 심함", "링크가
+    안 열리는 경우가 많음", "압축 경로").
+    - **Stream surface.** The native viewer drew each JPEG frame through React Native's
+      `Image`; on Android a new non-resource source fades in for 300 ms
+      (`REMOTE_IMAGE_FADE_DURATION_MS`) and the old bitmap is dropped while the next decodes, so
+      a 10 fps stream flashed. Frames now go to expo-image (`transition={0}`,
+      `cachePolicy="none"`, one `recyclingKey` per browser target), whose two stacked views keep
+      the shown bitmap until the next one is decoded. The surface is its own memoized component
+      fed by a frame store, so the toolbar, gestures, and keyboard no longer re-render per frame.
+      The watch lifecycle is a pure controller (`remote-stream-watch.ts`): a frame that arrives
+      before the watch response no longer leaves the 8 s first-frame timer armed (a static page
+      went to "retrying" and was unwatched and rewatched), and a real recovery restores the full
+      retry budget.
+    - **Path resolve.** `fs.path.resolve.request` (gated on `server_info.features.pathResolve`)
+      stats the paths a link may mean and, when none exists, walks the workspace or home
+      breadth-first for entries ending with the named suffix. It looks inside hidden folders
+      (`~/.pi` plans, which the explorer's gitignore-aware suffix search skips) but not package
+      stores, VCS internals, `Library`, or the daemon's own `timelines` (2.5 million files on
+      this Mac), stops after two matches or 3 s, and confines candidates, roots, and matches to
+      the explorer's readable roots (workspace, home, temp). The app sends every local link
+      through it before opening: one match opens (Finder or a macOS app on the Mac, delta 56/62;
+      the pane or an Android app on the phone, delta 75), several matches, none, or an
+      unfinished search give a toast. Nothing opens a pane for a path that does not exist, and
+      nothing opens a guess.
+    - **Shapes the app now accepts** (`assistant-file-links/parse.ts`, `resolver.ts`): a path
+      shortened with `…` or `...` is a search below what the agent kept before the ellipsis
+      (`~/.pi/…/x.md`) or below the workspace and home (`…/research/x.md`), never a file; globs
+      and brace lists stay text. A bare web address (`invite.folnua.com/seoulforest/`,
+      `mac.tail29eaf5.ts.net`) opens over https, and linkify's `http://` in front of a bare host
+      becomes `https://` (Tailscale serve answers only https); a file name or a version is never
+      a host. Builds, installers, fonts, and more media (`apk`, `aab`, `dmg`, `ipa`, `mkv`, …)
+      count as file names, and a bare name with spaces in inline code (`회사 자료 접근 지도.md`)
+      resolves unless it starts with a command (`open report.pdf`). Markdown destinations are
+      percent-decoded (markdown-it encodes spaces and Korean even inside `<…>`), so `~/` and
+      relative links with such names open; before, only absolute ones did.
+    - **Key files:** `packages/server/src/server/file-explorer/path-resolve.ts`,
+      `packages/server/src/server/session/files/workspace-files-session.ts`,
+      `packages/app/src/assistant-file-links/{parse,resolver,use-file-link,provider}.ts(x)`,
+      `packages/app/src/desktop/browser/pane/{remote-stream-watch.ts,remote-stream-frame.tsx}`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including
@@ -2115,6 +2161,29 @@ Adopted for 0.5.43 (reviewed 2026-10-04):
   and the two-frame paint wait is capped at one second and never fails the capture). On its own it
   does not help Daseo: an Electron 41 PoC showed a parked 1×1 tab keeps 75 fps with throttling on
   while the window is visible; only freezing stops it.
+
+Reviewed for 0.5.103 (2026-11-10, upstream link fixes after the last adoption). None of them
+cherry-picks: each builds on #6520 (href decoding) and the #6973 renderer rewrite, which Daseo
+does not take. Hand-ported into delta 90 (commit `6c420edc4`):
+
+- `fa70b215a` #7205: a folder link expands Files down to that folder, hidden ones included
+  (`file-explorer/tree.ts` `revealExplorerDirectory`). The listing probe is replaced by the
+  daemon's path resolve, which already knows file from folder.
+- `06cdc5a0b` #7210 and `a0aeca967` #7233: an authored markdown destination is taken as
+  written, bare and extensionless names included, and only inferred text uses the filename
+  heuristic. Daseo differs on one case: a destination that reads as a web address
+  (`example.com/guides`) opens over https instead of as a file.
+- `a8032a150` #7726: a folder outside the workspace shows "outside this workspace" on the phone
+  instead of opening Files on an access error. The desktop editor-target part is not carried:
+  the Mac app already opens any folder in Finder (delta 56).
+- `0e5bcbd9f` #8361: a relative link written against a nested repository falls back to a
+  suffix search when the workspace-root path is missing; Daseo runs it for inline code and
+  markdown links alike, through the daemon path resolve.
+
+Reviewed for 0.5.103 and deliberately not adopted: `5384abdba` #7229 and `c70a6cfb9` #7538
+(folder and document-relative links in the Markdown preview). Daseo's file-pane preview renders
+links through the plain Markdown renderer, not the assistant link opener, so neither problem
+exists here; carrying them means routing the preview through the opener first.
 
 ## Product version policy
 
