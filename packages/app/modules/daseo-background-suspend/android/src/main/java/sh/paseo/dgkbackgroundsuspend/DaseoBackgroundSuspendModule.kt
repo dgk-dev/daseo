@@ -52,7 +52,7 @@ class DaseoBackgroundSuspendModule : Module() {
 
     Function("releaseMemory") {
       val application = appContext.reactContext?.applicationContext as? ReactApplication
-      val router = application?.reactHost?.memoryPressureRouter ?: return@Function
+      val router = application?.reactHost?.memoryPressureRouter ?: return@Function null
       val before = Debug.getNativeHeapAllocatedSize()
       // Same level and path as DaseoMemoryGuard (delta 63).
       handler.post { router.onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL) }
@@ -63,6 +63,7 @@ class DaseoBackgroundSuspendModule : Module() {
           },
           AFTER_RELEASE_SAMPLE_MS,
       )
+      null
     }
 
     OnDestroy {
