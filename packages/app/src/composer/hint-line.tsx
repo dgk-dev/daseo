@@ -30,6 +30,8 @@ export const HINT_LINE_LABELS = {
   mute: "mute",
   unmute: "unmute",
   interrupt: "interrupt",
+  bottom: "bottom",
+  bottomArrow: "↓",
 } as const;
 
 export const HINT_LINE_CARET = "▾";
@@ -47,11 +49,28 @@ export const HINT_LINE_FONT_SIZE = 13;
  */
 export const HintLineWidthContext = createContext<number | null>(null);
 
-/** A command word, muted until its control is hovered, pressed, or open. */
-export function HintWord({ children, active = false }: { children: ReactNode; active?: boolean }) {
+function resolveHintWordStyle({ active, accent }: { active: boolean; accent: boolean }) {
+  if (accent) return hintLineStyles.wordAccent;
+  if (active) return hintLineStyles.wordActive;
+  return hintLineStyles.word;
+}
+
+/**
+ * A command word, muted until its control is hovered, pressed, or open. `accent` marks the one
+ * word that acts now (send, when there is something to send).
+ */
+export function HintWord({
+  children,
+  active = false,
+  accent = false,
+}: {
+  children: ReactNode;
+  active?: boolean;
+  accent?: boolean;
+}) {
   return (
     <Text
-      style={active ? hintLineStyles.wordActive : hintLineStyles.word}
+      style={resolveHintWordStyle({ active, accent })}
       numberOfLines={1}
       dataSet={CODE_SURFACE_DATASET}
       selectable={false}
@@ -139,6 +158,12 @@ export const hintLineStyles = StyleSheet.create((theme) => ({
   },
   wordActive: {
     color: theme.colors.foreground,
+    fontFamily: theme.fontFamily.mono,
+    fontSize: HINT_LINE_FONT_SIZE,
+    flexShrink: 0,
+  },
+  wordAccent: {
+    color: theme.colors.accent,
     fontFamily: theme.fontFamily.mono,
     fontSize: HINT_LINE_FONT_SIZE,
     flexShrink: 0,

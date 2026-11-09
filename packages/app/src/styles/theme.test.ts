@@ -67,6 +67,13 @@ describe("Daseo theme (Ubuntu aubergine)", () => {
     expect(contrastRatio(colors.foregroundMuted, colors.surface1)).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio(colors.accent, colors.surface1)).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio(colors.accentForeground, colors.accent)).toBeGreaterThanOrEqual(4.5);
+    // Errors and the faintest captions stay readable on the chat, sidebar and code backgrounds.
+    for (const surface of [colors.surface0, colors.surface1, colors.surface2]) {
+      expect(contrastRatio(colors.destructive, surface)).toBeGreaterThanOrEqual(4.5);
+    }
+    for (const surface of [colors.surface0, colors.surface1]) {
+      expect(contrastRatio(colors.foregroundExtraMuted, surface)).toBeGreaterThanOrEqual(4.5);
+    }
   });
 
   it("uses the Tango palette in the integrated terminal", () => {

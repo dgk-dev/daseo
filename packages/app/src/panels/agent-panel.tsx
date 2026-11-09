@@ -25,6 +25,7 @@ import { ArchivedAgentCallout } from "@/components/archived-agent-callout";
 import { FileDropZone } from "@/components/file-drop/file-drop-zone";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { Composer } from "@/composer";
+import { JumpToBottomBridgeContext, useCreateJumpToBottomBridge } from "@/composer/jump-to-bottom";
 import { getActiveMessageSubmissions } from "@/composer/submission/model";
 import { RewindComposerRestoreProvider } from "@/components/rewind/composer-restore";
 import { getProviderIcon } from "@/components/provider-icons";
@@ -1251,6 +1252,8 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
   onOpenWorkspaceFile?: (request: WorkspaceFileOpenRequest) => void;
 }) {
   const { t } = useTranslation();
+  // Daseo delta 89: the stream's "jump to bottom" reaches the composer hint line on desktop.
+  const jumpToBottomBridge = useCreateJumpToBottomBridge();
   const rawAgentInputDraft = useAgentInputDraft({
     draftKey: buildDraftStoreKey({
       serverId,
@@ -1334,7 +1337,8 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
   );
   const contentContainer = <View style={styles.contentContainer}>{streamContent}</View>;
 
-  return (
+  return provideJumpToBottomBridge(
+    jumpToBottomBridge,
     <RewindComposerRestoreProvider
       text={agentInputDraft.text}
       setText={agentInputDraft.replaceText}
@@ -1390,9 +1394,20 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
           </View>
         ) : null}
       </View>
-    </RewindComposerRestoreProvider>
+    </RewindComposerRestoreProvider>,
   );
 });
+
+function provideJumpToBottomBridge(
+  bridge: ReturnType<typeof useCreateJumpToBottomBridge>,
+  children: React.ReactNode,
+) {
+  return (
+    <JumpToBottomBridgeContext.Provider value={bridge}>
+      {children}
+    </JumpToBottomBridgeContext.Provider>
+  );
+}
 
 /** Local fork: the `/btw` sheet, plus carrying an answer into a fork of this agent. */
 function AgentSideQuestion({

@@ -44,6 +44,7 @@ import type { ImageAttachment, MessagePayload } from "@/composer/types";
 import { focusWithRetries } from "@/utils/web-focus";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Shortcut } from "@/components/ui/shortcut";
+import { JumpToBottomHint } from "@/composer/jump-to-bottom";
 import {
   HINT_LINE_HIT_SLOP,
   HINT_LINE_LABELS,
@@ -394,6 +395,10 @@ function SendTooltipBody({
   );
 }
 
+// The word `send` is four cells wide; this wider slop keeps its touch target at least 44 by 44
+// on phones (24 high plus 10 above and below; the word plus 10 on each side).
+const SEND_HIT_SLOP = { top: 10, bottom: 10, left: 10, right: 10 } as const;
+
 // Daseo delta 89: send is `⏎ send` on the hint line (the keycap only where Enter submits); a
 // caller's own submit label (`⏎ rename`) replaces the word, and a loading submit shows a spinner.
 function SendButtonContent({
@@ -401,11 +406,13 @@ function SendButtonContent({
   submitLabel,
   sendKeys,
   hovered,
+  sendable,
 }: {
   isSubmitLoading: boolean;
   submitLabel: string | undefined;
   sendKeys: ShortcutChord | null | undefined;
   hovered: boolean;
+  sendable: boolean;
 }) {
   if (isSubmitLoading) {
     return <ThemedLoadingSpinner size="small" uniProps={iconForegroundMutedMapping} />;
@@ -413,7 +420,9 @@ function SendButtonContent({
   return (
     <>
       <HintKeycap chord={sendKeys} />
-      <HintWord active={hovered}>{submitLabel ?? HINT_LINE_LABELS.send}</HintWord>
+      <HintWord active={hovered} accent={sendable}>
+        {submitLabel ?? HINT_LINE_LABELS.send}
+      </HintWord>
     </>
   );
 }
@@ -816,7 +825,7 @@ function SendButtonTooltip({
         accessibilityRole="button"
         testID={submitButtonTestID}
         style={sendButtonCombinedStyle}
-        hitSlop={HINT_LINE_HIT_SLOP}
+        hitSlop={SEND_HIT_SLOP}
       >
         {({ hovered, pressed }: { hovered?: boolean; pressed: boolean }) => (
           <SendButtonContent
@@ -824,6 +833,7 @@ function SendButtonTooltip({
             submitLabel={submitLabel}
             sendKeys={sendKeys}
             hovered={Boolean(hovered) || pressed}
+            sendable={!isSendButtonDisabled}
           />
         )}
       </TooltipTrigger>
@@ -2000,41 +2010,44 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           {/* Daseo delta 89: the hint line — every control as a word. Desktop reads `model …
               effort … ⏎ send ⇧⏎ newline ⌘L focus / commands @ files attach dictate voice`; phones
               keep send at the trailing edge, where the thumb expects it. */}
-          <View style={styles.hintLine} onLayout={handleHintLineLayout}>
-            <HintLineWidthContext.Provider value={hintLineWidth}>
-              {leftContent}
-            </HintLineWidthContext.Provider>
-            {isCompact ? null : primaryAction}
-            <ComposerKeyHints
-              shouldSubmitOnEnter={shouldSubmitOnEnter}
-              showAutocomplete={mode.showAutocomplete}
-              focusInputKeys={focusInputKeys}
-            />
-            <AttachmentDropdown
-              visible={mode.showAttachments}
-              isConnected={isConnected}
-              disabled={disabled}
-              attachButtonStyle={attachButtonStyle}
-              renderAttachButtonIcon={renderAttachButtonIcon}
-              attachmentMenuItems={attachmentMenuItems}
-              addAttachmentLabel={t("composer.input.addAttachment")}
-            />
-            <VoiceButtonTooltip
-              visible={mode.showVoice}
-              onVoicePress={handleVoicePress}
-              isDictationStartEnabled={isDictationStartEnabled}
-              voiceButtonAccessibilityLabel={voiceButtonAccessibilityLabel}
-              voiceButtonStyle={voiceButtonStyle}
-              renderVoiceButtonIcon={renderVoiceButtonIcon}
-              voiceTooltipText={voiceTooltipText}
-              isRealtimeVoiceForCurrentAgent={isRealtimeVoiceForCurrentAgent}
-              voiceMuteToggleKeys={voiceMuteToggleKeys}
-              dictationToggleKeys={dictationToggleKeys}
-            />
-            {rightContent}
+          <View style={styles.hintLineRow}>
+            <View style={styles.hintLine} onLayout={handleHintLineLayout}>
+              <HintLineWidthContext.Provider value={hintLineWidth}>
+                {leftContent}
+              </HintLineWidthContext.Provider>
+              {isCompact ? null : primaryAction}
+              <ComposerKeyHints
+                shouldSubmitOnEnter={shouldSubmitOnEnter}
+                showAutocomplete={mode.showAutocomplete}
+                focusInputKeys={focusInputKeys}
+              />
+              <AttachmentDropdown
+                visible={mode.showAttachments}
+                isConnected={isConnected}
+                disabled={disabled}
+                attachButtonStyle={attachButtonStyle}
+                renderAttachButtonIcon={renderAttachButtonIcon}
+                attachmentMenuItems={attachmentMenuItems}
+                addAttachmentLabel={t("composer.input.addAttachment")}
+              />
+              <VoiceButtonTooltip
+                visible={mode.showVoice}
+                onVoicePress={handleVoicePress}
+                isDictationStartEnabled={isDictationStartEnabled}
+                voiceButtonAccessibilityLabel={voiceButtonAccessibilityLabel}
+                voiceButtonStyle={voiceButtonStyle}
+                renderVoiceButtonIcon={renderVoiceButtonIcon}
+                voiceTooltipText={voiceTooltipText}
+                isRealtimeVoiceForCurrentAgent={isRealtimeVoiceForCurrentAgent}
+                voiceMuteToggleKeys={voiceMuteToggleKeys}
+                dictationToggleKeys={dictationToggleKeys}
+              />
+              {rightContent}
+            </View>
             <View style={styles.hintLineEnd}>
               {beforeVoiceContent}
               {isCompact ? primaryAction : null}
+              <JumpToBottomHint />
             </View>
           </View>
         </View>
@@ -2143,8 +2156,16 @@ const styles = StyleSheet.create((theme: Theme) => ({
     minHeight: MIN_INPUT_HEIGHT,
     color: theme.colors.foregroundMuted,
   },
-  // One wrapping line of words; the context meter (and send on phones) holds the trailing edge.
+  // The words wrap among themselves; the trailing group (context meter, send on phones,
+  // `↓ bottom` on desktop) never wraps and holds the right edge of the first line.
+  hintLineRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    columnGap: theme.spacing[3],
+  },
   hintLine: {
+    flex: 1,
+    minWidth: 0,
     flexDirection: "row",
     flexWrap: "wrap",
     alignItems: "center",
@@ -2152,7 +2173,8 @@ const styles = StyleSheet.create((theme: Theme) => ({
     rowGap: theme.spacing[1],
   },
   hintLineEnd: {
-    marginLeft: "auto",
+    flexShrink: 0,
+    minHeight: 24,
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[3],

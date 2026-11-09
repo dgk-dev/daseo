@@ -1857,11 +1857,14 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
     820 px column, icon rows under every answer, pill buttons under the input).
     - **Palette.** The Daseo theme is Ubuntu's terminal: chat `#300A24`, sidebar, tab bar and
       status line `#26071C`, text `#EEEEEC`, one accent `#8AE234` (also `statusDotRunning`, which
-      the native Android ring reads), destructive `#EF2929`, Tango terminal colours. Only token
-      values changed; no token was renamed or removed. Syntax colours that fall under 4.5:1 on
-      the code background are lifted toward white for this theme only
-      (`styles/syntax-contrast.ts`). Measured on `#300A24`: text 15.1:1, muted 6.8:1, accent
-      10.9:1, accent text on accent 12.0:1. Delta 55's palette lives on as the **Tokyo Night**
+      the native Android ring reads), destructive `#F55555`, faintest captions `#9C8094`, Tango
+      terminal colours. Only token values changed; no token was renamed or removed. Syntax
+      colours that fall under 4.5:1 on the code background are lifted toward white for this
+      theme only (`styles/syntax-contrast.ts`). Measured on the chat `#300A24` / code `#3C1430`
+      / sidebar `#26071C`: text 15.1 / 13.5 / 16.0, muted 6.8 / 6.1 / 7.2, faintest captions
+      5.0 / 4.4 / 5.3, accent 10.9 / 9.8 / 11.5, destructive 5.3 / 4.7 / 5.6, accent text on
+      accent 12.0 (the first values, Tango's red `#EF2929` and a caption grey `#86677B`, fell
+      under 4.5 and were raised). Delta 55's palette lives on as the **Tokyo Night**
       theme option (same terminal chrome). Pre-paint literals (web `index.html` and manifest,
       Expo splash, Electron window and title-bar overlay, Android block cursor) take the new
       values; they cannot follow a runtime theme choice.
@@ -1871,14 +1874,22 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       (`proseMeasureWidth`, follows the font size and delta 71's `chatTextScale`); tables,
       code, diffs and tool rows use the pane width. The height estimators measure with the
       same widths so the virtualised list does not jump. The chat outline rail narrows to sit
-      in the left gutter, and the jump-to-bottom button moves to the composer's right edge,
-      past the prose measure, instead of the middle of the text. Phones are unchanged.
+      in the left gutter. Phones are unchanged.
     - **Words instead of icons.** Message actions read `copy`, `fork`, `undo` on the metadata
       line (always visible, delta 32). Under the input sits one hint line: `model … ▾`,
       `effort … ▾`, `mode … ▾`, then only key hints that really work on that platform
       (`⏎ send`, `⇧⏎ newline`, `⌘L focus`, `/ commands`, `@ files`), `attach`, `dictate`,
-      `voice` and the context meter; phones drop the key hints and keep send at the trailing
-      edge, every control with a 44 dp target. Tool rows read `✓ read  path … 3s` (`✗` failed,
+      `voice`, then a trailing group that never wraps: the context meter, and on desktop
+      `↓ bottom`. Jump-to-newest is that word on desktop instead of a button floating over the
+      transcript (it covered the end of wide code blocks and tables): same condition and
+      handler, carried from the stream view to the composer by a per-pane bridge
+      (`composer/jump-to-bottom.tsx`); the word keeps its space while hidden, so scrolling
+      never rewraps the line or moves the composer. Phones keep the floating button. `send` is
+      in the accent when there is something to send and muted when disabled; it appears under
+      the same rule as the old arrow (content to send, or empty submit allowed; `interrupt`
+      while the agent runs). Phones drop the key hints and put send or interrupt in the
+      trailing group, so the other words wrap before it, every control with a 44 dp target
+      (send's slop is wider for its four-cell word). Tool rows read `✓ read  path … 3s` (`✗` failed,
       delta 73's blinking block while running), the collapsed work row `▸ worked 6m 12s · …`.
       The sidebar loses its decorative icons and letter boxes (`── workspaces ──`, `~/name`,
       a bare status glyph keeps the old overlay's status), and its footer is words. The status
@@ -1889,7 +1900,8 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       single-letter key labels in front of sidebar rows and actions (`n New workspace`,
       `c copy`: the keys are not bound, so they would be costume), and a markdown restyle.
     - **Key files:** `packages/app/src/styles/theme.ts`, `styles/syntax-contrast.ts`,
-      `constants/layout.ts`, `composer/hint-line.tsx`, `components/stream-action-label.tsx`,
+      `constants/layout.ts`, `composer/hint-line.tsx`, `composer/jump-to-bottom.tsx`,
+      `components/stream-action-label.tsx`,
       `components/message.tsx` (tool rows), `components/sidebar/sidebar-section-rule.tsx`,
       `screens/workspace/workspace-status-line.tsx`.
 

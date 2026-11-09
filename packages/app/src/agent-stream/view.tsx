@@ -33,6 +33,7 @@ import { useMutation } from "@tanstack/react-query";
 import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
 import { Check, ChevronDown, X } from "lucide-react-native";
 import { usePanelStore } from "@/stores/panel-store";
+import { useJumpToBottom } from "@/composer/jump-to-bottom";
 import {
   AssistantMessage,
   AssistantResponseBlock,
@@ -726,6 +727,11 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         onError: handleTimelineHistoryLoadError,
       });
     }, [agentId, handleTimelineHistoryLoadError, isTimelineDetached, resolvedServerId]);
+    // Daseo delta 89: on desktop the jump is `↓ bottom` on the composer hint line.
+    const showFloatingJumpToBottom = useJumpToBottom(
+      !isNearBottom || isTimelineDetached,
+      scrollToBottom,
+    );
 
     const setInlineDetailsExpanded = useCallback(
       (itemId: string, expanded: boolean) => {
@@ -1213,7 +1219,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
               activePrompt={chatOutline.activePrompt}
               onJumpToPrompt={chatOutline.jumpToPrompt}
             />
-            {(!isNearBottom || isTimelineDetached) && (
+            {showFloatingJumpToBottom && (
               <View style={stylesheet.scrollToBottomContainer} pointerEvents="box-none">
                 <Animated.View entering={scrollIndicatorFadeIn} exiting={scrollIndicatorFadeOut}>
                   <Pressable
@@ -1750,15 +1756,12 @@ const stylesheet = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     textAlign: "center",
   },
-  // Daseo delta 89: on desktop the transcript is left-anchored, so the button sits on the
-  // composer's right edge, past the prose measure, instead of over the middle of the text.
   scrollToBottomContainer: {
     position: "absolute",
     bottom: 16,
     left: 0,
     right: 0,
-    alignItems: { xs: "center", md: "flex-end" },
-    paddingRight: { xs: 0, md: theme.spacing[4] },
+    alignItems: "center",
   },
   scrollToBottomButton: {
     width: 48,
