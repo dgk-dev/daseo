@@ -1,4 +1,6 @@
-import { MAX_CONTENT_WIDTH } from "@/constants/layout";
+import { proseMeasureWidth } from "@/constants/layout";
+import { FONT_SIZE } from "@/styles/theme";
+import { getAssistantContentWidth } from "@/utils/assistant-content-width";
 import { resolveAssistantImageSource } from "@/utils/assistant-image-source";
 import { createImageSourceCacheKey } from "@/attachments/utils";
 
@@ -14,7 +16,13 @@ const ASSISTANT_IMAGE_METADATA_CACHE_LIMIT = 500;
 const ASSISTANT_IMAGE_PARSE_CACHE_LIMIT = 500;
 
 const MARKDOWN_IMAGE_PATTERN = /!\[[^\]]*]\((<[^>]+>|[^)\n]+)\)/g;
-const ASSISTANT_IMAGE_ESTIMATE_WIDTH = MAX_CONTENT_WIDTH - 8;
+// An assistant image fills the transcript up to the prose measure (Daseo delta 89). The estimate
+// takes the measure at the default chat font size; the conversation text scale is not visible here.
+const ASSISTANT_IMAGE_MAX_ESTIMATE_WIDTH = proseMeasureWidth(FONT_SIZE.base, 1);
+
+function getAssistantImageEstimateWidth(): number {
+  return Math.min(getAssistantContentWidth() ?? Infinity, ASSISTANT_IMAGE_MAX_ESTIMATE_WIDTH);
+}
 const ASSISTANT_IMAGE_MIN_HEIGHT = 160;
 const ASSISTANT_IMAGE_BLOCK_GAP = 24;
 const ASSISTANT_MESSAGE_BASE_HEIGHT = 96;
@@ -189,7 +197,7 @@ export function estimateAssistantMessageHeightFromCache(markdown: string): numbe
     .map((metadata) =>
       Math.max(
         ASSISTANT_IMAGE_MIN_HEIGHT,
-        Math.round(ASSISTANT_IMAGE_ESTIMATE_WIDTH / metadata.aspectRatio),
+        Math.round(getAssistantImageEstimateWidth() / metadata.aspectRatio),
       ),
     );
 

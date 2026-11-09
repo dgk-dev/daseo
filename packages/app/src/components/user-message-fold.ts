@@ -1,3 +1,5 @@
+import { PROSE_MEASURE_CELLS } from "@/constants/layout";
+
 /**
  * A long submitted prompt folds to its first USER_MESSAGE_FOLD_LINES lines behind "Show full
  * message" (the Ovis/herdr web UI fold for user turns), so a pasted log or a long dictated
@@ -9,9 +11,9 @@
  */
 export const USER_MESSAGE_FOLD_LINES = 12;
 
-// The bubble is at most MAX_CONTENT_WIDTH (820px) less its padding, about 790px of text at
-// fontSize.base; an average Latin glyph is about 7px wide there.
-const WIDEST_BUBBLE_COLUMNS = 110;
+// The prompt wraps at the prose measure (Daseo delta 89), PROSE_MEASURE_CELLS monospace cells
+// at any font size.
+const WIDEST_BUBBLE_COLUMNS = PROSE_MEASURE_CELLS;
 
 function isWideCharacter(codePoint: number): boolean {
   return (

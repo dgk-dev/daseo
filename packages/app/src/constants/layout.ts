@@ -11,8 +11,20 @@ export const HEADER_INNER_HEIGHT_MOBILE = 56;
 export const WORKSPACE_SECONDARY_HEADER_HEIGHT = 36;
 export const HEADER_TOP_PADDING_MOBILE = 8;
 
-// Max width for chat content (stream view, input area, new agent form)
+// Max width for the new-workspace form and the markdown file preview. The chat transcript and
+// composer no longer use it (Daseo delta 89): they start at the pane's left inset and run the
+// full pane width, and prose stops at PROSE_MEASURE_CELLS instead.
 export const MAX_CONTENT_WIDTH = 820;
+
+// Daseo delta 89: paragraphs, lists, headings, quotes, prompts and images in the conversation stop
+// at a readable measure of this many monospace cells of the chat font. A D2Coding cell is half an
+// em, so the measure follows the font size and the conversation text scale; code blocks, tables,
+// diffs and tool rows still use the full pane width.
+export const PROSE_MEASURE_CELLS = 104;
+
+export function proseMeasureWidth(fontSize: number, chatTextScale: number): number {
+  return Math.round(PROSE_MEASURE_CELLS * 0.5 * fontSize * chatTextScale);
+}
 export const COMPACT_FORM_FACTOR_WIDTH = 500;
 
 // Settings uses the canonical desktop list + detail layout. Its sidebar and

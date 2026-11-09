@@ -5,7 +5,6 @@ import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
 import { Button } from "@/components/ui/button";
 import { TaskListRow } from "@/components/task-list-row";
-import { MAX_CONTENT_WIDTH } from "@/constants/layout";
 import { useSessionStore } from "@/stores/session-store";
 import type { TodoEntry } from "@/types/stream";
 
@@ -84,7 +83,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   track: {
     width: "100%",
-    maxWidth: MAX_CONTENT_WIDTH,
   },
   // Daseo delta 57: a status line over the prompt line (delta 53), like the subagents track.
   card: {

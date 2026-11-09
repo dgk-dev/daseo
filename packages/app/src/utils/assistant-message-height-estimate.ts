@@ -1,9 +1,12 @@
-import { MAX_CONTENT_WIDTH } from "@/constants/layout";
 import { estimateAssistantMessageHeightFromCache as estimateAssistantImageMessageHeightFromCache } from "@/utils/assistant-image-metadata";
+import {
+  clearAssistantContentWidth,
+  getAssistantContentWidth,
+  recordAssistantContentWidth,
+} from "@/utils/assistant-content-width";
 import { splitMarkdownBlocks } from "@/utils/split-markdown-blocks";
 
 const ASSISTANT_MARKDOWN_BLOCK_HEIGHT_CACHE_LIMIT = 1000;
-const ASSISTANT_MARKDOWN_BLOCK_ESTIMATE_WIDTH = MAX_CONTENT_WIDTH - 16;
 const ASSISTANT_MESSAGE_VERTICAL_PADDING = 24;
 const ASSISTANT_MARKDOWN_BLOCK_GAP = 12;
 
@@ -69,6 +72,8 @@ export function setAssistantMarkdownBlockHeight(input: {
     return null;
   }
   const height = Math.ceil(input.height);
+  const width = normalizeMarkdownBlockWidth(input.width);
+  if (width !== null) recordAssistantContentWidth(width);
   touchCacheEntry(
     assistantMarkdownBlockHeightCache,
     key,
@@ -80,7 +85,8 @@ export function setAssistantMarkdownBlockHeight(input: {
 
 function estimateAssistantMarkdownBlockHeightFromCache(markdown: string): number | null {
   const blocks = splitMarkdownBlocks(markdown);
-  if (blocks.length === 0) {
+  const width = getAssistantContentWidth();
+  if (blocks.length === 0 || width === null) {
     return null;
   }
 
@@ -88,7 +94,7 @@ function estimateAssistantMarkdownBlockHeightFromCache(markdown: string): number
   for (const block of blocks) {
     const key = createMarkdownBlockHeightKey({
       block,
-      width: ASSISTANT_MARKDOWN_BLOCK_ESTIMATE_WIDTH,
+      width,
     });
     const cachedHeight = key ? assistantMarkdownBlockHeightCache.get(key) : undefined;
     if (cachedHeight === undefined) {
@@ -113,4 +119,5 @@ export function estimateAssistantMessageHeightFromCache(markdown: string): numbe
 
 export function clearAssistantMessageHeightEstimateCache(): void {
   assistantMarkdownBlockHeightCache.clear();
+  clearAssistantContentWidth();
 }

@@ -30,6 +30,17 @@ describe("assistant message height estimate", () => {
     expect(estimateAssistantMessageHeightFromCache("First paragraph\n\nSecond paragraph")).toBe(97);
   });
 
+  it("estimates at the width the transcript was last measured at, not a fixed column", () => {
+    setAssistantMarkdownBlockHeight({ block: "Wide paragraph", width: 1096, height: 22 });
+
+    expect(estimateAssistantMessageHeightFromCache("Wide paragraph")).toBe(46);
+
+    setAssistantMarkdownBlockHeight({ block: "Narrow paragraph", width: 700, height: 44 });
+
+    expect(estimateAssistantMessageHeightFromCache("Wide paragraph")).toBeNull();
+    expect(estimateAssistantMessageHeightFromCache("Narrow paragraph")).toBe(68);
+  });
+
   it("falls back to image metadata when markdown blocks are not measured", () => {
     setAssistantImageMetadata(
       {

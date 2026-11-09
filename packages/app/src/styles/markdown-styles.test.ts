@@ -91,7 +91,7 @@ describe("createMarkdownStyles", () => {
         flexShrink: 1,
         minWidth: 0,
         width: "100%",
-        maxWidth: "100%",
+        maxWidth: 832,
         overflow: "visible",
       });
     }
@@ -107,6 +107,20 @@ describe("createMarkdownStyles", () => {
       width: "100%",
       lineHeight: Math.round(darkTheme.fontSize.base * 1.4),
     });
+  });
+
+  it("stops prose at 104 half-em cells of the chat font and leaves code and tables full width", () => {
+    const styles = createMarkdownStyles(darkTheme);
+    // 104 cells x 0.5em x 16px
+    for (const key of ["paragraph", "bullet_list", "ordered_list", "blockquote"] as const) {
+      expect(styles[key]).toMatchObject({ maxWidth: 832 });
+    }
+    expect(styles.fence).not.toHaveProperty("maxWidth");
+    expect(styles.code_block).not.toHaveProperty("maxWidth");
+    expect(styles.table).not.toHaveProperty("maxWidth");
+
+    const scaled = createMarkdownStyles({ ...darkTheme, chatTextScale: 1.25 });
+    expect(scaled.paragraph).toMatchObject({ maxWidth: 1040 });
   });
 
   it("uses the mono font-size token directly for inline and block code", () => {

@@ -1,4 +1,5 @@
 import type { Theme } from "./theme";
+import { proseMeasureWidth } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
 
 const webSelectableTextStyle = isWeb ? { userSelect: "text" as const } : {};
@@ -62,6 +63,10 @@ export function createMarkdownStyles(theme: Theme) {
 }
 
 function buildMarkdownStyles(theme: Theme) {
+  // Daseo delta 89: prose stops at a readable measure; code, tables and rules use the full width.
+  const proseMeasure = {
+    maxWidth: proseMeasureWidth(theme.fontSize.base, theme.chatTextScale ?? 1),
+  };
   return {
     // =========================================================================
     // BASE STYLES
@@ -97,6 +102,7 @@ function buildMarkdownStyles(theme: Theme) {
       flexShrink: 1,
       minWidth: 0,
       width: "100%" as const,
+      ...proseMeasure,
     },
 
     // =========================================================================
@@ -105,6 +111,7 @@ function buildMarkdownStyles(theme: Theme) {
 
     heading1: {
       ...markdownHeadingContainerStyle,
+      ...proseMeasure,
       ...webSelectableTextStyle,
       fontSize: theme.fontSize["3xl"],
       fontWeight: theme.fontWeight.bold,
@@ -119,6 +126,7 @@ function buildMarkdownStyles(theme: Theme) {
 
     heading2: {
       ...markdownHeadingContainerStyle,
+      ...proseMeasure,
       ...webSelectableTextStyle,
       fontSize: theme.fontSize["2xl"],
       fontWeight: theme.fontWeight.bold,
@@ -133,6 +141,7 @@ function buildMarkdownStyles(theme: Theme) {
 
     heading3: {
       ...markdownHeadingContainerStyle,
+      ...proseMeasure,
       ...webSelectableTextStyle,
       fontSize: theme.fontSize.xl,
       fontWeight: theme.fontWeight.semibold,
@@ -144,6 +153,7 @@ function buildMarkdownStyles(theme: Theme) {
 
     heading4: {
       ...markdownHeadingContainerStyle,
+      ...proseMeasure,
       ...webSelectableTextStyle,
       fontSize: theme.fontSize.lg,
       fontWeight: theme.fontWeight.semibold,
@@ -155,6 +165,7 @@ function buildMarkdownStyles(theme: Theme) {
 
     heading5: {
       ...markdownHeadingContainerStyle,
+      ...proseMeasure,
       ...webSelectableTextStyle,
       fontSize: theme.fontSize.base,
       fontWeight: theme.fontWeight.semibold,
@@ -166,6 +177,7 @@ function buildMarkdownStyles(theme: Theme) {
 
     heading6: {
       ...markdownHeadingContainerStyle,
+      ...proseMeasure,
       ...webSelectableTextStyle,
       fontSize: theme.fontSize.base,
       fontWeight: theme.fontWeight.semibold,
@@ -317,11 +329,13 @@ function buildMarkdownStyles(theme: Theme) {
     bullet_list: {
       paddingLeft: 0,
       width: "100%" as const,
+      ...proseMeasure,
     },
 
     ordered_list: {
       paddingLeft: 0,
       width: "100%" as const,
+      ...proseMeasure,
     },
 
     list_item: {
@@ -364,6 +378,7 @@ function buildMarkdownStyles(theme: Theme) {
     // =========================================================================
 
     blockquote: {
+      ...proseMeasure,
       backgroundColor: theme.colors.surface2,
       borderLeftWidth: 4,
       borderLeftColor: theme.colors.primary,

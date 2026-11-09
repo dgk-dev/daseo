@@ -54,7 +54,7 @@ import {
 } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
-import { useIsCompactFormFactor } from "@/constants/layout";
+import { proseMeasureWidth, useIsCompactFormFactor } from "@/constants/layout";
 import { useReducedMotion } from "react-native-reanimated";
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
@@ -312,6 +312,8 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
   },
   bubble: {
     position: "relative",
+    // Daseo delta 89: the prompt wraps at the prose measure, past its `>` gutter.
+    maxWidth: proseMeasureWidth(theme.fontSize.base, theme.chatTextScale) + theme.spacing[4],
     paddingLeft: theme.spacing[4],
     paddingVertical: theme.spacing[1],
     minWidth: 0,
@@ -940,6 +942,8 @@ export const assistantMessageStylesheet = StyleSheet.create((theme) => ({
   },
   imageFrame: {
     width: "100%",
+    // Daseo delta 89: an image stays in the prose column instead of spanning a wide pane.
+    maxWidth: proseMeasureWidth(theme.fontSize.base, theme.chatTextScale),
     minHeight: 160,
     marginHorizontal: -theme.spacing[1],
   },
