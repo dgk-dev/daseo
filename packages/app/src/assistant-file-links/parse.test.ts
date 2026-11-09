@@ -654,8 +654,20 @@ describe("link tolerance (Daseo delta 90)", () => {
       target: { path: "/Users/test/project/회사 자료 접근 지도.md" },
     });
     expect(classifyAssistantFileLink("회사 자료 접근 지도.md", root)).toBeNull();
-    expect(classifyAssistantFileLink("open report.pdf", inline)).toBeNull();
-    expect(classifyAssistantFileLink("Release notes for v2", inline)).toBeNull();
+    expect(classifyAssistantFileLink("Document_261102_120113 (1).pdf", inline)).toMatchObject({
+      kind: "ambiguousFileCandidate",
+    });
+    for (const value of [
+      "open report.pdf",
+      "Release notes for v2",
+      "vitest kits.test.ts",
+      "mktg channel-sales.test.ts",
+      "node.exe … delivery-agent.mjs",
+      "✓ read …conversation-list.tsx",
+      "— 치트시트.pdf",
+    ]) {
+      expect(classifyAssistantFileLink(value, inline)).toBeNull();
+    }
   });
 
   it("decodes an authored destination and takes it as written", () => {

@@ -794,14 +794,67 @@ export function isWhitespacePathToken(token: string): boolean {
   if (firstWord.includes("/")) {
     return isPlausibleAssistantLocalPath(token);
   }
-  // A bare name with spaces (`회사 자료 접근 지도.md`) is a file when it ends in a known
-  // extension and does not start with a command (`open report.pdf`). Daseo delta 90.
-  if (token.includes("/") || COMMAND_WORDS.has(firstWord.toLowerCase())) {
+  // A bare name with spaces (`회사 자료 접근 지도.md`, `발주 제안_HDEX.xlsx`) is a document an
+  // agent names. Source files never carry spaces, so `vitest kits.test.ts` or `mktg app.ts` is
+  // a command; so is anything starting with a command word, a symbol, or an ellipsis
+  // (`open report.pdf`, `✓ read …view.tsx`). Daseo delta 90.
+  if (
+    token.includes("/") ||
+    token.includes("…") ||
+    !/^[\p{L}\p{N}]/u.test(token) ||
+    COMMAND_WORDS.has(firstWord.toLowerCase())
+  ) {
     return false;
   }
   const lastDot = token.lastIndexOf(".");
-  return lastDot > 0 && ASSISTANT_FILE_EXTENSIONS.has(token.slice(lastDot + 1).toLowerCase());
+  return lastDot > 0 && SPACED_NAME_EXTENSIONS.has(token.slice(lastDot + 1).toLowerCase());
 }
+
+// Documents, data, and media: what a bare name with spaces names.
+const SPACED_NAME_EXTENSIONS = new Set([
+  "apk",
+  "csv",
+  "dmg",
+  "doc",
+  "docx",
+  "epub",
+  "gif",
+  "heic",
+  "htm",
+  "html",
+  "hwp",
+  "hwpx",
+  "jpeg",
+  "jpg",
+  "json",
+  "key",
+  "log",
+  "m4a",
+  "md",
+  "mov",
+  "mp3",
+  "mp4",
+  "numbers",
+  "odp",
+  "ods",
+  "odt",
+  "pages",
+  "pdf",
+  "png",
+  "ppt",
+  "pptx",
+  "rtf",
+  "svg",
+  "tsv",
+  "txt",
+  "wav",
+  "webm",
+  "webp",
+  "xls",
+  "xlsm",
+  "xlsx",
+  "zip",
+]);
 
 const COMMAND_WORDS = new Set([
   "adb",
