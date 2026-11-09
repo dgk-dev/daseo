@@ -23,18 +23,7 @@ export function useSidebarWorkspaceTrailing(): SidebarWorkspaceTrailing {
   return sidebarWorkspaceTrailing;
 }
 
-/** Whether the slot has anything to draw for this workspace under the current preference. */
-export function hasSidebarWorkspaceTrailing({
-  workspace,
-  trailing,
-}: {
-  workspace: SidebarWorkspaceEntry;
-  trailing: SidebarWorkspaceTrailing;
-}): boolean {
-  if (trailing === "diff") return workspace.diffStat !== null;
-  if (trailing === "timestamp") return workspace.statusEnteredAt !== null;
-  return false;
-}
+export { hasSidebarWorkspaceTrailing } from "@/components/sidebar/trailing-action-visibility";
 
 export function SidebarWorkspaceTrailingContent({
   workspace,

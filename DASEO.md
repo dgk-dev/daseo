@@ -1697,6 +1697,15 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       raises `TRIM_MEMORY_RUNNING_CRITICAL` through `MemoryPressureRouter`, as delta 63's
       watchdog does. Measured by hand on 0.5.97 (9.7 h process, backgrounded): native heap
       allocated 360 → 267 MB, TOTAL PSS 745 → 674 MB; Views unchanged at 6,974.
+    - **Sidebar rows without a kebab (owner's report the same day): not reproduced.** On 0.5.98 the
+      Fold showed the ⋮ kebab on every workspace row unfolded (project and status grouping),
+      right after a suspend and resume, and on the cover screen. In code every row renderer
+      (project, status, pinned) passes its archive action, and on touch the kebab hides only
+      under the keyboard-shortcut badge, which Android never raises. The shared rule moved to
+      `packages/app/src/components/sidebar/trailing-action-visibility.ts` so
+      `sidebar-workspace-trailing-actions.test.ts` pins it without React Native: on a touch
+      screen every row with row actions shows the kebab and reserves its width, whatever the
+      trailing preference or row content. A next sighting needs a screenshot of that sidebar.
     - **Not changed:** server, protocol, relay, desktop and web behavior; push still comes from
       the daemon's presence policy (a suspended phone is not a connected client).
     - **Key files:** `packages/app/src/runtime/background-suspend/` (`controller.ts` grace and
