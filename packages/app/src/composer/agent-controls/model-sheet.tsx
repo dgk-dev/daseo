@@ -1,14 +1,20 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Keyboard, ScrollView, Text, View, type PressableStateCallbackType } from "react-native";
+import { Keyboard, ScrollView, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import type { AgentProvider } from "@getpaseo/protocol/agent-types";
 import type { AgentProfilePicker } from "@/agent-profiles";
 import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
 import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
-import { getProviderIcon } from "@/components/provider-icons";
 import { ModelBrowser, useModelBrowser } from "@/components/model-browser";
-import { ComposerToolbarGlyph } from "@/composer/agent-controls/glyph";
+import {
+  HINT_LINE_HIT_SLOP,
+  HINT_LINE_LABELS,
+  HintCaret,
+  HintValue,
+  HintWord,
+  hintLineStyles,
+} from "@/composer/hint-line";
 import { resolveModelSheetLayout } from "@/composer/agent-controls/model-sheet-layout";
 import type { ProviderSelectorProvider } from "@/provider-selection/provider-selection";
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -36,7 +42,6 @@ interface CompactModelSheetProps {
   isRetryingProvider?: boolean;
   disabled?: boolean;
   serverId?: string | null;
-  glyphSize: number;
   children: ReactNode;
 }
 
@@ -60,7 +65,6 @@ export function CompactModelSheet({
   isRetryingProvider = false,
   disabled = false,
   serverId = null,
-  glyphSize,
   children,
 }: CompactModelSheetProps) {
   const { t } = useTranslation();
@@ -81,8 +85,6 @@ export function CompactModelSheet({
     serverId,
   });
   const { prepareToOpen, reset } = browser;
-  const ProviderIcon =
-    selectedProvider.trim().length > 0 ? getProviderIcon(selectedProvider) : null;
   const compactFooter = useMemo(
     () =>
       layout.showControlsFooter ? (
@@ -140,13 +142,11 @@ export function CompactModelSheet({
   }, [close, isOpen, open]);
 
   const triggerStyle = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType) => [
-      styles.trigger,
-      hovered && styles.triggerHovered,
-      (pressed || isOpen) && styles.triggerPressed,
-      disabled && styles.triggerDisabled,
+    (_state: PressableStateCallbackType) => [
+      hintLineStyles.control,
+      disabled && hintLineStyles.controlDisabled,
     ],
-    [disabled, isOpen],
+    [disabled],
   );
 
   return (
@@ -162,15 +162,16 @@ export function CompactModelSheet({
         })}
         testID="combined-model-selector"
         chevron={null}
+        hitSlop={HINT_LINE_HIT_SLOP}
       >
-        {ProviderIcon ? (
-          <ComposerToolbarGlyph size={glyphSize}>
-            <ProviderIcon size={glyphSize} color={styles.providerIcon.color} />
-          </ComposerToolbarGlyph>
-        ) : null}
-        <Text style={styles.triggerText} numberOfLines={1}>
-          {shortModelLabel(browser.triggerLabel)}
-        </Text>
+        {/* Daseo delta 89: `model <label> ▾` in text on the composer hint line. */}
+        {({ hovered, pressed }: { hovered: boolean; pressed: boolean }) => (
+          <>
+            <HintWord active={hovered || pressed || isOpen}>{HINT_LINE_LABELS.model}</HintWord>
+            <HintValue>{shortModelLabel(browser.triggerLabel)}</HintValue>
+            <HintCaret />
+          </>
+        )}
       </ComboboxTrigger>
 
       <AdaptiveModalSheet
@@ -222,36 +223,6 @@ export function CompactModelSheet({
 }
 
 const styles = StyleSheet.create((theme) => ({
-  trigger: {
-    height: 28,
-    minWidth: 0,
-    flexShrink: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[1],
-    paddingHorizontal: theme.spacing[2],
-    borderRadius: theme.borderRadius["2xl"],
-    backgroundColor: "transparent",
-  },
-  triggerHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
-  triggerPressed: {
-    backgroundColor: theme.colors.surface0,
-  },
-  triggerDisabled: {
-    opacity: 0.5,
-  },
-  triggerText: {
-    minWidth: 0,
-    flexShrink: 1,
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
-    fontWeight: theme.fontWeight.normal,
-  },
-  providerIcon: {
-    color: theme.colors.foregroundMuted,
-  },
   sheetBody: {
     paddingHorizontal: 0,
     paddingTop: 0,

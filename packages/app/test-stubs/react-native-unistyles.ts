@@ -30,6 +30,7 @@ const testTheme = {
     sm: 14,
     base: 16,
   },
+  fontFamily: { ui: "System", mono: "Menlo" },
   fontWeight: {
     normal: "400",
     medium: "500",

@@ -84,7 +84,7 @@ export const ar: TranslationResources = {
   },
   composer: {
     placeholders: {
-      desktop: "أرسل رسالة إلى الوكيل أو ضع علامة على @files أو استخدم /commands و /skills",
+      desktop: "رسالة · @files · /commands",
       mobile: "الرسالة، @files ، /commands",
       fallback: "رسالة...",
       terminal: "Prompt",
@@ -92,7 +92,6 @@ export const ar: TranslationResources = {
     input: {
       accessibilityLabel: "وكيل الرسائل...",
       terminalAccessibilityLabel: "Terminal prompt",
-      focusHint: "{{shortcut}}للتركيز",
       addAttachment: "إضافة مرفق",
       interruptAgent: "عامل المقاطعة",
       queueMessage: "رسالة قائمة الانتظار",

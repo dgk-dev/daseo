@@ -12,6 +12,14 @@ import { useIsCompactFormFactor } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
 import type { ProviderSelectorProvider } from "@/provider-selection/provider-selection";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
+import {
+  HINT_LINE_HIT_SLOP,
+  HINT_LINE_LABELS,
+  HintCaret,
+  HintValue,
+  HintWord,
+  hintLineStyles,
+} from "@/composer/hint-line";
 
 const EMPTY_COMBOBOX_OPTIONS: ComboboxOption[] = [];
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
@@ -69,6 +77,7 @@ interface CombinedModelSelectorProps {
    * (the composer's layout).
    */
   triggerFill?: boolean;
+  /** The composer's toolbar: the trigger renders as `model <label> ▾` on the hint line. */
   toolbar?: {
     glyphSize: number;
     showCaret: boolean;
@@ -162,6 +171,9 @@ export function CombinedModelSelector({
           disabled && styles.triggerDisabled,
         ];
       }
+      if (toolbar && !renderTrigger) {
+        return [hintLineStyles.control, disabled && hintLineStyles.controlDisabled];
+      }
       return [
         styles.trigger,
         Boolean(hovered) && styles.triggerHovered,
@@ -170,7 +182,19 @@ export function CombinedModelSelector({
         renderTrigger ? styles.customTriggerWrapper : null,
       ];
     },
-    [disabled, isOpen, renderTrigger, triggerFill],
+    [disabled, isOpen, renderTrigger, toolbar, triggerFill],
+  );
+
+  // Daseo delta 89: on the composer hint line the model is `model <label> ▾` in text.
+  const renderHintLineTrigger = useCallback(
+    ({ hovered, pressed }: { hovered: boolean; pressed: boolean }) => (
+      <>
+        <HintWord active={hovered || pressed || isOpen}>{HINT_LINE_LABELS.model}</HintWord>
+        <HintValue>{browser.triggerLabel}</HintValue>
+        <HintCaret />
+      </>
+    ),
+    [browser.triggerLabel, isOpen],
   );
 
   const handleApplyProfile = useCallback(
@@ -238,24 +262,28 @@ export function CombinedModelSelector({
           disabled={disabled}
           onPress={handleTriggerPress}
           style={triggerStyle}
+          hitSlop={toolbar ? HINT_LINE_HIT_SLOP : undefined}
           accessibilityRole="button"
           accessibilityLabel={t("modelSelector.selectedModel", {
             model: browser.selectedModelLabel,
           })}
           testID="combined-model-selector"
-          chevron={toolbar?.showCaret === false ? null : undefined}
+          chevron={toolbar ? null : undefined}
         >
-          {selectedProvider.trim().length > 0 ? (
-            <View style={toolbar?.glyphSize === 20 ? styles.toolbarGlyph20 : styles.toolbarGlyph16}>
-              <ModelProviderGlyph
-                provider={selectedProvider}
-                size={toolbar?.glyphSize ?? ICON_SIZE.md}
-              />
-            </View>
-          ) : null}
-          <Text style={styles.triggerText} numberOfLines={1} ellipsizeMode="tail">
-            {browser.triggerLabel}
-          </Text>
+          {toolbar ? (
+            renderHintLineTrigger
+          ) : (
+            <>
+              {selectedProvider.trim().length > 0 ? (
+                <View style={styles.toolbarGlyph16}>
+                  <ModelProviderGlyph provider={selectedProvider} size={ICON_SIZE.md} />
+                </View>
+              ) : null}
+              <Text style={styles.triggerText} numberOfLines={1} ellipsizeMode="tail">
+                {browser.triggerLabel}
+              </Text>
+            </>
+          )}
         </ComboboxTrigger>
       )}
       <Combobox
@@ -297,11 +325,6 @@ const styles = StyleSheet.create((theme) => ({
   toolbarGlyph16: {
     width: 16,
     height: 16,
-    flexShrink: 0,
-  },
-  toolbarGlyph20: {
-    width: 20,
-    height: 20,
     flexShrink: 0,
   },
   triggerPressed: {

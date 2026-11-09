@@ -84,7 +84,7 @@ export const ru: TranslationResources = {
   },
   composer: {
     placeholders: {
-      desktop: "Напишите агенту сообщение, отметьте @files или используйте /commands и /skills.",
+      desktop: "сообщение · @files · /commands",
       mobile: "Сообщение,@files,/commands",
       fallback: "Сообщение...",
       terminal: "Prompt",
@@ -92,7 +92,6 @@ export const ru: TranslationResources = {
     input: {
       accessibilityLabel: "Агент сообщений...",
       terminalAccessibilityLabel: "Terminal prompt",
-      focusHint: "{{shortcut}}, чтобы сосредоточиться",
       addAttachment: "Добавить вложение",
       interruptAgent: "Агент прерываний",
       queueMessage: "Сообщение в очереди",

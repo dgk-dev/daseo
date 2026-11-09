@@ -1,6 +1,7 @@
 import {
   memo,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -16,14 +17,12 @@ import {
   Pressable,
   Keyboard,
   useWindowDimensions,
-  type LayoutChangeEvent,
   type PressableStateCallbackType,
   type StyleProp,
   type ViewStyle,
 } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useShallow } from "zustand/shallow";
-import { Settings2 } from "lucide-react-native";
 import {
   getAgentFeatureIcon,
   getAgentFeatureToggleIcon,
@@ -77,7 +76,6 @@ import {
   resolveModelChangeThinkingOptionId,
 } from "@/composer/agent-controls/utils";
 import { useIsCompactFormFactor } from "@/constants/layout";
-import { readMeasuredWidth } from "@/hooks/use-container-width";
 import { useToast } from "@/contexts/toast-context";
 import { toErrorMessage } from "@/utils/error-messages";
 import { showProviderNoticeToast } from "@/utils/provider-notice-toast";
@@ -91,8 +89,15 @@ import {
   type ComposerControlPresentation,
 } from "@/composer/agent-controls/layout";
 import { ComposerControlLayoutProvider } from "@/composer/agent-controls/layout-context";
-import { ComposerToolbarGlyph } from "@/composer/agent-controls/glyph";
 import { AgentControlTrigger } from "@/composer/agent-controls/control";
+import {
+  HINT_LINE_HIT_SLOP,
+  HINT_LINE_LABELS,
+  HintCaret,
+  HintLineWidthContext,
+  HintWord,
+  hintLineStyles,
+} from "@/composer/hint-line";
 import { useAcknowledgedAgentFeatures } from "@/composer/agent-controls/use-acknowledged-agent-features";
 import { CompactModelSheet } from "@/composer/agent-controls/model-sheet";
 import {
@@ -569,21 +574,17 @@ function ControlledAgentControls({
     [controlPresence],
   );
 
-  const handleLayout = useCallback(
-    (event: LayoutChangeEvent) => {
-      const availableWidth = readMeasuredWidth(event);
-      if (availableWidth === null) return;
-      availableWidthRef.current = availableWidth;
-      updateDensityForWidth(availableWidth);
-    },
-    [updateDensityForWidth],
-  );
-
+  // Daseo delta 89: the controls are words on the composer hint line and size to their content,
+  // so the density budget is the hint line's width (HintLineWidthContext), not this box's.
+  const hintLineWidth = useContext(HintLineWidthContext);
   useEffect(() => {
+    if (hintLineWidth !== null && hintLineWidth > 0) {
+      availableWidthRef.current = hintLineWidth;
+    }
     if (availableWidthRef.current > 0) {
       updateDensityForWidth(availableWidthRef.current);
     }
-  }, [updateDensityForWidth]);
+  }, [hintLineWidth, updateDensityForWidth]);
 
   const modelDisabled = disabled;
 
@@ -743,7 +744,7 @@ function ControlledAgentControls({
 
   return (
     <ComposerControlLayoutProvider value={layoutContextValue}>
-      <View style={styles.container} onLayout={handleLayout}>
+      <View style={styles.container}>
         {!isCompact ? (
           <DesktopAgentControlsContent
             provider={provider}
@@ -826,7 +827,6 @@ function ControlledAgentControls({
             handleOpenChange={handleSheetOpenChange}
             renderThinkingOption={renderThinkingOption}
             modeControl={modeControl}
-            glyphSize={layoutContextValue.glyphSize}
             modelSelectorServerId={modelSelectorServerId}
           />
         )}
@@ -894,7 +894,6 @@ interface DesktopAgentControlsContentProps {
 const DESKTOP_SEARCH_THRESHOLD = 6;
 
 function DesktopAgentControlsContent(props: DesktopAgentControlsContentProps) {
-  const { theme } = useUnistyles();
   const { t } = useTranslation();
   const {
     provider,
@@ -1023,6 +1022,7 @@ function DesktopAgentControlsContent(props: DesktopAgentControlsContentProps) {
                 icon={ThinkingIcon}
                 surface="toolbar"
                 label={t("agentControls.thinking.title")}
+                hintLabel={HINT_LINE_LABELS.effort}
                 value={displayThinking}
                 showToolbarLabel={presentation.showThinkingLabel}
                 showCaret={presentation.showCarets}
@@ -1061,14 +1061,20 @@ function DesktopAgentControlsContent(props: DesktopAgentControlsContentProps) {
           <Pressable
             onPress={handleOpenFeatures}
             disabled={disabled}
-            style={styles.modeIconBadge}
+            style={[hintLineStyles.control, disabled && hintLineStyles.controlDisabled]}
+            hitSlop={HINT_LINE_HIT_SLOP}
             accessibilityRole="button"
             accessibilityLabel={t("agentControls.features.open")}
             testID="agent-controls-features"
           >
-            <ComposerToolbarGlyph size={glyphSize}>
-              <Settings2 size={glyphSize} color={theme.colors.foregroundMuted} />
-            </ComposerToolbarGlyph>
+            {({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => (
+              <>
+                <HintWord active={Boolean(hovered) || pressed}>
+                  {HINT_LINE_LABELS.features}
+                </HintWord>
+                <HintCaret />
+              </>
+            )}
           </Pressable>
           <AdaptiveModalSheet
             header={featuresSheetHeader}
@@ -1140,7 +1146,6 @@ interface SheetAgentControlsContentProps {
     onPress: () => void;
   }) => ReactElement;
   modeControl?: AgentModeControlValue | null;
-  glyphSize: number;
   modelSelectorServerId: string | null;
 }
 
@@ -1176,7 +1181,6 @@ function SheetAgentControlsContent(props: SheetAgentControlsContentProps) {
     handleOpenChange,
     renderThinkingOption,
     modeControl,
-    glyphSize,
     modelSelectorServerId,
   } = props;
 
@@ -1267,7 +1271,6 @@ function SheetAgentControlsContent(props: SheetAgentControlsContentProps) {
           onRetryProvider={onRetryModelProvider}
           isRetryingProvider={isRetryingModelProvider}
           serverId={modelSelectorServerId}
-          glyphSize={glyphSize}
         >
           {sheetControls}
         </CompactModelSheet>
@@ -1953,14 +1956,15 @@ export function DraftAgentControls({
 }
 
 const styles = StyleSheet.create((theme) => ({
+  // Daseo delta 89: a run of words on the composer hint line, wrapping with the line.
   container: {
     minWidth: 0,
-    flexGrow: 1,
     flexShrink: 1,
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
-    gap: theme.spacing[1],
-    overflow: "hidden",
+    columnGap: theme.spacing[3],
+    rowGap: theme.spacing[1],
   },
   modeBadge: {
     height: 28,
@@ -1979,16 +1983,6 @@ const styles = StyleSheet.create((theme) => ({
     width: 14,
     height: 14,
     flexShrink: 0,
-  },
-  modeIconBadge: {
-    width: 28,
-    height: 28,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 0,
-    flexShrink: 0,
-    backgroundColor: "transparent",
-    borderRadius: theme.borderRadius.full,
   },
   modeBadgeHovered: {
     backgroundColor: theme.colors.surface2,

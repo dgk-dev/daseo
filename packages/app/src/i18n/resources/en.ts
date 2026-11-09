@@ -81,7 +81,7 @@ export const en = {
   },
   composer: {
     placeholders: {
-      desktop: "Message the agent, tag @files, or use /commands and /skills",
+      desktop: "message · @files · /commands",
       mobile: "Message, @files, /commands",
       fallback: "Message...",
       terminal: "Prompt",
@@ -89,7 +89,6 @@ export const en = {
     input: {
       accessibilityLabel: "Message agent...",
       terminalAccessibilityLabel: "Terminal prompt",
-      focusHint: "{{shortcut}} to focus",
       addAttachment: "Add attachment",
       interruptAgent: "Interrupt agent",
       queueMessage: "Queue message",

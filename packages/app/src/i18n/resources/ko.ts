@@ -84,7 +84,7 @@ export const ko: TranslationResources = {
   },
   composer: {
     placeholders: {
-      desktop: "에이전트에게 메시지를 보내거나 @files 태그, /commands, /skills를 사용하세요",
+      desktop: "메시지 · @files · /commands",
       mobile: "메시지, @files, /commands",
       fallback: "메시지...",
       terminal: "Prompt",
@@ -92,7 +92,6 @@ export const ko: TranslationResources = {
     input: {
       accessibilityLabel: "에이전트에게 메시지...",
       terminalAccessibilityLabel: "Terminal prompt",
-      focusHint: "{{shortcut}}로 포커스",
       addAttachment: "첨부 추가",
       interruptAgent: "에이전트 중단",
       queueMessage: "메시지 대기열에 추가",

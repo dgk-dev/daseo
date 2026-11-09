@@ -24,9 +24,7 @@ import { useIsCompactFormFactor } from "@/constants/layout";
 import { useShallow } from "zustand/shallow";
 import {
   ArrowUp,
-  Square,
   Pencil,
-  AudioLines,
   CircleDot,
   FileText,
   GitPullRequest,
@@ -44,6 +42,13 @@ import {
   type DraftAgentControlsProps,
 } from "@/composer/agent-controls";
 import { ContextWindowMeter } from "@/components/context-window-meter";
+import {
+  HINT_LINE_HIT_SLOP,
+  HINT_LINE_LABELS,
+  HintKeycap,
+  HintWord,
+  hintLineStyles,
+} from "@/composer/hint-line";
 import { useImageAttachmentPicker } from "@/hooks/use-image-attachment-picker";
 import { selectAgentTurnPresentation, useSessionStore } from "@/stores/session-store";
 import { useFilePicker } from "@/hooks/use-file-picker";
@@ -241,22 +246,17 @@ function resolveCheckoutRemoteUrl(
   return checkoutStatus?.remoteUrl ?? null;
 }
 
-function buildCancelButtonStyle(isConnected: boolean, isCancellingAgent: boolean): object[] {
-  const disabled = !isConnected || isCancellingAgent ? styles.buttonDisabled : undefined;
-  return [styles.cancelButton, disabled].filter((value): value is object => Boolean(value));
+// Daseo delta 89: interrupt and voice mode are words on the composer hint line.
+function buildCancelButtonStyle(
+  isConnected: boolean,
+  isCancellingAgent: boolean,
+): (object | undefined)[] {
+  const disabled = !isConnected || isCancellingAgent;
+  return [hintLineStyles.control, disabled ? hintLineStyles.controlDisabled : undefined];
 }
 
-function buildRealtimeVoiceButtonStyle(
-  hovered: boolean | undefined,
-  voiceButtonDisabled: boolean,
-  reserveLeadingSpace: boolean,
-): object[] {
-  const hoveredStyle = hovered ? styles.iconButtonHovered : undefined;
-  const disabledStyle = voiceButtonDisabled ? styles.buttonDisabled : undefined;
-  const reserveStyle = reserveLeadingSpace ? styles.realtimeVoiceButtonCompactReserve : undefined;
-  return [styles.realtimeVoiceButton, reserveStyle, hoveredStyle, disabledStyle].filter(
-    (value): value is object => Boolean(value),
-  );
+function buildRealtimeVoiceButtonStyle(voiceButtonDisabled: boolean): (object | undefined)[] {
+  return [hintLineStyles.control, voiceButtonDisabled ? hintLineStyles.controlDisabled : undefined];
 }
 
 function buildAgentStateSelector(serverId: string, agentId: string) {
@@ -921,7 +921,6 @@ interface ComposerProps {
   submitButtonAccessibilityLabel?: string;
   /** Optional testID for the primary submit button. */
   submitButtonTestID?: string;
-  submitIcon?: "arrow" | "return";
   /** Externally controlled loading state. When true, disables the submit button. */
   isSubmitLoading?: boolean;
   /** When true, waits for pasted GitHub links to resolve before enabling submit. */
@@ -1016,11 +1015,6 @@ function ComposerCancelButton({
   const accessibilityLabel = isCancellingAgent
     ? t("composer.cancel.cancelingAgent")
     : t("composer.cancel.stopAgent");
-  const icon = isCancellingAgent ? (
-    <ThemedStopSpinner size="small" />
-  ) : (
-    <ThemedStopSquare size={ICON_SIZE.xs} />
-  );
   const shortcutNode = agentInterruptKeys ? <Shortcut chord={agentInterruptKeys} /> : null;
   return (
     <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
@@ -1030,8 +1024,15 @@ function ComposerCancelButton({
         accessibilityLabel={accessibilityLabel}
         accessibilityRole="button"
         style={cancelButtonStyle}
+        hitSlop={HINT_LINE_HIT_SLOP}
       >
-        {icon}
+        {({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => (
+          <>
+            {isCancellingAgent ? <ThemedStopSpinner size="small" /> : null}
+            <HintKeycap chord={agentInterruptKeys} />
+            <HintWord active={Boolean(hovered) || pressed}>{HINT_LINE_LABELS.interrupt}</HintWord>
+          </>
+        )}
       </TooltipTrigger>
       <TooltipContent side="top" align="center" offset={8}>
         <View style={styles.tooltipRow}>
@@ -1044,13 +1045,10 @@ function ComposerCancelButton({
 }
 
 interface ComposerVoiceModeButtonProps {
-  buttonIconSize: number;
   handleToggleRealtimeVoice: () => void;
   isConnected: boolean;
   isVoiceSwitching: boolean;
-  realtimeVoiceButtonStyle: (
-    state: PressableStateCallbackType & { hovered?: boolean },
-  ) => (object | undefined)[];
+  realtimeVoiceButtonStyle: (object | undefined)[];
   voiceToggleKeys: ReturnType<typeof useShortcutKeys>;
   t: TFunction;
 }
@@ -1085,7 +1083,6 @@ function ComposerRightControlsSlot({
 }
 
 function ComposerVoiceModeButton({
-  buttonIconSize,
   handleToggleRealtimeVoice,
   isConnected,
   isVoiceSwitching,
@@ -1095,14 +1092,14 @@ function ComposerVoiceModeButton({
 }: ComposerVoiceModeButtonProps) {
   const shortcutNode = voiceToggleKeys ? <Shortcut chord={voiceToggleKeys} /> : null;
   const renderTriggerContent = useCallback(
-    ({ hovered }: PressableStateCallbackType & { hovered?: boolean }) => {
-      if (isVoiceSwitching) {
-        return <LoadingSpinner size="small" color="white" />;
-      }
-      const colorMapping = hovered ? iconForegroundMapping : iconForegroundMutedMapping;
-      return <ThemedAudioLines size={buttonIconSize} uniProps={colorMapping} />;
-    },
-    [buttonIconSize, isVoiceSwitching],
+    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => (
+      <>
+        {isVoiceSwitching ? <ThemedStopSpinner size="small" /> : null}
+        <HintKeycap chord={voiceToggleKeys} />
+        <HintWord active={Boolean(hovered) || pressed}>{HINT_LINE_LABELS.voice}</HintWord>
+      </>
+    ),
+    [isVoiceSwitching, voiceToggleKeys],
   );
   return (
     <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
@@ -1112,6 +1109,7 @@ function ComposerVoiceModeButton({
         accessibilityLabel={t("composer.voice.enableVoiceMode")}
         accessibilityRole="button"
         style={realtimeVoiceButtonStyle}
+        hitSlop={HINT_LINE_HIT_SLOP}
       >
         {renderTriggerContent}
       </TooltipTrigger>
@@ -1138,7 +1136,6 @@ export function Composer({
   allowEmptySubmit = false,
   submitButtonAccessibilityLabel,
   submitButtonTestID,
-  submitIcon = "arrow",
   isSubmitLoading = false,
   waitForGithubAutoAttachOnSubmit = false,
   submitBehavior = "clear",
@@ -2041,10 +2038,9 @@ export function Composer({
 
   const isVoiceSwitching = voice?.isVoiceSwitching ?? false;
   const voiceButtonDisabled = !isConnected || isVoiceSwitching;
-  const realtimeVoiceButtonStyle = useCallback(
-    (state: PressableStateCallbackType & { hovered?: boolean }) =>
-      buildRealtimeVoiceButtonStyle(state.hovered, voiceButtonDisabled, isCompactLayout),
-    [isCompactLayout, voiceButtonDisabled],
+  const realtimeVoiceButtonStyle = useMemo(
+    () => buildRealtimeVoiceButtonStyle(voiceButtonDisabled),
+    [voiceButtonDisabled],
   );
 
   const activeActionContent = useMemo(
@@ -2070,7 +2066,6 @@ export function Composer({
         hasSendableContent={hasSendableContent}
         isCompact={isCompactLayout}
         showVoice={mode.showVoice}
-        buttonIconSize={buttonIconSize}
         handleToggleRealtimeVoice={handleToggleRealtimeVoice}
         isConnected={isConnected}
         isVoiceSwitching={isVoiceSwitching}
@@ -2080,7 +2075,6 @@ export function Composer({
       />
     ),
     [
-      buttonIconSize,
       handleToggleRealtimeVoice,
       hasAgent,
       hasSendableContent,
@@ -2447,7 +2441,6 @@ export function Composer({
                 allowEmptySubmit={allowEmptySubmit}
                 submitButtonAccessibilityLabel={submitButtonAccessibilityLabel}
                 submitButtonTestID={submitButtonTestID}
-                submitIcon={submitIcon}
                 isSubmitDisabled={isSubmitDisabled}
                 isSubmitLoading={isSubmitLoadingVisible}
                 preserveHeightOnSubmit={submitBehavior === "preserve-and-lock"}
@@ -2552,16 +2545,6 @@ const styles = StyleSheet.create((theme: Theme) => ({
     width: "100%",
     gap: theme.spacing[3],
   },
-  // Keep the circular 28pt control system and hit target; only quiet the fill and inner stop mark.
-  cancelButton: {
-    width: 28,
-    height: 28,
-    borderRadius: theme.borderRadius.full,
-    backgroundColor: theme.colors.surface3,
-    alignItems: "center",
-    justifyContent: "center",
-    marginLeft: theme.spacing[1],
-  },
   rightControls: {
     flexDirection: "row",
     alignItems: "center",
@@ -2574,22 +2557,9 @@ const styles = StyleSheet.create((theme: Theme) => ({
     alignItems: "center",
     justifyContent: "center",
   },
-  realtimeVoiceButton: {
-    width: 28,
-    height: 28,
-    borderRadius: theme.borderRadius.full,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  realtimeVoiceButtonCompactReserve: {
-    marginLeft: theme.spacing[1],
-  },
   realtimeVoiceButtonActive: {
     backgroundColor: theme.colors.palette.green[600],
     borderColor: theme.colors.palette.green[800],
-  },
-  iconButtonHovered: {
-    backgroundColor: theme.colors.surface2,
   },
   attachmentTray: {
     flexDirection: "row",
@@ -2658,16 +2628,11 @@ const styles = StyleSheet.create((theme: Theme) => ({
 const ThemedStopSpinner = withUnistyles(LoadingSpinner, (theme) => ({
   color: theme.colors.foregroundMuted,
 }));
-const ThemedStopSquare = withUnistyles(Square, (theme) => ({
-  color: theme.colors.foregroundMuted,
-  fill: theme.colors.foregroundMuted,
-}));
 const ThemedPencil = withUnistyles(Pencil);
 const ThemedArrowUp = withUnistyles(ArrowUp);
 const ThemedTrash = withUnistyles(Trash2);
 const ThemedGitPullRequest = withUnistyles(GitPullRequest);
 const ThemedCircleDot = withUnistyles(CircleDot);
-const ThemedAudioLines = withUnistyles(AudioLines);
 const ThemedPaperclip = withUnistyles(Paperclip);
 const ThemedImageIcon = withUnistyles(ImageIcon);
 const ThemedClipboardPaste = withUnistyles(ClipboardPaste);

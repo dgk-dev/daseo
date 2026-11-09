@@ -17,6 +17,7 @@ import { resolveNextAgentModeId } from "@/composer/agent-controls/mode";
 import { useComposerKeyboardScope } from "@/composer/keyboard-scope";
 import { useComposerControlLayout } from "@/composer/agent-controls/layout-context";
 import { AgentControlTrigger } from "@/composer/agent-controls/control";
+import { HINT_LINE_LABELS } from "@/composer/hint-line";
 import { useSessionStore } from "@/stores/session-store";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { mergeProviderPreferences, useFormPreferences } from "@/hooks/use-form-preferences";
@@ -201,6 +202,7 @@ export function AgentModeControl({
             iconColor={iconColor}
             surface={surface}
             label={t("agentControls.mode.title")}
+            hintLabel={HINT_LINE_LABELS.mode}
             value={selectedModeLabel}
             showToolbarLabel={presentation.showModeLabel}
             showCaret={surface === "toolbar" && presentation.showCarets}

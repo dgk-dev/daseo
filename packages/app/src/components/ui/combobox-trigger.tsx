@@ -36,7 +36,8 @@ type TriggerStyleProp = StyleProp<ViewStyle> | ((state: TriggerState) => StylePr
 
 interface ComboboxTriggerProps extends Omit<PressableProps, "style" | "children"> {
   style?: TriggerStyleProp;
-  children?: ReactNode;
+  /** A function child reads the trigger's hover and press state (text-only triggers). */
+  children?: ReactNode | ((state: { pressed: boolean; hovered: boolean }) => ReactNode);
   chevron?: ReactNode | null;
   // Fill the Pressable's width and use the standard sidebar-row gap, so the
   // trigger reads as a full-width row: the label expands and the chevron pins to
@@ -85,15 +86,17 @@ export const ComboboxTrigger = forwardRef<View, ComboboxTriggerProps>(function C
       onBlur={handleBlur}
       {...props}
     >
-      <View style={rowStyle}>
-        {children}
-        {chevron !== null &&
-          (chevron ?? (
-            <View style={styles.chevronContainer}>
-              <ThemedChevronDown size={ICON_SIZE.sm} uniProps={chevronColorMapping} />
-            </View>
-          ))}
-      </View>
+      {({ pressed, hovered = false }: PressableStateCallbackType & { hovered?: boolean }) => (
+        <View style={rowStyle}>
+          {typeof children === "function" ? children({ pressed, hovered }) : children}
+          {chevron !== null &&
+            (chevron ?? (
+              <View style={styles.chevronContainer}>
+                <ThemedChevronDown size={ICON_SIZE.sm} uniProps={chevronColorMapping} />
+              </View>
+            ))}
+        </View>
+      )}
     </Pressable>
   );
 });

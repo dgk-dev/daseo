@@ -2384,7 +2384,6 @@ export function NewWorkspaceScreen({
               allowEmptySubmit={true}
               submitButtonAccessibilityLabel={t("newWorkspace.create")}
               submitButtonTestID="workspace-create-submit"
-              submitIcon="return"
               isSubmitLoading={isPending}
               waitForGithubAutoAttachOnSubmit
               submitBehavior="preserve-and-lock"

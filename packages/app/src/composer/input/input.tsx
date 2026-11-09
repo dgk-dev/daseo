@@ -5,6 +5,7 @@ import {
   View,
   Text,
   useWindowDimensions,
+  type LayoutChangeEvent,
   NativeSyntheticEvent,
   TextInputContentSizeChangeEventData,
   TextInputKeyPressEventData,
@@ -22,8 +23,7 @@ import {
 } from "react";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
-import { ICON_SIZE, type Theme } from "@/styles/theme";
-import { ArrowUp, Mic, MicOff, CornerDownLeft, Plus, Square } from "lucide-react-native";
+import type { Theme } from "@/styles/theme";
 import { useDictation } from "@/hooks/use-dictation";
 import { DictationOverlay } from "@/components/dictation-controls";
 import { RealtimeVoiceOverlay } from "@/components/realtime-voice-overlay";
@@ -44,6 +44,16 @@ import type { ImageAttachment, MessagePayload } from "@/composer/types";
 import { focusWithRetries } from "@/utils/web-focus";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Shortcut } from "@/components/ui/shortcut";
+import {
+  HINT_LINE_HIT_SLOP,
+  HINT_LINE_LABELS,
+  HINT_LINE_RECORDING_MARK,
+  HintKey,
+  HintKeycap,
+  HintLineWidthContext,
+  HintWord,
+  hintLineStyles,
+} from "@/composer/hint-line";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -73,8 +83,10 @@ import {
   type PendingNativeTextReplacement,
 } from "@/components/ui/text-input/native-replacement";
 
+// Daseo delta 89: the placeholder is the prompt's dim hint, in the extra-muted text colour (the
+// surface4 fill it used read at 1.5:1 on the aubergine background).
 const ComposerTextInput = withUnistyles(EditingTextInput, (theme) => ({
-  placeholderTextColor: theme.colors.surface4,
+  placeholderTextColor: theme.colors.foregroundExtraMuted,
 }));
 import {
   resolveSendTooltipLabel,
@@ -93,6 +105,11 @@ import {
 } from "./state";
 
 const DEFAULT_SEND_KEYS: ShortcutKey[][] = [["Enter"]];
+// Key hints the composer's own key handling honours (handleDesktopKeyPressImpl leaves Shift+Enter
+// to the textarea; `/` and `@` open the command and file autocomplete).
+const NEWLINE_KEYS: ShortcutKey[][] = [["shift", "Enter"]];
+const COMMANDS_KEYS: ShortcutKey[][] = [["/"]];
+const FILES_KEYS: ShortcutKey[][] = [["@"]];
 const COMPOSER_INPUT_DATASET = { composerInput: "" } as const;
 
 export interface AttachmentMenuItem {
@@ -117,7 +134,6 @@ export interface MessageInputProps {
   submitButtonAccessibilityLabel?: string;
   /** Optional testID for the primary submit button. */
   submitButtonTestID?: string;
-  submitIcon?: "arrow" | "return";
   isSubmitDisabled?: boolean;
   isSubmitLoading?: boolean;
   /** When true, keep the grown input height after submit (text is preserved, not cleared). */
@@ -226,19 +242,16 @@ interface TextAreaHandle {
   } & Record<string, unknown>;
 }
 
-function AttachButtonIcon({
+function AttachButtonLabel({
   hovered,
   onAttachButtonRef,
-  buttonIconSize,
 }: {
   hovered: boolean;
   onAttachButtonRef: ((node: View | null) => void) | undefined;
-  buttonIconSize: number;
 }) {
-  const colorMapping = hovered ? iconForegroundMapping : iconForegroundMutedMapping;
   return (
     <View ref={onAttachButtonRef} collapsable={false} style={styles.attachButtonAnchor}>
-      <ThemedPlus size={buttonIconSize} uniProps={colorMapping} />
+      <HintWord active={hovered}>{HINT_LINE_LABELS.attach}</HintWord>
     </View>
   );
 }
@@ -290,6 +303,7 @@ function AttachmentDropdown({
             accessibilityRole="button"
             testID="message-input-attach-button"
             style={attachButtonStyle}
+            hitSlop={HINT_LINE_HIT_SLOP}
           >
             {renderAttachButtonIcon}
           </DropdownMenuTrigger>
@@ -312,25 +326,40 @@ function AttachmentDropdown({
   );
 }
 
-function VoiceButtonIcon({
+// Daseo delta 89: the mic button is a word on the hint line. Dictation reads `dictate` and, while
+// it records, `dictate ●` in the destructive colour (press stops it); during realtime voice the
+// same control mutes and unmutes.
+function VoiceButtonLabel({
   hovered,
   isDictating,
+  isRealtime,
   isMutedRealtime,
-  buttonIconSize,
+  shortcut,
 }: {
   hovered: boolean;
   isDictating: boolean;
+  isRealtime: boolean;
   isMutedRealtime: boolean;
-  buttonIconSize: number;
+  shortcut: ShortcutChord | null | undefined;
 }) {
   if (isDictating) {
-    return <Square size={buttonIconSize} color="white" fill="white" />;
+    return (
+      <>
+        <HintKeycap chord={shortcut} />
+        <Text style={hintLineStyles.wordRecording} selectable={false}>
+          {`${HINT_LINE_LABELS.dictate} ${HINT_LINE_RECORDING_MARK}`}
+        </Text>
+      </>
+    );
   }
-  const colorMapping = hovered ? iconForegroundMapping : iconForegroundMutedMapping;
-  if (isMutedRealtime) {
-    return <ThemedMicOff size={buttonIconSize} uniProps={colorMapping} />;
-  }
-  return <ThemedMic size={buttonIconSize} uniProps={colorMapping} />;
+  let word: string = HINT_LINE_LABELS.dictate;
+  if (isRealtime) word = isMutedRealtime ? HINT_LINE_LABELS.unmute : HINT_LINE_LABELS.mute;
+  return (
+    <>
+      <HintKeycap chord={shortcut} />
+      <HintWord active={hovered}>{word}</HintWord>
+    </>
+  );
 }
 
 type ShortcutChord = NonNullable<React.ComponentProps<typeof Shortcut>["chord"]>;
@@ -365,27 +394,28 @@ function SendTooltipBody({
   );
 }
 
+// Daseo delta 89: send is `⏎ send` on the hint line (the keycap only where Enter submits); a
+// caller's own submit label (`⏎ rename`) replaces the word, and a loading submit shows a spinner.
 function SendButtonContent({
   isSubmitLoading,
-  submitIcon,
   submitLabel,
-  buttonIconSize,
+  sendKeys,
+  hovered,
 }: {
   isSubmitLoading: boolean;
-  submitIcon: "arrow" | "return";
   submitLabel: string | undefined;
-  buttonIconSize: number;
+  sendKeys: ShortcutChord | null | undefined;
+  hovered: boolean;
 }) {
   if (isSubmitLoading) {
-    return <ThemedLoadingSpinner size="small" uniProps={iconAccentForegroundMapping} />;
+    return <ThemedLoadingSpinner size="small" uniProps={iconForegroundMutedMapping} />;
   }
-  if (submitLabel) {
-    return <Text style={styles.sendButtonLabel}>{submitLabel}</Text>;
-  }
-  if (submitIcon === "return") {
-    return <ThemedCornerDownLeft size={buttonIconSize} uniProps={iconAccentForegroundMapping} />;
-  }
-  return <ThemedArrowUp size={buttonIconSize} uniProps={iconAccentForegroundMapping} />;
+  return (
+    <>
+      <HintKeycap chord={sendKeys} />
+      <HintWord active={hovered}>{submitLabel ?? HINT_LINE_LABELS.send}</HintWord>
+    </>
+  );
 }
 
 interface DesktopKeyPressContext {
@@ -610,29 +640,33 @@ function MessageInputOverlay({
   return null;
 }
 
-// Stands in for the shortcut in the translated hint, so the keycap lands where the
-// language puts the shortcut.
-const FOCUS_HINT_SHORTCUT_SLOT = "\u0000";
-
-function FocusHint({
-  visible,
+/**
+ * Daseo delta 89: the key hints on the composer hint line, each only where its key works — Enter
+ * submits on desktop web, `/` and `@` open autocomplete in chat mode. Shortcut renders nothing on
+ * phones, so there the line keeps only its controls.
+ */
+function ComposerKeyHints({
+  shouldSubmitOnEnter,
+  showAutocomplete,
   focusInputKeys,
-  label,
 }: {
-  visible: boolean;
+  shouldSubmitOnEnter: boolean;
+  showAutocomplete: boolean;
   focusInputKeys: ShortcutChord | null | undefined;
-  label: string;
 }) {
-  if (!visible || !focusInputKeys || !label.trim()) return null;
-  // Daseo delta 51: the shortcut is drawn as a keycap inside the sentence, in the
-  // sentence's own word order ("⌘L to focus", "⌘L로 포커스").
-  const [before = "", after = ""] = label.split(FOCUS_HINT_SHORTCUT_SLOT);
   return (
-    <View style={styles.focusHint} pointerEvents="none">
-      {before.trim() ? <Text style={styles.focusHintText}>{before.trim()}</Text> : null}
-      <Shortcut chord={focusInputKeys} />
-      {after.trim() ? <Text style={styles.focusHintText}>{after.trim()}</Text> : null}
-    </View>
+    <>
+      {shouldSubmitOnEnter ? (
+        <HintKey chord={NEWLINE_KEYS} label={HINT_LINE_LABELS.newline} />
+      ) : null}
+      <HintKey chord={focusInputKeys} label={HINT_LINE_LABELS.focus} />
+      {showAutocomplete ? (
+        <>
+          <HintKey chord={COMMANDS_KEYS} label={HINT_LINE_LABELS.commands} />
+          <HintKey chord={FILES_KEYS} label={HINT_LINE_LABELS.files} />
+        </>
+      ) : null}
+    </>
   );
 }
 
@@ -657,9 +691,6 @@ interface ComposerTextSurfaceProps {
   onSelectionChange: (event: NativeSyntheticEvent<TextInputSelectionChangeEventData>) => void;
   onPasteImages: ((files: readonly NativePastedFile[]) => void) | undefined;
   onPasteError: (message: string) => void;
-  focusHintVisible: boolean;
-  focusInputKeys: ShortcutChord | null | undefined;
-  focusHintLabel: string;
 }
 
 /**
@@ -700,11 +731,6 @@ function ComposerTextSurface(props: ComposerTextSurfaceProps): React.ReactElemen
         onPasteError={props.onPasteError}
         autoFocus={props.autoFocus}
       />
-      <FocusHint
-        visible={props.focusHintVisible}
-        focusInputKeys={props.focusInputKeys}
-        label={props.focusHintLabel}
-      />
     </View>
   );
 }
@@ -742,6 +768,7 @@ function VoiceButtonTooltip({
         accessibilityRole="button"
         accessibilityLabel={voiceButtonAccessibilityLabel}
         style={voiceButtonStyle}
+        hitSlop={HINT_LINE_HIT_SLOP}
       >
         {renderVoiceButtonIcon}
       </TooltipTrigger>
@@ -761,10 +788,8 @@ function SendButtonTooltip({
   submitAccessibilityLabel,
   sendButtonCombinedStyle,
   isSubmitLoading,
-  submitIcon,
   submitLabel,
   submitButtonTestID,
-  buttonIconSize,
   sendKeys,
   sendTooltipLabel,
 }: {
@@ -776,10 +801,8 @@ function SendButtonTooltip({
   submitAccessibilityLabel: string;
   sendButtonCombinedStyle: React.ComponentProps<typeof TooltipTrigger>["style"];
   isSubmitLoading: boolean;
-  submitIcon: "arrow" | "return";
   submitLabel: string | undefined;
   submitButtonTestID: string | undefined;
-  buttonIconSize: number;
   sendKeys: ShortcutChord | null | undefined;
   sendTooltipLabel: string;
 }) {
@@ -793,13 +816,16 @@ function SendButtonTooltip({
         accessibilityRole="button"
         testID={submitButtonTestID}
         style={sendButtonCombinedStyle}
+        hitSlop={HINT_LINE_HIT_SLOP}
       >
-        <SendButtonContent
-          isSubmitLoading={isSubmitLoading}
-          submitIcon={submitIcon}
-          submitLabel={submitLabel}
-          buttonIconSize={buttonIconSize}
-        />
+        {({ hovered, pressed }: { hovered?: boolean; pressed: boolean }) => (
+          <SendButtonContent
+            isSubmitLoading={isSubmitLoading}
+            submitLabel={submitLabel}
+            sendKeys={sendKeys}
+            hovered={Boolean(hovered) || pressed}
+          />
+        )}
       </TooltipTrigger>
       <TooltipContent side="top" align="center" offset={8}>
         <SendTooltipBody label={sendTooltipLabel} sendKeys={sendKeys} />
@@ -1061,7 +1087,6 @@ interface ResolvedMessageInputProps {
   allowEmptySubmit: boolean;
   submitButtonAccessibilityLabel: string | undefined;
   submitButtonTestID: string | undefined;
-  submitIcon: "arrow" | "return";
   isSubmitDisabled: boolean;
   isSubmitLoading: boolean;
   preserveHeightOnSubmit: boolean;
@@ -1112,7 +1137,6 @@ function resolveMessageInputProps(props: MessageInputProps): ResolvedMessageInpu
     allowEmptySubmit: props.allowEmptySubmit ?? false,
     submitButtonAccessibilityLabel: props.submitButtonAccessibilityLabel,
     submitButtonTestID: props.submitButtonTestID,
-    submitIcon: props.submitIcon ?? "arrow",
     isSubmitDisabled: props.isSubmitDisabled ?? false,
     isSubmitLoading: props.isSubmitLoading ?? false,
     preserveHeightOnSubmit: props.preserveHeightOnSubmit ?? false,
@@ -1171,7 +1195,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       allowEmptySubmit,
       submitButtonAccessibilityLabel,
       submitButtonTestID,
-      submitIcon,
       isSubmitDisabled,
       isSubmitLoading,
       preserveHeightOnSubmit,
@@ -1217,7 +1240,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const { height: windowHeight } = useWindowDimensions();
     const keyboardHeight = useKeyboardHeight();
     const maxInputHeight = resolveMaxInputHeight(windowHeight, keyboardHeight);
-    const buttonIconSize = isWeb ? ICON_SIZE.md : ICON_SIZE.lg;
     const toast = useToast();
     const voice = useVoiceOptional();
     const voiceMuteToggleKeys = useShortcutKeys("voice-mute-toggle");
@@ -1815,23 +1837,14 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       onFocusChange?.(false);
     }, [onFocusChange]);
 
-    const attachButtonStyle = useCallback(
-      ({ hovered }: { hovered?: boolean }) => [
-        styles.attachButton,
-        Boolean(hovered) && styles.iconButtonHovered,
-        (!isConnected || disabled) && styles.buttonDisabled,
-      ],
+    const attachButtonStyle = useMemo(
+      () => [hintLineStyles.control, (!isConnected || disabled) && hintLineStyles.controlDisabled],
       [isConnected, disabled],
     );
 
-    const voiceButtonStyle = useCallback(
-      ({ hovered }: { hovered?: boolean }) => [
-        styles.voiceButton,
-        Boolean(hovered) && !isDictating && styles.iconButtonHovered,
-        !isDictationStartEnabled && styles.buttonDisabled,
-        isDictating && styles.voiceButtonRecording,
-      ],
-      [isDictating, isDictationStartEnabled],
+    const voiceButtonStyle = useMemo(
+      () => [hintLineStyles.control, !isDictationStartEnabled && hintLineStyles.controlDisabled],
+      [isDictationStartEnabled],
     );
 
     const handleRealtimeVoiceStop = useCallback(() => {
@@ -1867,12 +1880,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       [mode.isMonospace],
     );
     const sendButtonCombinedStyle = useMemo(
-      () => [
-        styles.sendButton,
-        submitLabel ? styles.sendButtonLabeled : undefined,
-        isSendButtonDisabled && styles.buttonDisabled,
-      ],
-      [isSendButtonDisabled, submitLabel],
+      () => [hintLineStyles.control, isSendButtonDisabled && hintLineStyles.controlDisabled],
+      [isSendButtonDisabled],
     );
     const overlayContainerStyle = useMemo(
       () => [styles.overlayContainer, { opacity: surfacePresentation.overlay.opacity }],
@@ -1880,26 +1889,73 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     );
 
     const renderAttachButtonIcon = useCallback(
-      ({ hovered }: { hovered?: boolean }) => (
-        <AttachButtonIcon
-          hovered={Boolean(hovered)}
+      ({ hovered, pressed }: { hovered?: boolean; pressed?: boolean }) => (
+        <AttachButtonLabel
+          hovered={Boolean(hovered) || Boolean(pressed)}
           onAttachButtonRef={onAttachButtonRef}
-          buttonIconSize={buttonIconSize}
         />
       ),
-      [onAttachButtonRef, buttonIconSize],
+      [onAttachButtonRef],
     );
 
     const renderVoiceButtonIcon = useCallback(
-      ({ hovered }: { hovered?: boolean }) => (
-        <VoiceButtonIcon
-          hovered={Boolean(hovered)}
+      ({ hovered, pressed }: { hovered?: boolean; pressed?: boolean }) => (
+        <VoiceButtonLabel
+          hovered={Boolean(hovered) || Boolean(pressed)}
           isDictating={isDictating}
+          isRealtime={isRealtimeVoiceForCurrentAgent}
           isMutedRealtime={Boolean(isRealtimeVoiceForCurrentAgent && voice?.isMuted)}
-          buttonIconSize={buttonIconSize}
+          shortcut={isRealtimeVoiceForCurrentAgent ? voiceMuteToggleKeys : dictationToggleKeys}
         />
       ),
-      [isDictating, isRealtimeVoiceForCurrentAgent, voice?.isMuted, buttonIconSize],
+      [
+        isDictating,
+        isRealtimeVoiceForCurrentAgent,
+        voice?.isMuted,
+        voiceMuteToggleKeys,
+        dictationToggleKeys,
+      ],
+    );
+
+    const [hintLineWidth, setHintLineWidth] = useState<number | null>(null);
+    const handleHintLineLayout = useCallback((event: LayoutChangeEvent) => {
+      setHintLineWidth(Math.round(event.nativeEvent.layout.width));
+    }, []);
+    const sendKeys = shouldSubmitOnEnter ? DEFAULT_SEND_KEYS : null;
+    const primaryAction = useMemo(
+      () => (
+        <PrimaryAction
+          kind={primaryActionKind}
+          activeActionContent={activeActionContent}
+          shouldShow
+          canPressLoadingButton={canPressLoadingButton}
+          onSubmitLoadingPress={onSubmitLoadingPress}
+          onDefaultSendAction={handleDefaultSendAction}
+          isSendButtonDisabled={isSendButtonDisabled}
+          submitAccessibilityLabel={submitAccessibilityLabel}
+          sendButtonCombinedStyle={sendButtonCombinedStyle}
+          isSubmitLoading={isSubmitLoading}
+          submitLabel={submitLabel}
+          submitButtonTestID={submitButtonTestID}
+          sendKeys={sendKeys}
+          sendTooltipLabel={sendTooltipLabel}
+        />
+      ),
+      [
+        primaryActionKind,
+        activeActionContent,
+        canPressLoadingButton,
+        onSubmitLoadingPress,
+        handleDefaultSendAction,
+        isSendButtonDisabled,
+        submitAccessibilityLabel,
+        sendButtonCombinedStyle,
+        isSubmitLoading,
+        submitLabel,
+        submitButtonTestID,
+        sendKeys,
+        sendTooltipLabel,
+      ],
     );
 
     return (
@@ -1911,84 +1967,74 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           pointerEvents={surfacePresentation.input.pointerEvents}
         >
           {attachmentSlot}
-          {/* Text input */}
-          <ComposerTextSurface
-            readOnly={readOnly}
-            value={value}
-            inputGeneration={nativeInputGeneration}
-            textInputRef={textInputRef}
-            textInputStyle={textInputStyle}
-            readOnlyTextStyle={readOnlyTextStyle}
-            placeholder={placeholder ?? t("composer.placeholders.fallback")}
-            accessibilityLabel={t(mode.accessibilityLabelKey)}
-            onChangeText={handleInputChange}
-            onFocus={handleInputFocus}
-            onBlur={handleInputBlur}
-            editable={!isDictating && !isRealtimeVoiceForCurrentAgent && !disabled}
-            scrollEnabled={isWeb ? inputHeight >= maxInputHeight : true}
-            autoFocus={isWeb && autoFocus}
-            onContentSizeChange={handleContentSizeChange}
-            onKeyPress={shouldHandleWebKeyPress ? handleDesktopKeyPress : undefined}
-            onSelectionChange={handleSelectionChange}
-            onPasteImages={onPasteImages}
-            onPasteError={handlePasteError}
-            focusHintVisible={isWeb && isPaneFocused && !isInputFocused && !value}
-            focusInputKeys={focusInputKeys}
-            focusHintLabel={t("composer.input.focusHint", {
-              shortcut: FOCUS_HINT_SHORTCUT_SLOT,
-            })}
-          />
-
-          {/* Button row */}
-          <View style={styles.buttonRow}>
-            {/* Toolbar left: attachment button + agent controls */}
-            <View style={styles.leftButtonGroup}>
-              <AttachmentDropdown
-                visible={mode.showAttachments}
-                isConnected={isConnected}
-                disabled={disabled}
-                attachButtonStyle={attachButtonStyle}
-                renderAttachButtonIcon={renderAttachButtonIcon}
-                attachmentMenuItems={attachmentMenuItems}
-                addAttachmentLabel={t("composer.input.addAttachment")}
+          {/* Daseo delta 89: the prompt line — an accent `>` and the text input. */}
+          <View style={styles.promptLine}>
+            <Text style={styles.promptMarker} aria-hidden selectable={false}>
+              {">"}
+            </Text>
+            <View style={styles.promptInput}>
+              <ComposerTextSurface
+                readOnly={readOnly}
+                value={value}
+                inputGeneration={nativeInputGeneration}
+                textInputRef={textInputRef}
+                textInputStyle={textInputStyle}
+                readOnlyTextStyle={readOnlyTextStyle}
+                placeholder={placeholder ?? t("composer.placeholders.fallback")}
+                accessibilityLabel={t(mode.accessibilityLabelKey)}
+                onChangeText={handleInputChange}
+                onFocus={handleInputFocus}
+                onBlur={handleInputBlur}
+                editable={!isDictating && !isRealtimeVoiceForCurrentAgent && !disabled}
+                scrollEnabled={isWeb ? inputHeight >= maxInputHeight : true}
+                autoFocus={isWeb && autoFocus}
+                onContentSizeChange={handleContentSizeChange}
+                onKeyPress={shouldHandleWebKeyPress ? handleDesktopKeyPress : undefined}
+                onSelectionChange={handleSelectionChange}
+                onPasteImages={onPasteImages}
+                onPasteError={handlePasteError}
               />
-              {leftContent}
             </View>
+          </View>
 
-            {/* Right: voice button, contextual button (realtime/send/cancel) */}
-            <View style={styles.rightButtonGroup}>
+          {/* Daseo delta 89: the hint line — every control as a word. Desktop reads `model …
+              effort … ⏎ send ⇧⏎ newline ⌘L focus / commands @ files attach dictate voice`; phones
+              keep send at the trailing edge, where the thumb expects it. */}
+          <View style={styles.hintLine} onLayout={handleHintLineLayout}>
+            <HintLineWidthContext.Provider value={hintLineWidth}>
+              {leftContent}
+            </HintLineWidthContext.Provider>
+            {isCompact ? null : primaryAction}
+            <ComposerKeyHints
+              shouldSubmitOnEnter={shouldSubmitOnEnter}
+              showAutocomplete={mode.showAutocomplete}
+              focusInputKeys={focusInputKeys}
+            />
+            <AttachmentDropdown
+              visible={mode.showAttachments}
+              isConnected={isConnected}
+              disabled={disabled}
+              attachButtonStyle={attachButtonStyle}
+              renderAttachButtonIcon={renderAttachButtonIcon}
+              attachmentMenuItems={attachmentMenuItems}
+              addAttachmentLabel={t("composer.input.addAttachment")}
+            />
+            <VoiceButtonTooltip
+              visible={mode.showVoice}
+              onVoicePress={handleVoicePress}
+              isDictationStartEnabled={isDictationStartEnabled}
+              voiceButtonAccessibilityLabel={voiceButtonAccessibilityLabel}
+              voiceButtonStyle={voiceButtonStyle}
+              renderVoiceButtonIcon={renderVoiceButtonIcon}
+              voiceTooltipText={voiceTooltipText}
+              isRealtimeVoiceForCurrentAgent={isRealtimeVoiceForCurrentAgent}
+              voiceMuteToggleKeys={voiceMuteToggleKeys}
+              dictationToggleKeys={dictationToggleKeys}
+            />
+            {rightContent}
+            <View style={styles.hintLineEnd}>
               {beforeVoiceContent}
-              <VoiceButtonTooltip
-                visible={mode.showVoice}
-                onVoicePress={handleVoicePress}
-                isDictationStartEnabled={isDictationStartEnabled}
-                voiceButtonAccessibilityLabel={voiceButtonAccessibilityLabel}
-                voiceButtonStyle={voiceButtonStyle}
-                renderVoiceButtonIcon={renderVoiceButtonIcon}
-                voiceTooltipText={voiceTooltipText}
-                isRealtimeVoiceForCurrentAgent={isRealtimeVoiceForCurrentAgent}
-                voiceMuteToggleKeys={voiceMuteToggleKeys}
-                dictationToggleKeys={dictationToggleKeys}
-              />
-              {rightContent}
-              <PrimaryAction
-                kind={primaryActionKind}
-                activeActionContent={activeActionContent}
-                shouldShow
-                canPressLoadingButton={canPressLoadingButton}
-                onSubmitLoadingPress={onSubmitLoadingPress}
-                onDefaultSendAction={handleDefaultSendAction}
-                isSendButtonDisabled={isSendButtonDisabled}
-                submitAccessibilityLabel={submitAccessibilityLabel}
-                sendButtonCombinedStyle={sendButtonCombinedStyle}
-                isSubmitLoading={isSubmitLoading}
-                submitIcon={submitIcon}
-                submitLabel={submitLabel}
-                submitButtonTestID={submitButtonTestID}
-                buttonIconSize={buttonIconSize}
-                sendKeys={DEFAULT_SEND_KEYS}
-                sendTooltipLabel={sendTooltipLabel}
-              />
+              {isCompact ? primaryAction : null}
             </View>
           </View>
         </View>
@@ -2037,9 +2083,10 @@ const styles = StyleSheet.create((theme: Theme) => ({
       xs: theme.spacing[2],
       md: theme.spacing[4],
     },
+    // Daseo delta 89: on desktop the prompt's `>` lands on the transcript's left inset.
     paddingHorizontal: {
       xs: theme.spacing[3],
-      md: theme.spacing[4],
+      md: theme.spacing[2],
     },
     ...(isWeb
       ? {
@@ -2057,18 +2104,22 @@ const styles = StyleSheet.create((theme: Theme) => ({
   textInputScrollWrapper: {
     position: "relative",
   },
-  focusHint: {
-    position: "absolute",
-    top: 0,
-    right: 0,
+  promptLine: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[1],
-    opacity: 0.6,
+    alignItems: "flex-start",
+    gap: theme.spacing[2],
   },
-  focusHintText: {
-    fontSize: theme.fontSize.xs,
-    color: theme.colors.foregroundMuted,
+  // Same size and line height as the input, so the marker sits on its first line.
+  promptMarker: {
+    color: theme.colors.accent,
+    fontFamily: theme.fontFamily.mono,
+    fontWeight: theme.fontWeight.bold,
+    fontSize: theme.fontSize.base * theme.chatTextScale,
+    lineHeight: Math.round(theme.fontSize.base * 1.4 * theme.chatTextScale),
+  },
+  promptInput: {
+    flex: 1,
+    minWidth: 0,
   },
   textInput: {
     width: "100%",
@@ -2092,71 +2143,23 @@ const styles = StyleSheet.create((theme: Theme) => ({
     minHeight: MIN_INPUT_HEIGHT,
     color: theme.colors.foregroundMuted,
   },
-  buttonRow: {
+  // One wrapping line of words; the context meter (and send on phones) holds the trailing edge.
+  hintLine: {
     flexDirection: "row",
-    alignItems: "flex-end",
-    justifyContent: "space-between",
-    marginHorizontal: -6,
+    flexWrap: "wrap",
+    alignItems: "center",
+    columnGap: theme.spacing[3],
+    rowGap: theme.spacing[1],
   },
-  leftButtonGroup: {
-    minWidth: 0,
-    flexShrink: 1,
-    flexGrow: 1,
-    flexDirection: "row",
-    alignItems: "flex-end",
-    gap: theme.spacing[0],
-  },
-  rightButtonGroup: {
-    flexShrink: 0,
+  hintLineEnd: {
+    marginLeft: "auto",
     flexDirection: "row",
     alignItems: "center",
-    gap: theme.spacing[1],
-  },
-  attachButton: {
-    width: 28,
-    height: 28,
-    borderRadius: theme.borderRadius.full,
-    alignItems: "center",
-    justifyContent: "center",
+    gap: theme.spacing[3],
   },
   attachButtonAnchor: {
-    width: 28,
-    height: 28,
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-  },
-  voiceButton: {
-    width: 28,
-    height: 28,
-    borderRadius: theme.borderRadius.full,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  voiceButtonRecording: {
-    backgroundColor: theme.colors.destructive,
-  },
-  sendButton: {
-    width: 28,
-    height: 28,
-    borderRadius: theme.borderRadius.full,
-    backgroundColor: theme.colors.accent,
-    alignItems: "center",
-    justifyContent: "center",
-    marginLeft: theme.spacing[1],
-  },
-  sendButtonLabeled: {
-    width: "auto",
-    minWidth: 28,
-    paddingHorizontal: theme.spacing[3],
-    borderRadius: theme.borderRadius.full,
-  },
-  sendButtonLabel: {
-    fontSize: theme.fontSize.sm,
-    fontWeight: theme.fontWeight.medium,
-    color: theme.colors.accentForeground,
-  },
-  iconButtonHovered: {
-    backgroundColor: theme.colors.surface2,
   },
   tooltipRow: {
     flexDirection: "row",
@@ -2184,13 +2187,6 @@ const styles = StyleSheet.create((theme: Theme) => ({
   },
 })) as unknown as Record<string, object>;
 
-const ThemedPlus = withUnistyles(Plus);
-const ThemedMic = withUnistyles(Mic);
-const ThemedMicOff = withUnistyles(MicOff);
-const ThemedArrowUp = withUnistyles(ArrowUp);
-const ThemedCornerDownLeft = withUnistyles(CornerDownLeft);
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 
-const iconForegroundMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const iconForegroundMutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
-const iconAccentForegroundMapping = (theme: Theme) => ({ color: theme.colors.accentForeground });

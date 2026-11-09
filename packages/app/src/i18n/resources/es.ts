@@ -84,7 +84,7 @@ export const es: TranslationResources = {
   },
   composer: {
     placeholders: {
-      desktop: "Envíe un mensaje al agente, etiquete@fileso use/commandsy/skills",
+      desktop: "mensaje · @files · /commands",
       mobile: "Mensaje,@files,/commands",
       fallback: "Mensaje...",
       terminal: "Prompt",
@@ -92,7 +92,6 @@ export const es: TranslationResources = {
     input: {
       accessibilityLabel: "Agente de mensajes...",
       terminalAccessibilityLabel: "Terminal prompt",
-      focusHint: "{{shortcut}}para enfocar",
       addAttachment: "Agregar archivo adjunto",
       interruptAgent: "agente de interrupción",
       queueMessage: "mensaje de cola",

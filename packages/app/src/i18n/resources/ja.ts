@@ -84,7 +84,7 @@ export const ja: TranslationResources = {
   },
   composer: {
     placeholders: {
-      desktop: "エージェントにメッセージ、@ファイル、/コマンドや/スキルを入力",
+      desktop: "メッセージ · @ファイル · /コマンド",
       mobile: "メッセージ、@ファイル、/コマンド",
       fallback: "メッセージ...",
       terminal: "Prompt",
@@ -92,7 +92,6 @@ export const ja: TranslationResources = {
     input: {
       accessibilityLabel: "エージェントにメッセージ...",
       terminalAccessibilityLabel: "Terminal prompt",
-      focusHint: "{{shortcut}}でフォーカス",
       addAttachment: "添付ファイルを追加",
       interruptAgent: "エージェントを中断",
       queueMessage: "メッセージをキューに追加",

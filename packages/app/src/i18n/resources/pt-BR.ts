@@ -84,7 +84,7 @@ export const ptBR: TranslationResources = {
   },
   composer: {
     placeholders: {
-      desktop: "Envie uma mensagem ao agente, marque @files ou use /commands e /skills",
+      desktop: "mensagem · @files · /commands",
       mobile: "Mensagem, @files, /commands",
       fallback: "Mensagem...",
       terminal: "Prompt",
@@ -92,7 +92,6 @@ export const ptBR: TranslationResources = {
     input: {
       accessibilityLabel: "Enviar mensagem ao agente...",
       terminalAccessibilityLabel: "Terminal prompt",
-      focusHint: "{{shortcut}} para focar",
       addAttachment: "Adicionar anexo",
       interruptAgent: "Interromper agente",
       queueMessage: "Enfileirar mensagem",

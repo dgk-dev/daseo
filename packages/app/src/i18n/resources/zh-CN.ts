@@ -84,7 +84,7 @@ export const zhCN: TranslationResources = {
   },
   composer: {
     placeholders: {
-      desktop: "给 Agent 发消息，标记 @files，或使用 /commands 和 /skills",
+      desktop: "消息 · @files · /commands",
       mobile: "发消息，@files，/commands",
       fallback: "输入消息...",
       terminal: "Prompt",
@@ -92,7 +92,6 @@ export const zhCN: TranslationResources = {
     input: {
       accessibilityLabel: "给 Agent 发消息...",
       terminalAccessibilityLabel: "Terminal prompt",
-      focusHint: "{{shortcut}} 聚焦",
       addAttachment: "添加附件",
       interruptAgent: "中断 Agent",
       queueMessage: "消息排队",

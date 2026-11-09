@@ -3,8 +3,14 @@ import { Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
 import { useComposerControlLayout } from "@/composer/agent-controls/layout-context";
-import { ComposerToolbarGlyph } from "@/composer/agent-controls/glyph";
 import type { AgentControlIcon } from "@/agent-controls/icons";
+import {
+  HINT_LINE_HIT_SLOP,
+  HintCaret,
+  HintValue,
+  HintWord,
+  hintLineStyles,
+} from "@/composer/hint-line";
 
 type AgentControlTriggerProps = Omit<
   ComponentProps<typeof ComboboxTrigger>,
@@ -14,6 +20,8 @@ type AgentControlTriggerProps = Omit<
   iconColor?: string;
   surface: "toolbar" | "sheet";
   label: string;
+  /** Daseo delta 89: the command word on the composer hint line; defaults to `label`, lowercased. */
+  hintLabel?: string;
   value?: string;
   showToolbarLabel?: boolean;
   showCaret?: boolean;
@@ -29,6 +37,7 @@ export const AgentControlTrigger = forwardRef<View, AgentControlTriggerProps>(
       iconColor,
       surface,
       label,
+      hintLabel,
       value,
       showToolbarLabel = true,
       showCaret = false,
@@ -45,17 +54,51 @@ export const AgentControlTrigger = forwardRef<View, AgentControlTriggerProps>(
     const isSheet = surface === "sheet";
     const resolvedGlyphSize = isSheet ? 16 : glyphSize;
     const resolvedIconColor = iconColor ?? styles.iconColor.color;
-    const showValue = isSheet || showToolbarLabel;
     const triggerStyle = useCallback(
-      ({ pressed, hovered }: PressableStateCallbackType) => [
-        isSheet ? styles.sheetRow : styles.toolbarControl,
-        !isSheet && !showToolbarLabel && styles.toolbarIconOnly,
-        hovered && (isSheet ? styles.sheetRowInteractive : styles.hovered),
-        (pressed || open) && (isSheet ? styles.sheetRowInteractive : styles.pressed),
-        disabled && styles.disabled,
-      ],
-      [disabled, isSheet, open, showToolbarLabel],
+      ({ pressed, hovered }: PressableStateCallbackType) =>
+        isSheet
+          ? [
+              styles.sheetRow,
+              (hovered || pressed || open) && styles.sheetRowInteractive,
+              disabled && styles.disabled,
+            ]
+          : [hintLineStyles.control, disabled && hintLineStyles.controlDisabled],
+      [disabled, isSheet, open],
     );
+
+    if (!isSheet) {
+      // Daseo delta 89: on the composer hint line a control is `word value ▾` in text; a toggle
+      // is its word, in the accent while it is on. The icon, pill, and fill are gone.
+      const checked = triggerProps.accessibilityState?.checked === true;
+      const word = hintLabel ?? label.toLowerCase();
+      return (
+        <ComboboxTrigger
+          hitSlop={HINT_LINE_HIT_SLOP}
+          {...triggerProps}
+          ref={ref}
+          collapsable={false}
+          disabled={disabled}
+          onPress={onPress}
+          style={triggerStyle}
+          accessibilityRole="button"
+          accessibilityLabel={accessibilityLabel}
+          testID={testID}
+          chevron={null}
+        >
+          {({ hovered, pressed }: { hovered: boolean; pressed: boolean }) => (
+            <>
+              {checked ? (
+                <HintValue>{word}</HintValue>
+              ) : (
+                <HintWord active={hovered || pressed || open}>{word}</HintWord>
+              )}
+              {value !== undefined && showToolbarLabel ? <HintValue>{value}</HintValue> : null}
+              {value !== undefined && (showCaret || !showToolbarLabel) ? <HintCaret /> : null}
+            </>
+          )}
+        </ComboboxTrigger>
+      );
+    }
 
     return (
       <ComboboxTrigger
@@ -70,55 +113,21 @@ export const AgentControlTrigger = forwardRef<View, AgentControlTriggerProps>(
         testID={testID}
         chevron={showCaret ? undefined : null}
       >
-        {isSheet ? (
-          <View style={styles.sheetGlyph}>
-            <Icon size={resolvedGlyphSize} color={resolvedIconColor} />
-          </View>
-        ) : (
-          <ComposerToolbarGlyph size={resolvedGlyphSize}>
-            <Icon size={resolvedGlyphSize} color={resolvedIconColor} />
-          </ComposerToolbarGlyph>
-        )}
-        {isSheet ? (
-          <Text style={styles.sheetLabel} numberOfLines={1}>
-            {label}
-          </Text>
-        ) : null}
-        {showValue ? (
-          <Text style={isSheet ? styles.sheetValue : styles.toolbarValue} numberOfLines={1}>
-            {value ?? label}
-          </Text>
-        ) : null}
+        <View style={styles.sheetGlyph}>
+          <Icon size={resolvedGlyphSize} color={resolvedIconColor} />
+        </View>
+        <Text style={styles.sheetLabel} numberOfLines={1}>
+          {label}
+        </Text>
+        <Text style={styles.sheetValue} numberOfLines={1}>
+          {value ?? label}
+        </Text>
       </ComboboxTrigger>
     );
   },
 );
 
 const styles = StyleSheet.create((theme) => ({
-  toolbarControl: {
-    height: 28,
-    minWidth: 0,
-    flexShrink: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[1],
-    paddingHorizontal: theme.spacing[2],
-    borderRadius: theme.borderRadius["2xl"],
-    backgroundColor: "transparent",
-  },
-  toolbarIconOnly: {
-    width: 28,
-    flexShrink: 0,
-    paddingHorizontal: 0,
-    justifyContent: "center",
-  },
-  toolbarValue: {
-    minWidth: 0,
-    flexShrink: 1,
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
-    fontWeight: theme.fontWeight.normal,
-  },
   sheetRow: {
     minHeight: 44,
     minWidth: 0,
@@ -154,12 +163,6 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.normal,
-  },
-  hovered: {
-    backgroundColor: theme.colors.surface2,
-  },
-  pressed: {
-    backgroundColor: theme.colors.surface0,
   },
   disabled: {
     opacity: 0.5,
