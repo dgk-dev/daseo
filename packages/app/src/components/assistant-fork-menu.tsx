@@ -10,6 +10,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  STREAM_ACTION_HIT_SLOP,
+  STREAM_ACTION_LABELS,
+  StreamActionLabel,
+} from "@/components/stream-action-label";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 
 export type AssistantForkTarget = "tab" | "workspace";
@@ -22,7 +27,6 @@ interface AssistantForkMenuProps {
 const ThemedSplit = withUnistyles(Split);
 
 const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
-const foregroundMutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
 export const AssistantForkMenu = memo(function AssistantForkMenu({
   onFork,
@@ -83,13 +87,14 @@ export const AssistantForkMenu = memo(function AssistantForkMenu({
               accessibilityLabel={t("message.actions.forkMenu")}
               accessibilityRole="button"
               disabled={isLocked}
+              hitSlop={STREAM_ACTION_HIT_SLOP}
               style={triggerStyle}
               testID={`${testID}-trigger`}
             >
-              {({ hovered, open }) => (
-                <ThemedSplit
-                  size={ICON_SIZE.sm}
-                  uniProps={hovered || open ? foregroundColorMapping : foregroundMutedColorMapping}
+              {({ hovered, pressed, open }) => (
+                <StreamActionLabel
+                  label={STREAM_ACTION_LABELS.fork}
+                  active={hovered || pressed || open}
                 />
               )}
             </DropdownMenuTrigger>
@@ -125,7 +130,8 @@ export const AssistantForkMenu = memo(function AssistantForkMenu({
 
 const styles = StyleSheet.create((theme) => ({
   trigger: {
-    padding: theme.spacing[1],
+    paddingHorizontal: theme.spacing[1],
+    paddingVertical: 2,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "transparent",

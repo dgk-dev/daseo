@@ -45,7 +45,6 @@ import {
   Check,
   CheckSquare,
   CircleDot,
-  Copy,
   Plus,
   TriangleAlertIcon,
   Scissors,
@@ -53,7 +52,7 @@ import {
   FileSymlink,
 } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { ICON_SIZE, type Theme } from "@/styles/theme";
+import type { Theme } from "@/styles/theme";
 import { proseMeasureWidth, useIsCompactFormFactor } from "@/constants/layout";
 import { useReducedMotion } from "react-native-reanimated";
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
@@ -109,6 +108,11 @@ import type { AgentCapabilityFlags } from "@getpaseo/protocol/agent-types";
 import { RewindMenu, type RewindMode } from "@/components/rewind/rewind-menu";
 import { useRewindAgentMutation } from "@/components/rewind/use-rewind-agent-mutation";
 import { AssistantForkMenu, type AssistantForkTarget } from "@/components/assistant-fork-menu";
+import {
+  STREAM_ACTION_HIT_SLOP,
+  STREAM_ACTION_LABELS,
+  StreamActionLabel,
+} from "@/components/stream-action-label";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import {
   markdownCopyDataSet,
@@ -360,10 +364,9 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
   },
   copyButton: {
     alignSelf: "center",
-    padding: theme.spacing[1],
-    paddingTop: theme.spacing[1],
+    paddingHorizontal: theme.spacing[1],
+    paddingVertical: 2,
     marginTop: 0,
-    marginRight: -theme.spacing[1],
   },
   trailingRow: {
     alignSelf: "flex-start",
@@ -680,10 +683,9 @@ const assistantTurnFooterStylesheet = StyleSheet.create((theme) => ({
   },
   copyButton: {
     alignSelf: "center",
-    padding: theme.spacing[1],
-    paddingTop: theme.spacing[1],
+    paddingHorizontal: theme.spacing[1],
+    paddingVertical: 2,
     marginTop: 0,
-    marginLeft: -theme.spacing[1],
   },
   label: {
     color: theme.colors.foregroundMuted,
@@ -727,11 +729,6 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
 
   return (
     <View style={assistantTurnFooterStylesheet.container}>
-      <TurnCopyButton
-        getContent={getContent}
-        containerStyle={assistantTurnFooterStylesheet.copyButton}
-      />
-      {canFork ? <AssistantForkMenu onFork={handleFork} /> : null}
       {label ? (
         <Text
           style={assistantTurnFooterStylesheet.label}
@@ -741,6 +738,11 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
           {label}
         </Text>
       ) : null}
+      <TurnCopyButton
+        getContent={getContent}
+        containerStyle={assistantTurnFooterStylesheet.copyButton}
+      />
+      {canFork ? <AssistantForkMenu onFork={handleFork} /> : null}
     </View>
   );
 });
@@ -793,13 +795,6 @@ export const AssistantResponseBlock = memo(function AssistantResponseBlock({
     <View>
       {children}
       <View style={assistantResponseFooterStylesheet.row} testID="assistant-response-footer">
-        <View style={assistantResponseFooterStylesheet.actions}>
-          <TurnCopyButton
-            getContent={getContent}
-            containerStyle={assistantTurnFooterStylesheet.copyButton}
-            accessibilityLabel={t("message.actions.copyMessage")}
-          />
-        </View>
         <Text
           style={assistantResponseFooterStylesheet.time}
           dataSet={CODE_SURFACE_DATASET}
@@ -807,6 +802,13 @@ export const AssistantResponseBlock = memo(function AssistantResponseBlock({
         >
           {timeLabel}
         </Text>
+        <View style={assistantResponseFooterStylesheet.actions}>
+          <TurnCopyButton
+            getContent={getContent}
+            containerStyle={assistantTurnFooterStylesheet.copyButton}
+            accessibilityLabel={t("message.actions.copyMessage")}
+          />
+        </View>
       </View>
     </View>
   );
@@ -1183,12 +1185,6 @@ const turnCopyButtonStylesheet = StyleSheet.create((theme) => ({
     paddingTop: 0,
     marginTop: theme.spacing[2],
   },
-  iconColor: {
-    color: theme.colors.foregroundMuted,
-  },
-  iconHoveredColor: {
-    color: theme.colors.foreground,
-  },
 }));
 
 interface TurnCopyButtonProps {
@@ -1244,6 +1240,7 @@ export const TurnCopyButton = memo(function TurnCopyButton({
     <Pressable
       onPress={handleCopy}
       style={pressableStyle}
+      hitSlop={STREAM_ACTION_HIT_SLOP}
       accessibilityRole="button"
       accessibilityLabel={
         copied
@@ -1251,16 +1248,12 @@ export const TurnCopyButton = memo(function TurnCopyButton({
           : (accessibilityLabel ?? t("message.actions.copyTurn"))
       }
     >
-      {({ hovered }) => {
-        const iconColor = hovered
-          ? turnCopyButtonStylesheet.iconHoveredColor.color
-          : turnCopyButtonStylesheet.iconColor.color;
-        return copied ? (
-          <Check size={ICON_SIZE.sm} color={iconColor} />
-        ) : (
-          <Copy size={ICON_SIZE.sm} color={iconColor} />
-        );
-      }}
+      {({ hovered, pressed }) => (
+        <StreamActionLabel
+          label={copied ? STREAM_ACTION_LABELS.copied : STREAM_ACTION_LABELS.copy}
+          active={copied || hovered || pressed}
+        />
+      )}
     </Pressable>
   );
 });

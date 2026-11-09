@@ -1,8 +1,8 @@
 import { memo, useCallback, useMemo, useState, type ReactElement } from "react";
 import { useTranslation } from "react-i18next";
 import { Text, View } from "react-native";
-import { FileText, Layers, MessageSquare, Undo2 } from "lucide-react-native";
-import { StyleSheet, useUnistyles } from "react-native-unistyles";
+import { FileText, Layers, MessageSquare } from "lucide-react-native";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,6 +11,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  STREAM_ACTION_HIT_SLOP,
+  STREAM_ACTION_LABELS,
+  StreamActionLabel,
+} from "@/components/stream-action-label";
+import type { Theme } from "@/styles/theme";
 import { type RewindMode, useRewindCapabilities } from "./use-rewind-capabilities";
 import type { AgentCapabilityFlags } from "@getpaseo/protocol/agent-types";
 
@@ -24,14 +30,19 @@ interface RewindMenuProps {
   testID?: string;
 }
 
-function getIcon(mode: RewindMode, color: string): ReactElement {
+const ThemedMessageSquare = withUnistyles(MessageSquare);
+const ThemedFileText = withUnistyles(FileText);
+const ThemedLayers = withUnistyles(Layers);
+const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
+
+function getIcon(mode: RewindMode): ReactElement {
   switch (mode) {
     case "conversation":
-      return <MessageSquare size={16} color={color} />;
+      return <ThemedMessageSquare size={16} uniProps={foregroundColorMapping} />;
     case "files":
-      return <FileText size={16} color={color} />;
+      return <ThemedFileText size={16} uniProps={foregroundColorMapping} />;
     case "both":
-      return <Layers size={16} color={color} />;
+      return <ThemedLayers size={16} uniProps={foregroundColorMapping} />;
   }
 }
 
@@ -42,7 +53,6 @@ export const RewindMenu = memo(function RewindMenu({
   isPending: isPendingProp = false,
   testID = "rewind-menu",
 }: RewindMenuProps) {
-  const { theme } = useUnistyles();
   const { t } = useTranslation();
   const rewindLabels = useMemo(
     () => ({
@@ -108,13 +118,14 @@ export const RewindMenu = memo(function RewindMenu({
               accessibilityLabel={t("rewind.tooltip")}
               accessibilityRole="button"
               disabled={isLocked}
+              hitSlop={STREAM_ACTION_HIT_SLOP}
               style={triggerStyle}
               testID={`${testID}-trigger`}
             >
-              {({ hovered, open }) => (
-                <Undo2
-                  size={16}
-                  color={hovered || open ? theme.colors.foreground : theme.colors.foregroundMuted}
+              {({ hovered, pressed, open }) => (
+                <StreamActionLabel
+                  label={STREAM_ACTION_LABELS.undo}
+                  active={hovered || pressed || open}
                 />
               )}
             </DropdownMenuTrigger>
@@ -132,7 +143,7 @@ export const RewindMenu = memo(function RewindMenu({
             key={item.mode}
             closeOnSelect={false}
             disabled={isLocked && pendingMode !== item.mode}
-            leading={getIcon(item.mode, theme.colors.foreground)}
+            leading={getIcon(item.mode)}
             onSelect={handleSelect(item.mode)}
             status={pendingMode === item.mode ? "pending" : undefined}
             testID={item.testID}
@@ -147,8 +158,8 @@ export const RewindMenu = memo(function RewindMenu({
 
 const styles = StyleSheet.create((theme) => ({
   trigger: {
-    padding: theme.spacing[1],
-    paddingTop: theme.spacing[1],
+    paddingHorizontal: theme.spacing[1],
+    paddingVertical: 2,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "transparent",
