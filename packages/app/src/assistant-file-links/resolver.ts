@@ -52,6 +52,39 @@ export type AssistantFileLinkResolution =
       target: InlinePathTarget;
     };
 
+/** Daseo delta 90: with a daemon that resolves paths, it finds what a link names first. */
+export type AssistantFileLinkPlan =
+  | AssistantFileLinkResolution
+  | {
+      kind: "needsPathResolve";
+      token: string;
+      target: InlinePathTarget;
+      query: PathResolveQuery;
+    };
+
+/** What the daemon is asked: exact paths first, then a suffix search. */
+export interface PathResolveQuery {
+  candidates: string[];
+  suffix?: string;
+  contains?: string;
+  searchRoots?: string[];
+}
+
+export interface PathResolveMatch {
+  path: string;
+  kind: "file" | "directory";
+}
+
+export type ResolvePath = (
+  input: PathResolveQuery & { cwd: string },
+) => Promise<{ matches: PathResolveMatch[]; complete: boolean; error: string | null }>;
+
+export type PathResolveOutcome =
+  | { kind: "found"; target: InlinePathTarget; isDirectory: boolean }
+  | { kind: "missing" }
+  | { kind: "ambiguous" }
+  | { kind: "incomplete" };
+
 export interface FetchDaemonResolutionInput {
   ambiguousQuery: string;
   token: string;
@@ -112,24 +145,62 @@ export async function fetchDaemonResolution({
   };
 }
 
+function classifySource(
+  source: AssistantFileLinkSource,
+  context: AssistantFileLinkContext,
+): { token: string; classification: AssistantFileLinkClassification } | null {
+  const token = getAssistantFileLinkToken(source).trim();
+  if (!token) {
+    return null;
+  }
+  const explicitLink =
+    token === source.href.trim() &&
+    source.sourceType !== "inline-code" &&
+    !isLinkifiedSource(source);
+  const classification = classifyAssistantFileLink(token, {
+    workspaceRoot: context.workspaceRoot,
+    allowWhitespace: source.sourceType === "inline-code",
+    explicitLink,
+  });
+  return classification ? { token, classification } : null;
+}
+
+export function planAssistantFileLink(
+  source: AssistantFileLinkSource,
+  context: AssistantFileLinkContext & { pathResolve?: boolean },
+): AssistantFileLinkPlan {
+  const workspaceRoot = context.workspaceRoot?.trim();
+  const classified = context.pathResolve && workspaceRoot ? classifySource(source, context) : null;
+  if (!classified || !workspaceRoot || classified.classification.kind === "external") {
+    return classifyForResolution(source, context);
+  }
+  const { token, classification } = classified;
+  return {
+    kind: "needsPathResolve",
+    token,
+    target: classification.target,
+    query: buildPathResolveQuery({ classification, token, workspaceRoot }),
+  };
+}
+
 export function classifyForResolution(
   source: AssistantFileLinkSource,
   context: AssistantFileLinkContext,
 ): AssistantFileLinkResolution {
-  const token = getAssistantFileLinkToken(source).trim();
-  if (!token) {
+  const classified = classifySource(source, context);
+  if (!classified) {
     return { kind: "resolved", value: { kind: "ignored" } };
   }
-
-  const classification = classifyAssistantFileLink(token, {
-    workspaceRoot: context.workspaceRoot,
-    allowWhitespace: source.sourceType === "inline-code",
-  });
-  if (!classification) {
-    return { kind: "resolved", value: { kind: "ignored" } };
-  }
+  const { token, classification } = classified;
   if (classification.kind === "external") {
-    return { kind: "resolved", value: { kind: "external", url: classification.raw } };
+    return {
+      kind: "resolved",
+      value: { kind: "external", url: preferHttpsForBareHost(source, classification.raw) },
+    };
+  }
+  if (classification.kind === "elidedPath") {
+    // Only a daemon that can search may open a shortened path; nothing else guesses it.
+    return { kind: "resolved", value: { kind: "ignored" } };
   }
   if (
     classification.kind === "directFile" &&
@@ -154,6 +225,100 @@ export function classifyForResolution(
     token,
     target: classification.target,
   };
+}
+
+/**
+ * Daseo delta 90. Exact paths are tried first; a name that may sit deeper (a bare file name, a
+ * workspace-relative path written against another base, upstream #8361, or a path shortened
+ * with an ellipsis) also gets a suffix search, and only a single hit opens.
+ */
+export function buildPathResolveQuery(input: {
+  classification: Exclude<AssistantFileLinkClassification, { kind: "external" }>;
+  token: string;
+  workspaceRoot: string;
+}): PathResolveQuery {
+  const { classification, workspaceRoot } = input;
+  if (classification.kind === "elidedPath") {
+    const { head, suffix } = classification;
+    if (head === "~" || head.startsWith("~/") || isAbsolutePathToken(head)) {
+      return { candidates: [], suffix, searchRoots: [head] };
+    }
+    const searchRoots = [workspaceRoot, "~"];
+    return head
+      ? { candidates: [], suffix, contains: head, searchRoots }
+      : { candidates: [], suffix, searchRoots };
+  }
+  const path = classification.target.path;
+  const relative = relativeToWorkspace(path, workspaceRoot);
+  const writtenAsRelative =
+    relative !== null &&
+    !isAbsolutePathToken(input.token) &&
+    !input.token.startsWith("~") &&
+    !input.token.toLowerCase().startsWith("file:");
+  if (!writtenAsRelative || relative === null || relative.length === 0) {
+    return { candidates: [path] };
+  }
+  return { candidates: [path], suffix: relative, searchRoots: [workspaceRoot] };
+}
+
+/** One existing match opens; none, several, or an unfinished search never guesses. */
+export async function resolvePathThroughDaemon(input: {
+  query: PathResolveQuery;
+  target: InlinePathTarget;
+  workspaceRoot: string;
+  resolvePath: ResolvePath;
+}): Promise<PathResolveOutcome> {
+  const result = await input.resolvePath({ ...input.query, cwd: input.workspaceRoot });
+  if (result.error) {
+    return { kind: "missing" };
+  }
+  const [match, second] = result.matches;
+  if (second) {
+    return { kind: "ambiguous" };
+  }
+  if (!match) {
+    return result.complete ? { kind: "missing" } : { kind: "incomplete" };
+  }
+  if (!result.complete) {
+    return { kind: "incomplete" };
+  }
+  return {
+    kind: "found",
+    isDirectory: match.kind === "directory",
+    target: {
+      raw: input.target.raw,
+      path: match.path,
+      lineStart: input.target.lineStart,
+      lineEnd: input.target.lineEnd,
+    },
+  };
+}
+
+function relativeToWorkspace(targetPath: string, workspaceRoot: string): string | null {
+  const root = workspaceRoot.replace(/\\/g, "/").replace(/\/+$/, "");
+  const normalized = targetPath.replace(/\\/g, "/");
+  if (normalized === root) {
+    return "";
+  }
+  return normalized.startsWith(`${root}/`) ? normalized.slice(root.length + 1) : null;
+}
+
+function isAbsolutePathToken(value: string): boolean {
+  return value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value);
+}
+
+// linkify writes `http://` in front of a bare host (`mac.tail29eaf5.ts.net`); the sites agents
+// name serve https, and Tailscale serve answers only https. Daseo delta 90.
+function preferHttpsForBareHost(source: AssistantFileLinkSource, url: string): string {
+  const text = source.text?.trim() ?? "";
+  if (
+    isLinkifiedSource(source) &&
+    url.toLowerCase().startsWith("http://") &&
+    !/^[a-z][a-z0-9+.-]*:\/\//i.test(text)
+  ) {
+    return `https://${url.slice("http://".length)}`;
+  }
+  return url;
 }
 
 export function getAssistantFileLinkToken(source: AssistantFileLinkSource): string {

@@ -126,6 +126,46 @@ const ASSISTANT_FILE_EXTENSIONS = new Set([
   "xlsm",
   "xlsx",
   "zip",
+  // Builds, installers, fonts, media, and exchange formats agents hand over by name
+  // (`Daseo-0.5.101.apk`). Daseo delta 90.
+  "aab",
+  "aac",
+  "apk",
+  "avi",
+  "avif",
+  "bz2",
+  "diff",
+  "dmg",
+  "eps",
+  "exe",
+  "fig",
+  "flac",
+  "ics",
+  "ipa",
+  "iso",
+  "jar",
+  "m4v",
+  "mkv",
+  "msi",
+  "ogg",
+  "opus",
+  "otf",
+  "patch",
+  "pkg",
+  "plist",
+  "rar",
+  "sketch",
+  "srt",
+  "tif",
+  "tiff",
+  "ttf",
+  "vcf",
+  "vtt",
+  "whl",
+  "woff",
+  "woff2",
+  "xz",
+  "zst",
 ]);
 // A token that already names a directory (`docs/x.foo`) is a path, not prose,
 // so any short alphanumeric extension qualifies there.
@@ -140,6 +180,12 @@ export interface AssistantHrefParseOptions {
   workspaceRoot?: string;
   /** Accept spaces inside the token when it still reads as one path. */
   allowWhitespace?: boolean;
+  /**
+   * The token is a markdown destination the agent wrote. markdown-it percent-encodes spaces and
+   * non-ASCII in destinations, so the path is decoded; and an authored destination names a file
+   * or folder, so it skips the filename guessing inferred text needs (upstream #7210, #7233).
+   */
+  explicitLink?: boolean;
 }
 
 export type AssistantFileLinkClassification =
@@ -154,6 +200,17 @@ export type AssistantFileLinkClassification =
   | {
       kind: "ambiguousFileCandidate";
       target: InlinePathTarget;
+    }
+  | {
+      /**
+       * A path shortened with `…` or `...` (`…/research/report.md`). It never names a file by
+       * itself: the daemon searches below `head` (or the workspace) for the one entry ending
+       * with `suffix`. Daseo delta 90.
+       */
+      kind: "elidedPath";
+      target: InlinePathTarget;
+      head: string;
+      suffix: string;
     };
 
 export interface NormalizedInlinePathTarget {
@@ -316,20 +373,31 @@ export function classifyAssistantFileLink(
   options: AssistantHrefParseOptions = {},
 ): AssistantFileLinkClassification | null {
   const raw = value ?? "";
-  const trimmed = raw.trim();
-  if (!trimmed) {
+  const rawTrimmed = raw.trim();
+  if (!rawTrimmed) {
     return null;
   }
 
-  if (isExternalHref(trimmed)) {
+  if (isExternalHref(rawTrimmed)) {
     return {
       kind: "external",
       raw,
     };
   }
 
-  if (/\s/.test(trimmed) && !(options.allowWhitespace && isWhitespacePathToken(trimmed))) {
+  if (/\s/.test(rawTrimmed) && !(options.allowWhitespace && isWhitespacePathToken(rawTrimmed))) {
     return null;
+  }
+  // A destination's spaces arrive percent-encoded; decoded, they are part of the path.
+  const trimmed = options.explicitLink ? safeDecodeURIComponent(rawTrimmed) : rawTrimmed;
+
+  if (ELLIPSIS_SEGMENT.test(trimmed)) {
+    return parseElidedPath(trimmed, raw);
+  }
+
+  const webUrl = schemeLessWebUrl(trimmed);
+  if (webUrl) {
+    return { kind: "external", raw: webUrl };
   }
 
   const target = parseAssistantFileLink(trimmed, options);
@@ -337,7 +405,10 @@ export function classifyAssistantFileLink(
     return null;
   }
 
-  if (isAmbiguousWorkspaceCandidate(trimmed, target, options.workspaceRoot)) {
+  if (
+    !options.explicitLink &&
+    isAmbiguousWorkspaceCandidate(trimmed, target, options.workspaceRoot)
+  ) {
     return {
       kind: "ambiguousFileCandidate",
       target,
@@ -394,6 +465,7 @@ export function parseAssistantFileLink(
 
   const relativeTarget = parseWorkspaceRelativeFileLink(trimmed, {
     workspaceRoot: options.workspaceRoot,
+    explicitLink: options.explicitLink,
   });
   if (relativeTarget) {
     return relativeTarget;
@@ -450,7 +522,7 @@ function parseWorkspaceRelativeFileLink(
   value: string,
   options: AssistantHrefParseOptions,
 ): InlinePathTarget | null {
-  const parsed = parseLocalPathParts(value);
+  const parsed = parseLocalPathParts(value, options);
   if (!parsed || isAbsolutePath(parsed.path)) {
     return null;
   }
@@ -482,6 +554,7 @@ function parseWorkspaceRelativeFileLink(
 
 function parseLocalPathParts(
   value: string,
+  options: Pick<AssistantHrefParseOptions, "explicitLink"> = {},
 ): { path: string; lines: Pick<InlinePathTarget, "lineStart" | "lineEnd"> } | null {
   const normalized = normalizePathToken(value);
   if (!normalized || normalized.includes("?")) {
@@ -498,7 +571,7 @@ function parseLocalPathParts(
 
   const inlinePathTarget = parseInlinePathToken(beforeHash);
   if (inlinePathTarget) {
-    if (!isPlausibleAssistantLocalPath(inlinePathTarget.path)) {
+    if (!isAcceptedLocalPath(inlinePathTarget.path, options)) {
       return null;
     }
 
@@ -515,7 +588,7 @@ function parseLocalPathParts(
     return null;
   }
 
-  if (!isPlausibleAssistantLocalPath(beforeHash)) {
+  if (!isAcceptedLocalPath(beforeHash, options)) {
     return null;
   }
 
@@ -523,6 +596,19 @@ function parseLocalPathParts(
     path: beforeHash,
     lines: fragmentLines,
   };
+}
+
+/**
+ * An authored destination is taken as written (a web address was already turned into an https
+ * link before this); inferred text must look like a file.
+ */
+function isAcceptedLocalPath(
+  pathValue: string,
+  options: Pick<AssistantHrefParseOptions, "explicitLink">,
+): boolean {
+  return options.explicitLink
+    ? pathValue.split("/").some(Boolean)
+    : isPlausibleAssistantLocalPath(pathValue);
 }
 
 export function normalizeInlinePathTarget(
@@ -705,7 +791,231 @@ export function isWhitespacePathToken(token: string): boolean {
     return true;
   }
   const firstWord = token.split(/\s+/)[0] ?? "";
-  return firstWord.includes("/") && isPlausibleAssistantLocalPath(token);
+  if (firstWord.includes("/")) {
+    return isPlausibleAssistantLocalPath(token);
+  }
+  // A bare name with spaces (`회사 자료 접근 지도.md`) is a file when it ends in a known
+  // extension and does not start with a command (`open report.pdf`). Daseo delta 90.
+  if (token.includes("/") || COMMAND_WORDS.has(firstWord.toLowerCase())) {
+    return false;
+  }
+  const lastDot = token.lastIndexOf(".");
+  return lastDot > 0 && ASSISTANT_FILE_EXTENSIONS.has(token.slice(lastDot + 1).toLowerCase());
+}
+
+const COMMAND_WORDS = new Set([
+  "adb",
+  "awk",
+  "bash",
+  "brew",
+  "bun",
+  "cargo",
+  "cat",
+  "cd",
+  "chmod",
+  "code",
+  "cp",
+  "curl",
+  "cursor",
+  "deno",
+  "docker",
+  "echo",
+  "ffmpeg",
+  "find",
+  "git",
+  "go",
+  "grep",
+  "head",
+  "java",
+  "less",
+  "ls",
+  "make",
+  "mkdir",
+  "more",
+  "mv",
+  "nano",
+  "node",
+  "npm",
+  "npx",
+  "open",
+  "perl",
+  "pip",
+  "pip3",
+  "pnpm",
+  "python",
+  "python3",
+  "rg",
+  "rm",
+  "rsync",
+  "ruby",
+  "scp",
+  "sed",
+  "sh",
+  "sips",
+  "source",
+  "ssh",
+  "subl",
+  "sudo",
+  "tail",
+  "tar",
+  "touch",
+  "tsx",
+  "unzip",
+  "uv",
+  "vi",
+  "vim",
+  "wget",
+  "yarn",
+  "zip",
+  "zsh",
+]);
+
+// A path segment that is only an ellipsis: `…/a.md`, `src/.../a.ts`, `~/ws/…`.
+const ELLIPSIS_SEGMENT = /(?:^|\/)(?:…|\.{3})(?=\/|$)/;
+const ELLIPSIS_SEGMENT_GLOBAL = /(?:^|\/)(?:…|\.{3})(?=\/|$)/g;
+// Globs and brace lists name several files at once; none of them is one link.
+const PATTERN_CHARACTERS = /[*?{}[\]]/;
+
+/**
+ * `…/research/report.md:12` → head `""`, suffix `research/report.md`, line 12. The head is what
+ * the agent kept before the first ellipsis (`~`, an absolute path, or a relative directory),
+ * the suffix what follows the last one. A suffix must end in a file name or a folder slash.
+ */
+function parseElidedPath(
+  value: string,
+  raw: string,
+): Extract<AssistantFileLinkClassification, { kind: "elidedPath" }> | null {
+  const located = splitLineReference(value);
+  if (!located || PATTERN_CHARACTERS.test(located.path) || located.path.includes("://")) {
+    return null;
+  }
+  const parts = splitAtEllipses(located.path);
+  if (!parts || !isElidedSuffix(parts.suffix)) {
+    return null;
+  }
+  const headFirstSegment = parts.head.split("/").find(Boolean);
+  if (headFirstSegment && isDomainLikePathSegment(headFirstSegment)) {
+    return null;
+  }
+  return {
+    kind: "elidedPath",
+    head: parts.head,
+    suffix: parts.suffix.split("/").filter(Boolean).join("/"),
+    target: { raw, path: located.path, ...located.lines },
+  };
+}
+
+/** `a/b.md:12` or `a/b.md#L12` → the path and its line range. */
+function splitLineReference(
+  value: string,
+): { path: string; lines: Pick<InlinePathTarget, "lineStart" | "lineEnd"> } | null {
+  const hashIndex = value.indexOf("#");
+  const beforeHash = hashIndex >= 0 ? value.slice(0, hashIndex) : value;
+  const fragmentLines = parseLineFragment(hashIndex >= 0 ? value.slice(hashIndex) : "");
+  if (!fragmentLines) {
+    return null;
+  }
+  const withLines = parseInlinePathToken(beforeHash);
+  const path = normalizePathToken(withLines?.path ?? beforeHash);
+  if (!path) {
+    return null;
+  }
+  const lines = withLines
+    ? { lineStart: withLines.lineStart, lineEnd: withLines.lineEnd }
+    : fragmentLines;
+  return { path, lines };
+}
+
+/** What the agent kept before the first ellipsis, and what follows the last one. */
+function splitAtEllipses(pathPart: string): { head: string; suffix: string } | null {
+  const ellipses = [...pathPart.matchAll(ELLIPSIS_SEGMENT_GLOBAL)];
+  const first = ellipses[0];
+  const last = ellipses.at(-1);
+  if (first?.index === undefined || last?.index === undefined) {
+    return null;
+  }
+  return {
+    head: pathPart.slice(0, first.index).replace(/\/+$/, ""),
+    suffix: pathPart.slice(last.index + last[0].length).replace(/^\/+/, ""),
+  };
+}
+
+/** A suffix ends in a file name or a folder slash, and never climbs with `..`. */
+function isElidedSuffix(suffix: string): boolean {
+  const segments = suffix.split("/").filter(Boolean);
+  const lastSegment = segments.at(-1);
+  if (!lastSegment || segments.includes("..")) {
+    return false;
+  }
+  return suffix.endsWith("/") || isPlausibleAssistantFileName(lastSegment, { inDirectory: true });
+}
+
+// Generic TLDs, plus any two-letter country code. A host without a path also needs a third
+// label or one of the TLDs an agent means as a website (`naver.com`, not `Daseo.app`).
+const GENERIC_TLDS = new Set([
+  "app",
+  "art",
+  "asia",
+  "biz",
+  "blog",
+  "cloud",
+  "com",
+  "design",
+  "dev",
+  "edu",
+  "gov",
+  "info",
+  "io",
+  "link",
+  "live",
+  "me",
+  "name",
+  "net",
+  "news",
+  "online",
+  "org",
+  "page",
+  "pro",
+  "shop",
+  "site",
+  "store",
+  "studio",
+  "tech",
+  "wiki",
+  "xyz",
+]);
+const HOST_ONLY_TLDS = new Set(["com", "net", "org", "io", "dev", "co", "kr", "jp", "me", "xyz"]);
+const HOST_LABEL = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i;
+
+/**
+ * `invite.folnua.com/seoulforest/` → `https://invite.folnua.com/seoulforest/`. A file name is
+ * never a host (`file.html`, `index.ts`, `app.module.ts`), and neither is a version
+ * (`0.5.101`). Daseo delta 90: the Tailscale and company sites agents name serve https only.
+ */
+export function schemeLessWebUrl(token: string): string | null {
+  if (/\s/.test(token) || token.includes("://") || ELLIPSIS_SEGMENT.test(token)) {
+    return null;
+  }
+  const hostEnd = token.search(/[/?#]/);
+  const host = hostEnd >= 0 ? token.slice(0, hostEnd) : token;
+  const labels = host.split(".");
+  if (labels.length < 2 || !labels.every((label) => HOST_LABEL.test(label))) {
+    return null;
+  }
+  const tld = (labels.at(-1) ?? "").toLowerCase();
+  if (!/^[a-z]{2,}$/.test(tld) || !(GENERIC_TLDS.has(tld) || tld.length === 2)) {
+    return null;
+  }
+  const hasPath = hostEnd >= 0 && token.length > hostEnd + 1;
+  if (!hasPath) {
+    if (ASSISTANT_FILE_EXTENSIONS.has(tld)) {
+      return null;
+    }
+    if (labels.length < 3 && !HOST_ONLY_TLDS.has(tld)) {
+      return null;
+    }
+  }
+  return `https://${token}`;
 }
 
 function isDomainLikePathSegment(segment: string): boolean {

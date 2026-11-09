@@ -12,8 +12,10 @@ import {
   type AssistantFileLinkResolverContextValue,
 } from "./provider";
 import {
-  classifyForResolution,
   fetchDaemonResolution,
+  planAssistantFileLink,
+  resolvePathThroughDaemon,
+  type AssistantFileLinkPlan,
   type AssistantFileLinkResolution,
   type AssistantFileLinkSource,
 } from "./resolver";
@@ -65,12 +67,10 @@ export function useFileLink(source: AssistantFileLinkSource): UseFileLinkResult 
   const activeConfig = context.configRef.current;
   const workspaceRoot = activeConfig.workspaceRoot;
   const serverId = activeConfig.serverId;
+  const pathResolve = activeConfig.supportsPathResolve === true;
   const resolution = useMemo(
-    () =>
-      classifyForResolution(stableSource, {
-        workspaceRoot,
-      }),
-    [stableSource, workspaceRoot],
+    () => planAssistantFileLink(stableSource, { workspaceRoot, pathResolve }),
+    [stableSource, workspaceRoot, pathResolve],
   );
   const queryKey = useMemo(
     () =>
@@ -111,6 +111,8 @@ export function useFileLink(source: AssistantFileLinkSource): UseFileLinkResult 
         context,
         queryClient,
         formatNoFileFoundMessage: (token) => t("common.errors.noFileFound", { token }),
+        formatAmbiguousMessage: (token) => t("common.errors.multipleFilesFound", { token }),
+        formatIncompleteMessage: (token) => t("common.errors.fileSearchIncomplete", { token }),
       });
     },
   );
@@ -165,6 +167,9 @@ export function useFileLink(source: AssistantFileLinkSource): UseFileLinkResult 
     if (resolution.kind === "resolved") {
       return resolution.value.kind === "file" ? resolution.value.target : null;
     }
+    if (resolution.kind === "needsPathResolve") {
+      return resolution.target;
+    }
     return query.data ?? null;
   }, [query.data, resolution]);
 
@@ -185,16 +190,20 @@ export function useAssistantFileLinkActions(): AssistantFileLinkActions {
   );
   const canOpen = useCallback(
     (source: AssistantFileLinkSource) =>
-      canOpenAssistantFileLink(source, context.configRef.current.workspaceRoot),
+      canOpenAssistantFileLink(source, planContext(context.configRef.current)),
     [context.configRef],
   );
   const canResolveFile = useCallback(
     (source: AssistantFileLinkSource) =>
-      canResolveAssistantFileLinkToFile(source, context.configRef.current.workspaceRoot),
+      canResolveAssistantFileLinkToFile(source, planContext(context.configRef.current)),
     [context.configRef],
   );
 
   return useMemo(() => ({ open, canOpen, canResolveFile }), [open, canOpen, canResolveFile]);
+}
+
+function planContext(config: AssistantFileLinkResolverContextValue["configRef"]["current"]) {
+  return { workspaceRoot: config.workspaceRoot, pathResolve: config.supportsPathResolve === true };
 }
 
 function openAssistantFileLink(input: {
@@ -203,11 +212,16 @@ function openAssistantFileLink(input: {
   context: AssistantFileLinkResolverContextValue;
   queryClient: ReturnType<typeof useQueryClient>;
   formatNoFileFoundMessage: (token: string) => string;
+  formatAmbiguousMessage: (token: string) => string;
+  formatIncompleteMessage: (token: string) => string;
 }): void {
   const capturedConfig = input.context.configRef.current;
-  const capturedResolution = classifyForResolution(input.source, {
-    workspaceRoot: capturedConfig.workspaceRoot,
-  });
+  const capturedResolution = planAssistantFileLink(input.source, planContext(capturedConfig));
+
+  if (capturedResolution.kind === "needsPathResolve") {
+    void openThroughPathResolve({ ...input, plan: capturedResolution, capturedConfig });
+    return;
+  }
 
   if (capturedResolution.kind === "resolved") {
     void dispatchResolvedLink({
@@ -264,20 +278,73 @@ function openAssistantFileLink(input: {
   void run();
 }
 
+// Daseo delta 90: the daemon finds the file or folder first. One match opens it; a missing
+// path, several matches, or a search that ran out of time say so in a toast, so nothing opens
+// a pane for a file that does not exist and nothing opens a guess.
+async function openThroughPathResolve(input: {
+  plan: Extract<AssistantFileLinkPlan, { kind: "needsPathResolve" }>;
+  capturedConfig: AssistantFileLinkResolverContextValue["configRef"]["current"];
+  disposition: OpenFileDisposition;
+  context: AssistantFileLinkResolverContextValue;
+  formatNoFileFoundMessage: (token: string) => string;
+  formatAmbiguousMessage: (token: string) => string;
+  formatIncompleteMessage: (token: string) => string;
+}): Promise<void> {
+  const { plan, capturedConfig } = input;
+  const workspaceRoot = capturedConfig.workspaceRoot?.trim() ?? "";
+  let outcome: Awaited<ReturnType<typeof resolvePathThroughDaemon>>;
+  try {
+    outcome = await trackFileLinkLookup(() =>
+      resolvePathThroughDaemon({
+        query: plan.query,
+        target: plan.target,
+        workspaceRoot,
+        resolvePath: input.context.resolvePath,
+      }),
+    );
+  } catch {
+    outcome = { kind: "missing" };
+  }
+  if (outcome.kind === "found") {
+    await dispatchFileTarget({
+      target: outcome.target,
+      isDirectory: outcome.isDirectory,
+      disposition: input.disposition,
+      capturedServerId: capturedConfig.serverId,
+      capturedWorkspaceRoot: capturedConfig.workspaceRoot,
+      context: input.context,
+    });
+    return;
+  }
+  let message = input.formatNoFileFoundMessage(plan.token);
+  if (outcome.kind === "ambiguous") {
+    message = input.formatAmbiguousMessage(plan.token);
+  } else if (outcome.kind === "incomplete") {
+    message = input.formatIncompleteMessage(plan.token);
+  }
+  await dispatchUnresolvedError({
+    error: null,
+    noFileFoundMessage: message,
+    capturedServerId: capturedConfig.serverId,
+    capturedWorkspaceRoot: capturedConfig.workspaceRoot,
+    context: input.context,
+  });
+}
+
 function canOpenAssistantFileLink(
   source: AssistantFileLinkSource,
-  workspaceRoot: string | undefined,
+  context: { workspaceRoot?: string; pathResolve: boolean },
 ): boolean {
-  const resolution = classifyForResolution(source, { workspaceRoot });
-  return resolution.kind === "needsLookup" || resolution.value.kind !== "ignored";
+  const resolution = planAssistantFileLink(source, context);
+  return resolution.kind !== "resolved" || resolution.value.kind !== "ignored";
 }
 
 function canResolveAssistantFileLinkToFile(
   source: AssistantFileLinkSource,
-  workspaceRoot: string | undefined,
+  context: { workspaceRoot?: string; pathResolve: boolean },
 ): boolean {
-  const resolution = classifyForResolution(source, { workspaceRoot });
-  return resolution.kind === "needsLookup" || resolution.value.kind === "file";
+  const resolution = planAssistantFileLink(source, context);
+  return resolution.kind !== "resolved" || resolution.value.kind === "file";
 }
 
 function useStableSource(source: AssistantFileLinkSource): AssistantFileLinkSource {
@@ -331,6 +398,8 @@ async function dispatchResolvedLink(input: {
 
 async function dispatchFileTarget(input: {
   target: InlinePathTarget;
+  /** Known from the daemon (delta 90); a folder never goes through a download. */
+  isDirectory?: boolean;
   disposition: OpenFileDisposition;
   capturedServerId?: string;
   capturedWorkspaceRoot?: string;
@@ -344,6 +413,12 @@ async function dispatchFileTarget(input: {
     return;
   }
   if (await openInMacApp(input.target, current.isLocalDaemon === true)) {
+    return;
+  }
+  if (input.isDirectory) {
+    // A trailing slash is how the workspace opener tells a folder from a file.
+    const path = input.target.path.replace(/\/+$/, "");
+    current.onOpenWorkspaceFile?.({ ...input.target, path: `${path}/` }, input.disposition);
     return;
   }
   // Delta 75: on the phone, text and images open in the file pane; only the rest leaves the app.

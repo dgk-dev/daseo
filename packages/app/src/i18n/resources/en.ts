@@ -35,6 +35,9 @@ export const en = {
       daemonClientUnavailable: "Daemon client unavailable",
       daemonClientDisconnected: "Daemon client is disconnected",
       noFileFound: "No file found for {{token}}",
+      multipleFilesFound: "Several files match {{token}}, so none was opened",
+      fileSearchIncomplete: "Searching for {{token}} took too long, so nothing was opened",
+      folderOutsideWorkspace: "{{path}} is outside this workspace",
       unexpectedDictationError: "An unexpected error occurred while handling dictation.",
     },
     connectionStatus: {

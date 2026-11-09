@@ -38,6 +38,10 @@ export const ru: TranslationResources = {
       daemonClientUnavailable: "Клиент Daemon недоступен",
       daemonClientDisconnected: "Клиент Daemon отключен",
       noFileFound: "Файл для{{token}}не найден",
+      multipleFilesFound: "{{token}} соответствует несколько файлов, поэтому ничего не открыто",
+      fileSearchIncomplete:
+        "Поиск {{token}} занял слишком много времени, поэтому ничего не открыто",
+      folderOutsideWorkspace: "{{path}} находится вне этого рабочего пространства",
       unexpectedDictationError: "При обработке диктовки произошла непредвиденная ошибка.",
     },
     connectionStatus: {

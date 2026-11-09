@@ -38,6 +38,9 @@ export const ar: TranslationResources = {
       daemonClientUnavailable: "عميل Daemon غير متوفر",
       daemonClientDisconnected: "تم قطع اتصال عميل Daemon",
       noFileFound: "لم يتم العثور على ملف لـ{{token}}",
+      multipleFilesFound: "هناك عدة ملفات تطابق {{token}}، لذلك لم يُفتح أي منها",
+      fileSearchIncomplete: "استغرق البحث عن {{token}} وقتًا طويلًا، لذلك لم يُفتح شيء",
+      folderOutsideWorkspace: "{{path}} خارج مساحة العمل هذه",
       unexpectedDictationError: "حدث خطأ غير متوقع أثناء معالجة الإملاء.",
     },
     connectionStatus: {

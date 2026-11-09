@@ -25,6 +25,7 @@ import type {
   CreatePaseoWorktreeRequest,
   FileDownloadTokenResponse,
   PreviewLinkCreateResponse,
+  PathResolveResponse,
   AgentHistoryAiRankResponseMessage,
   AgentHistoryGetSearchStatusResponseMessage,
   FileUploadResponse,
@@ -493,6 +494,7 @@ export interface FileUploadInput {
 export type FileUploadResult = FileUploadResponse["payload"];
 type FileDownloadTokenPayload = FileDownloadTokenResponse["payload"];
 export type PreviewLinkCreatePayload = PreviewLinkCreateResponse["payload"];
+export type PathResolvePayload = PathResolveResponse["payload"];
 export type AgentHistorySearchStatusPayload = AgentHistoryGetSearchStatusResponseMessage["payload"];
 export type AgentHistoryAiRankPayload = AgentHistoryAiRankResponseMessage["payload"];
 type ListProviderFeaturesPayload = ListProviderFeaturesResponseMessage["payload"];
@@ -4741,6 +4743,31 @@ export class DaemonClient {
         type: "fs.preview_link.create.request",
         path: input.path,
         ...(input.cwd ? { cwd: input.cwd } : {}),
+      },
+    });
+  }
+
+  /**
+   * Daseo delta 90: stat the paths a link may mean and, when none exists, search for the one
+   * entry ending with `suffix`. Gate on `server_info.features.pathResolve`.
+   */
+  async resolvePath(input: {
+    cwd: string;
+    candidates: string[];
+    suffix?: string;
+    contains?: string;
+    searchRoots?: string[];
+    requestId?: string;
+  }): Promise<PathResolvePayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"fs.path.resolve.response">({
+      requestId: input.requestId,
+      message: {
+        type: "fs.path.resolve.request",
+        cwd: input.cwd,
+        candidates: input.candidates,
+        ...(input.suffix ? { suffix: input.suffix } : {}),
+        ...(input.contains ? { contains: input.contains } : {}),
+        ...(input.searchRoots ? { searchRoots: input.searchRoots } : {}),
       },
     });
   }

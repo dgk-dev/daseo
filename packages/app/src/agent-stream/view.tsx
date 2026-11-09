@@ -18,6 +18,7 @@ import React, {
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
+import { isAbsolutePath } from "@/utils/path";
 import {
   View,
   Text,
@@ -365,6 +366,9 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       (state) =>
         state.sessions[resolvedServerId]?.serverInfo?.features?.agentForkContextCursor === true,
     );
+    const supportsPathResolve = useSessionStore(
+      (state) => state.sessions[resolvedServerId]?.serverInfo?.features?.pathResolve === true,
+    );
     const supportsChatOutline = useSessionStore(
       (state) =>
         state.sessions[resolvedServerId]?.serverInfo?.features?.agentTimelinePromptIndex === true,
@@ -384,7 +388,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     );
 
     const workspaceRoot = context.cwd?.trim() || "";
-    const { requestDirectoryListing } = useFileExplorerActions({
+    const { revealDirectory } = useFileExplorerActions({
       serverId: resolvedServerId,
       workspaceId: context.workspaceId,
       workspaceRoot,
@@ -463,10 +467,17 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           return;
         }
 
-        void requestDirectoryListing(normalized.directory, {
-          recordHistory: false,
-          setCurrentPath: false,
-        });
+        // Upstream #7726: Files lists only the workspace, so a folder outside it says so
+        // instead of opening Files on an access error. On the Mac app such a folder already
+        // opened in Finder (delta 56) before reaching here.
+        if (isAbsolutePath(normalized.directory) || normalized.directory.startsWith("~")) {
+          toast?.show(t("common.errors.folderOutsideWorkspace", { path: normalized.directory }), {
+            variant: "error",
+            testID: "assistant-folder-outside-workspace-toast",
+          });
+          return;
+        }
+        void revealDirectory(normalized.directory);
 
         const checkout = {
           serverId: resolvedServerId,
@@ -801,6 +812,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
             client={client}
             serverId={resolvedServerId}
             workspaceRoot={workspaceRoot}
+            supportsPathResolve={supportsPathResolve}
             onOpenWorkspaceFile={handleInlinePathPress}
             openFileExternally={openFileExternally}
             toast={toast}
@@ -837,6 +849,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         handleInlinePathPress,
         openFileExternally,
         resolvedServerId,
+        supportsPathResolve,
         toast,
         workspaceRoot,
       ],

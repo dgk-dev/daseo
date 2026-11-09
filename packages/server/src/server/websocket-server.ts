@@ -1655,6 +1655,8 @@ export class VoiceAssistantWebSocketServer {
         discardEmptyWorkspace: true,
         // Local fork (delta 75): tailnet preview links, only when a base URL is configured.
         previewLinks: this.previewLinks?.isConfigured() === true,
+        // Local fork (delta 90): links in agent answers resolve through fs.path.resolve.request.
+        pathResolve: true,
         // Local fork (delta 46): send/create requests accept chunk-uploaded images.
         imageUploads: true,
         // Local fork (delta 79): History hides sub-agents unless asked; content search and

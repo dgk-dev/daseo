@@ -7,6 +7,8 @@ import {
 } from "@/stores/session-store";
 import { explorerFileFromReadResult } from "@/file-explorer/read-result";
 import { parentExplorerPath } from "@/utils/explorer-paths";
+import { usePanelStore } from "@/stores/panel-store";
+import { revealExplorerDirectory } from "@/file-explorer/tree";
 
 function createExplorerState(): AgentFileExplorerState {
   return {
@@ -337,8 +339,32 @@ export function useFileExplorerActions(params: { serverId: string } & FileExplor
     [updateExplorerState],
   );
 
+  // Upstream #7205: a folder link expands Files down to that folder, hidden ones included.
+  const revealDirectory = useCallback(
+    async (directoryPath: string) => {
+      if (!workspaceStateKey) return;
+      await revealExplorerDirectory({
+        directoryPath,
+        requestDirectoryListing: (path) =>
+          requestDirectoryListing(path, { recordHistory: false, setCurrentPath: false }),
+        showHiddenFiles: () => {
+          const panel = usePanelStore.getState();
+          if (!panel.explorerShowHiddenFiles) panel.toggleExplorerShowHiddenFiles();
+        },
+        expandPaths: (paths) =>
+          usePanelStore
+            .getState()
+            .setExpandedPathsForWorkspace(workspaceStateKey, (current) =>
+              Array.from(new Set([...current, ...paths])),
+            ),
+      });
+    },
+    [requestDirectoryListing, workspaceStateKey],
+  );
+
   return {
     workspaceStateKey,
+    revealDirectory,
     requestDirectoryListing,
     requestFilePreview,
     requestFileDownloadToken,

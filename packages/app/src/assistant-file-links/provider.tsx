@@ -12,10 +12,11 @@ import type { ToastApi } from "@/components/toast-host";
 import { useIsLocalDaemon } from "@/hooks/use-is-local-daemon";
 import type { OpenFileDisposition } from "@/workspace/file-open";
 import type { InlinePathTarget } from "./parse";
-import type { AssistantFileLinkContext, GetDirectorySuggestions } from "./resolver";
+import type { AssistantFileLinkContext, GetDirectorySuggestions, ResolvePath } from "./resolver";
 
 export interface AssistantFileLinkDaemonClient {
   getDirectorySuggestions: GetDirectorySuggestions;
+  resolvePath?: ResolvePath;
 }
 
 export interface AssistantFileLinkResolverConfig {
@@ -24,6 +25,8 @@ export interface AssistantFileLinkResolverConfig {
   /** The transcript's daemon runs on this machine, so its paths exist here (delta 56). */
   isLocalDaemon?: boolean;
   workspaceRoot?: string;
+  /** Delta 90: the daemon resolves link paths (`server_info.features.pathResolve`). */
+  supportsPathResolve?: boolean;
   onOpenWorkspaceFile?: (target: InlinePathTarget, disposition: OpenFileDisposition) => void;
   /**
    * Delta 62: on the phone, download the file and open it in another app. Resolves false when
@@ -40,6 +43,7 @@ export interface AssistantFileLinkResolverProviderProps extends AssistantFileLin
 export interface AssistantFileLinkResolverContextValue {
   configRef: MutableRefObject<AssistantFileLinkResolverConfig>;
   getDirectorySuggestions: GetDirectorySuggestions;
+  resolvePath: ResolvePath;
 }
 
 const AssistantFileLinkResolverContext =
@@ -49,6 +53,7 @@ export function AssistantFileLinkResolverProvider({
   client,
   serverId,
   workspaceRoot,
+  supportsPathResolve,
   onOpenWorkspaceFile,
   openFileExternally,
   toast,
@@ -60,6 +65,7 @@ export function AssistantFileLinkResolverProvider({
     serverId,
     isLocalDaemon,
     workspaceRoot,
+    supportsPathResolve,
     onOpenWorkspaceFile,
     openFileExternally,
     toast,
@@ -69,6 +75,7 @@ export function AssistantFileLinkResolverProvider({
     serverId,
     isLocalDaemon,
     workspaceRoot,
+    supportsPathResolve,
     onOpenWorkspaceFile,
     openFileExternally,
     toast,
@@ -84,9 +91,17 @@ export function AssistantFileLinkResolverProvider({
     return { entries: result.entries, error: result.error };
   }, []);
 
+  const resolvePath = useCallback<ResolvePath>(async (input) => {
+    const activeClient = configRef.current.client;
+    if (!activeClient?.resolvePath) {
+      return { matches: [], complete: true, error: "Path resolve unavailable." };
+    }
+    return activeClient.resolvePath(input);
+  }, []);
+
   const value = useMemo<AssistantFileLinkResolverContextValue>(
-    () => ({ configRef, getDirectorySuggestions }),
-    [getDirectorySuggestions],
+    () => ({ configRef, getDirectorySuggestions, resolvePath }),
+    [getDirectorySuggestions, resolvePath],
   );
 
   return (

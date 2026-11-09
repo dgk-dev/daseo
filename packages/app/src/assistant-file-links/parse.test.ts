@@ -167,22 +167,22 @@ describe("classifyAssistantFileLink", () => {
     });
   });
 
-  it("does not classify normal bare domains as file candidates", () => {
+  it("opens bare domains as https websites, never as file candidates", () => {
     expect(
       classifyAssistantFileLink("google.com", {
         workspaceRoot: "/Users/test/project",
       }),
-    ).toBeNull();
+    ).toEqual({ kind: "external", raw: "https://google.com" });
     expect(
       classifyAssistantFileLink("example.com", {
         workspaceRoot: "/Users/test/project",
       }),
-    ).toBeNull();
+    ).toEqual({ kind: "external", raw: "https://example.com" });
     expect(
       classifyAssistantFileLink("openai.com/path", {
         workspaceRoot: "/Users/test/project",
       }),
-    ).toBeNull();
+    ).toEqual({ kind: "external", raw: "https://openai.com/path" });
   });
 
   it("does not classify plain inline code words or identifiers as file candidates", () => {
@@ -237,7 +237,7 @@ describe("classifyAssistantFileLink", () => {
       classifyAssistantFileLink("hymdosan.com", {
         workspaceRoot: "/Users/test/project",
       }),
-    ).toBeNull();
+    ).toEqual({ kind: "external", raw: "https://hymdosan.com" });
   });
 
   it("accepts spaces only when allowed and the token still reads as one path", () => {
@@ -541,6 +541,153 @@ describe("normalizeInlinePathTarget", () => {
       normalizeInlinePathTarget("/Users/test/project/packages/app/", "/Users/test/project"),
     ).toEqual({
       directory: "packages/app",
+    });
+  });
+});
+
+describe("link tolerance (Daseo delta 90)", () => {
+  const root = { workspaceRoot: "/Users/test/project" };
+
+  it("keeps a path shortened with an ellipsis as a search, never as a file", () => {
+    expect(classifyAssistantFileLink("…/research/2026-11-09-report.md", root)).toMatchObject({
+      kind: "elidedPath",
+      head: "",
+      suffix: "research/2026-11-09-report.md",
+    });
+    expect(classifyAssistantFileLink(".../verify-pc.log", root)).toMatchObject({
+      kind: "elidedPath",
+      head: "",
+      suffix: "verify-pc.log",
+    });
+    expect(classifyAssistantFileLink("~/.pi/agent/…/research/x.md", root)).toMatchObject({
+      kind: "elidedPath",
+      head: "~/.pi/agent",
+      suffix: "research/x.md",
+    });
+    expect(classifyAssistantFileLink("apps/mktg/.../app-schema-migrations.ts:12", root)).toEqual({
+      kind: "elidedPath",
+      head: "apps/mktg",
+      suffix: "app-schema-migrations.ts",
+      target: {
+        raw: "apps/mktg/.../app-schema-migrations.ts:12",
+        path: "apps/mktg/.../app-schema-migrations.ts",
+        lineStart: 12,
+        lineEnd: undefined,
+      },
+    });
+  });
+
+  it("does not link an ellipsis that names no single file", () => {
+    for (const value of [
+      "…/",
+      "…",
+      "…/assets/*.png",
+      "…/research/{a,b}.md",
+      "…/answer/14693848",
+      "www.coupang.com/vp/products/…",
+    ]) {
+      expect(classifyAssistantFileLink(value, root)).toBeNull();
+    }
+  });
+
+  it("opens a scheme-less web address over https", () => {
+    for (const value of [
+      "invite.folnua.com/seoulforest/",
+      "mac.tail29eaf5.ts.net",
+      "hdexwear.com/hd/fit-guide.html",
+      "h-dex.jp/hd/fit-guide.html",
+      "naver.com",
+    ]) {
+      expect(classifyAssistantFileLink(value, root)).toEqual({
+        kind: "external",
+        raw: `https://${value}`,
+      });
+    }
+  });
+
+  it("never reads a file name or a version as a web address", () => {
+    expect(classifyAssistantFileLink("file.html", root)).toMatchObject({
+      kind: "ambiguousFileCandidate",
+    });
+    expect(classifyAssistantFileLink("index.ts", root)).toMatchObject({
+      kind: "ambiguousFileCandidate",
+    });
+    expect(classifyAssistantFileLink("app.module.ts", root)).toMatchObject({
+      kind: "ambiguousFileCandidate",
+    });
+    expect(classifyAssistantFileLink("README.md", root)).toMatchObject({
+      kind: "ambiguousFileCandidate",
+    });
+    for (const value of ["0.5.101", "Daseo.app", "claude.ai", "100.125.123.120:5555"]) {
+      expect(classifyAssistantFileLink(value, root)).toBeNull();
+    }
+  });
+
+  it("links bare names of builds, installers, media, and documents", () => {
+    for (const value of [
+      "Daseo-0.5.101.apk",
+      "app-release.aab",
+      "Daseo-0.5.101-mac-arm64.dmg",
+      "photo.heic",
+      "demo.mov",
+      "demo.mp4",
+      "memo.m4a",
+      "take.wav",
+      "song.mp3",
+      "book.epub",
+      "보고서.hwpx",
+      "sheet.numbers",
+      "letter.pages",
+      "deck.key",
+    ]) {
+      expect(classifyAssistantFileLink(value, root)).toMatchObject({
+        kind: "ambiguousFileCandidate",
+        target: { path: `/Users/test/project/${value}` },
+      });
+    }
+  });
+
+  it("links a bare name with spaces in inline code, but not a command", () => {
+    const inline = { ...root, allowWhitespace: true };
+    expect(classifyAssistantFileLink("회사 자료 접근 지도.md", inline)).toMatchObject({
+      kind: "ambiguousFileCandidate",
+      target: { path: "/Users/test/project/회사 자료 접근 지도.md" },
+    });
+    expect(classifyAssistantFileLink("회사 자료 접근 지도.md", root)).toBeNull();
+    expect(classifyAssistantFileLink("open report.pdf", inline)).toBeNull();
+    expect(classifyAssistantFileLink("Release notes for v2", inline)).toBeNull();
+  });
+
+  it("decodes an authored destination and takes it as written", () => {
+    const explicit = { ...root, explicitLink: true };
+    expect(classifyAssistantFileLink("~/brain/Memory/System%20Map.md", explicit)).toMatchObject({
+      kind: "directFile",
+      target: { path: "~/brain/Memory/System Map.md" },
+    });
+    expect(
+      classifyAssistantFileLink(
+        "docs/%EC%B5%9C%EC%A2%85%20%EB%B3%B4%EA%B3%A0%EC%84%9C.md",
+        explicit,
+      ),
+    ).toMatchObject({
+      kind: "directFile",
+      target: { path: "/Users/test/project/docs/최종 보고서.md" },
+    });
+    expect(classifyAssistantFileLink("docs/guides", explicit)).toMatchObject({
+      kind: "directFile",
+      target: { path: "/Users/test/project/docs/guides" },
+    });
+    expect(classifyAssistantFileLink("capture.png", explicit)).toMatchObject({
+      kind: "directFile",
+      target: { path: "/Users/test/project/capture.png" },
+    });
+    expect(classifyAssistantFileLink("%E2%80%A6/research/x.md", explicit)).toMatchObject({
+      kind: "elidedPath",
+      suffix: "research/x.md",
+    });
+    expect(classifyAssistantFileLink("invite.folnua.com/seoulforest/", explicit)).toEqual({
+      kind: "external",
+      raw: "https://invite.folnua.com/seoulforest/",
     });
   });
 });

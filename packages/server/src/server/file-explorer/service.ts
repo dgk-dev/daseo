@@ -814,6 +814,23 @@ function isEntryExistsError(error: unknown): boolean {
   );
 }
 
+/**
+ * The real location of `targetPath` when the explorer may read it (inside `root`, home, or temp
+ * space, judged after resolving symlinks); throws otherwise. Used by path lookups that report
+ * existence without reading the file.
+ */
+export async function resolveReadableExplorerPath(input: {
+  root: string;
+  targetPath: string;
+}): Promise<string> {
+  const scoped = await resolveScopedPath({
+    root: input.root,
+    relativePath: input.targetPath,
+    access: "read",
+  });
+  return scoped.resolvedPath;
+}
+
 async function resolveScopedPath({
   root,
   relativePath = ".",

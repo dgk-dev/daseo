@@ -2680,6 +2680,20 @@ export const PreviewLinkCreateRequestSchema = z.object({
   cwd: z.string().optional(),
 });
 
+// Daseo delta 90: resolve a path an agent named in an answer. The daemon stats `candidates`
+// (absolute, `~/`, or relative to `cwd`) and, when none exists, searches `searchRoots` (default
+// `cwd`) for entries whose path ends with `/<suffix>` and contains `contains` before it. Sent
+// only to daemons advertising `pathResolve`.
+export const PathResolveRequestSchema = z.object({
+  type: z.literal("fs.path.resolve.request"),
+  requestId: z.string(),
+  cwd: z.string(),
+  candidates: z.array(z.string()),
+  suffix: z.string().optional(),
+  contains: z.string().optional(),
+  searchRoots: z.array(z.string()).optional(),
+});
+
 export const FileUploadRequestSchema = z.object({
   type: z.literal("file.upload.request"),
   fileName: z.string().min(1),
@@ -3146,6 +3160,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ProjectIconGetRequestSchema,
   FileDownloadTokenRequestSchema,
   PreviewLinkCreateRequestSchema,
+  PathResolveRequestSchema,
   FileUploadRequestSchema,
   ClearAgentAttentionMessageSchema,
   ClientHeartbeatMessageSchema,
@@ -3368,6 +3383,8 @@ export const ServerInfoStatusPayloadSchema = z
         // Local fork (delta 75): fs.preview_link.create.request issues tailnet preview links;
         // true only when the host has a preview base URL configured.
         previewLinks: z.boolean().optional(),
+        // Local fork (delta 90): fs.path.resolve.request finds the file an agent's link names.
+        pathResolve: z.boolean().optional(),
         // Local fork (delta 46): send/create requests accept `imageUploads`.
         imageUploads: z.boolean().optional(),
         // Local fork (delta 79): history hides agents another agent created unless the
@@ -5869,6 +5886,23 @@ export const PreviewLinkCreateResponseSchema = z.object({
   }),
 });
 
+export const PathResolveResponseSchema = z.object({
+  type: z.literal("fs.path.resolve.response"),
+  payload: z.object({
+    requestId: z.string(),
+    /** Existing candidates, or up to two suffix matches; two means the name is ambiguous. */
+    matches: z.array(
+      z.object({
+        path: z.string(),
+        kind: z.enum(["file", "directory"]),
+      }),
+    ),
+    /** False when the suffix search stopped at its time budget. */
+    complete: z.boolean(),
+    error: z.string().nullable(),
+  }),
+});
+
 export const FileUploadResponseSchema = z.object({
   type: z.literal("file.upload.response"),
   payload: z.object({
@@ -6547,6 +6581,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ProjectIconGetResponseSchema,
   FileDownloadTokenResponseSchema,
   PreviewLinkCreateResponseSchema,
+  PathResolveResponseSchema,
   FileUploadResponseSchema,
   ListProviderModelsResponseMessageSchema,
   ListProviderModesResponseMessageSchema,
@@ -7034,6 +7069,8 @@ export type FileDownloadTokenRequest = z.infer<typeof FileDownloadTokenRequestSc
 export type FileDownloadTokenResponse = z.infer<typeof FileDownloadTokenResponseSchema>;
 export type PreviewLinkCreateRequest = z.infer<typeof PreviewLinkCreateRequestSchema>;
 export type PreviewLinkCreateResponse = z.infer<typeof PreviewLinkCreateResponseSchema>;
+export type PathResolveRequest = z.infer<typeof PathResolveRequestSchema>;
+export type PathResolveResponse = z.infer<typeof PathResolveResponseSchema>;
 export type FileUploadRequest = z.infer<typeof FileUploadRequestSchema>;
 export type FileUploadResponse = z.infer<typeof FileUploadResponseSchema>;
 export type RestartServerRequestMessage = z.infer<typeof RestartServerRequestMessageSchema>;

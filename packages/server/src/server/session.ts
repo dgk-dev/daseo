@@ -2489,6 +2489,8 @@ export class Session {
         return this.workspaceFilesSession.handleFileDownloadTokenRequest(msg);
       case "fs.preview_link.create.request":
         return this.workspaceFilesSession.handlePreviewLinkCreateRequest(msg);
+      case "fs.path.resolve.request":
+        return this.workspaceFilesSession.handlePathResolveRequest(msg);
       case "file.upload.request":
         this.workspaceFilesSession.handleFileUploadRequest(msg);
         return undefined;

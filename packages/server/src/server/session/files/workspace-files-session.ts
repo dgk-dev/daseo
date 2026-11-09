@@ -1,3 +1,4 @@
+import path from "path";
 import type pino from "pino";
 import { getErrorMessage } from "@getpaseo/protocol/error-utils";
 import {
@@ -16,6 +17,7 @@ import type {
   FileSubscribeRequest,
   FileUnsubscribeRequest,
   FileWriteRequest,
+  PathResolveRequest,
   PreviewLinkCreateRequest,
   SessionInboundMessage,
   SessionOutboundMessage,
@@ -35,6 +37,7 @@ import {
   writeExplorerFile,
 } from "../../file-explorer/service.js";
 import { workspaceFileObserver, type FileObserver } from "../../file-explorer/observer.js";
+import { resolveNamedPath } from "../../file-explorer/path-resolve.js";
 import { getProjectIcon } from "../../../utils/project-icon.js";
 
 /**
@@ -73,12 +76,14 @@ export class WorkspaceFilesSession {
   private readonly fileUploads: FileUploadStore;
   private readonly fileObserver: FileObserver;
   private readonly fileSubscriptions = new Map<string, () => void>();
+  private readonly paseoHome: string;
 
   constructor(options: WorkspaceFilesSessionOptions) {
     this.host = options.host;
     this.downloadTokenStore = options.downloadTokenStore;
     this.previewLinks = options.previewLinks ?? null;
     this.logger = options.logger;
+    this.paseoHome = options.paseoHome;
     this.fileUploads = new FileUploadStore({ paseoHome: options.paseoHome });
     this.fileObserver = options.fileObserver ?? workspaceFileObserver;
   }
@@ -503,5 +508,31 @@ export class WorkspaceFilesSession {
         error: null,
       },
     });
+  }
+
+  // Daseo delta 90: find the file or folder a link in an agent's answer names.
+  async handlePathResolveRequest(request: PathResolveRequest): Promise<void> {
+    const { requestId } = request;
+    try {
+      const result = await resolveNamedPath({
+        cwd: request.cwd,
+        candidates: request.candidates,
+        ...(request.suffix ? { suffix: request.suffix } : {}),
+        ...(request.contains ? { contains: request.contains } : {}),
+        ...(request.searchRoots ? { searchRoots: request.searchRoots } : {}),
+        // The daemon's own timeline store holds millions of small files.
+        skipPaths: [path.join(this.paseoHome, "timelines")],
+      });
+      this.host.emit({
+        type: "fs.path.resolve.response",
+        payload: { requestId, matches: result.matches, complete: result.complete, error: null },
+      });
+    } catch (error) {
+      this.logger.debug({ err: error, cwd: request.cwd }, "Path resolve failed");
+      this.host.emit({
+        type: "fs.path.resolve.response",
+        payload: { requestId, matches: [], complete: true, error: getErrorMessage(error) },
+      });
+    }
   }
 }

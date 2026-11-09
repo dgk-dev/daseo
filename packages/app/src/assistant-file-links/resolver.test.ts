@@ -3,6 +3,9 @@ import {
   classifyForResolution,
   fetchDaemonResolution,
   getAssistantFileLinkToken,
+  planAssistantFileLink,
+  resolvePathThroughDaemon,
+  type ResolvePath,
   UnresolvedFileLinkError,
   type AssistantFileLinkContext,
   type DirectorySuggestionEntry,
@@ -148,15 +151,24 @@ describe("classifyForResolution", () => {
     });
   });
 
-  it("keeps auto-linkified normal domains external", () => {
-    const result = classifyForResolution(
-      { href: "http://google.com", text: "google.com", markup: "linkify" },
-      CONTEXT,
-    );
-
-    expect(result).toEqual({
+  it("keeps auto-linkified normal domains external, over https when written without a scheme", () => {
+    expect(
+      classifyForResolution(
+        { href: "http://google.com", text: "google.com", markup: "linkify" },
+        CONTEXT,
+      ),
+    ).toEqual({
       kind: "resolved",
-      value: { kind: "external", url: "http://google.com" },
+      value: { kind: "external", url: "https://google.com" },
+    });
+    expect(
+      classifyForResolution(
+        { href: "http://example.com/a", text: "http://example.com/a", markup: "linkify" },
+        CONTEXT,
+      ),
+    ).toEqual({
+      kind: "resolved",
+      value: { kind: "external", url: "http://example.com/a" },
     });
   });
 
@@ -345,5 +357,143 @@ describe("getAssistantFileLinkToken", () => {
         sourceType: "inline-code",
       }),
     ).toBe("workspace-git-service.ts:1553");
+  });
+});
+
+describe("path resolve (Daseo delta 90)", () => {
+  const PLAN_CONTEXT = { workspaceRoot: "/Users/test/project", pathResolve: true };
+  const inline = (text: string) => ({ href: text, text, sourceType: "inline-code" as const });
+
+  it.each([
+    [
+      "an elided path with no head searches the workspace and home",
+      inline("…/research/report.md"),
+      {
+        candidates: [],
+        suffix: "research/report.md",
+        searchRoots: ["/Users/test/project", "~"],
+      },
+    ],
+    [
+      "an elided path under home searches below its head",
+      inline("~/.pi/…/research/report.md"),
+      { candidates: [], suffix: "research/report.md", searchRoots: ["~/.pi"] },
+    ],
+    [
+      "an elided relative path keeps its head as a constraint",
+      inline("apps/mktg/.../schema.ts"),
+      {
+        candidates: [],
+        suffix: "schema.ts",
+        contains: "apps/mktg",
+        searchRoots: ["/Users/test/project", "~"],
+      },
+    ],
+    [
+      "a bare name is tried at the root, then searched",
+      inline("Daseo-0.5.101.apk"),
+      {
+        candidates: ["/Users/test/project/Daseo-0.5.101.apk"],
+        suffix: "Daseo-0.5.101.apk",
+        searchRoots: ["/Users/test/project"],
+      },
+    ],
+    [
+      "a relative markdown link written against a nested repo is searched (#8361)",
+      { href: "schema/x.md", text: "x.md" },
+      {
+        candidates: ["/Users/test/project/schema/x.md"],
+        suffix: "schema/x.md",
+        searchRoots: ["/Users/test/project"],
+      },
+    ],
+    [
+      "an absolute link is only checked",
+      { href: "/Users/test/Downloads/report.pdf", text: "report.pdf" },
+      { candidates: ["/Users/test/Downloads/report.pdf"] },
+    ],
+    [
+      "a home link with a space is decoded and only checked",
+      { href: "~/brain/Memory/System%20Map.md", text: "System Map.md" },
+      { candidates: ["~/brain/Memory/System Map.md"] },
+    ],
+  ])("%s", (_name, source, query) => {
+    expect(planAssistantFileLink(source, PLAN_CONTEXT)).toMatchObject({
+      kind: "needsPathResolve",
+      query,
+    });
+  });
+
+  it("keeps web addresses external and leaves elided paths unlinked without the daemon feature", () => {
+    expect(planAssistantFileLink(inline("invite.folnua.com/seoulforest/"), PLAN_CONTEXT)).toEqual({
+      kind: "resolved",
+      value: { kind: "external", url: "https://invite.folnua.com/seoulforest/" },
+    });
+    expect(
+      planAssistantFileLink(inline("…/research/report.md"), {
+        workspaceRoot: "/Users/test/project",
+        pathResolve: false,
+      }),
+    ).toEqual({ kind: "resolved", value: { kind: "ignored" } });
+  });
+
+  function daemon(result: Awaited<ReturnType<ResolvePath>>): ResolvePath {
+    return async () => result;
+  }
+  const target = { raw: "…/report.md:3", path: "…/report.md", lineStart: 3 };
+  const query = { candidates: [], suffix: "report.md" };
+
+  it("opens the one match and keeps the line reference", async () => {
+    await expect(
+      resolvePathThroughDaemon({
+        query,
+        target,
+        workspaceRoot: "/Users/test/project",
+        resolvePath: daemon({
+          matches: [{ path: "/Users/test/.pi/report.md", kind: "file" }],
+          complete: true,
+          error: null,
+        }),
+      }),
+    ).resolves.toEqual({
+      kind: "found",
+      isDirectory: false,
+      target: {
+        raw: "…/report.md:3",
+        path: "/Users/test/.pi/report.md",
+        lineStart: 3,
+        lineEnd: undefined,
+      },
+    });
+  });
+
+  it.each([
+    [
+      "ambiguous",
+      {
+        matches: [
+          { path: "/a/report.md", kind: "file" as const },
+          { path: "/b/report.md", kind: "file" as const },
+        ],
+        complete: true,
+        error: null,
+      },
+    ],
+    ["missing", { matches: [], complete: true, error: null }],
+    ["incomplete", { matches: [], complete: false, error: null }],
+    [
+      "incomplete",
+      { matches: [{ path: "/a/report.md", kind: "file" as const }], complete: false, error: null },
+    ],
+    ["missing", { matches: [], complete: true, error: "boom" }],
+  ])("never opens a guess: %s", async (kind, result) => {
+    await expect(
+      resolvePathThroughDaemon({
+        query,
+        target,
+        workspaceRoot: "/Users/test/project",
+        resolvePath: daemon(result),
+      }),
+    ).resolves.toEqual({ kind });
   });
 });

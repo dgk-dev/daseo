@@ -38,6 +38,9 @@ export const ko: TranslationResources = {
       daemonClientUnavailable: "데몬 클라이언트를 사용할 수 없습니다",
       daemonClientDisconnected: "데몬 클라이언트 연결이 끊어졌습니다",
       noFileFound: "{{token}}에 해당하는 파일을 찾을 수 없습니다",
+      multipleFilesFound: "{{token}}에 맞는 파일이 여러 개라 열지 않았습니다",
+      fileSearchIncomplete: "{{token}}을(를) 시간 안에 다 찾지 못해 열지 않았습니다",
+      folderOutsideWorkspace: "{{path}}은(는) 이 워크스페이스 밖에 있습니다",
       unexpectedDictationError: "받아쓰기를 처리하는 중 예기치 않은 오류가 발생했습니다.",
     },
     connectionStatus: {

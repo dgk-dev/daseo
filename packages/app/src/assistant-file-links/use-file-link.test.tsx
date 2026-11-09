@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ToastApi } from "@/components/toast-host";
 import type { InlinePathTarget } from "./parse";
 import { AssistantFileLinkResolverProvider } from "./provider";
-import type { DirectorySuggestionResult } from "./resolver";
+import type { DirectorySuggestionResult, ResolvePath } from "./resolver";
 import { useFileLink } from "./use-file-link";
 import type { OpenFileDisposition } from "@/workspace/file-open";
 
@@ -72,6 +72,7 @@ interface TestClient {
     matchMode: "suffix";
     limit: number;
   }) => Promise<DirectorySuggestionResult>;
+  resolvePath?: ResolvePath;
 }
 
 function createQueryClient(): QueryClient {
@@ -96,6 +97,7 @@ function createWrapper(input: {
   openedFiles: OpenedFile[];
   toast?: ToastApi;
   openFileExternally?: (target: InlinePathTarget) => Promise<boolean>;
+  supportsPathResolve?: boolean;
 }) {
   const queryClient = createQueryClient();
   return function Wrapper({ children }: { children: ReactNode }) {
@@ -112,6 +114,7 @@ function createWrapper(input: {
           client={input.client}
           serverId="server-1"
           workspaceRoot="/Users/test/project"
+          supportsPathResolve={input.supportsPathResolve}
           onOpenWorkspaceFile={openWorkspaceFile}
           openFileExternally={input.openFileExternally}
           toast={input.toast}
@@ -558,5 +561,115 @@ describe("useFileLink dispatch (Daseo delta 75)", () => {
       desktopMock.isLocalDaemon = false;
       desktopMock.openLocalPath = null;
     }
+  });
+});
+
+describe("useFileLink path resolve (Daseo delta 90)", () => {
+  const inlineCode = (text: string) => ({ href: text, text, sourceType: "inline-code" as const });
+  const noSuggestions = vi.fn(async () => resolvedSuggestions([]));
+
+  function setup(resolvePath: ResolvePath) {
+    const openedFiles: OpenedFile[] = [];
+    const toast = createToast();
+    const wrapper = createWrapper({
+      client: { getDirectorySuggestions: noSuggestions, resolvePath },
+      openedFiles,
+      toast,
+      supportsPathResolve: true,
+    });
+    return { openedFiles, toast, wrapper };
+  }
+
+  it("opens the one file an elided path names", async () => {
+    const resolvePath = vi.fn<ResolvePath>(async () => ({
+      matches: [{ path: "/Users/test/.pi/research/report.md", kind: "file" }],
+      complete: true,
+      error: null,
+    }));
+    const { openedFiles, wrapper } = setup(resolvePath);
+    const { result } = renderHook(() => useFileLink(inlineCode("…/research/report.md")), {
+      wrapper,
+    });
+
+    act(() => {
+      result.current.onPress();
+    });
+
+    await waitFor(() => {
+      expect(openedFiles).toHaveLength(1);
+    });
+    expect(openedFiles[0]?.target.path).toBe("/Users/test/.pi/research/report.md");
+    expect(resolvePath).toHaveBeenCalledWith({
+      cwd: "/Users/test/project",
+      candidates: [],
+      suffix: "research/report.md",
+      searchRoots: ["/Users/test/project", "~"],
+    });
+  });
+
+  it("shows a toast instead of a pane for a missing file or several matches", async () => {
+    const outcomes: Array<Awaited<ReturnType<ResolvePath>>> = [
+      { matches: [], complete: true, error: null },
+      {
+        matches: [
+          { path: "/Users/test/project/a/route.ts", kind: "file" },
+          { path: "/Users/test/project/b/route.ts", kind: "file" },
+        ],
+        complete: true,
+        error: null,
+      },
+    ];
+    const { openedFiles, toast, wrapper } = setup(async () => outcomes.shift()!);
+
+    for (const text of ["/Users/test/project/missing.md", "…/route.ts"]) {
+      const { result } = renderHook(() => useFileLink(inlineCode(text)), { wrapper });
+      act(() => {
+        result.current.onPress();
+      });
+    }
+
+    await waitFor(() => {
+      expect(toast.show).toHaveBeenCalledTimes(2);
+    });
+    expect(toast.show).toHaveBeenCalledWith("No file found for /Users/test/project/missing.md", {
+      variant: "error",
+      testID: "assistant-file-link-not-found-toast",
+    });
+    expect(toast.show).toHaveBeenCalledWith("Several files match …/route.ts, so none was opened", {
+      variant: "error",
+      testID: "assistant-file-link-not-found-toast",
+    });
+    expect(openedFiles).toEqual([]);
+  });
+
+  it("hands a folder to the workspace opener with a trailing slash, never to a download", async () => {
+    const openFileExternally = vi.fn(async () => true);
+    const openedFiles: OpenedFile[] = [];
+    const wrapper = createWrapper({
+      client: {
+        getDirectorySuggestions: noSuggestions,
+        resolvePath: async () => ({
+          matches: [{ path: "/Users/test/project/docs/guides", kind: "directory" }],
+          complete: true,
+          error: null,
+        }),
+      },
+      openedFiles,
+      openFileExternally,
+      supportsPathResolve: true,
+    });
+    const { result } = renderHook(() => useFileLink({ href: "docs/guides", text: "guides" }), {
+      wrapper,
+    });
+
+    act(() => {
+      result.current.onPress();
+    });
+
+    await waitFor(() => {
+      expect(openedFiles).toHaveLength(1);
+    });
+    expect(openedFiles[0]?.target.path).toBe("/Users/test/project/docs/guides/");
+    expect(openFileExternally).not.toHaveBeenCalled();
   });
 });
