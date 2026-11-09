@@ -1787,6 +1787,66 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       `clock.test.ts`, `use-paced-stream-text.test.ts`, `stream-pacing.test.ts` and
       `reanimated-commit-path.test.ts`.
 
+88. **Android status rings turn on the RenderThread** — the owner approved on 2026-11-09
+    (round 2 of the foreground CPU work) after 0.5.100 still spent 45 CPU-s per minute with a
+    finished conversation open, mostly waking the main thread for every ring frame: the
+    composer's cursor-position pre-draw listener (`Editor$PositionListener`, about 30%) and
+    Reanimated's frame callback (about 30%).
+    - **What changed.** On Android the ring's turning quarter is a native view
+      (`modules/daseo-status-ring`) drawing an `AnimatedVectorDrawable`, which animates on the
+      RenderThread since API 25. Once started, no ring frame touches the main thread, the JS
+      thread or Reanimated. The frame (knockout, track, centre dot) is still the shared React
+      Native view in `frame.tsx`. iOS keeps the Reanimated clock (`index.tsx`, `clock.ts`), web
+      keeps `index.web.tsx`.
+    - **Same look.** The vector path is what React Native's `BorderDrawable` draws for a lone
+      top border on a fully rounded 12 dp box: the band between radius 6 and 4.5 dp, cut along
+      the diagonals (225° to 315°), fill alpha `STATUS_RING_HEAD_OPACITY`, one turn per
+      `STATUS_RING_PERIOD_MS`. `native-contract.test.ts` pins those numbers to `geometry.ts`.
+      Colour: the vector's white fill is only a mask; `index.android.tsx` passes the theme's
+      running colour (`getStatusDotColor` → `theme.colors.statusDotRunning`) as the native
+      `color` prop through `withUnistyles`, and the view tints with it, so a theme change
+      re-tints the ring without re-rendering its row.
+    - **Same phase.** Every Android ring follows one 900 ms clock on `SystemClock.uptimeMillis`.
+      A drawable animation cannot start mid-turn, so a ring that appears waits for the next
+      quarter boundary (at most 225 ms) drawn turned by whole quarters, which moves the cached
+      bitmap exactly instead of resampling it.
+    - **Same gating as delta 87.** JS sets `spinning` only while the retained panel is active and
+      reduce motion is off; the view also stops (and resets to rest) when it, an ancestor or the
+      window is hidden, and when it detaches.
+    - **Frame rate.** The view asks for 60 fps (`requestedFrameRate`, API 35+), but the Fold 7's
+      display has no adaptive-refresh support (`hasArrSupport false`), so the ring draws at the
+      window's 120 Hz there. The owner accepted 120 Hz; moving the ring to its own surface
+      (`SurfaceView`, which keeps its own rate) was not taken.
+    - **Measured 2026-11-09 on the Fold 7** (profileable build of `c774e5b68`, same scripts and
+      screens as delta 87; CPU-s per minute, minute 1 / minute 2; 0.5.100 in brackets):
+      finished conversation 33.6/32.3 (44.8/45.1), main thread 2.4 (14.9), RenderThread 28.7,
+      14,594 frames in 2 minutes, jank 0; agent running quietly 42.8/42.8 (52.2/49.1); streaming
+      80.8/87.6 (70.3/78.4; unchanged code path, run variance); streaming with reduce motion
+      32.4 and 1.1 once the reply ended (rings still). Display render rate 120 Hz in 20 of 20
+      samples idle and 12 of 12 while flinging the chat. Pixel compare against 0.5.100 at rest
+      (reduce motion, three rings, 56×56 px crops): 29 of 3,136 px differ by more than 4/255,
+      8 by more than 32/255, at most 65/255, all at the arc's two ends. Background: 15 s on the
+      home screen, main thread and RenderThread 0. The plan's targets (15, 20, 40) were not
+      reached; at rest the screen costs 1.1, so S1 is almost entirely the 120 Hz ring drawing.
+    - **Found, not Daseo's:** with an agent running, 60–65% of the main thread was
+      `AccessibilityInteractionController` → `findLabelForView`, driven by two third-party
+      accessibility services on the owner's phone (a timer's lock service and the Minimalist
+      launcher) rebuilding Daseo's accessibility tree on every content change.
+    - **Tried and dropped: one container for the finished history rows.** Streaming's
+      remaining cost is each live-head commit cloning, diffing and laying out every mounted
+      history row (`ShadowTree::commit` 37%, `cloneChildInPlace` 16% of the JS thread). Markdown
+      splitting already touches only the live block (`promoteCompletedAssistantBlocks` in
+      `types/stream.ts`). Wrapping the mounted rows in one view needs a regrouping scroll
+      component, re-sent cell offsets on every live-head height change, and a replacement for
+      Android `maintainVisibleContentPosition`: `MaintainVisibleScrollPositionHelper` anchors on
+      the content view's direct children, so one group child shifts the reader on every block
+      promotion, and anchoring the footer breaks older-history paging and spacer changes. React
+      Native Android ships as the prebuilt `react-android` AAR here, so the helper cannot be
+      patched. Dropped as too fragile; mounting fewer history rows was not chosen.
+    - **Key files:** `packages/app/modules/daseo-status-ring/`,
+      `packages/app/src/components/status-ring/index.android.tsx`, test
+      `native-contract.test.ts`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including
