@@ -2,6 +2,7 @@ import { createContext, type ReactNode } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { Shortcut } from "@/components/ui/shortcut";
+import { useKeyboardShortcutsAvailable } from "@/keyboard/availability";
 import type { ShortcutKey } from "@/utils/format-shortcut";
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
 
@@ -82,7 +83,10 @@ export function HintCaret() {
   );
 }
 
-/** A key hint that is not a control: `⇧⏎ newline`. Renders nothing without its keycap. */
+/**
+ * A key hint that is not a control: `⇧⏎ newline`. Renders nothing where its keycap would not
+ * show (no binding, or a phone without a keyboard), so the word never stands alone.
+ */
 export function HintKey({
   chord,
   label,
@@ -90,7 +94,8 @@ export function HintKey({
   chord: ShortcutKey[][] | null | undefined;
   label: string;
 }) {
-  if (!chord || chord.length === 0) return null;
+  const shortcutsAvailable = useKeyboardShortcutsAvailable();
+  if (!shortcutsAvailable || !chord || chord.length === 0) return null;
   return (
     <View style={hintLineStyles.keyHint}>
       <HintKeycap chord={chord} />

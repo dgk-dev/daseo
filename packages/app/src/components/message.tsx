@@ -2517,6 +2517,8 @@ function ToolRowStatusGlyph({ status }: { status: ToolRowStatus }) {
       style={status === "failed" ? toolRowStyles.statusFailed : toolRowStyles.statusOk}
       dataSet={CODE_SURFACE_DATASET}
       selectable={false}
+      // The glyph replaces an icon that was never part of the row's accessible name.
+      aria-hidden
       testID={status === "failed" ? "tool-call-status-failed" : "tool-call-status-ok"}
     >
       {status === "failed" ? "✗" : "✓"}

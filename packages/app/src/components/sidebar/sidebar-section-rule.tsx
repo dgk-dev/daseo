@@ -4,22 +4,22 @@ import { StyleSheet } from "react-native-unistyles";
 /**
  * Daseo delta 89: a sidebar section title drawn as a terminal rule, `── workspaces ──`. The rule
  * is in the border colour and the title in muted text, so the section reads as a divider and
- * not as one more row.
+ * not as one more row. The rule and the trailing mark are drawing, hidden from assistive tech.
  */
 export function SidebarSectionRule({ title, trailing }: { title: string; trailing?: string }) {
   return (
     <View style={styles.row}>
-      <Text style={styles.rule} selectable={false}>
+      <Text style={styles.rule} selectable={false} aria-hidden>
         {"── "}
       </Text>
       <Text style={styles.title} numberOfLines={1} selectable={false}>
         {title}
       </Text>
-      <Text style={styles.rule} selectable={false}>
+      <Text style={styles.rule} selectable={false} aria-hidden>
         {" ──"}
       </Text>
       {trailing ? (
-        <Text style={styles.trailing} selectable={false}>
+        <Text style={styles.trailing} selectable={false} aria-hidden>
           {trailing}
         </Text>
       ) : null}

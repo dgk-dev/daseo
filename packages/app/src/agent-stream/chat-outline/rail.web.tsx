@@ -11,14 +11,16 @@ import type { ChatOutlineRailProps } from "./rail";
 
 // Hover tracking lives on the rail and the slots, never on the Pressable inside them:
 // magnifying a slot must not move the box the pointer is resting on. See docs/hover.md.
-const RAIL_WIDTH = 36;
+// Daseo delta 89: the transcript starts at the pane's left inset (24: list padding 16 + row 8), so
+// the rail lives in that gutter and its widest pill (4 + 20) stops where the text begins.
+const RAIL_WIDTH = 24;
 const SLOT_HEIGHT = 8;
 const MIN_PANEL_WIDTH = 918;
 const RESTING_PILL_HEIGHT = 2;
 const MAGNIFIED_PILL_HEIGHT = 4;
 const RESTING_PILL_WIDTH = 10;
 const ACTIVE_PILL_WIDTH = 18;
-const MAGNIFIED_PILL_WIDTH = 26;
+const MAGNIFIED_PILL_WIDTH = 20;
 const PREVIEW_WIDTH = 260;
 const PREVIEW_HEIGHT = 48;
 const PREVIEW_GAP = 4;
@@ -192,7 +194,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   rail: {
     position: "absolute",
-    left: theme.spacing[2],
+    left: 0,
     top: "10%",
     bottom: "10%",
     width: RAIL_WIDTH,
