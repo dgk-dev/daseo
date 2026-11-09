@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Image,
   PanResponder,
   Pressable,
   Text,
@@ -33,7 +32,8 @@ import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-
 import { useSessionStore } from "@/stores/session-store";
 import { mapTouchToGuest } from "./remote-viewport";
 import { RemoteKeyboardToggle, useRemoteTyping } from "./remote-typing";
-import { nextRemoteStreamRetry, shouldAcceptRemoteStreamSequence } from "./remote-stream-retry";
+import { createRemoteStreamWatch, type RemoteStreamStatus } from "./remote-stream-watch";
+import { createRemoteStreamFrameStore, RemoteStreamFrameView } from "./remote-stream-frame";
 import { useRemoteBrowserPopupTargets } from "@/desktop/browser/remote-popup-targets";
 
 interface BrowserPaneProps {
@@ -73,13 +73,6 @@ function bytesToBase64(bytes: Uint8Array): string {
   return out;
 }
 
-interface FrameState {
-  uri: string;
-  width: number;
-  height: number;
-}
-
-type StreamStatus = "connecting" | "retrying" | "live" | "stopped";
 type RemoteBrowserClient = ReturnType<typeof useHostRuntimeClient>;
 type RemoteInput = Parameters<
   NonNullable<RemoteBrowserClient>["sendBrowserRemoteInput"]
@@ -269,15 +262,16 @@ export function BrowserPane({
   });
   const activeBrowserId = popup.activeBrowserId;
 
-  const [frame, setFrame] = useState<FrameState | null>(null);
-  const [status, setStatus] = useState<StreamStatus>("connecting");
+  // The frame itself lives in a store only the frame surface reads; the pane re-renders when
+  // the first frame lands or the target changes, not per frame.
+  const [frameStore] = useState(createRemoteStreamFrameStore);
+  const [hasFrame, setHasFrame] = useState(false);
+  const [status, setStatus] = useState<RemoteStreamStatus>("connecting");
   const [urlText, setUrlText] = useState("");
   const urlInputRef = useRef<EditingTextInputHandle | null>(null);
   const [reconnectGeneration, setReconnectGeneration] = useState(0);
   const [viewerId] = useState(createViewerId);
   const containerSizeRef = useRef({ width: 0, height: 0 });
-  const frameRef = useRef<FrameState | null>(null);
-  const lastSequenceRef = useRef(-1);
   const scrollGestureRef = useRef({
     moved: false,
     lastDx: 0,
@@ -325,88 +319,22 @@ export function BrowserPane({
   );
 
   useEffect(() => {
-    frameRef.current = null;
-    lastSequenceRef.current = -1;
-    setFrame(null);
+    frameStore.set(null);
+    setHasFrame(false);
     setStatus("connecting");
-  }, [activeBrowserId]);
+  }, [activeBrowserId, frameStore]);
 
   useEffect(() => {
     if (!client || !supportsStream) {
       return;
     }
     if (!shouldWatch) {
-      setStatus(frameRef.current ? "retrying" : "connecting");
+      setStatus(frameStore.get() ? "retrying" : "connecting");
       return;
     }
-    let disposed = false;
-    let retryAttempt = 0;
-    let retryTimer: ReturnType<typeof setTimeout> | null = null;
-    let firstFrameTimer: ReturnType<typeof setTimeout> | null = null;
-    let watchInFlight = false;
-    lastSequenceRef.current = -1;
-    setStatus(frameRef.current ? "retrying" : "connecting");
-
-    const clearFirstFrameTimer = () => {
-      if (firstFrameTimer) {
-        clearTimeout(firstFrameTimer);
-        firstFrameTimer = null;
-      }
-    };
-
-    const clearRetryTimer = () => {
-      if (retryTimer) {
-        clearTimeout(retryTimer);
-        retryTimer = null;
-      }
-    };
-
-    let performRewatch = async () => {};
-    const scheduleRetry = () => {
-      if (disposed || retryTimer) {
-        return;
-      }
-      const retry = nextRemoteStreamRetry({ attempt: retryAttempt });
-      if (!retry) {
-        setStatus("stopped");
-        return;
-      }
-      retryAttempt = retry.nextAttempt;
-      setStatus("retrying");
-      retryTimer = setTimeout(() => {
-        retryTimer = null;
-        void performRewatch();
-      }, retry.delayMs);
-    };
-
-    const unsubscribeFrames = client.onBrowserStreamFrame((streamFrame: BrowserStreamFrame) => {
-      if (
-        disposed ||
-        streamFrame.browserId !== activeBrowserId ||
-        !shouldAcceptRemoteStreamSequence(lastSequenceRef.current, streamFrame.meta.seq)
-      ) {
-        return;
-      }
-      lastSequenceRef.current = streamFrame.meta.seq;
-      clearFirstFrameTimer();
-      clearRetryTimer();
-      const next: FrameState = {
-        uri: `data:image/jpeg;base64,${bytesToBase64(streamFrame.payload)}`,
-        width: streamFrame.meta.width,
-        height: streamFrame.meta.height,
-      };
-      frameRef.current = next;
-      setFrame(next);
-      setStatus("live");
-    });
-
-    const performWatch = async () => {
-      if (disposed || watchInFlight) {
-        return;
-      }
-      watchInFlight = true;
-      const result = await client
-        .watchBrowserStream({
+    const watch = createRemoteStreamWatch({
+      watch: async () => {
+        const result = await client.watchBrowserStream({
           browserId: activeBrowserId,
           workspaceId,
           viewerId,
@@ -414,64 +342,42 @@ export function BrowserPane({
           maxHeight: STREAM_MAX_DIMENSION,
           quality: STREAM_QUALITY,
           minFrameIntervalMs: STREAM_MIN_FRAME_INTERVAL_MS,
-        })
-        .catch(() => ({ ok: false }) as const);
-      watchInFlight = false;
-      if (disposed) {
-        return;
-      }
-      if (!result.ok) {
-        scheduleRetry();
-        return;
-      }
-      clearFirstFrameTimer();
-      firstFrameTimer = setTimeout(() => {
-        firstFrameTimer = null;
-        scheduleRetry();
-      }, FIRST_FRAME_TIMEOUT_MS);
-    };
-
-    performRewatch = async () => {
-      if (disposed || watchInFlight) {
-        return;
-      }
-      clearFirstFrameTimer();
-      try {
-        await client.unwatchBrowserStream({
-          browserId: activeBrowserId,
-          workspaceId,
-          viewerId,
         });
-      } catch {
-        // A failed unwatch never blocks a bounded recovery attempt.
-      }
-      if (disposed) {
+        return result.ok;
+      },
+      unwatch: async () => {
+        await client.unwatchBrowserStream({ browserId: activeBrowserId, workspaceId, viewerId });
+      },
+      onStatus: setStatus,
+      hasRetainedFrame: frameStore.get() !== null,
+      firstFrameTimeoutMs: FIRST_FRAME_TIMEOUT_MS,
+    });
+
+    const unsubscribeFrames = client.onBrowserStreamFrame((streamFrame: BrowserStreamFrame) => {
+      if (streamFrame.browserId !== activeBrowserId || !watch.acceptFrame(streamFrame.meta.seq)) {
         return;
       }
-      // The desktop sequence is monotonic across screencast restarts. Resetting
-      // also permits recovery after a full desktop-host process restart.
-      lastSequenceRef.current = -1;
-      await performWatch();
-    };
+      const hadFrame = frameStore.get() !== null;
+      frameStore.set({
+        uri: `data:image/jpeg;base64,${bytesToBase64(streamFrame.payload)}`,
+        width: streamFrame.meta.width,
+        height: streamFrame.meta.height,
+      });
+      if (!hadFrame) {
+        setHasFrame(true);
+      }
+    });
 
-    void performWatch();
+    watch.start();
 
     return () => {
-      disposed = true;
-      clearRetryTimer();
-      clearFirstFrameTimer();
       unsubscribeFrames();
-      void client
-        .unwatchBrowserStream({
-          browserId: activeBrowserId,
-          workspaceId,
-          viewerId,
-        })
-        .catch(() => undefined);
+      watch.dispose();
     };
   }, [
     activeBrowserId,
     client,
+    frameStore,
     reconnectGeneration,
     shouldWatch,
     supportsStream,
@@ -498,20 +404,23 @@ export function BrowserPane({
     });
   }, [sendInput]);
 
-  const mapEventToGuest = useCallback((event: GestureResponderEvent) => {
-    const current = frameRef.current;
-    if (!current) {
-      return null;
-    }
-    return mapTouchToGuest({
-      touchX: event.nativeEvent.locationX,
-      touchY: event.nativeEvent.locationY,
-      containerWidth: containerSizeRef.current.width,
-      containerHeight: containerSizeRef.current.height,
-      frameWidth: current.width,
-      frameHeight: current.height,
-    });
-  }, []);
+  const mapEventToGuest = useCallback(
+    (event: GestureResponderEvent) => {
+      const current = frameStore.get();
+      if (!current) {
+        return null;
+      }
+      return mapTouchToGuest({
+        touchX: event.nativeEvent.locationX,
+        touchY: event.nativeEvent.locationY,
+        containerWidth: containerSizeRef.current.width,
+        containerHeight: containerSizeRef.current.height,
+        frameWidth: current.width,
+        frameHeight: current.height,
+      });
+    },
+    [frameStore],
+  );
 
   const panResponder = useMemo(
     () =>
@@ -542,7 +451,7 @@ export function BrowserPane({
             return;
           }
           tracker.moved = true;
-          const current = frameRef.current;
+          const current = frameStore.get();
           const container = containerSizeRef.current;
           if (!current || container.width <= 0 || container.height <= 0) {
             return;
@@ -582,7 +491,16 @@ export function BrowserPane({
           flushScrollDelta();
         },
       }),
-    [flushScrollDelta, isInteractive, mapEventToGuest, onFocusPane, sendTap, shouldWatch, status],
+    [
+      flushScrollDelta,
+      frameStore,
+      isInteractive,
+      mapEventToGuest,
+      onFocusPane,
+      sendTap,
+      shouldWatch,
+      status,
+    ],
   );
 
   const handleContainerLayout = useCallback((event: LayoutChangeEvent) => {
@@ -611,7 +529,7 @@ export function BrowserPane({
 
   const scrollBy = useCallback(
     (deltaY: number) => {
-      const current = frameRef.current;
+      const current = frameStore.get();
       void sendInput({
         kind: "scroll",
         x: current ? Math.round(current.width / 2) : 200,
@@ -620,7 +538,7 @@ export function BrowserPane({
         deltaY,
       });
     },
-    [sendInput],
+    [frameStore, sendInput],
   );
 
   const handleBack = useCallback(() => void sendInput({ kind: "back" }), [sendInput]);
@@ -631,7 +549,6 @@ export function BrowserPane({
   const handleReconnect = useCallback(() => {
     setReconnectGeneration((current) => current + 1);
   }, []);
-  const frameSource = useMemo(() => (frame ? { uri: frame.uri } : null), [frame]);
   // The page viewport and the scroll buttons give the keyboard and key row their room.
   const viewportStyle = useMemo(
     () => [styles.viewport, { marginBottom: typing.keyboardInset }],
@@ -728,8 +645,8 @@ export function BrowserPane({
       ) : null}
 
       <View style={viewportStyle} onLayout={handleContainerLayout} {...panResponder.panHandlers}>
-        {frameSource ? (
-          <Image source={frameSource} style={styles.frameImage} resizeMode="contain" />
+        {hasFrame ? (
+          <RemoteStreamFrameView store={frameStore} targetKey={activeBrowserId} />
         ) : (
           <View style={styles.streamPlaceholder}>
             <Text style={[styles.subtitle, { color: mutedColor }]}>{statusLabel}</Text>
@@ -740,7 +657,7 @@ export function BrowserPane({
             ) : null}
           </View>
         )}
-        {frame && status !== "live" ? (
+        {hasFrame && status !== "live" ? (
           <View style={styles.staleOverlay} pointerEvents={status === "stopped" ? "auto" : "none"}>
             <Text style={[styles.staleText, { color: foreground }]}>{statusLabel}</Text>
             {status === "stopped" ? (
@@ -851,10 +768,6 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: theme.colors.background,
-  },
-  frameImage: {
-    width: "100%",
-    height: "100%",
   },
   streamPlaceholder: {
     alignItems: "center",
