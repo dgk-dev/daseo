@@ -1,16 +1,10 @@
 import { memo, useCallback, useMemo } from "react";
 import { Pressable, Text, View } from "react-native";
-import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { ChevronDown, ChevronRight } from "lucide-react-native";
-import type { Theme } from "@/styles/theme";
+import { StyleSheet } from "react-native-unistyles";
 import { formatDuration } from "@/utils/time";
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
 import { useCollapsedWork } from "./collapsed-work-context";
 import { formatWorkActivity } from "./collapsed-work";
-
-const chevronColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
-const ThemedChevronRight = withUnistyles(ChevronRight, chevronColorMapping);
-const ThemedChevronDown = withUnistyles(ChevronDown, chevronColorMapping);
 
 const HIT_SLOP = { top: 6, bottom: 6, left: 4, right: 4 } as const;
 
@@ -34,14 +28,16 @@ export const CollapsedWorkRow = memo(function CollapsedWorkRow({ turnKey }: { tu
     return null;
   }
 
-  const title =
-    durationMs !== undefined
-      ? `Worked for ${formatDuration(durationMs)}`
-      : `${workCount} ${workCount === 1 ? "step" : "steps"}`;
-  // What the folded work was, after the time: `Worked for 7s · 2 edits · 1 command`. The
+  const duration = durationMs !== undefined ? formatDuration(durationMs) : undefined;
+  const steps = `${workCount} ${workCount === 1 ? "step" : "steps"}`;
+  // Daseo delta 89: the row reads as a terminal summary line, `▸ worked 6m 12s · 2 edits`;
+  // its spoken label keeps the full wording.
+  const title = duration !== undefined ? `worked ${duration}` : steps;
+  const spokenTitle = duration !== undefined ? `Worked for ${duration}` : steps;
+  // What the folded work was, after the time: `worked 7s · 2 edits · 1 command`. The
   // counts end in an ellipsis on a narrow screen; the title is never cut.
   const activityParts = activity ? formatWorkActivity(activity) : [];
-  const label = [title, ...activityParts].join(" · ");
+  const label = [spokenTitle, ...activityParts].join(" · ");
 
   return (
     <View style={stylesheet.row}>
@@ -56,9 +52,8 @@ export const CollapsedWorkRow = memo(function CollapsedWorkRow({ turnKey }: { tu
         style={stylesheet.pressable}
         hitSlop={HIT_SLOP}
       >
-        {expanded ? <ThemedChevronDown size={14} /> : <ThemedChevronRight size={14} />}
         <Text style={stylesheet.label} dataSet={CODE_SURFACE_DATASET}>
-          {title}
+          {`${expanded ? "▾" : "▸"} ${title}`}
         </Text>
         {activityParts.length > 0 ? (
           <Text style={stylesheet.activity} numberOfLines={1} dataSet={CODE_SURFACE_DATASET}>

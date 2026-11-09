@@ -48,11 +48,6 @@ vi.mock("react-native-unistyles", () => ({
   withUnistyles: <T,>(component: T) => component,
 }));
 
-vi.mock("lucide-react-native", () => ({
-  ChevronDown: () => <span data-testid="chevron-down" />,
-  ChevronRight: () => <span data-testid="chevron-right" />,
-}));
-
 import { CollapsedWorkProvider, type CollapsedWorkController } from "./collapsed-work-context";
 import { CollapsedWorkRow } from "./collapsed-work-row";
 
@@ -102,7 +97,7 @@ describe("CollapsedWorkRow", () => {
     );
     expect(collapsed?.getAttribute("aria-expanded")).toBe("false");
     expect(collapsed?.getAttribute("aria-label")).toBe("Worked for 1m 2s, show work details");
-    expect(container?.querySelector('[data-testid="chevron-right"]')).not.toBeNull();
+    expect(collapsed?.textContent).toBe("▸ worked 1m 2s");
 
     act(() => collapsed?.click());
     expect(toggle).toHaveBeenCalledOnce();
@@ -120,7 +115,7 @@ describe("CollapsedWorkRow", () => {
     );
     expect(expanded?.getAttribute("aria-expanded")).toBe("true");
     expect(expanded?.getAttribute("aria-label")).toBe("Worked for 1m 2s, hide work details");
-    expect(container?.querySelector('[data-testid="chevron-down"]')).not.toBeNull();
+    expect(expanded?.textContent).toBe("▾ worked 1m 2s");
   });
 
   it("says what the folded work did after the time", () => {
@@ -133,7 +128,7 @@ describe("CollapsedWorkRow", () => {
     });
     const row = container?.querySelector('[data-testid="collapsed-work-row"]');
     expect(row?.textContent).toBe(
-      "Worked for 2m 36s· 2 edits · 1 command · 2 file reads · 1 other tool",
+      "▸ worked 2m 36s· 2 edits · 1 command · 2 file reads · 1 other tool",
     );
     expect(row?.getAttribute("aria-label")).toBe(
       "Worked for 2m 36s · 2 edits · 1 command · 2 file reads · 1 other tool, show work details",

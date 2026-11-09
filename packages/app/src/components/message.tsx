@@ -863,8 +863,7 @@ const nextTick = (value: number) => value + 1;
  * 5 s the row also shows how long the tool has run. Reduce motion keeps the caret solid;
  * a retained panel that is off screen stops ticking.
  */
-const RunningToolCaret = memo(function RunningToolCaret({ startedAt }: { startedAt?: number }) {
-  const reduceMotion = useReducedMotion();
+function useRunningToolTick(): number {
   const isPanelActive = useRetainedPanelActive();
   const [tick, setTick] = useState(0);
 
@@ -876,26 +875,65 @@ const RunningToolCaret = memo(function RunningToolCaret({ startedAt }: { started
     return () => clearInterval(handle);
   }, [isPanelActive]);
 
-  const caretVisible = reduceMotion || tick % 2 === 0;
-  const elapsedMs = startedAt === undefined ? 0 : Math.max(0, Date.now() - startedAt);
+  return tick;
+}
 
-  return (
-    <>
+function RunningToolCaretBlock({ tick, leading }: { tick: number; leading: boolean }) {
+  const reduceMotion = useReducedMotion();
+  const caretVisible = reduceMotion || tick % 2 === 0;
+  if (leading) {
+    return (
       <View
         testID="tool-call-running-caret"
-        style={caretVisible ? runningCaretStyles.caret : runningCaretStyles.caretHidden}
+        style={
+          caretVisible ? runningCaretStyles.caretLeading : runningCaretStyles.caretLeadingHidden
+        }
       />
-      {elapsedMs >= RUNNING_ELAPSED_AFTER_MS ? (
-        <Text
-          style={runningCaretStyles.elapsed}
-          dataSet={CODE_SURFACE_DATASET}
-          testID="tool-call-running-elapsed"
-        >
-          {formatDuration(elapsedMs)}
-        </Text>
-      ) : null}
+    );
+  }
+  return (
+    <View
+      testID="tool-call-running-caret"
+      style={caretVisible ? runningCaretStyles.caret : runningCaretStyles.caretHidden}
+    />
+  );
+}
+
+// Re-rendered by its parent's tick; reads the clock each time.
+function RunningToolElapsedText({ startedAt }: { startedAt?: number }) {
+  const elapsedMs = startedAt === undefined ? 0 : Math.max(0, Date.now() - startedAt);
+  if (elapsedMs < RUNNING_ELAPSED_AFTER_MS) return null;
+  return (
+    <Text
+      style={runningCaretStyles.elapsed}
+      dataSet={CODE_SURFACE_DATASET}
+      testID="tool-call-running-elapsed"
+    >
+      {formatDuration(elapsedMs)}
+    </Text>
+  );
+}
+
+const RunningToolCaret = memo(function RunningToolCaret({ startedAt }: { startedAt?: number }) {
+  const tick = useRunningToolTick();
+  return (
+    <>
+      <RunningToolCaretBlock tick={tick} leading={false} />
+      <RunningToolElapsedText startedAt={startedAt} />
     </>
   );
+});
+
+// Daseo delta 89: on a tool row the blinking block is the status cell and the elapsed time is
+// the duration column; each keeps its own tick so the row around them does not re-render.
+const RunningToolStatusCell = memo(function RunningToolStatusCell() {
+  const tick = useRunningToolTick();
+  return <RunningToolCaretBlock tick={tick} leading />;
+});
+
+const RunningToolElapsed = memo(function RunningToolElapsed({ startedAt }: { startedAt?: number }) {
+  useRunningToolTick();
+  return <RunningToolElapsedText startedAt={startedAt} />;
 });
 
 const runningCaretStyles = StyleSheet.create((theme) => {
@@ -906,9 +944,12 @@ const runningCaretStyles = StyleSheet.create((theme) => {
     flexShrink: 0,
     backgroundColor: theme.colors.accent,
   };
+  const caretLeading = { ...caret, marginLeft: 0 };
   return {
     caret,
     caretHidden: { ...caret, opacity: 0 },
+    caretLeading,
+    caretLeadingHidden: { ...caretLeading, opacity: 0 },
     elapsed: {
       marginLeft: "auto",
       paddingLeft: theme.spacing[2],
@@ -2426,7 +2467,114 @@ interface ExpandableBadgeProps {
   disableOuterSpacing?: boolean;
   borderlessWhenExpanded?: boolean;
   testID?: string;
+  /**
+   * Daseo delta 89: a tool call renders as an aligned row, `status  name  summary  duration`:
+   * a one-cell status glyph in place of the tool icon, the name in a fixed column, and the
+   * duration right-aligned when it is known (running time, or a duration the tool reported).
+   */
+  toolRow?: { durationLabel?: string };
 }
+
+type ToolRowStatus = "running" | "failed" | "ok";
+
+function resolveToolRowStatus(
+  toolRow: ExpandableBadgeProps["toolRow"],
+  isLoading: boolean,
+  isError: boolean,
+): ToolRowStatus | undefined {
+  if (!toolRow) return undefined;
+  if (isLoading) return "running";
+  if (isError) return "failed";
+  return "ok";
+}
+
+function isSameToolRow(
+  previous: ExpandableBadgeProps["toolRow"],
+  next: ExpandableBadgeProps["toolRow"],
+): boolean {
+  return Boolean(previous) === Boolean(next) && previous?.durationLabel === next?.durationLabel;
+}
+
+function resolveExpandableBadgeLabelStyle(input: {
+  isToolRow: boolean;
+  isActive: boolean;
+  isLoading: boolean;
+}): StyleProp<TextStyle> {
+  if (input.isToolRow) {
+    return [toolRowStyles.name, (input.isActive || input.isLoading) && toolRowStyles.nameActive];
+  }
+  return [
+    expandableBadgeStylesheet.label,
+    input.isActive && expandableBadgeStylesheet.labelActive,
+    input.isLoading && expandableBadgeStylesheet.labelLoading,
+  ];
+}
+
+function ToolRowStatusGlyph({ status }: { status: ToolRowStatus }) {
+  if (status === "running") return <RunningToolStatusCell />;
+  return (
+    <Text
+      style={status === "failed" ? toolRowStyles.statusFailed : toolRowStyles.statusOk}
+      dataSet={CODE_SURFACE_DATASET}
+      selectable={false}
+      testID={status === "failed" ? "tool-call-status-failed" : "tool-call-status-ok"}
+    >
+      {status === "failed" ? "✗" : "✓"}
+    </Text>
+  );
+}
+
+function ToolRowTrailing({
+  status,
+  startedAt,
+  durationLabel,
+}: {
+  status: ToolRowStatus;
+  startedAt?: number;
+  durationLabel?: string;
+}) {
+  if (status === "running") return <RunningToolElapsed startedAt={startedAt} />;
+  if (!durationLabel) return null;
+  return (
+    <Text style={toolRowStyles.duration} dataSet={CODE_SURFACE_DATASET} testID="tool-call-duration">
+      {durationLabel}
+    </Text>
+  );
+}
+
+const toolRowStyles = StyleSheet.create((theme) => ({
+  statusOk: {
+    color: theme.colors.accent,
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.sm,
+  },
+  statusFailed: {
+    color: theme.colors.destructive,
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.sm,
+  },
+  // About nine monospace cells; a longer name pushes the summary instead of being cut.
+  name: {
+    minWidth: Math.round(theme.fontSize.sm * 0.5 * 9),
+    flexShrink: 0,
+    color: theme.colors.foregroundMuted,
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.normal,
+    textTransform: "lowercase",
+  },
+  nameActive: {
+    color: theme.colors.foreground,
+  },
+  duration: {
+    marginLeft: "auto",
+    paddingLeft: theme.spacing[2],
+    flexShrink: 0,
+    color: theme.colors.foregroundExtraMuted,
+    fontSize: STREAM_METADATA_FONT_SIZE,
+    fontFamily: theme.fontFamily.mono,
+  },
+}));
 
 interface ExpandableBadgeSecondaryLabelProps {
   secondaryLabel?: string;
@@ -2454,6 +2602,9 @@ interface ExpandableBadgeLabelRowProps {
   secondaryLabelStyle: StyleProp<TextStyle>;
   isLoading: boolean;
   loadingStartedAt?: number;
+  /** Tool rows put the running block in the status cell and end in their duration column. */
+  toolRowStatus?: ToolRowStatus;
+  toolRowDurationLabel?: string;
   showOpenFileButton: boolean;
   isOpenFileHovered: boolean;
   onOpenFilePress: (event: GestureResponderEvent) => void;
@@ -2468,6 +2619,8 @@ function ExpandableBadgeLabelRow({
   secondaryLabelStyle,
   isLoading,
   loadingStartedAt,
+  toolRowStatus,
+  toolRowDurationLabel,
   showOpenFileButton,
   isOpenFileHovered,
   onOpenFilePress,
@@ -2484,7 +2637,14 @@ function ExpandableBadgeLabelRow({
         secondaryLabel={secondaryLabel}
         secondaryLabelStyle={secondaryLabelStyle}
       />
-      {isLoading ? <RunningToolCaret startedAt={loadingStartedAt} /> : null}
+      {isLoading && !toolRowStatus ? <RunningToolCaret startedAt={loadingStartedAt} /> : null}
+      {toolRowStatus ? (
+        <ToolRowTrailing
+          status={toolRowStatus}
+          startedAt={loadingStartedAt}
+          durationLabel={toolRowDurationLabel}
+        />
+      ) : null}
       {showOpenFileButton ? (
         <Pressable
           onPress={onOpenFilePress}
@@ -2530,11 +2690,16 @@ function renderExpandableBadgeIcon({
   isError,
   isActive,
   ThemedIcon,
+  toolRowStatus,
 }: {
   isError: boolean;
   isActive: boolean;
   ThemedIcon: ComponentType<{ size?: number; uniProps?: typeof foregroundColorMapping }> | null;
+  toolRowStatus?: ToolRowStatus;
 }): ReactNode {
+  if (toolRowStatus) {
+    return <ToolRowStatusGlyph status={toolRowStatus} />;
+  }
   if (isError) {
     return (
       <View style={LUCIDE_TOOL_ICON_NUDGE_LEFT}>
@@ -2617,6 +2782,7 @@ export const ExpandableBadge = memo(function ExpandableBadge({
   disableOuterSpacing,
   borderlessWhenExpanded = false,
   testID,
+  toolRow,
 }: ExpandableBadgeProps) {
   const resolvedDisableOuterSpacing = useDisableOuterSpacing(disableOuterSpacing);
   const [isHovered, setIsHovered] = useState(false);
@@ -2691,13 +2857,11 @@ export const ExpandableBadge = memo(function ExpandableBadge({
 
   const isActive = isHovered || isExpanded;
 
+  const toolRowStatus = resolveToolRowStatus(toolRow, isLoading, isError);
+  const isToolRow = toolRowStatus !== undefined;
   const labelStyle = useMemo(
-    () => [
-      expandableBadgeStylesheet.label,
-      isActive && expandableBadgeStylesheet.labelActive,
-      isLoading && expandableBadgeStylesheet.labelLoading,
-    ],
-    [isActive, isLoading],
+    () => resolveExpandableBadgeLabelStyle({ isToolRow, isActive, isLoading }),
+    [isActive, isLoading, isToolRow],
   );
 
   const secondaryLabelStyle = useMemo(
@@ -2720,7 +2884,7 @@ export const ExpandableBadge = memo(function ExpandableBadge({
   );
 
   const ThemedIcon = useMemo(() => (icon ? withUnistyles(icon) : null), [icon]);
-  const iconNode = renderExpandableBadgeIcon({ isError, isActive, ThemedIcon });
+  const iconNode = renderExpandableBadgeIcon({ isError, isActive, ThemedIcon, toolRowStatus });
   const iconSlotNode = renderExpandableBadgeIconSlot({
     showChevron: isInteractive && (isHovered || isExpanded),
     chevronStyle,
@@ -2758,6 +2922,8 @@ export const ExpandableBadge = memo(function ExpandableBadge({
             secondaryLabelStyle={secondaryLabelStyle}
             isLoading={isLoading}
             loadingStartedAt={loadingStartedAt}
+            toolRowStatus={toolRowStatus}
+            toolRowDurationLabel={toolRow?.durationLabel}
             showOpenFileButton={Boolean(onOpenFile && isHovered)}
             isOpenFileHovered={isOpenFileHovered}
             onOpenFilePress={handleOpenFilePress}
@@ -2793,6 +2959,7 @@ function areExpandableBadgePropsEqual(previous: ExpandableBadgeProps, next: Expa
   if (previous.disableOuterSpacing !== next.disableOuterSpacing) return false;
   if (previous.borderlessWhenExpanded !== next.borderlessWhenExpanded) return false;
   if (previous.testID !== next.testID) return false;
+  if (!isSameToolRow(previous.toolRow, next.toolRow)) return false;
   if (previous.onToggle !== next.onToggle) return false;
   if (previous.onOpenFile !== next.onOpenFile) return false;
   if (previous.onDetailHoverChange !== next.onDetailHoverChange) return false;
@@ -2955,6 +3122,17 @@ export const ToolCall = memo(function ToolCall({
     maxDetailHeight,
   ]);
 
+  const reportedDurationMs = resolveReportedToolDurationMs(effectiveDetail);
+  const toolRow = useMemo(
+    () => ({
+      durationLabel:
+        reportedDurationMs !== null && status === "completed"
+          ? formatDuration(reportedDurationMs)
+          : undefined,
+    }),
+    [reportedDurationMs, status],
+  );
+
   if (presentation.isPlan && effectiveDetail?.type === "plan") {
     return (
       <PlanCard
@@ -2981,9 +3159,22 @@ export const ToolCall = memo(function ToolCall({
       isLastInSequence={isLastInSequence}
       disableOuterSpacing={disableOuterSpacing}
       onDetailHoverChange={onInlineDetailsHoverChange}
+      toolRow={toolRow}
     />
   );
 }, areToolCallPropsEqual);
+
+/** A duration the tool itself reported (search, fetch); other tools report none. */
+function resolveReportedToolDurationMs(detail: ToolCallDetail | undefined): number | null {
+  if (!detail) return null;
+  if (detail.type === "search") {
+    if (typeof detail.durationMs === "number") return detail.durationMs;
+    if (typeof detail.durationSeconds === "number") return detail.durationSeconds * 1000;
+    return null;
+  }
+  if (detail.type === "fetch" && typeof detail.durationMs === "number") return detail.durationMs;
+  return null;
+}
 
 function areToolCallPropsEqual(previous: ToolCallProps, next: ToolCallProps) {
   if (previous.toolName !== next.toolName) return false;
