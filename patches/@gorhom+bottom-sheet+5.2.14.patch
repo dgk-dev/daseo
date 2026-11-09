@@ -1,0 +1,44 @@
+diff --git a/node_modules/@gorhom/bottom-sheet/lib/commonjs/components/bottomSheet/BottomSheetBody.js b/node_modules/@gorhom/bottom-sheet/lib/commonjs/components/bottomSheet/BottomSheetBody.js
+index d24edba..33f7163 100644
+--- a/node_modules/@gorhom/bottom-sheet/lib/commonjs/components/bottomSheet/BottomSheetBody.js
++++ b/node_modules/@gorhom/bottom-sheet/lib/commonjs/components/bottomSheet/BottomSheetBody.js
+@@ -27,7 +27,9 @@ function BottomSheetBodyComponent({
+     opacity: _reactNative.Platform.OS === 'android' && animatedIndex.get() === -1 ? 0 : 1,
+     transform: [{
+       translateY: animatedPosition.get()
+-    }]
++    }],
++    // Daseo: keeps the sheet on Reanimated's shadow-tree commit path (see the app's reanimated-commit-path.ts).
++    backfaceVisibility: 'visible'
+   }), [animatedPosition, animatedIndex]);
+   const containerStyle = (0, _react.useMemo)(() => [style, _styles.styles.container, containerAnimatedStyle], [style, containerAnimatedStyle]);
+   //#endregion
+diff --git a/node_modules/@gorhom/bottom-sheet/lib/module/components/bottomSheet/BottomSheetBody.js b/node_modules/@gorhom/bottom-sheet/lib/module/components/bottomSheet/BottomSheetBody.js
+index a139ede..e8b3d9e 100644
+--- a/node_modules/@gorhom/bottom-sheet/lib/module/components/bottomSheet/BottomSheetBody.js
++++ b/node_modules/@gorhom/bottom-sheet/lib/module/components/bottomSheet/BottomSheetBody.js
+@@ -22,7 +22,9 @@ function BottomSheetBodyComponent({
+     opacity: Platform.OS === 'android' && animatedIndex.get() === -1 ? 0 : 1,
+     transform: [{
+       translateY: animatedPosition.get()
+-    }]
++    }],
++    // Daseo: keeps the sheet on Reanimated's shadow-tree commit path (see the app's reanimated-commit-path.ts).
++    backfaceVisibility: 'visible'
+   }), [animatedPosition, animatedIndex]);
+   const containerStyle = useMemo(() => [style, styles.container, containerAnimatedStyle], [style, containerAnimatedStyle]);
+   //#endregion
+diff --git a/node_modules/@gorhom/bottom-sheet/src/components/bottomSheet/BottomSheetBody.tsx b/node_modules/@gorhom/bottom-sheet/src/components/bottomSheet/BottomSheetBody.tsx
+index 91b6a6a..c0efdfd 100644
+--- a/node_modules/@gorhom/bottom-sheet/src/components/bottomSheet/BottomSheetBody.tsx
++++ b/node_modules/@gorhom/bottom-sheet/src/components/bottomSheet/BottomSheetBody.tsx
+@@ -24,6 +24,9 @@ function BottomSheetBodyComponent({ style, children }: BottomSheetBodyProps) {
+           translateY: animatedPosition.get(),
+         },
+       ],
++      // Daseo: keeps the sheet (and the pressables in it) on Reanimated's shadow-tree commit
++      // path under ANDROID_SYNCHRONOUSLY_UPDATE_UI_PROPS; Android's default value.
++      backfaceVisibility: 'visible',
+     }),
+     [animatedPosition, animatedIndex]
+   );

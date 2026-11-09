@@ -4,7 +4,9 @@ import {
   LINE_UNIT_MAX_CHARS,
   advanceLineUnits,
   countLineUnits,
+  lineUnitsForCommit,
   nextLineUnitEnd,
+  shouldCommitPacedFrame,
 } from "./stream-pacing";
 
 describe("AdaptiveChunkingPolicy (Codex thresholds)", () => {
@@ -71,5 +73,19 @@ describe("line units", () => {
     expect(countLineUnits(text, 0)).toBe(4);
     expect(advanceLineUnits(text, 0, 2)).toBe(4);
     expect(advanceLineUnits(text, 4, 10)).toBe(text.length);
+  });
+});
+
+describe("paced reveal commits (delta 87)", () => {
+  it("commits the first frame after a pause and then at most every 30 ms", () => {
+    expect(shouldCommitPacedFrame(1_000, null)).toBe(true);
+    expect(shouldCommitPacedFrame(1_025, 1_000)).toBe(false);
+    expect(shouldCommitPacedFrame(1_030, 1_000)).toBe(true);
+  });
+
+  it("keeps one unit per display frame in the smooth gear and drains the queue in catch-up", () => {
+    expect(lineUnitsForCommit(1, "smooth", 4)).toBe(4);
+    expect(lineUnitsForCommit(1, "smooth", 0)).toBe(1);
+    expect(lineUnitsForCommit(12, "catch-up", 4)).toBe(12);
   });
 });

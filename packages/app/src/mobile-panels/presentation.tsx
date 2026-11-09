@@ -7,6 +7,7 @@ import { WindowChromeRootRegion } from "@/utils/desktop-window";
 import { usePanelStore, type MobilePanelView } from "@/stores/panel-store";
 import { getMobilePanelFrame } from "./model";
 import { useIsMobilePanelPresented, useMobilePanelsRuntime } from "./provider";
+import { SHADOW_TREE_COMMIT_PIN } from "@/utils/reanimated-commit-path";
 
 type OverlayPanel = Exclude<MobilePanelView, "agent">;
 
@@ -34,6 +35,8 @@ export function MobilePanelOverlay({
     const frame = getMobilePanelFrame(position.value, windowWidth);
     return {
       transform: [{ translateX: isLeft ? frame.leftTranslateX : frame.rightTranslateX }],
+      // The sidebar and explorer hold pressables; see SHADOW_TREE_COMMIT_PIN.
+      ...SHADOW_TREE_COMMIT_PIN,
     };
   }, [isLeft, windowWidth]);
 

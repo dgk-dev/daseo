@@ -20,6 +20,14 @@ const REENTER_CATCH_UP_HOLD_MS = 250;
 const SEVERE_QUEUE_DEPTH_LINES = 64;
 const SEVERE_OLDEST_AGE_MS = 300;
 
+/**
+ * Daseo delta 87: the reveal commits to React at most about 30 times a second. Each commit
+ * re-splits and re-parses the streaming markdown and lays the screen out again, which at
+ * 120 Hz cost the phone about 12 CPU-s a minute and most of its frame budget. 30 ms is four
+ * frames at 120 Hz, three at 90 and two at 60, so every common rate lands on ~30 Hz.
+ */
+export const PACED_TEXT_MIN_COMMIT_INTERVAL_MS = 30;
+
 export const LINE_UNIT_MAX_CHARS = 80;
 // A unit is cut at the last space within this many characters of the limit; a run of
 // text with no space in reach (a URL, CJK without spaces) is cut at the limit itself.
@@ -146,6 +154,24 @@ export function countLineUnits(text: string, from: number, cap = SEVERE_QUEUE_DE
     count += 1;
   }
   return count;
+}
+
+/** Whether this display frame commits the reveal; the first frame after a pause always does. */
+export function shouldCommitPacedFrame(nowMs: number, lastCommitAtMs: number | null): boolean {
+  return lastCommitAtMs === null || nowMs - lastCommitAtMs >= PACED_TEXT_MIN_COMMIT_INTERVAL_MS;
+}
+
+/**
+ * Line units one commit reveals. The smooth gear keeps its one-unit-per-display-frame reading
+ * speed by revealing one unit for every frame since the last commit; catch-up drains the queue
+ * as before.
+ */
+export function lineUnitsForCommit(
+  policyLines: number,
+  mode: PacingMode,
+  framesSinceCommit: number,
+): number {
+  return mode === "smooth" ? policyLines * Math.max(1, framesSinceCommit) : policyLines;
 }
 
 /** Index the reveal advances to after showing `lines` more units from `from`. */

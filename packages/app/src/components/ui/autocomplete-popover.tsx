@@ -11,6 +11,7 @@ import {
 import { useKeyboardShift } from "@/hooks/keyboard-shift-context";
 import { SPACING } from "@/styles/theme";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
+import { SHADOW_TREE_COMMIT_PIN } from "@/utils/reanimated-commit-path";
 
 const OFFSET_FROM_ANCHOR = SPACING[3];
 
@@ -128,6 +129,8 @@ export function AutocompletePopover({
 
   const animatedTransformStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: openShift.value - shift.value }],
+    // The suggestion rows are pressables; see SHADOW_TREE_COMMIT_PIN.
+    ...SHADOW_TREE_COMMIT_PIN,
   }));
 
   const composedStyle = useMemo(

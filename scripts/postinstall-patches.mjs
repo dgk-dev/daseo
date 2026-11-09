@@ -33,6 +33,13 @@ const patchedPackages = [
     nodeModulesPath: "node_modules/react-native-worklets",
     patchPrefix: "react-native-worklets+",
   },
+  // Daseo delta 87: keeps the sheet body on Reanimated's shadow-tree commit path under
+  // ANDROID_SYNCHRONOUSLY_UPDATE_UI_PROPS, so taps on menu items in a sheet land
+  // (packages/app/src/utils/reanimated-commit-path.ts).
+  {
+    nodeModulesPath: "node_modules/@gorhom/bottom-sheet",
+    patchPrefix: "@gorhom+bottom-sheet+",
+  },
   {
     nodeModulesPath: "node_modules/@mattermost/react-native-paste-input",
     patchPrefix: "@mattermost+react-native-paste-input+",

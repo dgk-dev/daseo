@@ -1,10 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { useReducedMotion } from "react-native-reanimated";
-import { AdaptiveChunkingPolicy, advanceLineUnits, countLineUnits } from "./stream-pacing";
+import {
+  AdaptiveChunkingPolicy,
+  advanceLineUnits,
+  countLineUnits,
+  lineUnitsForCommit,
+  shouldCommitPacedFrame,
+} from "./stream-pacing";
 
 /**
  * Daseo delta 51: reveals a streaming reply at the Codex pace (see stream-pacing.ts):
  * one line unit per frame, the whole backlog when it runs 8 units deep or 120 ms old.
+ * Daseo delta 87: the frames still set the pace, but the shown text is committed to React
+ * only about 30 times a second, each commit catching up the units of the frames in between.
  * A reply that is not streaming, a reply mounted mid-stream, and reduce motion show the
  * text whole at once; the pace applies only to text that arrives while it is on screen.
  */
@@ -19,6 +27,8 @@ export function usePacedStreamText(text: string, streaming: boolean): string {
   // past the shown length is the age of the oldest queued line.
   const arrivalsRef = useRef<Array<[number, number]>>([]);
   const frameRef = useRef<number | null>(null);
+  const framesSinceCommitRef = useRef(0);
+  const lastCommitAtRef = useRef<number | null>(null);
 
   textRef.current = text;
 
@@ -32,6 +42,8 @@ export function usePacedStreamText(text: string, streaming: boolean): string {
 
     const showAll = () => {
       cancelFrame();
+      framesSinceCommitRef.current = 0;
+      lastCommitAtRef.current = null;
       arrivalsRef.current = [];
       policyRef.current?.reset();
       shownLengthRef.current = text.length;
@@ -61,14 +73,22 @@ export function usePacedStreamText(text: string, streaming: boolean): string {
 
     const tick = () => {
       frameRef.current = null;
+      const now = Date.now();
+      framesSinceCommitRef.current += 1;
+      if (!shouldCommitPacedFrame(now, lastCommitAtRef.current)) {
+        frameRef.current = requestAnimationFrame(tick);
+        return;
+      }
       const current = textRef.current;
       const from = shownLengthRef.current;
-      const now = Date.now();
       const queuedLines = countLineUnits(current, from);
       const oldest = arrivalsRef.current[0];
       const oldestAgeMs = oldest ? now - oldest[1] : null;
       const lines = policy.decide({ queuedLines, oldestAgeMs }, now);
-      const next = advanceLineUnits(current, from, lines);
+      const units = lineUnitsForCommit(lines, policy.getMode(), framesSinceCommitRef.current);
+      const next = advanceLineUnits(current, from, units);
+      framesSinceCommitRef.current = 0;
+      lastCommitAtRef.current = now;
       shownLengthRef.current = next;
       setShownLength(next);
       // Drop arrivals the reveal has fully passed.
@@ -79,6 +99,8 @@ export function usePacedStreamText(text: string, streaming: boolean): string {
         frameRef.current = requestAnimationFrame(tick);
       } else {
         policy.decide({ queuedLines: 0, oldestAgeMs: null }, now);
+        // Caught up: the next arrival is shown on its first frame, as before.
+        lastCommitAtRef.current = null;
       }
     };
     frameRef.current = requestAnimationFrame(tick);

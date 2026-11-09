@@ -1728,6 +1728,46 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       (registered in `scripts/postinstall-patches.mjs`), tests in `controller.test.ts`,
       `host-runtime.test.ts` and `daemon-client.test.ts`.
 
+87. **The phone stops redrawing the whole screen for a spinning ring** — the owner's request on
+    2026-11-09 after the foreground profile: Daseo used 72 CPU-s per minute with a finished
+    conversation on screen, 77 with an agent running quietly and 90 while text streamed
+    (KakaoTalk averages about 7), with 82–95% janky frames while agents ran. simpleperf on a
+    profileable 0.5.99 put 85% of the main thread under `NodesManager.performOperations` →
+    `ShadowTree::commit` → Yoga `layoutTree`: every frame, the status rings' rotation and the
+    loader dots' opacity were committed to the shadow tree and the whole screen was laid out
+    again (Yoga's pixel rounding showed up as `fmod`). Streaming added a React commit every
+    display frame from delta 51's paced reveal.
+    - **Fast path for animated styles.** `packages/app/package.json` turns on Reanimated's
+      static flag `ANDROID_SYNCHRONOUSLY_UPDATE_UI_PROPS` (Reanimated 4.0+, off by default):
+      transform, opacity and colours apply to the native view without a commit or layout.
+    - **Tap targets stay where they are drawn.** With the fast path the shadow tree lags behind
+      a view that slid, and React Native's Pressability measures from the shadow tree, so a
+      pressable inside it can lose `onPress` on the first touch move (Reanimated documents
+      this; settled styles re-sync only after a second). In `performOperations` Reanimated
+      takes a view off the fast path as a whole when its animated style holds any property
+      outside the fast-path set, so `SHADOW_TREE_COMMIT_PIN` (`backfaceVisibility: "visible"`,
+      Android's default) keeps every container that moves pressables committed: the mobile
+      sliding panels, keyboard-shifted composers and callouts, the autocomplete popover, and
+      gorhom's sheet body (`patches/@gorhom+bottom-sheet+5.2.14.patch`; every phone menu is a
+      sheet). `reanimated-commit-path.test.ts` pins the three source facts this relies on.
+    - **Rings turn only where they can be seen.** A ring now follows the shared clock through
+      its own value, only while its retained panel is active and reduce motion is off (the
+      loader's pattern), so rings in hidden workspaces or a closed sidebar neither keep the
+      clock running nor update on its frames, and reduce motion holds every ring still.
+    - **Paced text commits at about 30 Hz.** The reveal still advances one line unit per
+      display frame, but the shown text reaches React only when 30 ms have passed since the
+      last commit, carrying the units of the frames in between; catch-up, thresholds and
+      hysteresis are unchanged, and text arriving after the reveal caught up shows on its
+      next frame.
+    - **Not changed:** what the screens show and how they move; web and Electron (the flag is
+      Android-only, the ring clock is the native implementation); worklets' idle frame loop
+      (react-native-reanimated#10553, fix PR #11237 still open).
+    - **Key files:** `packages/app/src/utils/reanimated-commit-path.ts`,
+      `packages/app/src/components/status-ring/clock.ts`,
+      `packages/app/src/agent-stream/{stream-pacing.ts,use-paced-stream-text.ts}`, tests in
+      `clock.test.ts`, `use-paced-stream-text.test.ts`, `stream-pacing.test.ts` and
+      `reanimated-commit-path.test.ts`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

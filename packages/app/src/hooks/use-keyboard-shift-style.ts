@@ -17,6 +17,7 @@ import {
   resolveKeyboardShift,
 } from "@/hooks/keyboard-shift-policy";
 import { KeyboardShiftContext, useKeyboardShift } from "@/hooks/keyboard-shift-context";
+import { SHADOW_TREE_COMMIT_PIN } from "@/utils/reanimated-commit-path";
 
 type KeyboardShiftMode = "translate" | "padding";
 
@@ -83,7 +84,8 @@ export function useKeyboardShiftStyle(input: { mode: KeyboardShiftMode; enabled?
       return { paddingBottom: bottomInset.value + shift.value };
     }
 
-    return { transform: [{ translateY: enabled ? -shift.value : 0 }] };
+    // Composers and callouts move their buttons with the keyboard; see SHADOW_TREE_COMMIT_PIN.
+    return { transform: [{ translateY: enabled ? -shift.value : 0 }], ...SHADOW_TREE_COMMIT_PIN };
   }, [enabled, mode]);
 
   return { shift, style };

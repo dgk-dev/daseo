@@ -153,5 +153,10 @@
     "vitest": "^4.1.11",
     "wrangler": "^4.105.0",
     "ws": "^8.21.0"
+  },
+  "reanimated": {
+    "staticFeatureFlags": {
+      "ANDROID_SYNCHRONOUSLY_UPDATE_UI_PROPS": true
+    }
   }
 }
