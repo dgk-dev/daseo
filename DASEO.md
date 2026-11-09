@@ -1762,6 +1762,25 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
     - **Not changed:** what the screens show and how they move; web and Electron (the flag is
       Android-only, the ring clock is the native implementation); worklets' idle frame loop
       (react-native-reanimated#10553, fix PR #11237 still open).
+    - **Measured 2026-11-09 on the Fold 7** (profileable build of the delta commit, same
+      scripts and screens as the 0.5.99 profile; CPU-s per minute, minute 1 / minute 2):
+      finished conversation 72.3 → 44.8/45.1 (main thread 50.0 → 14.9, RenderThread 18.5 →
+      27.4, jank 10% → 0.18% of 14,561 frames); agent running quietly 77.0 → 52.2/49.1 (jank
+      82% → 0%); streaming 90.2 → 70.3/78.4 (JS 35.9 → 26.0/33.3, jank 95% → 0%); streaming
+      with reduce motion 73.6 → 38.4/38.7 (RenderThread 22.5 → 2.3: rings hold still). The
+      streamed text area changed 388 times in 11.94 s of screen recording (32.5 Hz). What is
+      left: drawing the turning rings at a full 120 Hz (RenderThread, about 70% `libhwui`),
+      and on every drawn frame Android's text-field cursor-position listener
+      (`Editor$PositionListener.onPreDraw` → `getLocationInWindow`, about 30% of the main
+      thread) plus Reanimated's frame callback (about 30%); while streaming, each text commit's
+      React reconcile, `ShadowTree::commit` and Yoga layout on the JS thread (about 35% and
+      20%). The plan's targets (15, 20 and 40) were not reached.
+    - **Taps verified on the cover screen** (compact layout): workspace rows right after the
+      sidebar slid in (the slide takes about 0.1 s at animation scale 0.5), the row kebab, its
+      sheet's "Copy path" 0.2 s and 0.35 s after the kebab, tapping outside a sheet, the
+      sidebar's settings, back and close buttons, the file panel's entries and close button,
+      and the attachment button of the keyboard-shifted composer. A tap 0.1 s after the kebab
+      lands before the sheet has entered and does nothing.
     - **Key files:** `packages/app/src/utils/reanimated-commit-path.ts`,
       `packages/app/src/components/status-ring/clock.ts`,
       `packages/app/src/agent-stream/{stream-pacing.ts,use-paced-stream-text.ts}`, tests in
