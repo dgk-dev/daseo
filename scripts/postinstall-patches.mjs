@@ -26,6 +26,13 @@ const patchedPackages = [
     nodeModulesPath: "node_modules/react-native-gesture-handler",
     patchPrefix: "react-native-gesture-handler+",
   },
+  // Daseo delta 86: backport of software-mansion/react-native-reanimated#10196 (worklets 0.10.4).
+  // Without it the UI-runtime frame loop keeps the phone's main thread at the display rate while
+  // the app is in the background. Remove after upgrading worklets to 0.10.4 or later.
+  {
+    nodeModulesPath: "node_modules/react-native-worklets",
+    patchPrefix: "react-native-worklets+",
+  },
   {
     nodeModulesPath: "node_modules/@mattermost/react-native-paste-input",
     patchPrefix: "@mattermost+react-native-paste-input+",

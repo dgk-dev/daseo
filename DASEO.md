@@ -1669,6 +1669,18 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       would fire only on return. The local module `DaseoBackgroundSuspend` runs the grace on a
       main-looper `Handler` and emits an event; socket messages and module events still reach JS
       while paused, which is why the stream kept costing CPU.
+    - **The 60 Hz loop that ran with the screen off.** With the Activity stopped and no frame
+      drawn, the main thread still woke about 62 times a second (1.3 CPU-s per minute even
+      when no host was connected). simpleperf on a `PASEO_PROFILE_BUILD=1` APK put half of all
+      main-thread samples in `worklets AnimationFrameQueue.executeQueue`, the UI-runtime
+      `requestAnimationFrame` queue: worklets 0.8.3's `WorkletsModule` implements
+      `onHostPause` but never registers itself as a lifecycle listener, so the queue never
+      pauses. `patches/react-native-worklets+0.8.3.patch` backports
+      software-mansion/react-native-reanimated#10196 (worklets 0.10.4/0.12: register in
+      `initialize`, unregister under a lock in `invalidate`) and adds one thing upstream lacks:
+      React Native replays only `onHostResume` to a listener added late, so a module
+      initialized while the Activity is not resumed (a cold start behind the lock screen)
+      starts its queue paused. Remove the patch when worklets reaches 0.10.4.
     - **Memory on suspend.** React Native runs a Hermes collection only on
       `TRIM_MEMORY_BACKGROUND` or worse, which an app left on top with the screen off never
       gets, so delta 63's stale shadow-node revisions stay alive. On suspend the same module
@@ -1681,7 +1693,8 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       holds, `index.native.ts` wiring), `HostRuntimeController.suspend/resume` and
       `HostRuntimeStore.setBackgroundSuspended` in `packages/app/src/runtime/host-runtime.ts`,
       `DaemonClient.suspend` in `packages/client/src/daemon-client.ts`,
-      `packages/app/modules/daseo-background-suspend/`, tests in `controller.test.ts`,
+      `packages/app/modules/daseo-background-suspend/`, `patches/react-native-worklets+0.8.3.patch`
+      (registered in `scripts/postinstall-patches.mjs`), tests in `controller.test.ts`,
       `host-runtime.test.ts` and `daemon-client.test.ts`.
 
 ## Local reliability contracts

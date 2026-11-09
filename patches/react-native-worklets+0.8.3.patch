@@ -1,0 +1,172 @@
+diff --git a/node_modules/react-native-worklets/android/src/networking/com/swmansion/worklets/WorkletsModule.java b/node_modules/react-native-worklets/android/src/networking/com/swmansion/worklets/WorkletsModule.java
+index 6294cde..c24ef4b 100644
+--- a/node_modules/react-native-worklets/android/src/networking/com/swmansion/worklets/WorkletsModule.java
++++ b/node_modules/react-native-worklets/android/src/networking/com/swmansion/worklets/WorkletsModule.java
+@@ -7,6 +7,7 @@ import com.facebook.react.bridge.Callback;
+ import com.facebook.react.bridge.LifecycleEventListener;
+ import com.facebook.react.bridge.ReactApplicationContext;
+ import com.facebook.react.bridge.ReactMethod;
++import com.facebook.react.common.LifecycleState;
+ import com.facebook.react.bridge.ReadableNativeArray;
+ import com.facebook.react.bridge.ReadableNativeMap;
+ import com.facebook.react.bridge.queue.MessageQueueThread;
+@@ -17,7 +18,6 @@ import com.facebook.soloader.SoLoader;
+ import com.swmansion.worklets.runloop.AnimationFrameCallback;
+ import com.swmansion.worklets.runloop.AnimationFrameQueue;
+ import java.util.Objects;
+-import java.util.concurrent.atomic.AtomicBoolean;
+ 
+ @SuppressWarnings("JavaJniMissingFunction")
+ @ReactModule(name = WorkletsModule.NAME)
+@@ -45,7 +45,8 @@ public class WorkletsModule extends NativeWorkletsModuleSpec implements Lifecycl
+    * Invalidating concurrently could be fatal. It shouldn't happen in a normal flow, but it doesn't
+    * cost us much to add synchronization for extra safety.
+    */
+-  private final AtomicBoolean mInvalidated = new AtomicBoolean(false);
++  private final Object mInvalidationLock = new Object();
++  private boolean mInvalidated = false;
+ 
+   @OptIn(markerClass = FrameworkAPI.class)
+   private native HybridData initHybrid(
+@@ -144,9 +145,28 @@ public class WorkletsModule extends NativeWorkletsModuleSpec implements Lifecycl
+     mAnimationFrameQueue.enableSlowAnimations(mSlowAnimationsEnabled, ANIMATIONS_DRAG_FACTOR);
+   }
+ 
++  // Backport of software-mansion/react-native-reanimated#10196 (worklets 0.10.4 / 0.12): the
++  // module implemented LifecycleEventListener but never registered, so the UI-runtime
++  // requestAnimationFrame loop kept running at the display rate while the app was in the
++  // background. Daseo addition: a listener added while the host is not resumed gets no replay
++  // (ReactContext.addLifecycleEventListener only replays RESUMED), so the queue starts paused
++  // then and the next onHostResume starts it.
++  @Override
++  public void initialize() {
++    ReactApplicationContext context = getReactApplicationContext();
++    context.addLifecycleEventListener(this);
++    if (context.getLifecycleState() != LifecycleState.RESUMED) {
++      onHostPause();
++    }
++  }
++
+   public void invalidate() {
+-    if (mInvalidated.getAndSet(true)) {
+-      return;
++    synchronized (mInvalidationLock) {
++      if (mInvalidated) {
++        return;
++      }
++      mInvalidated = true;
++      getReactApplicationContext().removeLifecycleEventListener(this);
+     }
+     if (mHybridData != null && mHybridData.isValid()) {
+       // We have to destroy extra runtimes when invalidate is called. If we clean
+@@ -161,12 +181,22 @@ public class WorkletsModule extends NativeWorkletsModuleSpec implements Lifecycl
+ 
+   @Override
+   public void onHostResume() {
+-    mAnimationFrameQueue.resume();
++    synchronized (mInvalidationLock) {
++      if (mInvalidated) {
++        return;
++      }
++      mAnimationFrameQueue.resume();
++    }
+   }
+ 
+   @Override
+   public void onHostPause() {
+-    mAnimationFrameQueue.pause();
++    synchronized (mInvalidationLock) {
++      if (mInvalidated) {
++        return;
++      }
++      mAnimationFrameQueue.pause();
++    }
+   }
+ 
+   @Override
+diff --git a/node_modules/react-native-worklets/android/src/no-networking/com/swmansion/worklets/WorkletsModule.java b/node_modules/react-native-worklets/android/src/no-networking/com/swmansion/worklets/WorkletsModule.java
+index b9a5df4..47f14ff 100644
+--- a/node_modules/react-native-worklets/android/src/no-networking/com/swmansion/worklets/WorkletsModule.java
++++ b/node_modules/react-native-worklets/android/src/no-networking/com/swmansion/worklets/WorkletsModule.java
+@@ -6,6 +6,7 @@ import com.facebook.proguard.annotations.DoNotStrip;
+ import com.facebook.react.bridge.LifecycleEventListener;
+ import com.facebook.react.bridge.ReactApplicationContext;
+ import com.facebook.react.bridge.ReactMethod;
++import com.facebook.react.common.LifecycleState;
+ import com.facebook.react.bridge.queue.MessageQueueThread;
+ import com.facebook.react.common.annotations.FrameworkAPI;
+ import com.facebook.react.module.annotations.ReactModule;
+@@ -14,7 +15,6 @@ import com.facebook.soloader.SoLoader;
+ import com.swmansion.worklets.runloop.AnimationFrameCallback;
+ import com.swmansion.worklets.runloop.AnimationFrameQueue;
+ import java.util.Objects;
+-import java.util.concurrent.atomic.AtomicBoolean;
+ 
+ @SuppressWarnings("JavaJniMissingFunction")
+ @ReactModule(name = WorkletsModule.NAME)
+@@ -41,7 +41,8 @@ public class WorkletsModule extends NativeWorkletsModuleSpec implements Lifecycl
+    * Invalidating concurrently could be fatal. It shouldn't happen in a normal flow, but it doesn't
+    * cost us much to add synchronization for extra safety.
+    */
+-  private final AtomicBoolean mInvalidated = new AtomicBoolean(false);
++  private final Object mInvalidationLock = new Object();
++  private boolean mInvalidated = false;
+ 
+   @OptIn(markerClass = FrameworkAPI.class)
+   private native HybridData initHybrid(
+@@ -107,9 +108,28 @@ public class WorkletsModule extends NativeWorkletsModuleSpec implements Lifecycl
+     mAnimationFrameQueue.enableSlowAnimations(mSlowAnimationsEnabled, ANIMATIONS_DRAG_FACTOR);
+   }
+ 
++  // Backport of software-mansion/react-native-reanimated#10196 (worklets 0.10.4 / 0.12): the
++  // module implemented LifecycleEventListener but never registered, so the UI-runtime
++  // requestAnimationFrame loop kept running at the display rate while the app was in the
++  // background. Daseo addition: a listener added while the host is not resumed gets no replay
++  // (ReactContext.addLifecycleEventListener only replays RESUMED), so the queue starts paused
++  // then and the next onHostResume starts it.
++  @Override
++  public void initialize() {
++    ReactApplicationContext context = getReactApplicationContext();
++    context.addLifecycleEventListener(this);
++    if (context.getLifecycleState() != LifecycleState.RESUMED) {
++      onHostPause();
++    }
++  }
++
+   public void invalidate() {
+-    if (mInvalidated.getAndSet(true)) {
+-      return;
++    synchronized (mInvalidationLock) {
++      if (mInvalidated) {
++        return;
++      }
++      mInvalidated = true;
++      getReactApplicationContext().removeLifecycleEventListener(this);
+     }
+     if (mHybridData != null && mHybridData.isValid()) {
+       // We have to destroy extra runtimes when invalidate is called. If we clean
+@@ -124,12 +144,22 @@ public class WorkletsModule extends NativeWorkletsModuleSpec implements Lifecycl
+ 
+   @Override
+   public void onHostResume() {
+-    mAnimationFrameQueue.resume();
++    synchronized (mInvalidationLock) {
++      if (mInvalidated) {
++        return;
++      }
++      mAnimationFrameQueue.resume();
++    }
+   }
+ 
+   @Override
+   public void onHostPause() {
+-    mAnimationFrameQueue.pause();
++    synchronized (mInvalidationLock) {
++      if (mInvalidated) {
++        return;
++      }
++      mAnimationFrameQueue.pause();
++    }
+   }
+ 
+   @Override
