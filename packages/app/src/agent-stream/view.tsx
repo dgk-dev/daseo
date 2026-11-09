@@ -1750,12 +1750,15 @@ const stylesheet = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     textAlign: "center",
   },
+  // Daseo delta 89: on desktop the transcript is left-anchored, so the button sits on the
+  // composer's right edge, past the prose measure, instead of over the middle of the text.
   scrollToBottomContainer: {
     position: "absolute",
     bottom: 16,
     left: 0,
     right: 0,
-    alignItems: "center",
+    alignItems: { xs: "center", md: "flex-end" },
+    paddingRight: { xs: 0, md: theme.spacing[4] },
   },
   scrollToBottomButton: {
     width: 48,

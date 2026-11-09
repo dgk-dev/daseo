@@ -925,7 +925,8 @@ edits · 1 command · 2 file reads`; the counts end in an ellipsis before the ti
     (`FINISH_WATCH_STALL_MS`, `checkStall`).
 
 55. **A terminal tool on Tokyo Night** — the owner's call on 2026-10-23 ("더 터미널스럽게, cli스럽게",
-    selection still obvious). The Daseo theme is Tokyo Night: chat `#1a1b26`, sidebar and tab bar
+    selection still obvious). Delta 89 replaced this palette with Ubuntu aubergine; it lives on as
+    the Tokyo Night theme option. The Daseo theme was Tokyo Night: chat `#1a1b26`, sidebar and tab bar
     `#16161e`, text `#c0caf5`, and one accent (`#7aa2f7`) for everything active or selected; status
     and diff colors keep their meaning. Every theme radius is 0 (dots and pills included), and on
     web a root rule squares the literal radii too (`styles/terminal-chrome.web.ts`). The one exception is
@@ -1846,6 +1847,51 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
     - **Key files:** `packages/app/modules/daseo-status-ring/`,
       `packages/app/src/components/status-ring/index.android.tsx`, test
       `native-contract.test.ts`.
+
+89. **A terminal tool on Ubuntu aubergine, starting at the left** — the owner's call on
+    2026-11-09 after seeing delta 55 in use ("여전히 codex같고 개발자스럽지가 않아 … 이정도는 나도
+    하겠는데 느낌") and picking structure B on Ubuntu purple from the preview
+    (`~/paseo-builds/preview/daseo-terminal-look.html`: "ubuntu 보라 테마 좋고. 대화가 왼쪽에서
+    시작하는 것 좋고."). The research's finding: a colour change only alters the far-away
+    impression; up close the app still read as a chat app because of its structure (a centred
+    820 px column, icon rows under every answer, pill buttons under the input).
+    - **Palette.** The Daseo theme is Ubuntu's terminal: chat `#300A24`, sidebar, tab bar and
+      status line `#26071C`, text `#EEEEEC`, one accent `#8AE234` (also `statusDotRunning`, which
+      the native Android ring reads), destructive `#EF2929`, Tango terminal colours. Only token
+      values changed; no token was renamed or removed. Syntax colours that fall under 4.5:1 on
+      the code background are lifted toward white for this theme only
+      (`styles/syntax-contrast.ts`). Measured on `#300A24`: text 15.1:1, muted 6.8:1, accent
+      10.9:1, accent text on accent 12.0:1. Delta 55's palette lives on as the **Tokyo Night**
+      theme option (same terminal chrome). Pre-paint literals (web `index.html` and manifest,
+      Expo splash, Electron window and title-bar overlay, Android block cursor) take the new
+      values; they cannot follow a runtime theme choice.
+    - **Left-anchored transcript.** On desktop the transcript, task list, subagent track,
+      archived callout and composer start at one left inset instead of a centred column.
+      Paragraphs, lists, headings and quotes stop at 104 cells of the chat font
+      (`proseMeasureWidth`, follows the font size and delta 71's `chatTextScale`); tables,
+      code, diffs and tool rows use the pane width. The height estimators measure with the
+      same widths so the virtualised list does not jump. The chat outline rail narrows to sit
+      in the left gutter, and the jump-to-bottom button moves to the composer's right edge,
+      past the prose measure, instead of the middle of the text. Phones are unchanged.
+    - **Words instead of icons.** Message actions read `copy`, `fork`, `undo` on the metadata
+      line (always visible, delta 32). Under the input sits one hint line: `model … ▾`,
+      `effort … ▾`, `mode … ▾`, then only key hints that really work on that platform
+      (`⏎ send`, `⇧⏎ newline`, `⌘L focus`, `/ commands`, `@ files`), `attach`, `dictate`,
+      `voice` and the context meter; phones drop the key hints and keep send at the trailing
+      edge, every control with a 44 dp target. Tool rows read `✓ read  path … 3s` (`✗` failed,
+      delta 73's blinking block while running), the collapsed work row `▸ worked 6m 12s · …`.
+      The sidebar loses its decorative icons and letter boxes (`── workspaces ──`, `~/name`,
+      a bare status glyph keeps the old overlay's status), and its footer is words. The status
+      line starts with the host as an inverse accent block, separates segments with `│`, and
+      ends in a clock that re-renders once a minute. Command words stay English in every
+      locale, like key names; accessibility labels stay translated.
+    - **Not taken from the mock:** the faint band behind sent prompts (it reads like Codex CLI),
+      single-letter key labels in front of sidebar rows and actions (`n New workspace`,
+      `c copy`: the keys are not bound, so they would be costume), and a markdown restyle.
+    - **Key files:** `packages/app/src/styles/theme.ts`, `styles/syntax-contrast.ts`,
+      `constants/layout.ts`, `composer/hint-line.tsx`, `components/stream-action-label.tsx`,
+      `components/message.tsx` (tool rows), `components/sidebar/sidebar-section-rule.tsx`,
+      `screens/workspace/workspace-status-line.tsx`.
 
 ## Local reliability contracts
 
