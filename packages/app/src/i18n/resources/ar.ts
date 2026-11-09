@@ -2044,6 +2044,7 @@ export const ar: TranslationResources = {
           ghostty: "شبحي",
           pureBlack: "أسود خالص",
           daseo: "Daseo",
+          "tokyo-night": "Tokyo Night",
           auto: "نظام",
         },
       },

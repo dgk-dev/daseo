@@ -9,11 +9,13 @@ const DRAWABLE_NAME = "daseo_block_cursor";
 const APP_THEME_NAME = "AppTheme";
 const CURSOR_ITEM = "android:textCursorDrawable";
 
-// A translucent block keeps the glyph under the cursor readable.
+// A translucent block keeps the glyph under the cursor readable. Native resources are fixed at
+// build time and cannot read the app theme, so this is the Daseo theme accent (#8AE234, delta 89)
+// at 70% alpha; keep it in step with DASEO_ACCENT in src/styles/theme.ts.
 const DRAWABLE_XML = `<?xml version="1.0" encoding="utf-8"?>
 <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
     <size android:width="9dp" />
-    <solid android:color="#B37AA2F7" />
+    <solid android:color="#B38AE234" />
 </shape>
 `;
 

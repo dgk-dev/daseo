@@ -2078,6 +2078,7 @@ export const ptBR: TranslationResources = {
           ghostty: "Ghostty",
           pureBlack: "Preto puro",
           daseo: "Daseo",
+          "tokyo-night": "Tokyo Night",
           auto: "Sistema",
         },
       },

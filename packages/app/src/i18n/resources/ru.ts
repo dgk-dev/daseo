@@ -2082,6 +2082,7 @@ export const ru: TranslationResources = {
           ghostty: "Призрачный",
           pureBlack: "Чистый чёрный",
           daseo: "Daseo",
+          "tokyo-night": "Tokyo Night",
           auto: "Система",
         },
       },

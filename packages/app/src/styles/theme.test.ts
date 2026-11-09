@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { darkPureBlackTheme, getNextThemePreference, THEME_OPTIONS } from "./theme";
+import { contrastRatio } from "./syntax-contrast";
+import {
+  darkDaseoTheme,
+  darkPureBlackTheme,
+  darkTokyoNightTheme,
+  getNextThemePreference,
+  THEME_OPTIONS,
+} from "./theme";
 
 describe("Theme catalog", () => {
   it("owns the picker and shortcut order", () => {
@@ -13,10 +20,12 @@ describe("Theme catalog", () => {
       "ghostty",
       "pureBlack",
       "daseo",
+      "tokyo-night",
     ]);
     expect(getNextThemePreference("dark")).toBe("auto");
     expect(getNextThemePreference("pureBlack")).toBe("daseo");
-    expect(getNextThemePreference("daseo")).toBe("light");
+    expect(getNextThemePreference("daseo")).toBe("tokyo-night");
+    expect(getNextThemePreference("tokyo-night")).toBe("light");
   });
 });
 
@@ -40,5 +49,42 @@ describe("Pure black theme", () => {
   it("keeps ANSI black output readable on its zero-luminance terminal background", () => {
     expect(darkPureBlackTheme.colors.terminal.black).toBe("#595959");
     expect(darkPureBlackTheme.colors.terminal.brightBlack).toBe("#8a8a8a");
+  });
+});
+
+describe("Daseo theme (Ubuntu aubergine)", () => {
+  const colors = darkDaseoTheme.colors;
+
+  it("paints the chat in the Ubuntu terminal background and the chrome a darker step", () => {
+    expect(colors.surface1).toBe("#300A24");
+    expect(colors.terminal.background).toBe("#300A24");
+    expect(colors.surfaceSidebar).toBe("#26071C");
+    expect(colors.surface0).toBe("#26071C");
+  });
+
+  it("meets the contrast floors on the chat background", () => {
+    expect(contrastRatio(colors.foreground, colors.surface1)).toBeGreaterThanOrEqual(7);
+    expect(contrastRatio(colors.foregroundMuted, colors.surface1)).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(colors.accent, colors.surface1)).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(colors.accentForeground, colors.accent)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it("uses the Tango palette in the integrated terminal", () => {
+    expect(colors.terminal.green).toBe("#4E9A06");
+    expect(colors.terminal.brightGreen).toBe("#8AE234");
+    expect(colors.terminal.cursor).toBe(colors.accent);
+  });
+
+  it("keeps square corners", () => {
+    expect(darkDaseoTheme.borderRadius.full).toBe(0);
+  });
+});
+
+describe("Tokyo Night theme", () => {
+  it("keeps the delta 55 Daseo palette and square corners", () => {
+    expect(darkTokyoNightTheme.colors.surface1).toBe("#1a1b26");
+    expect(darkTokyoNightTheme.colors.accent).toBe("#7aa2f7");
+    expect(darkTokyoNightTheme.colors.foreground).toBe("#c0caf5");
+    expect(darkTokyoNightTheme.borderRadius.md).toBe(0);
   });
 });

@@ -1,5 +1,6 @@
 import { Platform } from "react-native";
 import { darkHighlightColors, lightHighlightColors } from "@getpaseo/highlight";
+import { liftSyntaxContrast } from "./syntax-contrast";
 
 export const baseColors = {
   // Base colors
@@ -692,13 +693,13 @@ const pureBlackDarkColors = buildDarkSemanticColors({
 
 export const darkPureBlackTheme = buildDarkTheme(pureBlackDarkColors);
 
-// Daseo — a terminal tool on Tokyo Night (delta 55, 2026-10-23, the owner's call). The chat is
-// Tokyo Night's editor background, the sidebar its darker panel, text its foreground; one
-// accent (Tokyo Night blue) marks everything that is active or selected. Status and diff
-// colors keep their meaning. Corners are square everywhere.
-const DASEO_FOREGROUND = "#c0caf5";
-const DASEO_ACCENT = "#7aa2f7";
-const daseoBaseColors = buildDarkSemanticColors({
+// Tokyo Night — the Daseo theme's palette from delta 55 (2026-10-23) until delta 89 moved Daseo to
+// Ubuntu aubergine; kept as its own option so the owner can switch back. The chat is Tokyo Night's
+// editor background, the sidebar its darker panel; one accent (Tokyo Night blue) marks everything
+// active or selected. Corners are square, as in the Daseo theme.
+const TOKYO_NIGHT_FOREGROUND = "#c0caf5";
+const TOKYO_NIGHT_ACCENT = "#7aa2f7";
+const tokyoNightBaseColors = buildDarkSemanticColors({
   surface0: "#16161e",
   surface1: "#1a1b26",
   surface2: "#1f2335",
@@ -712,29 +713,29 @@ const daseoBaseColors = buildDarkSemanticColors({
   scrollbarHandle: "#3b4261",
   border: "#292e42",
   borderAccent: "#3b4261",
-  accent: DASEO_ACCENT,
-  accentBright: DASEO_ACCENT,
+  accent: TOKYO_NIGHT_ACCENT,
+  accentBright: TOKYO_NIGHT_ACCENT,
   accentForeground: "#16161e",
   destructive: "#f7768e",
   terminalBlack: "#414868",
   terminalBrightBlack: "#565f89",
 });
-const daseoDarkColors = {
-  ...daseoBaseColors,
-  foreground: DASEO_FOREGROUND,
-  popoverForeground: DASEO_FOREGROUND,
-  primary: DASEO_FOREGROUND,
-  secondaryForeground: DASEO_FOREGROUND,
-  ring: DASEO_ACCENT,
-  statusDotRunning: DASEO_ACCENT,
+const tokyoNightDarkColors = {
+  ...tokyoNightBaseColors,
+  foreground: TOKYO_NIGHT_FOREGROUND,
+  popoverForeground: TOKYO_NIGHT_FOREGROUND,
+  primary: TOKYO_NIGHT_FOREGROUND,
+  secondaryForeground: TOKYO_NIGHT_FOREGROUND,
+  ring: TOKYO_NIGHT_ACCENT,
+  statusDotRunning: TOKYO_NIGHT_ACCENT,
   terminal: {
-    ...daseoBaseColors.terminal,
+    ...tokyoNightBaseColors.terminal,
     background: "#1a1b26",
-    foreground: DASEO_FOREGROUND,
-    cursor: DASEO_ACCENT,
+    foreground: TOKYO_NIGHT_FOREGROUND,
+    cursor: TOKYO_NIGHT_ACCENT,
     cursorAccent: "#1a1b26",
     selectionBackground: "rgba(122, 162, 247, 0.3)",
-    selectionForeground: DASEO_FOREGROUND,
+    selectionForeground: TOKYO_NIGHT_FOREGROUND,
     red: "#f7768e",
     green: "#9ece6a",
     yellow: "#e0af68",
@@ -748,12 +749,79 @@ const daseoDarkColors = {
     brightBlue: "#8db0ff",
     brightMagenta: "#c7a9ff",
     brightCyan: "#a4daff",
+    brightWhite: TOKYO_NIGHT_FOREGROUND,
+  },
+};
+
+// Daseo — a terminal tool on Ubuntu's terminal aubergine (delta 89, 2026-11-09, the owner's call:
+// "ubuntu 보라 테마 좋고"). The chat is the Ubuntu terminal background #300A24, the sidebar, tab bar
+// and status line a darker step of the same hue, surfaces step up in that hue. One accent, Tango
+// bright green (the Ubuntu prompt colour), marks everything active or selected. Status and diff
+// colours keep their shared values (all clear 4.5:1 on #300A24). Corners are square everywhere.
+// Contrast on #300A24: foreground 15.1:1, muted 6.8:1, accent 10.9:1, accentForeground on accent
+// 12.0:1.
+const DASEO_CHAT_BACKGROUND = "#300A24";
+const DASEO_FOREGROUND = "#EEEEEC";
+const DASEO_ACCENT = "#8AE234";
+const daseoBaseColors = buildDarkSemanticColors({
+  surface0: "#26071C",
+  surface1: DASEO_CHAT_BACKGROUND,
+  surface2: "#3C1430",
+  surface3: "#4D2140",
+  surface4: "#5E2D50",
+  surfaceDiffEmpty: "#3C1430",
+  surfaceSidebar: "#26071C",
+  surfaceSidebarHover: "#3C1430",
+  foregroundMuted: "#B49AAA",
+  foregroundExtraMuted: "#86677B",
+  scrollbarHandle: "#5E2D50",
+  border: "#4D2140",
+  borderAccent: "#5E2D50",
+  accent: DASEO_ACCENT,
+  accentBright: DASEO_ACCENT,
+  accentForeground: "#1D0516",
+  destructive: "#EF2929",
+  terminalBlack: "#2E3436",
+  terminalBrightBlack: "#555753",
+});
+const daseoDarkColors = {
+  ...daseoBaseColors,
+  foreground: DASEO_FOREGROUND,
+  popoverForeground: DASEO_FOREGROUND,
+  primary: DASEO_FOREGROUND,
+  secondaryForeground: DASEO_FOREGROUND,
+  ring: DASEO_ACCENT,
+  statusDotRunning: DASEO_ACCENT,
+  // The integrated terminal is the Ubuntu terminal: its Tango ANSI palette on #300A24.
+  terminal: {
+    ...daseoBaseColors.terminal,
+    background: DASEO_CHAT_BACKGROUND,
+    foreground: DASEO_FOREGROUND,
+    cursor: DASEO_ACCENT,
+    cursorAccent: DASEO_CHAT_BACKGROUND,
+    selectionBackground: "rgba(138, 226, 52, 0.3)",
+    selectionForeground: DASEO_FOREGROUND,
+    black: "#2E3436",
+    red: "#CC0000",
+    green: "#4E9A06",
+    yellow: "#C4A000",
+    blue: "#3465A4",
+    magenta: "#75507B",
+    cyan: "#06989A",
+    white: "#D3D7CF",
+    brightBlack: "#555753",
+    brightRed: "#EF2929",
+    brightGreen: "#8AE234",
+    brightYellow: "#FCE94F",
+    brightBlue: "#729FCF",
+    brightMagenta: "#AD7FA8",
+    brightCyan: "#34E2E2",
     brightWhite: DASEO_FOREGROUND,
   },
 };
 
-// Every corner is square in the Daseo theme, dots and pills included (delta 55); on web a
-// root rule (styles/terminal-chrome.web.ts) also squares the few literal radii.
+// Every corner is square in the Daseo and Tokyo Night themes, dots and pills included (delta 55);
+// on web a root rule (styles/terminal-chrome.web.ts) also squares the few literal radii.
 const DASEO_BORDER_RADIUS: Record<keyof typeof BORDER_RADIUS, number> = {
   none: 0,
   sm: 0,
@@ -765,8 +833,18 @@ const DASEO_BORDER_RADIUS: Record<keyof typeof BORDER_RADIUS, number> = {
   full: 0,
 };
 
+const daseoTheme = buildDarkTheme(daseoDarkColors);
 export const darkDaseoTheme = {
-  ...buildDarkTheme(daseoDarkColors),
+  ...daseoTheme,
+  colors: {
+    ...daseoTheme.colors,
+    syntax: liftSyntaxContrast(daseoTheme.colors.syntax, daseoDarkColors.surface2),
+  },
+  borderRadius: DASEO_BORDER_RADIUS,
+} as const;
+
+export const darkTokyoNightTheme = {
+  ...buildDarkTheme(tokyoNightDarkColors),
   borderRadius: DASEO_BORDER_RADIUS,
 } as const;
 
@@ -859,6 +937,13 @@ export const THEME_OPTIONS = [
     group: "variant",
     unistylesName: "darkDaseo",
     theme: darkDaseoTheme,
+    swatch: "#8AE234",
+  },
+  {
+    name: "tokyo-night",
+    group: "variant",
+    unistylesName: "darkTokyoNight",
+    theme: darkTokyoNightTheme,
     swatch: "#7aa2f7",
   },
 ] as const;

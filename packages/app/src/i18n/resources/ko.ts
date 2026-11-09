@@ -2055,6 +2055,7 @@ export const ko: TranslationResources = {
           ghostty: "Ghostty",
           pureBlack: "순수 검정",
           daseo: "Daseo",
+          "tokyo-night": "Tokyo Night",
           auto: "시스템",
         },
       },

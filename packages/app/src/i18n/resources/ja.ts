@@ -2060,6 +2060,7 @@ export const ja: TranslationResources = {
           ghostty: "Ghostty",
           pureBlack: "ピュアブラック",
           daseo: "Daseo",
+          "tokyo-night": "Tokyo Night",
           auto: "システム",
         },
       },

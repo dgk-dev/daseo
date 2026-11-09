@@ -2094,6 +2094,7 @@ export const es: TranslationResources = {
           ghostty: "fantasmal",
           pureBlack: "Negro puro",
           daseo: "Daseo",
+          "tokyo-night": "Tokyo Night",
           auto: "Sistema",
         },
       },

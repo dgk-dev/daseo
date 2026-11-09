@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { darkHighlightColors, resolveSyntaxColors } from "@getpaseo/highlight";
 import { DEFAULT_UI_FONT_STACK, REGISTERED_THEMES } from "@/styles/theme";
+import { contrastRatio } from "@/styles/syntax-contrast";
 import { applyAppearance, type AppearanceInput } from "./apply-appearance";
 
 // Override the global react-native-unistyles mock (vitest.setup.ts) so that
@@ -37,7 +38,7 @@ interface FakeTheme {
     "4xl": number;
   };
   lineHeight: { diff: number };
-  colors: { foreground: string; syntax: Record<string, string> };
+  colors: { foreground: string; surface2: string; syntax: Record<string, string> };
 }
 
 function makeFakeTheme(): FakeTheme {
@@ -56,7 +57,7 @@ function makeFakeTheme(): FakeTheme {
       "4xl": 34,
     },
     lineHeight: { diff: 22 },
-    colors: { foreground: "#fff", syntax: {} },
+    colors: { foreground: "#fff", surface2: "#3C1430", syntax: {} },
   };
 }
 
@@ -182,5 +183,22 @@ describe("applyAppearance", () => {
     // makeFakeTheme().colorScheme === "dark" -> github resolves to the dark palette.
     expect(runCapturedUpdater().colors.syntax).toEqual(darkHighlightColors);
     expect(runCapturedUpdater().colors.syntax).toEqual(resolveSyntaxColors("github", "dark"));
+  });
+
+  it("lifts syntax tokens under 4.5:1 on the Daseo code surface and leaves other themes alone", () => {
+    applyAppearance(makeInput({ syntaxTheme: "one" }));
+
+    const keys = updateTheme.mock.calls.map((call) => call[0]);
+    const daseo = runCapturedUpdater(keys.indexOf("darkDaseo")).colors.syntax;
+    const dark = runCapturedUpdater(keys.indexOf("dark")).colors.syntax;
+    const one = resolveSyntaxColors("one", "dark");
+
+    expect(dark).toEqual(one);
+    expect(daseo.keyword).toBe(one.keyword);
+    expect(contrastRatio(one.comment, "#3C1430")).toBeLessThan(4.5);
+    expect(contrastRatio(daseo.comment, "#3C1430")).toBeGreaterThanOrEqual(4.5);
+    for (const color of Object.values(daseo)) {
+      expect(contrastRatio(color, "#3C1430")).toBeGreaterThanOrEqual(4.5);
+    }
   });
 });

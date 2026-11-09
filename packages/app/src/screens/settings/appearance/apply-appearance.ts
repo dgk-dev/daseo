@@ -5,8 +5,10 @@ import {
   DEFAULT_MONO_FONT_STACK,
   FONT_SIZE,
   REGISTERED_THEMES,
+  THEME_TO_UNISTYLES,
   type Theme,
 } from "@/styles/theme";
+import { liftSyntaxContrast } from "@/styles/syntax-contrast";
 import { applyRootUiFont } from "./apply-root-font";
 
 const ALL_THEME_KEYS = Object.keys(REGISTERED_THEMES) as (keyof typeof REGISTERED_THEMES)[];
@@ -87,13 +89,21 @@ export function applyAppearance(input: AppearanceInput): void {
           colors: { ...t.colors, syntax: resolveSyntaxColors(input.syntaxTheme, t.colorScheme) },
         };
       }
+      const syntax = resolveSyntaxColors(input.syntaxTheme, t.colorScheme);
       return {
         ...t,
         fontFamily,
         fontSize,
         lineHeight,
         chatTextScale,
-        colors: { ...t.colors, syntax: resolveSyntaxColors(input.syntaxTheme, t.colorScheme) },
+        colors: {
+          ...t.colors,
+          // Daseo delta 89: code blocks sit on the aubergine surface2; lift tokens under 4.5:1.
+          syntax:
+            key === THEME_TO_UNISTYLES.daseo
+              ? liftSyntaxContrast(syntax, t.colors.surface2)
+              : syntax,
+        },
       };
     });
   }

@@ -50,8 +50,11 @@ export function resolveSystemWindowTheme(): WindowTheme {
   return nativeTheme.shouldUseDarkColors ? "dark" : "light";
 }
 
+// The window paints this before the renderer loads its theme. Dark follows the default Daseo
+// theme's chat background (Ubuntu aubergine, app src/styles/theme.ts, delta 89); the main process
+// cannot read the app theme, so keep this literal in step with it.
 export function getWindowBackgroundColor(theme: WindowTheme): string {
-  return theme === "dark" ? "#181B1A" : "#ffffff";
+  return theme === "dark" ? "#300A24" : "#ffffff";
 }
 
 export function createWindowControlsOverlayState(theme: WindowTheme): WindowControlsOverlayState {

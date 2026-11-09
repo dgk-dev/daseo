@@ -2021,6 +2021,7 @@ export const zhCN: TranslationResources = {
           ghostty: "Ghostty",
           pureBlack: "纯黑",
           daseo: "Daseo",
+          "tokyo-night": "Tokyo Night",
           auto: "系统",
         },
       },

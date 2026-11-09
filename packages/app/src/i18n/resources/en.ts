@@ -2101,6 +2101,7 @@ export const en = {
           ghostty: "Ghostty",
           pureBlack: "Pure black",
           daseo: "Daseo",
+          "tokyo-night": "Tokyo Night",
           auto: "System",
         },
       },

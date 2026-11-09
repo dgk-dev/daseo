@@ -118,6 +118,7 @@ import { flushDraftPersistStorage } from "@/stores/draft-store";
 import {
   DEFAULT_UI_FONT_STACK,
   darkDaseoTheme,
+  darkTokyoNightTheme,
   getNextThemePreference,
   THEME_TO_UNISTYLES,
 } from "@/styles/theme";
@@ -701,9 +702,12 @@ function ProvidersWrapper({ children }: { children: ReactNode }) {
       UnistylesRuntime.setAdaptiveThemes(false);
       UnistylesRuntime.setTheme(THEME_TO_UNISTYLES[settings.theme]);
     }
+    // Daseo and Tokyo Night (the Daseo palette before delta 89) share the terminal chrome.
+    const terminalChromeTheme =
+      settings.theme === "tokyo-night" ? darkTokyoNightTheme : darkDaseoTheme;
     applyTerminalChrome({
-      enabled: settings.theme === "daseo",
-      caretColor: darkDaseoTheme.colors.accent,
+      enabled: settings.theme === "daseo" || settings.theme === "tokyo-night",
+      caretColor: terminalChromeTheme.colors.accent,
     });
   }, [settingsLoading, settings.theme]);
 
