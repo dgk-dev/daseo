@@ -1,16 +1,5 @@
 import { router, usePathname } from "expo-router";
-import {
-  CalendarClock,
-  FolderPlus,
-  GitBranch,
-  History,
-  Home,
-  Plus,
-  Search,
-  Server,
-  Settings,
-  X,
-} from "lucide-react-native";
+import { GitBranch, Search, X } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
@@ -36,6 +25,8 @@ import { HostPicker } from "@/components/hosts/host-picker";
 import { SidebarHeaderRow } from "@/components/sidebar/sidebar-header-row";
 import { SidebarDisplayPreferencesMenu } from "@/components/sidebar/display-preferences/menu";
 import { SidebarHelpMenu } from "@/components/sidebar/sidebar-help-menu";
+import { SIDEBAR_FOOTER_WORDS } from "@/components/sidebar/footer-words";
+import { SidebarSectionRule } from "@/components/sidebar/sidebar-section-rule";
 import { SidebarResizeHandle } from "@/components/sidebar-resize-handle";
 import { Shortcut } from "@/components/ui/shortcut";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -302,23 +293,20 @@ function sidebarHostOptionTestID(serverId: string): string {
   return `sidebar-host-row-${serverId}`;
 }
 
-function FooterIconButton({
+// Daseo delta 89: a footer action is a word (`home`, `settings`); hover brightens it.
+function FooterTextButton({
   buttonRef,
   onPress,
   testID,
   label,
-  icon: Icon,
-  iconSize,
+  word,
   shortcutKeys,
-  theme,
 }: {
   onPress: () => void;
   testID: string;
   label: string;
-  icon: typeof FolderPlus;
-  iconSize?: number;
+  word: string;
   shortcutKeys?: ReturnType<typeof useShortcutKeys>;
-  theme: SidebarTheme;
   buttonRef?: RefObject<View | null>;
 }) {
   return (
@@ -326,7 +314,7 @@ function FooterIconButton({
       <TooltipTrigger asChild>
         <Pressable
           ref={buttonRef}
-          style={styles.footerIconButton}
+          style={styles.footerTextButton}
           testID={testID}
           nativeID={testID}
           collapsable={false}
@@ -334,12 +322,15 @@ function FooterIconButton({
           accessibilityLabel={label}
           accessibilityRole="button"
           onPress={onPress}
+          hitSlop={FOOTER_TEXT_HIT_SLOP}
         >
-          {({ hovered }) => (
-            <Icon
-              size={iconSize ?? theme.iconSize.md}
-              color={hovered ? theme.colors.foreground : theme.colors.foregroundMuted}
-            />
+          {({ hovered, pressed }) => (
+            <Text
+              numberOfLines={1}
+              style={hovered || pressed ? styles.footerWordHovered : styles.footerWord}
+            >
+              {word}
+            </Text>
           )}
         </Pressable>
       </TooltipTrigger>
@@ -350,55 +341,39 @@ function FooterIconButton({
   );
 }
 
-function footerAddProjectButtonStyle({
-  hovered,
-}: PressableStateCallbackType & { hovered?: boolean }) {
-  return [styles.footerAddProjectButton, Boolean(hovered) && styles.footerAddProjectButtonHovered];
-}
+// The footer row is 28 high; on phones this grows each word's touch target to 44.
+const FOOTER_TEXT_HIT_SLOP = { top: 8, bottom: 8, left: 4, right: 4 } as const;
 
 function FooterAddProjectButton({
   onPress,
   label,
   shortcutKeys,
-  theme,
 }: {
   onPress: () => void;
   label: string;
   shortcutKeys: ReturnType<typeof useShortcutKeys>;
-  theme: SidebarTheme;
 }) {
   return (
     <Tooltip delayDuration={300}>
       <TooltipTrigger asChild>
         <Pressable
-          style={footerAddProjectButtonStyle}
+          style={styles.footerAddProjectButton}
           testID="sidebar-add-project"
           nativeID="sidebar-add-project"
           accessible
           accessibilityLabel={label}
           accessibilityRole="button"
           onPress={onPress}
+          hitSlop={FOOTER_TEXT_HIT_SLOP}
         >
-          {({ hovered }) => {
-            const isHovered = Boolean(hovered);
-            return (
-              <>
-                <FolderPlus
-                  size={theme.iconSize.sm}
-                  color={isHovered ? theme.colors.foreground : theme.colors.foregroundMuted}
-                />
-                <Text
-                  numberOfLines={1}
-                  style={[
-                    styles.footerAddProjectLabel,
-                    isHovered && styles.footerAddProjectLabelHovered,
-                  ]}
-                >
-                  {label}
-                </Text>
-              </>
-            );
-          }}
+          {({ hovered, pressed }) => (
+            <Text
+              numberOfLines={1}
+              style={hovered || pressed ? styles.footerWordHovered : styles.footerWord}
+            >
+              {SIDEBAR_FOOTER_WORDS.addProject}
+            </Text>
+          )}
         </Pressable>
       </TooltipTrigger>
       <TooltipContent side="top" align="center" offset={8}>
@@ -409,12 +384,10 @@ function FooterAddProjectButton({
 }
 
 function SidebarHostPicker({
-  theme,
   label,
   onAddHost,
   onOpenHostSettings,
 }: {
-  theme: SidebarTheme;
   label: string;
   onAddHost: () => void;
   onOpenHostSettings: (serverId: string) => void;
@@ -450,14 +423,12 @@ function SidebarHostPicker({
       addHostTestID="sidebar-host-add"
       hostOptionTestID={sidebarHostOptionTestID}
     >
-      <FooterIconButton
+      <FooterTextButton
         buttonRef={triggerRef}
         onPress={handleOpen}
         testID="sidebar-hosts-trigger"
         label={label}
-        icon={Server}
-        iconSize={theme.iconSize.sm}
-        theme={theme}
+        word={SIDEBAR_FOOTER_WORDS.host}
       />
     </HostPicker>
   );
@@ -524,7 +495,6 @@ const SidebarNewWorkspaceHeaderRow = memo(function SidebarNewWorkspaceHeaderRow(
 
   return (
     <SidebarHeaderRow
-      icon={Plus}
       label={label}
       onPress={handlePress}
       testID={testID}
@@ -535,7 +505,6 @@ const SidebarNewWorkspaceHeaderRow = memo(function SidebarNewWorkspaceHeaderRow(
 });
 
 function SidebarFooter({
-  theme,
   handleOpenProject,
   handleHome,
   handleSettings,
@@ -543,7 +512,6 @@ function SidebarFooter({
   handleAddHost,
   handleOpenHostSettings,
 }: {
-  theme: SidebarTheme;
   handleOpenProject: () => void;
   handleHome: () => void;
   handleSettings: () => void;
@@ -566,30 +534,26 @@ function SidebarFooter({
         onPress={handleOpenProject}
         label={labels.addProject}
         shortcutKeys={newAgentKeys}
-        theme={theme}
       />
       <View style={styles.footerIconRow}>
         <SidebarHostPicker
-          theme={theme}
           label={labels.hosts}
           onAddHost={handleAddHost}
           onOpenHostSettings={handleOpenHostSettings}
         />
-        <FooterIconButton
+        <FooterTextButton
           onPress={handleHome}
           testID="sidebar-home"
           label={labels.home}
-          icon={Home}
-          theme={theme}
+          word={SIDEBAR_FOOTER_WORDS.home}
         />
         <SidebarHelpMenu />
-        <FooterIconButton
+        <FooterTextButton
           onPress={handleSettings}
           testID="sidebar-settings"
           label={labels.settings}
-          icon={Settings}
+          word={SIDEBAR_FOOTER_WORDS.settings}
           shortcutKeys={settingsKeys}
-          theme={theme}
         />
       </View>
     </View>
@@ -670,7 +634,6 @@ function MobileSidebar({
             onBeforeNavigate={closeSidebar}
           />
           <SidebarHeaderRow
-            icon={History}
             label={labels.sessions}
             onPress={handleViewMore}
             isActive={isSessionsActive}
@@ -678,7 +641,6 @@ function MobileSidebar({
             variant="compact"
           />
           <SidebarHeaderRow
-            icon={CalendarClock}
             label={labels.schedules}
             onPress={handleViewSchedules}
             isActive={isSchedulesActive}
@@ -730,7 +692,6 @@ function MobileSidebar({
         )}
 
         <SidebarFooter
-          theme={theme}
           handleOpenProject={handleOpenProject}
           handleHome={handleHome}
           handleSettings={handleSettings}
@@ -896,7 +857,6 @@ function DesktopSidebar({
               shortcutKeys={newWorkspaceKeys}
             />
             <SidebarHeaderRow
-              icon={History}
               label={labels.sessions}
               onPress={handleViewMore}
               isActive={isSessionsActive}
@@ -904,7 +864,6 @@ function DesktopSidebar({
               variant="compact"
             />
             <SidebarHeaderRow
-              icon={CalendarClock}
               label={labels.schedules}
               onPress={handleViewSchedules}
               isActive={isSchedulesActive}
@@ -937,7 +896,6 @@ function DesktopSidebar({
         <SidebarCalloutSlot />
 
         <SidebarFooter
-          theme={theme}
           handleOpenProject={handleOpenProject}
           handleHome={handleHome}
           handleSettings={handleSettings}
@@ -972,7 +930,7 @@ function WorkspacesSectionHeader() {
 
   return (
     <View style={styles.workspacesSectionHeader}>
-      <Text style={styles.workspacesSectionTitle}>Workspaces</Text>
+      <SidebarSectionRule title="workspaces" />
       <View style={styles.workspacesSectionActions}>
         <Tooltip delayDuration={300}>
           <TooltipTrigger asChild>
@@ -1051,11 +1009,6 @@ const styles = StyleSheet.create((theme) => ({
     paddingRight: 4,
     paddingTop: theme.spacing[1],
     paddingBottom: theme.spacing[1],
-  },
-  workspacesSectionTitle: {
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
-    fontWeight: theme.fontWeight.normal,
   },
   workspacesSectionActions: {
     flexDirection: "row",
@@ -1147,35 +1100,30 @@ const styles = StyleSheet.create((theme) => ({
   },
   footerAddProjectButton: {
     minWidth: 0,
-    minHeight: 32,
+    minHeight: 28,
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    gap: theme.spacing[2],
-    paddingVertical: theme.spacing[1.5],
     paddingHorizontal: theme.spacing[2],
-    borderRadius: theme.borderRadius.lg,
   },
-  footerAddProjectButtonHovered: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
+  footerTextButton: {
+    minHeight: 28,
+    justifyContent: "center",
+    paddingHorizontal: theme.spacing[1],
   },
-  footerAddProjectLabel: {
+  footerWord: {
     minWidth: 0,
     flexShrink: 1,
-    fontSize: theme.fontSize.sm,
-    fontWeight: theme.fontWeight.normal,
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.xs,
     color: theme.colors.foregroundMuted,
   },
-  footerAddProjectLabelHovered: {
+  footerWordHovered: {
+    minWidth: 0,
+    flexShrink: 1,
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.xs,
     color: theme.colors.foreground,
-  },
-  footerIconButton: {
-    width: 28,
-    height: 28,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: theme.spacing[1],
-    paddingHorizontal: theme.spacing[1],
   },
   tooltipRow: {
     flexDirection: "row",

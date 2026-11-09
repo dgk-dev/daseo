@@ -261,7 +261,6 @@ interface SidebarWorkspaceListProps {
 interface ProjectHeaderRowProps {
   project: SidebarProjectEntry;
   displayName: string;
-  iconDataUri: string | null;
   statusBucket: SidebarStateBucket | null;
   selected?: boolean;
   chevron: "expand" | "collapse" | null;
@@ -862,10 +861,24 @@ function NewWorkspaceGhostRow({
   );
 }
 
+/** Daseo delta 89: a project reads as its home path, `~/name`, the `~/` dimmer. */
+function ProjectRowTitle({ displayName, selected }: { displayName: string; selected: boolean }) {
+  return (
+    <Text
+      style={
+        selected ? [styles.projectTitle, sidebarSelectedTitleStyles.title] : styles.projectTitle
+      }
+      numberOfLines={1}
+    >
+      <Text style={styles.projectTitleHome}>~/</Text>
+      {displayName}
+    </Text>
+  );
+}
+
 function ProjectHeaderRow({
   project,
   displayName,
-  iconDataUri,
   statusBucket,
   selected = false,
   chevron,
@@ -961,10 +974,7 @@ function ProjectHeaderRow({
       <View style={styles.projectRowLeft}>
         <SidebarSelectionPointer selected={selected} />
         <ProjectLeadingVisual
-          displayName={displayName}
-          iconDataUri={iconDataUri}
           statusBucket={statusBucket}
-          projectViewKey={project.viewKey}
           backdrop={getSidebarRowBackdrop({ isDragging, isPressed, selected, isHovered })}
           chevron={chevron}
           showChevron={isHovered && chevron !== null}
@@ -972,16 +982,7 @@ function ProjectHeaderRow({
         />
 
         <View style={styles.projectTitleGroup}>
-          <Text
-            style={
-              selected
-                ? [styles.projectTitle, sidebarSelectedTitleStyles.title]
-                : styles.projectTitle
-            }
-            numberOfLines={1}
-          >
-            {displayName}
-          </Text>
+          <ProjectRowTitle displayName={displayName} selected={selected} />
         </View>
       </View>
       <ProjectRowTrailingActions
@@ -1596,7 +1597,6 @@ function ProjectBlock({
   workspaceEntriesByKey,
   collapsed,
   displayName,
-  iconDataUri,
   selectionEnabled,
   showShortcutBadges,
   shortcutIndexByWorkspaceKey,
@@ -1621,7 +1621,6 @@ function ProjectBlock({
   workspaceEntriesByKey: ReadonlyMap<string, SidebarWorkspaceEntry>;
   collapsed: boolean;
   displayName: string;
-  iconDataUri: string | null;
   selectionEnabled: boolean;
   showShortcutBadges: boolean;
   shortcutIndexByWorkspaceKey: Map<string, number>;
@@ -1847,7 +1846,6 @@ function ProjectBlock({
       <ProjectHeaderRow
         project={project}
         displayName={displayName}
-        iconDataUri={iconDataUri}
         statusBucket={aggregateStatusBucket}
         selected={false}
         chevron={rowModel.chevron}
@@ -1881,7 +1879,6 @@ function areProjectBlockPropsEqual(previous: ProjectBlockProps, next: ProjectBlo
     previous.workspaceEntriesByKey === next.workspaceEntriesByKey &&
     previous.collapsed === next.collapsed &&
     previous.displayName === next.displayName &&
-    previous.iconDataUri === next.iconDataUri &&
     previous.selectionEnabled === next.selectionEnabled &&
     previous.showShortcutBadges === next.showShortcutBadges &&
     previous.shortcutIndexByWorkspaceKey === next.shortcutIndexByWorkspaceKey &&
@@ -2314,7 +2311,6 @@ function ProjectModeList({
           workspaceEntriesByKey={workspaceEntriesByKey}
           collapsed={collapsedProjectKeys.has(item.viewKey)}
           displayName={item.projectName}
-          iconDataUri={projectIconByProjectViewKey.get(item.viewKey) ?? null}
           selectionEnabled={selectionEnabled}
           showShortcutBadges={showShortcutBadges}
           shortcutIndexByWorkspaceKey={shortcutIndexByWorkspaceKey}
@@ -2350,7 +2346,6 @@ function ProjectModeList({
       onToggleProjectCollapsed,
       parentGestureRef,
       dragGestureHostPresented,
-      projectIconByProjectViewKey,
       selectionEnabled,
       shortcutIndexByWorkspaceKey,
       showShortcutBadges,
@@ -2647,6 +2642,9 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: "400",
     minWidth: 0,
     flexShrink: 1,
+  },
+  projectTitleHome: {
+    color: theme.colors.foregroundExtraMuted,
   },
   projectActionButton: {
     flexDirection: "row",

@@ -14,7 +14,11 @@ const foregroundMutedColorMapping = (theme: Theme) => ({ color: theme.colors.for
 type SidebarHeaderRowVariant = "header" | "compact";
 
 interface SidebarHeaderRowProps {
-  icon: LucideIcon;
+  /**
+   * Daseo delta 89: the sidebar's own entries (New workspace, History, Schedules) are text
+   * with their keycap always shown; rows that pass an icon keep it and show the keycap on hover.
+   */
+  icon?: LucideIcon;
   label: string;
   onPress: () => void;
   isActive?: boolean;
@@ -42,7 +46,7 @@ export function SidebarHeaderRow({
   variant = "header",
   shortcutKeys = null,
 }: SidebarHeaderRowProps) {
-  const ThemedIcon = useMemo(() => withUnistyles(Icon), [Icon]);
+  const ThemedIcon = useMemo(() => (Icon ? withUnistyles(Icon) : null), [Icon]);
 
   const containerStyle = useMemo(
     () => (variant === "compact" ? styles.containerCompact : styles.container),
@@ -61,14 +65,17 @@ export function SidebarHeaderRow({
   const renderChildren = useCallback(
     (state: PressableStateCallbackType & { hovered?: boolean }) => {
       const isHighlighted = Boolean(state.hovered) || isActive;
+      const showShortcut = Boolean(shortcutKeys) && (!ThemedIcon || Boolean(state.hovered));
       return (
         <>
-          <ThemedIcon
-            size={ICON_SIZE.sm}
-            uniProps={isHighlighted ? foregroundColorMapping : foregroundMutedColorMapping}
-          />
+          {ThemedIcon ? (
+            <ThemedIcon
+              size={ICON_SIZE.sm}
+              uniProps={isHighlighted ? foregroundColorMapping : foregroundMutedColorMapping}
+            />
+          ) : null}
           <SidebarHeaderRowLabel label={label} isHighlighted={isHighlighted} />
-          {shortcutKeys && Boolean(state.hovered) ? (
+          {showShortcut && shortcutKeys ? (
             <Shortcut chord={shortcutKeys} style={styles.shortcut} />
           ) : null}
         </>

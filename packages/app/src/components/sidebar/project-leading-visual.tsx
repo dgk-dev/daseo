@@ -1,6 +1,7 @@
-import { ActivityIndicator, View, type ViewStyle } from "react-native";
+import type { ReactNode } from "react";
+import { ActivityIndicator, Text, View, type ViewStyle } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { ChevronDown, ChevronRight, CircleAlert } from "lucide-react-native";
+import { CircleAlert } from "lucide-react-native";
 import { ProjectIconView } from "@/components/project-icon-view";
 import { STATUS_BUCKET_LABELS } from "@/hooks/sidebar-status-view-model";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
@@ -51,24 +52,19 @@ const needsInputColorMapping = (theme: Theme) => ({
 
 /**
  * Leading slot of a sidebar project row: chevron on hover, archive spinner while removing,
- * otherwise the project icon carrying the project's aggregate workspace status.
+ * otherwise the project's aggregate workspace status as a bare glyph (Daseo delta 89: the
+ * lettered project box is gone; the row reads `~/name`).
  */
 export function ProjectLeadingVisual({
-  displayName,
-  iconDataUri,
   statusBucket,
-  projectViewKey,
   backdrop,
   chevron = null,
   showChevron = false,
   isArchiving = false,
 }: {
-  displayName: string;
-  iconDataUri: string | null;
   /** Aggregate status of the project's workspaces; null when it shouldn't be surfaced. */
   statusBucket: SidebarStateBucket | null;
-  projectViewKey: string;
-  /** The row's current background, so the status badge can knock out of it. */
+  /** The row's current background, so the status ring can knock out of it. */
   backdrop: SidebarSurfaceBackdrop;
   chevron?: "expand" | "collapse" | null;
   showChevron?: boolean;
@@ -90,14 +86,42 @@ export function ProjectLeadingVisual({
     );
   }
 
+  return <ProjectRowStatusGlyph statusBucket={statusBucket} backdrop={backdrop} />;
+}
+
+// Daseo delta 89: the project row's status without the project box around it. The glyph fills the
+// leading slot: the running ring (still round, delta 55), the needs-input alert, or a coloured
+// dot; nothing for done. It keeps the status role and label the corner badge had.
+function ProjectRowStatusGlyph({
+  statusBucket,
+  backdrop,
+}: {
+  statusBucket: SidebarStateBucket | null;
+  backdrop: SidebarSurfaceBackdrop;
+}) {
+  const content = getProjectStatusBadgeContent(statusBucket);
+  if (content === null || statusBucket === null) {
+    return <View style={styles.projectLeadingVisualSlot} testID="project-icon-only" />;
+  }
+  let glyph: ReactNode;
+  if (content.kind === "alert") {
+    glyph = (
+      <ThemedCircleAlert size={STATUS_INDICATOR_ALERT_SIZE} uniProps={needsInputColorMapping} />
+    );
+  } else if (content.bucket === "running") {
+    glyph = <StatusRing backdrop={backdrop} />;
+  } else {
+    glyph = <ProjectStatusDot bucket={content.bucket} />;
+  }
   return (
-    <ProjectStatusIndicator
-      iconDataUri={iconDataUri}
-      displayName={displayName}
-      projectViewKey={projectViewKey}
-      statusBucket={statusBucket}
-      backdrop={backdrop}
-    />
+    <View
+      style={styles.projectLeadingVisualSlot}
+      testID={`project-status-indicator-${statusBucket}`}
+    >
+      <View role="status" accessibilityLabel={STATUS_BUCKET_LABELS[statusBucket]}>
+        {glyph}
+      </View>
+    </View>
   );
 }
 
@@ -236,14 +260,16 @@ function ProjectIcon({
   );
 }
 
+// Daseo delta 89: the hover chevron is a text glyph in the muted colour (it was a literal grey).
 function ProjectInlineChevron({ chevron }: { chevron: "expand" | "collapse" | null }) {
   if (chevron === null) {
     return null;
   }
-  if (chevron === "collapse") {
-    return <ChevronDown size={14} color="#9ca3af" />;
-  }
-  return <ChevronRight size={14} color="#9ca3af" />;
+  return (
+    <Text style={styles.projectInlineChevron} selectable={false}>
+      {chevron === "collapse" ? "▾" : "▸"}
+    </Text>
+  );
 }
 
 function getStatusDotColorStyle(bucket: ProjectStatusBadgeDotBucket): ViewStyle {
@@ -285,6 +311,11 @@ const styles = StyleSheet.create((theme) => {
     },
     projectIconFallbackText: {
       fontSize: 9,
+    },
+    projectInlineChevron: {
+      color: theme.colors.foregroundMuted,
+      fontFamily: theme.fontFamily.mono,
+      fontSize: theme.fontSize.sm,
     },
     // The shell the alert and dot statuses share. It straddles the icon's bottom-right corner
     // (half in, half out) so the lettered project box stays readable. The shell is a knockout:

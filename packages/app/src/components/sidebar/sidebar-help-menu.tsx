@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { Text, View } from "react-native";
-import { Activity, CircleHelp, Gift, Keyboard } from "lucide-react-native";
+import { Activity, Gift, Keyboard } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { DiscordIcon } from "@/components/icons/discord-icon";
@@ -25,17 +25,18 @@ import type { HostProfile } from "@/types/host-connection";
 import { formatVersionWithPrefix } from "@/desktop/updates/desktop-updates";
 import { resolveAppVersion } from "@/utils/app-version";
 import { openExternalUrl } from "@/utils/open-external-url";
+import { SIDEBAR_FOOTER_WORDS } from "@/components/sidebar/footer-words";
 
+// The footer row is 28 high; on phones this grows the word's touch target to 44.
+const HELP_TRIGGER_HIT_SLOP = { top: 8, bottom: 8, left: 4, right: 4 } as const;
 const DISCORD_URL = "https://discord.gg/jz8T2uahpH";
 const GITHUB_ISSUE_URL = "https://github.com/getpaseo/paseo/issues/new";
 const CHANGELOG_URL = "https://paseo.sh/changelog";
 const ThemedActivity = withUnistyles(Activity);
-const ThemedCircleHelp = withUnistyles(CircleHelp);
 const ThemedGift = withUnistyles(Gift);
 const ThemedKeyboard = withUnistyles(Keyboard);
 const ThemedDiscordIcon = withUnistyles(DiscordIcon);
 const ThemedGitHubIcon = withUnistyles(GitHubIcon);
-const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const foregroundMutedColorMapping = (theme: Theme) => ({
   color: theme.colors.foregroundMuted,
 });
@@ -109,14 +110,17 @@ export function SidebarHelpMenu() {
             <DropdownMenuTrigger
               style={styles.trigger}
               testID="sidebar-help"
+              hitSlop={HELP_TRIGGER_HIT_SLOP}
               accessibilityRole="button"
               accessibilityLabel={t("sidebar.help.trigger")}
             >
-              {({ hovered }) => (
-                <ThemedCircleHelp
-                  size={ICON_SIZE.md}
-                  uniProps={hovered ? foregroundColorMapping : foregroundMutedColorMapping}
-                />
+              {({ hovered, pressed }) => (
+                <Text
+                  numberOfLines={1}
+                  style={hovered || pressed ? styles.triggerWordHovered : styles.triggerWord}
+                >
+                  {SIDEBAR_FOOTER_WORDS.help}
+                </Text>
               )}
             </DropdownMenuTrigger>
           </View>
@@ -185,13 +189,21 @@ export function SidebarHelpMenu() {
 }
 
 const styles = StyleSheet.create((theme) => ({
+  // Daseo delta 89: `help` is a word in the footer row, like `home` and `settings`.
   trigger: {
-    width: 28,
-    height: 28,
-    alignItems: "center",
+    minHeight: 28,
     justifyContent: "center",
-    paddingVertical: theme.spacing[1],
     paddingHorizontal: theme.spacing[1],
+  },
+  triggerWord: {
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundMuted,
+  },
+  triggerWordHovered: {
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foreground,
   },
   tooltipText: {
     fontSize: theme.fontSize.sm,

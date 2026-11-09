@@ -1,17 +1,10 @@
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, ChevronRight } from "lucide-react-native";
-import { Pressable, Text } from "react-native";
-import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { Pressable } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isNative } from "@/constants/platform";
-import type { Theme } from "@/styles/theme";
-
-const ThemedChevronDown = withUnistyles(ChevronDown);
-const ThemedChevronRight = withUnistyles(ChevronRight);
-const foregroundMutedColorMapping = (theme: Theme) => ({
-  color: theme.colors.foregroundMuted,
-});
+import { SidebarSectionRule } from "@/components/sidebar/sidebar-section-rule";
 
 export function PinnedSectionHeader({
   collapsed,
@@ -23,7 +16,7 @@ export function PinnedSectionHeader({
   const { t } = useTranslation();
   const isCompact = useIsCompactFormFactor();
   const accessibilityState = useMemo(() => ({ expanded: !collapsed }), [collapsed]);
-  const Chevron = collapsed ? ThemedChevronRight : ThemedChevronDown;
+  const stateMark = collapsed ? "▸" : "▾";
 
   return (
     <Pressable
@@ -33,13 +26,12 @@ export function PinnedSectionHeader({
       style={styles.header}
       testID="sidebar-pinned-section-header"
     >
+      {/* Daseo delta 89: `── pinned ──`, with the collapse state as ▸/▾ where the chevron was. */}
       {({ hovered }) => (
-        <>
-          <Text style={styles.title}>{t("sidebar.pinned.title")}</Text>
-          {hovered || isNative || isCompact ? (
-            <Chevron size={12} uniProps={foregroundMutedColorMapping} />
-          ) : null}
-        </>
+        <SidebarSectionRule
+          title={t("sidebar.pinned.title").toLowerCase()}
+          trailing={hovered || isNative || isCompact ? stateMark : undefined}
+        />
       )}
     </Pressable>
   );
@@ -55,10 +47,5 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing[2],
     paddingVertical: theme.spacing[1],
     userSelect: "none",
-  },
-  title: {
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
-    fontWeight: theme.fontWeight.normal,
   },
 }));
