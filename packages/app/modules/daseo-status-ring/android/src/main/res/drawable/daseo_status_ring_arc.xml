@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Daseo delta 88: the running ring's turning quarter, animated on the RenderThread (API 25+).
+  Geometry mirrors src/components/status-ring/geometry.ts and what React Native's BorderDrawable
+  draws for a single coloured border side on a fully rounded box: the band between the outer
+  circle (STATUS_RING_SIZE / 2) and the inner circle (that minus STATUS_RING_STROKE), cut along
+  the two diagonals through the centre, i.e. the top quarter from 225 to 315 degrees with radial
+  ends. fillAlpha is STATUS_RING_HEAD_OPACITY; the colour arrives as the view's tint. One turn
+  is STATUS_RING_PERIOD_MS. status-ring-native-contract.test.ts checks these numbers.
+-->
+<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt">
+    <aapt:attr name="android:drawable">
+        <vector
+            android:width="12dp"
+            android:height="12dp"
+            android:viewportWidth="12"
+            android:viewportHeight="12">
+            <group
+                android:name="rotator"
+                android:pivotX="6"
+                android:pivotY="6">
+                <path
+                    android:fillAlpha="0.9"
+                    android:fillColor="#FFFFFFFF"
+                    android:pathData="M1.7574,1.7574 A6,6 0 0,1 10.2426,1.7574 L9.1820,2.8180 A4.5,4.5 0 0,0 2.8180,2.8180 Z" />
+            </group>
+        </vector>
+    </aapt:attr>
+    <target android:name="rotator">
+        <aapt:attr name="android:animation">
+            <objectAnimator
+                android:duration="900"
+                android:interpolator="@android:anim/linear_interpolator"
+                android:propertyName="rotation"
+                android:repeatCount="infinite"
+                android:repeatMode="restart"
+                android:valueFrom="0"
+                android:valueTo="360"
+                android:valueType="floatType" />
+        </aapt:attr>
+    </target>
+</animated-vector>
