@@ -58,3 +58,4 @@ function withAndroidBlockCursor(config) {
 
 module.exports = withAndroidBlockCursor;
 module.exports.configureBlockCursor = configureBlockCursor;
+module.exports.BLOCK_CURSOR_DRAWABLE_XML = DRAWABLE_XML;

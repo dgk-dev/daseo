@@ -78,6 +78,12 @@ describe("Daseo theme (Ubuntu aubergine)", () => {
   it("keeps square corners", () => {
     expect(darkDaseoTheme.borderRadius.full).toBe(0);
   });
+
+  it("matches the Android block cursor, which is fixed at build time", () => {
+    const { BLOCK_CURSOR_DRAWABLE_XML } = require("../../plugins/with-android-block-cursor");
+    const accent = colors.accent.replace("#", "").toUpperCase();
+    expect(BLOCK_CURSOR_DRAWABLE_XML).toContain(`android:color="#B3${accent}"`);
+  });
 });
 
 describe("Tokyo Night theme", () => {
