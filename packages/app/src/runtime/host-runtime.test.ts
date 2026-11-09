@@ -213,6 +213,14 @@ class FakeDaemonClient {
 
   setReconnectEnabled(_enabled: boolean): void {}
 
+  public suspendCalls = 0;
+
+  suspend(): void {
+    this.suspendCalls += 1;
+    this.lifecycleEvents.push("suspend");
+    this.setConnectionState({ status: "disconnected", reason: "Client suspended" });
+  }
+
   getLastLivenessRttMs(): number | null {
     return this.heartbeatRttMs;
   }
@@ -1482,6 +1490,170 @@ describe("HostRuntimeController", () => {
     expect(controller.getSnapshot().client).toBe(activeClientBeforeProbes);
     expect(controller.getSnapshot().clientGeneration).toBe(generationBeforeProbes);
     expect(createdClients).toHaveLength(0);
+  });
+});
+
+describe("background suspend (Daseo delta 86)", () => {
+  const directConnection: HostConnection = {
+    id: "direct:lan:6767",
+    type: "directTcp",
+    endpoint: "lan:6767",
+  };
+
+  function makeSingleConnectionDeps(input: {
+    client: FakeDaemonClient;
+    probes: string[];
+  }): HostRuntimeControllerDeps {
+    return {
+      createClient: () => input.client as unknown as DaemonClient,
+      connectToDaemon: async ({ host, connection }) => {
+        input.probes.push(connection.id);
+        return {
+          client: makeConnectedProbeClient(5) as unknown as DaemonClient,
+          serverId: host.serverId,
+          hostname: null,
+        };
+      },
+      getClientId: async () => "cid_test_runtime",
+    };
+  }
+
+  async function onlineController(client: FakeDaemonClient, probes: string[] = []) {
+    const controller = new HostRuntimeController({
+      host: makeHost({ connections: [directConnection] }),
+      deps: makeSingleConnectionDeps({ client, probes }),
+    });
+    await controller.activateConnection({ connectionId: directConnection.id });
+    expect(controller.getSnapshot().connectionStatus).toBe("online");
+    return controller;
+  }
+
+  it("suspends the active client and reports the host idle, not offline or failed", async () => {
+    const client = new FakeDaemonClient();
+    const controller = await onlineController(client);
+
+    controller.suspend();
+
+    expect(client.suspendCalls).toBe(1);
+    expect(client.closeCalls).toBe(0);
+    expect(controller.getSnapshot()).toMatchObject({
+      connectionStatus: "idle",
+      lastError: null,
+      activeConnectionId: directConnection.id,
+      client,
+    });
+  });
+
+  it("resumes the same client and opens a new connection epoch for catch-up", async () => {
+    const client = new FakeDaemonClient();
+    const controller = await onlineController(client);
+    const epochBefore = controller.getSnapshot().connectionEpoch;
+
+    controller.suspend();
+    controller.resume();
+
+    expect(client.lifecycleEvents).toEqual(["connect", "suspend"]);
+    expect(client.getConnectionState().status).toBe("connected");
+    expect(controller.getSnapshot()).toMatchObject({
+      connectionStatus: "online",
+      client,
+      connectionEpoch: epochBefore + 1,
+    });
+    await controller.stop();
+  });
+
+  it("resumes a host whose connection had dropped and was waiting to reconnect", async () => {
+    const client = new FakeDaemonClient();
+    const controller = await onlineController(client);
+    client.setConnectionState({ status: "disconnected", reason: "Transport closed (1006)" });
+    expect(controller.getSnapshot().connectionStatus).toBe("error");
+
+    controller.suspend();
+    expect(controller.getSnapshot().connectionStatus).toBe("idle");
+    expect(controller.getSnapshot().lastError).toBeNull();
+
+    controller.resume();
+    expect(controller.getSnapshot().connectionStatus).toBe("online");
+    await controller.stop();
+  });
+
+  it("does not probe or switch connections while suspended", async () => {
+    const client = new FakeDaemonClient();
+    const probes: string[] = [];
+    const controller = await onlineController(client, probes);
+    const probesBefore = probes.length;
+
+    controller.suspend();
+    await controller.runProbeCycleNow();
+    await controller.activateConnection({ connectionId: directConnection.id });
+
+    expect(probes.length).toBe(probesBefore);
+    expect(client.connectCalls).toBe(1);
+    expect(controller.getSnapshot().connectionStatus).toBe("idle");
+    await controller.stop();
+  });
+
+  it("restores the pre-suspend state of a host that had no connection yet", async () => {
+    const controller = new HostRuntimeController({
+      host: makeHost({ connections: [directConnection] }),
+      deps: makeSingleConnectionDeps({ client: new FakeDaemonClient(), probes: [] }),
+    });
+    expect(controller.getSnapshot().connectionStatus).toBe("connecting");
+
+    controller.suspend();
+    expect(controller.getSnapshot().connectionStatus).toBe("idle");
+    controller.resume();
+
+    expect(controller.getSnapshot().connectionStatus).toBe("connecting");
+  });
+
+  it("suspends and resumes every host, re-bootstrapping directories on resume", async () => {
+    const hosts = [
+      makeHost({ serverId: "srv_one", connections: [directConnection] }),
+      makeHost({ serverId: "srv_two", connections: [directConnection] }),
+    ];
+    const clients = new Map<string, FakeDaemonClient>();
+    for (const host of hosts) {
+      const client = new FakeDaemonClient();
+      client.setConnectionState({ status: "connected" });
+      clients.set(host.serverId, client);
+    }
+    const store = new HostRuntimeStore({
+      deps: {
+        createClient: ({ host }) => clients.get(host.serverId) as unknown as DaemonClient,
+        connectToDaemon: async ({ host }) => ({
+          client: clients.get(host.serverId) as unknown as DaemonClient,
+          serverId: host.serverId,
+          hostname: null,
+        }),
+        getClientId: async () => "cid_test_runtime",
+      },
+    });
+    store.syncHosts(hosts);
+    for (const host of hosts) {
+      await clients.get(host.serverId)!.waitForFetches(1);
+      await waitForDirectoryReady(store, host.serverId);
+    }
+
+    store.setBackgroundSuspended(true);
+
+    for (const host of hosts) {
+      const client = clients.get(host.serverId)!;
+      expect(client.suspendCalls).toBe(1);
+      expect(store.getSnapshot(host.serverId)?.connectionStatus).toBe("idle");
+    }
+    store.syncHosts([...hosts, makeHost({ serverId: "srv_added", connections: [] })]);
+    expect(store.getSnapshot("srv_added")?.connectionStatus).toBe("idle");
+
+    store.setBackgroundSuspended(false);
+
+    for (const host of hosts) {
+      const client = clients.get(host.serverId)!;
+      expect(store.getSnapshot(host.serverId)?.connectionStatus).toBe("online");
+      await client.waitForFetches(2);
+      expect(client.fetchAgentsCalls[1]?.subscribe?.subscriptionId).toBe(`app:${host.serverId}`);
+    }
+    store.syncHosts([]);
   });
 });
 

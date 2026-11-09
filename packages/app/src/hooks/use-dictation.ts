@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 
 import { DictationStreamSender } from "@/dictation/dictation-stream-sender";
 import { useDictationAudioSource } from "@/hooks/use-dictation-audio-source";
+import { holdDaemonConnection } from "@/runtime/background-suspend";
 import { generateMessageId } from "@/types/stream";
 import { AttemptGuard } from "@/utils/attempt-guard";
 import {
@@ -65,6 +66,16 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
   useEffect(() => {
     isProcessingRef.current = isProcessing;
   }, [isProcessing]);
+
+  // Daseo delta 86: the audio streams over the daemon connection; leaving the app mid-recording
+  // must not suspend that connection until the transcript is back.
+  const holdsConnection = isRecording || isProcessing;
+  useEffect(() => {
+    if (!holdsConnection) {
+      return;
+    }
+    return holdDaemonConnection();
+  }, [holdsConnection]);
 
   // duration is used for UI only; no need to mirror into a ref.
 

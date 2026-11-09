@@ -1633,6 +1633,57 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       `open-external-url.test.ts`, and `packages/app/modules/daseo-app-links/`. Shipped in APK
       0.5.96, share-link rewrite in 0.5.97; the Mac app is unaffected.
 
+86. **The phone stops paying for Daseo when nobody looks at it, and the sidebar crash is gone** —
+    the owner's report on 2026-11-09 (battery, "error when I open it"), measured on the Fold 7.
+    With Daseo last on screen and the screen off, the process stayed `TOP_SLEEPING` (not cached,
+    not frozen) and kept receiving and rendering the live agent stream: 2.3–3.1 CPU-s per minute
+    on the main thread, peaks of 25 CPU-s per minute while agents streamed, 771 mAh of screen-off
+    CPU in one day, and two `excessive cpu` kills. Separately the whole app fell into
+    RootErrorBoundary nine times (10-26..11-09) with "Unable to find node on an unmounted
+    component", stack `attachHandlers` → `MountRegistry.gestureWillMount` → `forEach` →
+    `updateDetector` → `findNodeHandle` under `MobileSidebar`'s `GestureDetector`.
+    - **Crash.** react-native-gesture-handler's mount listener (`useMountReactions`) updates every
+      detector whose gesture is related (`simultaneousWith`, `requireToFail`, `blocksHandlers`)
+      to a gesture that is mounting. When one detector unmounts and a related one mounts in the
+      same commit, React runs the old detector's layout cleanup (`isMounted = false`) before the
+      new one's `attachHandlers`, but removes the old listener only with passive effects, so the
+      listener calls `findNodeHandle` on an unmounted component. Upstream fixed it in
+      software-mansion/react-native-gesture-handler#4268 (2.33.0) with an `isMounted` guard;
+      `patches/react-native-gesture-handler+2.28.0.patch` carries that guard in `src`,
+      `lib/module` and `lib/commonjs`. Upgrading to 2.33 was rejected for now (unverified with
+      RN 0.81.5, Expo 54, Reanimated 4.3, and the existing Android orchestrator hunks). Regression
+      test: `packages/app/src/mobile-panels/rngh-mount-reactions.test.tsx` reproduces the
+      commit order with the real `useMountReactions` and fails without the guard.
+    - **Background suspend.** 30 s after the native app stops being visible (AppState not
+      `active`), every host connection is suspended: `DaemonClient.suspend()` drops the
+      transport and stops reconnecting but keeps the client, its listeners and subscriptions;
+      the host reads `idle` (not offline or error, so no reconnect toast and no error state).
+      Showing the app again resumes at once with `ensureConnected()`, and the host's normal
+      online transition re-bootstraps the directories and catches the viewed timelines up, the
+      same path as a dropped relay. Probing and connection switches wait while suspended. A
+      return within the grace (a permission or credential prompt, copying a code) never
+      disconnects. Dictation and voice sessions hold the connection until they end. Web and
+      Electron never suspend (`index.ts` is a no-op; `index.native.ts` does the work).
+    - **Why a native timer.** React Native's JS timers run on Choreographer frames and stop at
+      `onHostPause` (`JavaTimerManager`), so a JS `setTimeout` started on leaving the screen
+      would fire only on return. The local module `DaseoBackgroundSuspend` runs the grace on a
+      main-looper `Handler` and emits an event; socket messages and module events still reach JS
+      while paused, which is why the stream kept costing CPU.
+    - **Memory on suspend.** React Native runs a Hermes collection only on
+      `TRIM_MEMORY_BACKGROUND` or worse, which an app left on top with the screen off never
+      gets, so delta 63's stale shadow-node revisions stay alive. On suspend the same module
+      raises `TRIM_MEMORY_RUNNING_CRITICAL` through `MemoryPressureRouter`, as delta 63's
+      watchdog does. Measured by hand on 0.5.97 (9.7 h process, backgrounded): native heap
+      allocated 360 → 267 MB, TOTAL PSS 745 → 674 MB; Views unchanged at 6,974.
+    - **Not changed:** server, protocol, relay, desktop and web behavior; push still comes from
+      the daemon's presence policy (a suspended phone is not a connected client).
+    - **Key files:** `packages/app/src/runtime/background-suspend/` (`controller.ts` grace and
+      holds, `index.native.ts` wiring), `HostRuntimeController.suspend/resume` and
+      `HostRuntimeStore.setBackgroundSuspended` in `packages/app/src/runtime/host-runtime.ts`,
+      `DaemonClient.suspend` in `packages/client/src/daemon-client.ts`,
+      `packages/app/modules/daseo-background-suspend/`, tests in `controller.test.ts`,
+      `host-runtime.test.ts` and `daemon-client.test.ts`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

@@ -3442,6 +3442,129 @@ test("reconnects after relay close with replaced-by-new-connection reason", asyn
   }
 });
 
+function createSequencedTransports(count: number) {
+  const transports = Array.from({ length: count }, () => createMockTransport());
+  const closes: Array<{ index: number; code?: number; reason?: string }> = [];
+  let created = 0;
+  return {
+    transports,
+    closes,
+    created: () => created,
+    factory: () => {
+      const index = Math.min(created, transports.length - 1);
+      created += 1;
+      const mock = transports[index];
+      return {
+        ...mock.transport,
+        close: (code?: number, reason?: string) => {
+          closes.push({ index, code, reason });
+        },
+      };
+    },
+  };
+}
+
+test("suspend drops the transport and does not reconnect until ensureConnected", async () => {
+  useHeartbeatClock();
+  try {
+    const sequence = createSequencedTransports(2);
+    const client = new DaemonClient({
+      url: "ws://relay.test/ws?role=client&serverId=srv_test&v=2",
+      clientId: "clsk_test",
+      logger: createMockLogger(),
+      reconnect: { enabled: true, baseDelayMs: 5, maxDelayMs: 5 },
+      transportFactory: sequence.factory,
+    });
+    clients.push(client);
+    const statuses: string[] = [];
+    client.subscribeConnectionStatus((state) => statuses.push(state.status));
+    const received: string[] = [];
+    client.on("agent_stream", (message) => received.push(message.payload.agentId));
+
+    const connectPromise = client.connect();
+    sequence.transports[0].triggerOpen();
+    await connectPromise;
+
+    client.suspend();
+
+    expect(sequence.closes).toEqual([{ index: 0, code: 1000, reason: "Client suspended" }]);
+    expect(client.getConnectionState()).toEqual({
+      status: "disconnected",
+      reason: "Client suspended",
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(sequence.created()).toBe(1);
+    expect(client.getConnectionState().status).toBe("disconnected");
+
+    client.ensureConnected();
+    expect(sequence.created()).toBe(2);
+    expect(client.getConnectionState().status).toBe("connecting");
+    sequence.transports[1].triggerOpen();
+    expect(client.getConnectionState().status).toBe("connected");
+
+    sequence.transports[1].triggerMessage(
+      wrapSessionMessage({
+        type: "agent_stream",
+        payload: {
+          agentId: "agent-after-resume",
+          timestamp: "2026-07-12T00:00:00.000Z",
+          event: {
+            type: "attention_required",
+            provider: "codex",
+            agentId: "agent-after-resume",
+            reason: "finished",
+            timestamp: "2026-07-12T00:00:00.000Z",
+            shouldNotify: true,
+          },
+        },
+      }),
+    );
+    expect(received).toEqual(["agent-after-resume"]);
+    expect(statuses).toEqual([
+      "idle",
+      "connecting",
+      "connected",
+      "disconnected",
+      "connecting",
+      "connected",
+    ]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("suspend cancels a pending reconnect after the connection dropped", async () => {
+  useHeartbeatClock();
+  try {
+    const sequence = createSequencedTransports(2);
+    const client = new DaemonClient({
+      url: "ws://relay.test/ws?role=client&serverId=srv_test&v=2",
+      clientId: "clsk_test",
+      logger: createMockLogger(),
+      reconnect: { enabled: true, baseDelayMs: 5, maxDelayMs: 5 },
+      transportFactory: sequence.factory,
+    });
+    clients.push(client);
+
+    const connectPromise = client.connect();
+    sequence.transports[0].triggerOpen();
+    await connectPromise;
+    sequence.transports[0].triggerClose({ code: 1006, reason: "" });
+    expect(client.getConnectionState().status).toBe("disconnected");
+
+    client.suspend();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(sequence.created()).toBe(1);
+    expect(client.getConnectionState()).toEqual({
+      status: "disconnected",
+      reason: "Client suspended",
+    });
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("requires non-empty clientId", () => {
   expect(() => {
     const _client = new DaemonClient({

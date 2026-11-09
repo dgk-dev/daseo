@@ -939,6 +939,7 @@ const DEFAULT_RECONNECT_MAX_DELAY_MS = 30000;
 const DEFAULT_SESSION_RPC_TIMEOUT_MS = 60_000;
 const PUSH_TOKEN_REVOCATION_TIMEOUT_MS = 2_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
+const CLIENT_SUSPENDED_REASON = "Client suspended";
 const DEFAULT_LIVENESS_TIMEOUT_MS = 5000;
 const LIVENESS_HEARTBEAT_INTERVAL_MS = 10_000;
 const LIVENESS_HEARTBEAT_TIMEOUT_MS = 15_000;
@@ -1423,6 +1424,37 @@ export class DaemonClient {
       { status: "disposed" },
       { event: "DISPOSE", reason: "Client closed", reasonCode: "disposed" },
     );
+  }
+
+  /**
+   * Daseo (delta 86): drops the transport and stays disconnected, without reconnecting, until
+   * `ensureConnected()`. Unlike `close()` the client stays usable: listeners, subscriptions and
+   * the session it feeds survive, so resuming runs the same recovery as a dropped connection.
+   * The native app suspends its clients while it is not visible.
+   */
+  suspend(): void {
+    // `shouldReconnect` is false only after `close()` or an earlier `suspend()`.
+    if (this.connectionState.status === "disposed" || !this.shouldReconnect) {
+      return;
+    }
+    this.shouldReconnect = false;
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+    this.reconnectAttempt = 0;
+    this.disposeTransport(1000, CLIENT_SUSPENDED_REASON);
+    const error = new Error(CLIENT_SUSPENDED_REASON);
+    this.clearWaiters(error);
+    this.rejectPendingSendQueue(error);
+    this.rejectPingProbe(error);
+    this.terminalStreams.clearSlots();
+    this.lastServerInfoMessage = null;
+    this.updateConnectionState(
+      { status: "disconnected", reason: CLIENT_SUSPENDED_REASON },
+      { event: "SUSPEND", reason: CLIENT_SUSPENDED_REASON, reasonCode: "suspended" },
+    );
+    this.rejectConnect(error);
   }
 
   ensureConnected(): void {

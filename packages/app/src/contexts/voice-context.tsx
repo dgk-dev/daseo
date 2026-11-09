@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
+import { holdDaemonConnection } from "@/runtime/background-suspend";
 import { useSessionStore } from "@/stores/session-store";
 import { createAudioEngine } from "@/voice/audio-engine";
 import type { AudioEngine } from "@/voice/audio-engine-types";
@@ -153,6 +154,27 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
 
   const engine = engineRef.current;
   const runtime = runtimeRef.current!;
+
+  // Daseo delta 86: a voice session talks over the daemon connection; it keeps the connection
+  // when the app leaves the screen until the session ends.
+  useEffect(() => {
+    let release: (() => void) | null = null;
+    const syncHold = (): void => {
+      const active = runtime.getSnapshot().phase !== "disabled";
+      if (active && !release) {
+        release = holdDaemonConnection();
+      } else if (!active && release) {
+        release();
+        release = null;
+      }
+    };
+    syncHold();
+    const unsubscribe = runtime.subscribe(syncHold);
+    return () => {
+      unsubscribe();
+      release?.();
+    };
+  }, [runtime]);
 
   useEffect(() => {
     return () => {

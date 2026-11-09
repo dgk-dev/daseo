@@ -251,6 +251,12 @@ type HostRuntimeConnectionMachineState =
       activeConnectionId: string | null;
       activeConnection: ActiveConnection | null;
       message: string;
+    }
+  // Daseo delta 86: the native app is not visible and its connection is dropped on purpose.
+  | {
+      tag: "suspended";
+      activeConnectionId: string | null;
+      activeConnection: ActiveConnection | null;
     };
 
 type HostRuntimeConnectionMachineEvent =
@@ -258,7 +264,8 @@ type HostRuntimeConnectionMachineEvent =
   | { type: "client_state"; state: ConnectionState; lastError: string | null }
   | { type: "connect_failed"; message: string }
   | { type: "no_connections" }
-  | { type: "stopped" };
+  | { type: "stopped" }
+  | { type: "suspend" };
 
 function extractPreviousConnectionRef(state: HostRuntimeConnectionMachineState): {
   id: string | null;
@@ -268,7 +275,8 @@ function extractPreviousConnectionRef(state: HostRuntimeConnectionMachineState):
     state.tag === "connecting" ||
     state.tag === "online" ||
     state.tag === "offline" ||
-    state.tag === "error"
+    state.tag === "error" ||
+    state.tag === "suspended"
   ) {
     return { id: state.activeConnectionId, connection: state.activeConnection };
   }
@@ -360,6 +368,15 @@ function nextConnectionMachineState(input: {
     };
   }
 
+  if (event.type === "suspend") {
+    const suspended = extractPreviousConnectionRef(state);
+    return {
+      tag: "suspended",
+      activeConnectionId: suspended.id,
+      activeConnection: suspended.connection,
+    };
+  }
+
   if (event.type === "no_connections" || event.type === "stopped") {
     return {
       tag: "offline",
@@ -421,6 +438,18 @@ function toSnapshotConnectionPatch(
       connectionStatus: "online",
       lastError: null,
       lastOnlineAt: state.lastOnlineAt,
+      connectionEpoch,
+    };
+  }
+  if (state.tag === "suspended") {
+    // `idle` is not a failure: no reconnect toast, and the reconnect that ends it starts the
+    // unavailable clock afresh, as for a connection that drops while the app is in view.
+    return {
+      activeConnectionId: state.activeConnectionId,
+      activeConnection: state.activeConnection,
+      connectionStatus: "idle",
+      lastError: null,
+      lastOnlineAt: null,
       connectionEpoch,
     };
   }
@@ -612,6 +641,11 @@ export class HostRuntimeController {
   private switchRequestVersion = 0;
   private probeRequestVersion = 0;
   private probeCycleInFlight: Promise<void> | null = null;
+  private autoProbe = true;
+  // Daseo delta 86: background suspension (see `suspend()`).
+  private suspended = false;
+  private stateBeforeSuspend: HostRuntimeConnectionMachineState | null = null;
+  private switchOnResumeConnectionId: string | null = null;
 
   constructor(input: {
     host: HostProfile;
@@ -656,6 +690,7 @@ export class HostRuntimeController {
       return;
     }
     this.started = true;
+    this.autoProbe = options?.autoProbe !== false;
     this.trackConnectionFirstSeen();
     if (options?.initialConnection) {
       await this.switchToConnection({
@@ -664,10 +699,8 @@ export class HostRuntimeController {
       });
     }
     await this.runProbeCycleNow();
-    if (options?.autoProbe !== false) {
-      this.probeIntervalHandle = setInterval(() => {
-        void this.runProbeCycleNow();
-      }, PROBE_TICK_MS);
+    if (!this.suspended) {
+      this.startProbeInterval();
     }
   }
 
@@ -675,10 +708,7 @@ export class HostRuntimeController {
     this.switchRequestVersion += 1;
     this.probeRequestVersion += 1;
     this.started = false;
-    if (this.probeIntervalHandle) {
-      clearInterval(this.probeIntervalHandle);
-      this.probeIntervalHandle = null;
-    }
+    this.stopProbeInterval();
     if (this.unsubscribeClientStatus) {
       this.unsubscribeClientStatus();
       this.unsubscribeClientStatus = null;
@@ -712,9 +742,100 @@ export class HostRuntimeController {
       !equal(previousActiveConnection, nextActiveConnection)
     ) {
       this.connectionLastProbedAt.delete(activeConnectionId);
-      await this.switchToConnection({ connectionId: activeConnectionId });
+      if (this.suspended) {
+        this.switchOnResumeConnectionId = activeConnectionId;
+      } else {
+        await this.switchToConnection({ connectionId: activeConnectionId });
+      }
     }
     await this.runProbeCycleNow();
+  }
+
+  /**
+   * Daseo delta 86: drops this host's connection while the native app is not visible, so the
+   * phone stops receiving and rendering the live stream it cannot show. The active client is
+   * suspended, not closed (`DaemonClient.suspend`): `resume()` reconnects that same client and
+   * the online transition runs the reconnect recovery (directory re-bootstrap, timeline
+   * catch-up). Probing and connection switches wait for `resume()`.
+   */
+  suspend(): void {
+    if (this.suspended) {
+      return;
+    }
+    this.suspended = true;
+    this.stateBeforeSuspend = this.connectionMachineState;
+    // A probe cycle in flight finishes into a stale version: it activates nothing and closes
+    // the clients it opened.
+    this.probeRequestVersion += 1;
+    this.stopProbeInterval();
+    this.activeClient?.suspend();
+    this.applyConnectionEvent({ type: "suspend" });
+    this.updateSnapshot({
+      ...toSnapshotConnectionPatch(this.connectionMachineState, this.connectionEpoch),
+      ...this.buildAgentDirectoryStatusPatch(),
+    });
+  }
+
+  resume(): void {
+    if (!this.suspended) {
+      return;
+    }
+    this.suspended = false;
+    const stateBeforeSuspend = this.stateBeforeSuspend;
+    this.stateBeforeSuspend = null;
+    const switchConnectionId = this.switchOnResumeConnectionId;
+    this.switchOnResumeConnectionId = null;
+    const client = this.activeClient;
+    if (client) {
+      client.ensureConnected();
+      this.applyClientState(client);
+    } else if (stateBeforeSuspend) {
+      this.connectionMachineState = stateBeforeSuspend;
+      this.updateSnapshot({
+        ...toSnapshotConnectionPatch(this.connectionMachineState, this.connectionEpoch),
+        ...this.buildAgentDirectoryStatusPatch(),
+      });
+    }
+    if (!this.started) {
+      return;
+    }
+    if (switchConnectionId) {
+      void this.switchToConnection({ connectionId: switchConnectionId });
+    }
+    this.startProbeInterval();
+    void this.runProbeCycleNow();
+  }
+
+  isSuspended(): boolean {
+    return this.suspended;
+  }
+
+  private startProbeInterval(): void {
+    if (!this.started || !this.autoProbe || this.probeIntervalHandle) {
+      return;
+    }
+    this.probeIntervalHandle = setInterval(() => {
+      void this.runProbeCycleNow();
+    }, PROBE_TICK_MS);
+  }
+
+  private stopProbeInterval(): void {
+    if (this.probeIntervalHandle) {
+      clearInterval(this.probeIntervalHandle);
+      this.probeIntervalHandle = null;
+    }
+  }
+
+  private applyClientState(client: DaemonClient): void {
+    this.applyConnectionEvent({
+      type: "client_state",
+      state: client.getConnectionState(),
+      lastError: client.lastError,
+    });
+    this.updateSnapshot({
+      ...toSnapshotConnectionPatch(this.connectionMachineState, this.connectionEpoch),
+      ...this.buildAgentDirectoryStatusPatch(),
+    });
   }
 
   ensureConnected(): void {
@@ -784,6 +905,9 @@ export class HostRuntimeController {
   }
 
   private async runProbeCycle(): Promise<void> {
+    if (this.suspended) {
+      return;
+    }
     const requestVersion = ++this.probeRequestVersion;
     if (this.host.connections.length === 0) {
       if (!this.isCurrentProbeRequest(requestVersion)) {
@@ -1135,7 +1259,9 @@ export class HostRuntimeController {
 
   private isSwitchStillValid(requestVersion: number, expectedProbeVersion?: number): boolean {
     return (
-      this.isCurrentSwitchRequest(requestVersion) && this.canProceedForProbe(expectedProbeVersion)
+      !this.suspended &&
+      this.isCurrentSwitchRequest(requestVersion) &&
+      this.canProceedForProbe(expectedProbeVersion)
     );
   }
 
@@ -1198,7 +1324,7 @@ export class HostRuntimeController {
     existingClient?: DaemonClient;
   }): Promise<void> {
     const { connectionId, expectedProbeVersion, existingClient } = input;
-    if (!this.canProceedForProbe(expectedProbeVersion)) {
+    if (this.suspended || !this.canProceedForProbe(expectedProbeVersion)) {
       await this.abortSwitchWithClient(existingClient);
       return;
     }
@@ -1279,6 +1405,11 @@ export class HostRuntimeController {
 
     this.unsubscribeClientStatus = client.subscribeConnectionStatus((state) => {
       if (!this.isCurrentSwitchRequest(requestVersion) || this.activeClient !== client) {
+        return;
+      }
+      // The suspend's own disconnect is not a connection failure; `resume()` reads the
+      // client's state again.
+      if (this.suspended) {
         return;
       }
       this.applyConnectionEvent({
@@ -1400,6 +1531,7 @@ export class HostRuntimeStore {
   private directorySyncByServer = new Map<string, DirectorySync>();
   private configuredOverrideBootstrapInFlight: Promise<void> | null = null;
   private bootPromise: Promise<void> | null = null;
+  private backgroundSuspended = false;
   private storage: HostRuntimeStorage;
   private replicaCache: ReplicaCache;
   private readonly revokePushNotifications: typeof revokePushNotifications;
@@ -2072,6 +2204,9 @@ export class HostRuntimeStore {
         deps: this.deps,
         onReconcileServerId: (oldId, newId) => this.reconcileServerId(oldId, newId),
       });
+      if (this.backgroundSuspended) {
+        controller.suspend();
+      }
       this.controllers.set(host.serverId, controller);
       this.directorySyncByServer.set(
         host.serverId,
@@ -2583,6 +2718,28 @@ export class HostRuntimeStore {
       }
     }
     return earliestServerId;
+  }
+
+  /**
+   * Daseo delta 86: the native app suspends every host connection while it is not visible
+   * (`runtime/background-suspend`) and resumes them when it is shown again.
+   */
+  setBackgroundSuspended(suspended: boolean): void {
+    if (this.backgroundSuspended === suspended) {
+      return;
+    }
+    this.backgroundSuspended = suspended;
+    for (const controller of this.controllers.values()) {
+      if (suspended) {
+        controller.suspend();
+      } else {
+        controller.resume();
+      }
+    }
+  }
+
+  isBackgroundSuspended(): boolean {
+    return this.backgroundSuspended;
   }
 
   ensureConnectedAll(): void {

@@ -72,6 +72,7 @@ import {
   startHostRuntimeBootstrap,
   type StartupBlocker,
 } from "@/navigation/host-runtime-bootstrap";
+import { startBackgroundSuspend } from "@/runtime/background-suspend";
 import { registerWorkspaceRouteNavigationRef } from "@/navigation/workspace-route-navigation";
 import { ThemedStack } from "@/navigation/themed-stack";
 import { shouldUseDesktopDaemon } from "@/desktop/daemon/desktop-daemon";
@@ -391,6 +392,7 @@ function HostRuntimeBootstrapProvider({ children }: { children: ReactNode }) {
       daemonStartService,
       shouldStartDaemon: shouldStartBuiltInDaemon,
     });
+    return startBackgroundSuspend(store);
   }, []);
 
   const anyOnlineHostServerId = useEarliestOnlineHostServerId();
