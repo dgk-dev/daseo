@@ -1697,6 +1697,18 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       raises `TRIM_MEMORY_RUNNING_CRITICAL` through `MemoryPressureRouter`, as delta 63's
       watchdog does. Measured by hand on 0.5.97 (9.7 h process, backgrounded): native heap
       allocated 360 → 267 MB, TOTAL PSS 745 → 674 MB; Views unchanged at 6,974.
+    - **Measured on the Fold 7 (0.5.98, 2026-11-09).** The daemon logged the phone's disconnect
+      30–31 s after every departure in his own use (16:26:02 → 16:26:33, 16:42:26 → 16:42:56,
+      17:08:57 → 17:09:27); a fold mid-use (Activity recreated in 2 s) kept the connection.
+      Returning reconnected in under 1 s (16:43:13.5 → 16:43:14) with the timeline on screen at
+      once and no error, offline banner or reconnect toast. Pushes sent while suspended reached
+      the phone 1 s later (16:28:15 → 16:28:16, 16:29:12 → 16:29:13). Out of view after the
+      grace: 0 CPU ticks per minute for three minutes (17:13–17:15, another app in front).
+      Memory of one process, in view → 30 s after leaving: TOTAL PSS 699 → 596 MB, native heap
+      280 → 220 MB, Views 3,125 → 2,629. No RootErrorBoundary report since 0.5.98 was
+      installed. Still a large foreground cost while in use (main thread 30–43 CPU-s per
+      minute): upstream software-mansion/react-native-reanimated#10553, the UI-runtime frame
+      loop re-arming every frame while visible, is one candidate; not part of this delta.
     - **Sidebar rows without a kebab (owner's report the same day): not reproduced.** On 0.5.98 the
       Fold showed the ⋮ kebab on every workspace row unfolded (project and status grouping),
       right after a suspend and resume, and on the cover screen. In code every row renderer
