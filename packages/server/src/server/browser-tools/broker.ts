@@ -251,12 +251,15 @@ export class BrowserToolsBroker {
       })),
     );
 
-    const failed = hostResponses.find(({ payload }) => !payload.ok);
-    if (failed) {
-      return withBrowserToolsRequestId(failed.payload, params.request.requestId);
+    // Daseo delta 91: one host that does not answer (an app window that is closing, a stuck
+    // renderer) no longer hides the tabs of the hosts that did. Only when every host failed is
+    // the list a failure.
+    const answered = hostResponses.filter(({ payload }) => payload.ok);
+    if (answered.length === 0) {
+      return withBrowserToolsRequestId(hostResponses[0]!.payload, params.request.requestId);
     }
 
-    for (const { host, payload } of hostResponses) {
+    for (const { host, payload } of answered) {
       this.rememberBrowserHostForPayload(host.client.id, payload);
     }
 
@@ -265,7 +268,7 @@ export class BrowserToolsBroker {
       ok: true,
       result: {
         command: "list_tabs",
-        tabs: hostResponses.flatMap(({ payload }) =>
+        tabs: answered.flatMap(({ payload }) =>
           payload.ok && payload.result.command === "list_tabs" ? payload.result.tabs : [],
         ),
       },

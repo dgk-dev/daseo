@@ -1951,6 +1951,31 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       `packages/app/src/assistant-file-links/{parse,resolver,use-file-link,provider}.ts(x)`,
       `packages/app/src/desktop/browser/pane/{remote-stream-watch.ts,remote-stream-frame.tsx}`.
 
+91. **Browser tools answer, send holds the right edge, and the hint line drops `voice`** — the
+    owner on 2026-11-10 ("send가 맨 끝에 있어야 직관적인데 … 중간에 있는 경우가 있어서", "닷새우
+    브라우저가 응답을 하지 않는 경우가 있고 … 궁극적으로 개선", "dictate만 남겨주고").
+    - **Why tools went silent.** Agents' browser calls timed out 470 times in 30 days (11-04: 62,
+      11-05: 79), in episodes of 20–50 minutes that began right after an evaluate and ended by
+      themselves; on 11-10 every call, `list_tabs` included, timed out while the desktop app sat
+      connected and idle. Each tab's lifecycle steps (wake, throttle, freeze, discard) run on one
+      serial chain, and a freeze or wake is a CDP `Page.setWebLifecycleState` with no deadline:
+      a page that never answered it held the chain, so every later wake, and every automation
+      command behind it (`runAwake`), waited until it settled.
+    - **Fix.** A lifecycle step that has not settled after 5 s (`BROWSER_TAB_STEP_TIMEOUT_MS`) is
+      logged and the chain moves on; an unanswered freeze is recorded as frozen so the next wake
+      re-sends `active`. The renderer handler answers `list_tabs` and `resize` exactly once even
+      when they throw. The broker's multi-host `list_tabs` returns the tabs of the hosts that
+      answered and fails only when all of them failed.
+    - **Send.** `send` (with its `⏎` keycap where Enter submits) is the last word of the hint
+      line's trailing group on every platform; on desktop it used to sit after `mode`, mid-line,
+      and moved whenever the other words wrapped.
+    - **Voice.** The realtime `voice` word is hidden (`SHOW_REALTIME_VOICE_WORD`); `dictate` stays.
+      The realtime voice code and its shortcut are untouched.
+    - **Key files:** `packages/desktop/src/features/browser-webviews/lifecycle.ts`,
+      `packages/app/src/desktop/browser/automation/handler.ts`,
+      `packages/server/src/server/browser-tools/broker.ts`,
+      `packages/app/src/composer/input/input.tsx`, `packages/app/src/composer/index.tsx`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

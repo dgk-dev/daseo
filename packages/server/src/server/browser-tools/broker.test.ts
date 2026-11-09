@@ -569,7 +569,7 @@ describe("BrowserToolsBroker", () => {
     expect(other.receivedRequests).toEqual([]);
   });
 
-  test("failed list tabs aggregation does not seed browser id affinity", async () => {
+  test("a host that fails list_tabs does not hide the tabs of hosts that answered (delta 91)", async () => {
     const broker = createBroker();
     const firstHost = new FakeBrowserHostClient("host-1");
     const secondHost = new FakeBrowserHostClient("host-2");
@@ -606,32 +606,37 @@ describe("BrowserToolsBroker", () => {
       },
     });
 
-    await expect(listPromise).resolves.toEqual({
+    await expect(listPromise).resolves.toMatchObject({
       requestId: "req-1",
-      ok: false,
-      error: {
-        code: "browser_timeout",
-        message: "Host did not answer list_tabs.",
-        retryable: true,
-      },
+      ok: true,
+      result: { command: "list_tabs", tabs: [{ browserId: BROWSER_ID, title: "One" }] },
     });
 
-    await expect(
-      broker.execute({
-        command: { command: "snapshot", args: { browserId: BROWSER_ID } },
-        workspaceId: "workspace-1",
-      }),
-    ).resolves.toEqual({
-      requestId: "req-1",
-      ok: false,
-      error: {
-        code: "browser_tab_not_found",
-        message: `Browser tab ${BROWSER_ID} is not associated with a connected browser automation host. Call browser_list_tabs and use one of the returned browserId values.`,
-        retryable: false,
-      },
+    // The answering host owns the listed tab: the next command goes straight to it.
+    void broker.execute({
+      command: { command: "snapshot", args: { browserId: BROWSER_ID } },
+      workspaceId: "workspace-1",
     });
-    expect(firstHost.receivedRequests).toHaveLength(1);
+    expect(firstHost.receivedRequests).toHaveLength(2);
     expect(secondHost.receivedRequests).toHaveLength(1);
+  });
+
+  test("list_tabs fails only when every host failed", async () => {
+    const broker = createBroker();
+    const firstHost = new FakeBrowserHostClient("host-1");
+    const secondHost = new FakeBrowserHostClient("host-2");
+    broker.registerClient(firstHost);
+    broker.registerClient(secondHost);
+
+    const listPromise = broker.execute({ command: { command: "list_tabs", args: {} } });
+    const failure = {
+      ok: false as const,
+      error: { code: "browser_timeout" as const, message: "Host did not answer.", retryable: true },
+    };
+    firstHost.resolveLatestWith(broker, { requestId: "req-1:host-1", ...failure });
+    secondHost.resolveLatestWith(broker, { requestId: "req-1:host-2", ...failure });
+
+    await expect(listPromise).resolves.toEqual({ requestId: "req-1", ...failure });
   });
 
   test("unsupported commands are rejected before sending to the routed host", async () => {

@@ -150,9 +150,17 @@ async function handleBrowserAutomationRequest(params: {
   const executeAutomationCommand = browserHost?.executeAutomationCommand;
 
   if (request.command.command === "list_tabs" && serverId && request.workspaceId) {
+    // Daseo delta 91: every branch answers exactly once, a throw included; an unanswered request
+    // only surfaced as the daemon's 15-second "did not respond".
+    let payload: BrowserAutomationResponsePayload;
+    try {
+      payload = await listWorkspaceBrowserTabsForRequest({ request, serverId, browserHost });
+    } catch (error) {
+      payload = normalizeThrownBridgeError(request.requestId, error);
+    }
     client.sendBrowserAutomationExecuteResponse({
       type: "browser.automation.execute.response",
-      payload: await listWorkspaceBrowserTabsForRequest({ request, serverId, browserHost }),
+      payload,
     });
     return;
   }
@@ -180,9 +188,15 @@ async function handleBrowserAutomationRequest(params: {
   }
 
   if (request.command.command === "resize") {
+    let payload: BrowserAutomationResponsePayload;
+    try {
+      payload = await resizeBrowserTabForRequest({ request, serverId, browserHost });
+    } catch (error) {
+      payload = normalizeThrownBridgeError(request.requestId, error);
+    }
     client.sendBrowserAutomationExecuteResponse({
       type: "browser.automation.execute.response",
-      payload: await resizeBrowserTabForRequest({ request, serverId, browserHost }),
+      payload,
     });
     return;
   }

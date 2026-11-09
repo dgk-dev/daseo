@@ -38,6 +38,12 @@ export interface BrowserTabLifecycleOptions {
   setTimer?: (callback: () => void, delayMs: number) => TimerHandle;
   clearTimer?: (handle: TimerHandle) => void;
   onError?: (error: unknown, context: { webContentsId: number; step: string }) => void;
+  /**
+   * How long one lifecycle step may run before the tab's chain moves on without it (delta 91).
+   * A CDP `Page.setWebLifecycleState` the page never answers used to hold the chain, so every
+   * later wake, and every automation command behind it, waited until the step settled.
+   */
+  stepTimeoutMs?: number;
   onTransition?: (webContentsId: number, state: BrowserTabLifecycleState) => void;
 }
 
@@ -52,6 +58,9 @@ interface TrackedTab {
 
 export const BROWSER_TAB_THROTTLE_AFTER_MS = 2 * 60_000;
 export const BROWSER_TAB_FREEZE_AFTER_MS = 15 * 60_000;
+// Daseo delta 91: a wake or freeze is one CDP round trip; five seconds is far past a healthy one
+// and well inside the daemon's 15-second browser-tool deadline.
+export const BROWSER_TAB_STEP_TIMEOUT_MS = 5_000;
 const BROWSER_TAB_FREEZE_RETRY_MS = 60_000;
 
 /**
@@ -80,6 +89,7 @@ export class BrowserTabLifecycle {
   private readonly throttleAfterMs: number;
   private readonly freezeAfterMs: number;
   private readonly freezeRetryMs: number;
+  private readonly stepTimeoutMs: number;
   private readonly now: () => number;
   private readonly setTimer: (callback: () => void, delayMs: number) => TimerHandle;
   private readonly clearTimer: (handle: TimerHandle) => void;
@@ -89,6 +99,7 @@ export class BrowserTabLifecycle {
     this.throttleAfterMs = options.throttleAfterMs ?? BROWSER_TAB_THROTTLE_AFTER_MS;
     this.freezeAfterMs = options.freezeAfterMs ?? BROWSER_TAB_FREEZE_AFTER_MS;
     this.freezeRetryMs = options.freezeRetryMs ?? BROWSER_TAB_FREEZE_RETRY_MS;
+    this.stepTimeoutMs = options.stepTimeoutMs ?? BROWSER_TAB_STEP_TIMEOUT_MS;
     this.now = options.now ?? Date.now;
     this.setTimer = options.setTimer ?? ((callback, delayMs) => setTimeout(callback, delayMs));
     this.clearTimer = options.clearTimer ?? ((handle) => clearTimeout(handle));
@@ -326,10 +337,28 @@ export class BrowserTabLifecycle {
     if (tab.target.isDestroyed()) {
       return;
     }
+    let timer: TimerHandle | null = null;
+    const timedOut = new Promise<"timeout">((resolve) => {
+      timer = this.setTimer(() => resolve("timeout"), this.stepTimeoutMs);
+    });
     try {
-      await run();
+      const outcome = await Promise.race([Promise.resolve().then(run), timedOut]);
+      if (outcome === "timeout") {
+        // The step may still land later. A freeze that did not answer may have frozen the page,
+        // so record it as frozen: the next wake then sends `active` instead of trusting the
+        // throttled state it would otherwise skip.
+        if (step === "freeze" && tab.state === "throttled") {
+          this.setState(tab, "frozen");
+        }
+        this.options.onError?.(
+          new Error(`browser tab ${step} did not settle within ${this.stepTimeoutMs}ms`),
+          { webContentsId: tab.target.id, step },
+        );
+      }
     } catch (error) {
       this.options.onError?.(error, { webContentsId: tab.target.id, step });
+    } finally {
+      if (timer !== null) this.clearTimer(timer);
     }
   }
 

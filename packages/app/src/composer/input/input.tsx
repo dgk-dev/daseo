@@ -2008,14 +2008,14 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           </View>
 
           {/* Daseo delta 89: the hint line — every control as a word. Desktop reads `model …
-              effort … ⏎ send ⇧⏎ newline ⌘L focus / commands @ files attach dictate voice`; phones
-              keep send at the trailing edge, where the thumb expects it. */}
+              effort … ⇧⏎ newline ⌘L focus / commands @ files attach dictate … ⏎ send`.
+              Delta 91: send is the last word of the trailing group on every platform, so it holds
+              the right edge however the other words wrap (on desktop it sat after `mode`, mid-line). */}
           <View style={styles.hintLineRow}>
             <View style={styles.hintLine} onLayout={handleHintLineLayout}>
               <HintLineWidthContext.Provider value={hintLineWidth}>
                 {leftContent}
               </HintLineWidthContext.Provider>
-              {isCompact ? null : primaryAction}
               <ComposerKeyHints
                 shouldSubmitOnEnter={shouldSubmitOnEnter}
                 showAutocomplete={mode.showAutocomplete}
@@ -2046,8 +2046,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
             </View>
             <View style={styles.hintLineEnd}>
               {beforeVoiceContent}
-              {isCompact ? primaryAction : null}
               <JumpToBottomHint />
+              {primaryAction}
             </View>
           </View>
         </View>

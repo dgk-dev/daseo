@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   BROWSER_TAB_FREEZE_AFTER_MS,
+  BROWSER_TAB_STEP_TIMEOUT_MS,
   BROWSER_TAB_THROTTLE_AFTER_MS,
   BrowserTabLifecycle,
   type BrowserTabLifecycleTarget,
@@ -319,5 +320,27 @@ describe("BrowserTabLifecycle", () => {
     lifecycle.track(new FakeTab(2).enableDiscard());
     lifecycle.setEnabled(false);
     expect(lifecycle.listDiscardCandidates(0)).toEqual([]);
+  });
+
+  test("a freeze the page never answers does not hold later wakes or commands (delta 91)", async () => {
+    const { clock, lifecycle, errors } = createLifecycle();
+    const tab = new FakeTab(41);
+    tab.holdFreezes = true;
+    lifecycle.track(tab);
+    await clock.advance(BROWSER_TAB_FREEZE_AFTER_MS + 1);
+    expect(tab.pendingFreeze).not.toBeNull();
+
+    let ran = false;
+    const command = lifecycle.runAwake(41, async () => {
+      ran = true;
+    });
+    await clock.advance(BROWSER_TAB_STEP_TIMEOUT_MS + 1);
+    await command;
+
+    expect(ran).toBe(true);
+    // The unanswered freeze is treated as possibly applied, so the wake re-sends `active`.
+    expect(tab.calls).toContain("lifecycle:active");
+    expect(lifecycle.getState(41)).toBe("active");
+    expect(String(errors[0])).toContain("freeze did not settle");
   });
 });

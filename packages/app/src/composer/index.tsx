@@ -1062,6 +1062,10 @@ interface ComposerRightControlsSlotProps extends ComposerVoiceModeButtonProps {
   showVoice: boolean;
 }
 
+// Daseo delta 91 (2026-11-10, the owner: "dictate만 사용하고 보이스 기능은 사용 안 하잖아.
+// dictate만 남겨주고"): the hint line drops the realtime `voice` word; `dictate` stays.
+const SHOW_REALTIME_VOICE_WORD = false;
+
 function ComposerRightControlsSlot({
   isVoiceModeForAgent,
   hasAgent,
@@ -1073,7 +1077,12 @@ function ComposerRightControlsSlot({
 }: ComposerRightControlsSlotProps) {
   const hideVoiceForCompactInput = isCompact && hasSendableContent;
   const showVoiceModeButton =
-    showVoice && !isVoiceModeForAgent && hasAgent && !isAgentRunning && !hideVoiceForCompactInput;
+    SHOW_REALTIME_VOICE_WORD &&
+    showVoice &&
+    !isVoiceModeForAgent &&
+    hasAgent &&
+    !isAgentRunning &&
+    !hideVoiceForCompactInput;
   if (!showVoiceModeButton) return null;
   return (
     <View style={styles.rightControls}>
