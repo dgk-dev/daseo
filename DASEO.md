@@ -1681,6 +1681,16 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       React Native replays only `onHostResume` to a listener added late, so a module
       initialized while the Activity is not resumed (a cold start behind the lock screen)
       starts its queue paused. Remove the patch when worklets reaches 0.10.4.
+    - **Known remaining cost (not fixed): cold start behind the lock screen.** Started with the
+      screen off and the keyguard up, the host resumes and pauses 20 ms apart while React is
+      still being created. `ReactContext.addLifecycleEventListener` replays `onHostResume` to a
+      listener added while the state is `RESUMED` through a UI-thread runnable that does not
+      re-check the state, so a listener registered in that window (React Native's
+      `JavaTimerManager`) gets the pause first and the stale resume after it, and keeps its timer
+      frame callback posting at the display rate: about 62 main-thread wakeups a second,
+      0.6–0.9 CPU-s per minute, 3 of 3 cold starts on the Fold 7 (2026-11-09). It lives in the
+      prebuilt `react-android` AAR, which a patch-package source edit cannot reach; a candidate
+      for an upstream React Native report. A normal "used, then screen off" pause is unaffected.
     - **Memory on suspend.** React Native runs a Hermes collection only on
       `TRIM_MEMORY_BACKGROUND` or worse, which an app left on top with the screen off never
       gets, so delta 63's stale shadow-node revisions stay alive. On suspend the same module
