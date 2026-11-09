@@ -1946,6 +1946,16 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       resolves unless it starts with a command (`open report.pdf`). Markdown destinations are
       percent-decoded (markdown-it encodes spaces and Korean even inside `<…>`), so `~/` and
       relative links with such names open; before, only absolute ones did.
+    - **Corpus** (4,311 turn-final assistant messages, 2026-10-20..11-10, 11,020 links and path
+      spans; existence resolved on every 8th message, 1,360 spans, against the disk on
+      2026-11-10). Before: 544 opened an existing file (52 of them the first of several
+      matches), 426 opened a pane for a missing path, 257 gave a toast. After: 662 open, 103 say
+      "several match" (44 of them were the old first-of-several guesses), 466 say "not found",
+      0 open a missing-path pane. Shortened paths (all 78): before, 61 opened a missing-path
+      pane and none opened a file; after, 39 open the one match, 1 is ambiguous, 17 are not
+      found, 21 stay text (globs, brace lists, web paths). The spaced-name rule was narrowed to
+      document and media extensions after this run showed it linking commands
+      (`vitest kits.test.ts`).
     - **Key files:** `packages/server/src/server/file-explorer/path-resolve.ts`,
       `packages/server/src/server/session/files/workspace-files-session.ts`,
       `packages/app/src/assistant-file-links/{parse,resolver,use-file-link,provider}.ts(x)`,
