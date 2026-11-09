@@ -198,9 +198,11 @@ export default {
           image: "./assets/images/splash-icon.png",
           imageWidth: 200,
           resizeMode: "contain",
-          backgroundColor: "#050506",
+          // Fixed at build time, before any theme loads: the default Daseo theme's chat
+          // background (Ubuntu aubergine, src/styles/theme.ts, delta 89).
+          backgroundColor: "#300A24",
           dark: {
-            backgroundColor: "#050506",
+            backgroundColor: "#300A24",
           },
         },
       ],

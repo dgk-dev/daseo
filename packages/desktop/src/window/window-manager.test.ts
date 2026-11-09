@@ -58,7 +58,7 @@ describe("window-manager", () => {
 
     it("returns dark title bar overlay colors", () => {
       expect(getTitleBarOverlayOptions("dark")).toEqual({
-        color: "#181B1A",
+        color: "#26071C",
         symbolColor: "#e4e4e7",
         height: 29,
       });
@@ -179,7 +179,7 @@ describe("window-manager", () => {
         frame: false,
         autoHideMenuBar: true,
         titleBarOverlay: {
-          color: "#181B1A",
+          color: "#26071C",
           symbolColor: "#e4e4e7",
           height: 29,
         },

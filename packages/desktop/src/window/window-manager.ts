@@ -67,8 +67,10 @@ export function createWindowControlsOverlayState(theme: WindowTheme): WindowCont
 }
 
 export function getTitleBarOverlayOptions(theme: WindowTheme): Electron.TitleBarOverlayOptions {
+  // Until the renderer sends its theme, the dark overlay matches the Daseo theme's chrome
+  // (surface0 #26071C, delta 89); the app then updates it from the live theme.
   if (theme === "dark") {
-    return { color: "#181B1A", symbolColor: "#e4e4e7", height: 29 };
+    return { color: "#26071C", symbolColor: "#e4e4e7", height: 29 };
   }
 
   return { color: "#ffffff", symbolColor: "#09090b", height: 29 };

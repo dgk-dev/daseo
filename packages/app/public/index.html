@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta http-equiv="X-UA-Compatible" content="IE=edge" />
     <meta name="robots" content="noindex,nofollow" />
-    <meta name="theme-color" content="#181B1A" />
+    <meta name="theme-color" content="#300A24" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Paseo" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -32,11 +32,12 @@
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
       }
-      /* Prevent white flash before React mounts */
+      /* Prevent white flash before React mounts. Dark is the default Daseo theme's chat
+         background (Ubuntu aubergine, src/styles/theme.ts, delta 89). */
       @media (prefers-color-scheme: dark) {
         html,
         body {
-          background-color: #181b1a;
+          background-color: #300a24;
         }
       }
       /* These styles make the root element full-height */
