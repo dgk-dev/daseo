@@ -410,8 +410,11 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     file wait's single `fired`; a command wait's `fired` is one matching line and keeps it), and
     when `pending` reaches 0; it never keeps more labels than `pending`. An expired hold (delta 29)
     omits the field. `deriveAgentStateBucket`/`getAgentStatusPriority` treat `idle` with
-    `backgroundWaits.pending > 0` and no permission, error, or unread attention as `running`
-    (`isAgentWaitingInBackground`), so sidebar, tabs, workspace status, the subagent track, the
+    `backgroundWaits.pending > 0` and no permission or error as `running`
+    (`isAgentWaitingInBackground`); an unread "finished" does not block it, because delta 29
+    sets none while waits are pending, so one seen then is stale (a subagent's interim report
+    its lead already read stopped the sidebar spinner while the subagent waited on a build,
+    2026-11-10), and it shows again once the waits are gone. So sidebar, tabs, workspace status, the subagent track, the
     command center, and agent sorting show it busy; lifecycle, composer, and queue semantics are
     unchanged. A wake (`<paseo-system>` whose first line is `wait_for: …`) parses as summary kind
     `wait` and renders as one compact line,

@@ -86,15 +86,18 @@ describe("deriveAgentStateBucket", () => {
     ).toBe("needs_input");
   });
 
-  it("keeps unread attention and errors ahead of pending background waits", () => {
-    expect(
-      deriveAgentStateBucket({
-        status: "idle",
-        requiresAttention: true,
-        attentionReason: "finished",
-        backgroundWaits: { pending: 1 },
-      }),
-    ).toBe("attention");
+  it("shows an earlier unread finish as running while background waits are pending", () => {
+    const input = {
+      status: "idle" as const,
+      requiresAttention: true,
+      attentionReason: "finished" as const,
+      backgroundWaits: { pending: 1 },
+    };
+    expect(isAgentWaitingInBackground(input)).toBe(true);
+    expect(deriveAgentStateBucket(input)).toBe("running");
+  });
+
+  it("keeps errors ahead of pending background waits", () => {
     expect(
       deriveAgentStateBucket({
         status: "error",

@@ -24,7 +24,10 @@ const WORKSPACE_STATE_BUCKET_PRIORITY = {
  * Daseo: an idle agent that ended its turn with background waits pending (pi-local
  * `wait_for`) will be woken by them, so it presents as busy. Lifecycle stays `idle`
  * (composer and queue semantics key off it); only the bucket and sort priority change.
- * Permission, error, and unread attention keep their own buckets.
+ * Permission and error keep their own buckets. An unread "finished" does not: the
+ * daemon sets no finished attention while waits are pending (delta 29), so one seen
+ * here is from an earlier turn, such as a subagent's interim report its lead already
+ * read, and the agent is not finished. It shows again once the waits are gone.
  */
 export function isAgentWaitingInBackground(input: AgentStateBucketInput): boolean {
   return (
@@ -33,7 +36,7 @@ export function isAgentWaitingInBackground(input: AgentStateBucketInput): boolea
     (input.pendingPermissionCount ?? 0) === 0 &&
     input.attentionReason !== "permission" &&
     input.attentionReason !== "error" &&
-    !input.requiresAttention
+    (!input.requiresAttention || input.attentionReason === "finished")
   );
 }
 
