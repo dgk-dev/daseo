@@ -1989,6 +1989,41 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       `packages/server/src/server/browser-tools/broker.ts`,
       `packages/app/src/composer/input/input.tsx`, `packages/app/src/composer/index.tsx`.
 
+92. **A macOS prompt never stalls the browser, and when the app does stall the agent is told
+    why** — the owner approved on 2026-11-11 ("권장대로 모두 진행"). Shipped in two waves; wave 1
+    is 0.5.106.
+    - **Why every browser tool went silent after 0.5.105.** The first tab install after the swap
+      loaded the stored passkey with `safeStorage.decryptString`, which reads the keychain on the
+      main thread. macOS showed a keychain prompt (SecurityAgent), and `sample` showed the main
+      thread inside `SecItemCopyMatching` for 85+ minutes: every command that needs the main
+      process timed out at 15 s, `main.log` stopped, and only renderer-side calls answered. Why
+      the prompt came back although the signing requirement did not change is not known.
+    - **Passkey keys (wave 1).** The store uses only safeStorage's async API. Its keychain read
+      runs on a Chromium worker thread (`KeychainKeyProvider::GetKey` posts a `MayBlock` task),
+      and it reads what the sync API wrote: both use the `v10` format and key (measured with
+      Electron 44.10.2: sync-encrypted text decrypts async and the reverse, `shouldReEncrypt`
+      false). Decrypted keys stay in main-process memory for the app run. A tab install never
+      waits for them: it installs the authenticator with the keys it already has, and the rest
+      are added to every installed tab when decryption finishes. A passkey a site registers is
+      served to other tabs at once and written to disk only after it is encrypted, never in plain
+      text. A failed decrypt is logged once and retried on the next install.
+    - **A stalled app is named (wave 1).** While a browser request is unanswered, the desktop
+      renderer pings the main process every 5 s (`paseo:browser:ping`); a ping without a reply in
+      2 s answers the request with `browser_timeout`, `hostUnresponsive: true` (an optional error
+      field) and a message that names the main process and the usual cause. A slow command
+      whose main process keeps answering is not cut short. The daemon runs
+      `pgrep -x SecurityAgent` (cached 3 s) on that failure and on its own 15 s timeout, adds "a
+      macOS security prompt is open on the Mac" to the message, and sends one push per stall episode
+      ("Mac의 Daseo가 macOS 확인 창 때문에 멈췄습니다…"): not again until a browser command is
+      answered, or 30 minutes passed.
+    - **main.log (wave 1).** Browser lifecycle and automation warnings in the main process went
+      to `console`, which electron-log never writes to `main.log`; they use electron-log now.
+    - **Key files:** `packages/desktop/src/features/browser-automation/{passkeys,ipc}.ts`,
+      `packages/desktop/src/features/browser-webviews/index.ts`, `packages/desktop/src/preload.ts`,
+      `packages/app/src/desktop/browser/automation/handler.ts`,
+      `packages/server/src/server/browser-tools/{broker,host-stall}.ts`,
+      `packages/protocol/src/browser-automation/rpc-schemas.ts`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

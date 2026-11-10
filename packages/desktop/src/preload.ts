@@ -150,6 +150,7 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
       ipcRenderer.invoke("paseo:browser:clear-profile", legacyBrowserIds),
     executeAutomationCommand: (request: Record<string, unknown>) =>
       ipcRenderer.invoke("paseo:browser:execute-automation-command", request),
+    ping: () => ipcRenderer.invoke("paseo:browser:ping"),
     onStreamFrame: (handler: EventHandler): (() => void) => {
       const listener = (_ipcEvent: Electron.IpcRendererEvent, payload: unknown) => {
         handler(payload);

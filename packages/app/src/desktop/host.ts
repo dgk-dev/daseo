@@ -216,6 +216,8 @@ export interface DesktopBrowserBridge {
   executeAutomationCommand?: (
     request: BrowserAutomationExecuteRequest,
   ) => Promise<BrowserAutomationExecuteResponse["payload"]>;
+  /** Answers at once unless the app's main process is blocked (delta 92). */
+  ping?: () => Promise<unknown>;
   /** Subscribe to live screencast frames pushed from the Electron main process. */
   onStreamFrame?: (handler: (payload: unknown) => void) => () => void;
   /** Capture a PNG screenshot of the guest viewport cropped to `rect`. */

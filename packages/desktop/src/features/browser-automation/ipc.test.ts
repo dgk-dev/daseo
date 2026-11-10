@@ -5,6 +5,7 @@ import {
   adaptWebContents,
   HostSnapshotEngineRegistry,
   preparePersistentBrowserDialogMonitoring,
+  registerBrowserAutomationIpc,
 } from "./ipc.js";
 import {
   PROMPT_SHIM_DRAIN_FUNCTION,
@@ -13,6 +14,9 @@ import {
 } from "./dialog-handling.js";
 import type { IsolatedKeyboardInputEvent } from "./trusted-input.js";
 import { getPaseoBrowserTabLifecycle } from "../browser-webviews/index.js";
+
+const mainLog = vi.hoisted(() => ({ warn: vi.fn(), info: vi.fn() }));
+vi.mock("electron-log/main", () => ({ default: mainLog }));
 
 class FakeImage implements FullPageCaptureImage {
   public toPNG(): Uint8Array {
@@ -275,6 +279,16 @@ class FakeWebContents {
 }
 
 describe("browser automation IPC adapter", () => {
+  test("answers the renderer's ping with nothing but a free main thread", async () => {
+    const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
+    registerBrowserAutomationIpc({
+      ipc: { handle: (channel, listener) => handlers.set(channel, listener) },
+    });
+    const ping = handlers.get("paseo:browser:ping");
+    expect(ping).toBeDefined();
+    expect(await ping?.({})).toBe(true);
+  });
+
   test("isolates snapshot refs by host window and releases them on destruction", () => {
     const registry = new HostSnapshotEngineRegistry();
     const firstHost = new FakeHostWebContents(1);
@@ -687,18 +701,18 @@ describe("browser automation IPC adapter", () => {
     const contents = new FakeWebContents(30);
     contents.debugger.failedCommandNames.add("Page.enable");
     const tab = adaptWebContents(contents);
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mainLog.warn.mockClear();
 
     await expect(tab.captureDialogs?.(async () => "done")).resolves.toEqual({
       result: "done",
       dialogs: [],
     });
 
-    expect(warn).toHaveBeenCalledWith(
+    // Main-process warnings go to electron-log, which writes main.log; console does not.
+    expect(mainLog.warn).toHaveBeenCalledWith(
       "[browser-automation] Dialog capture unavailable; running command without it",
       { contentsId: 30, error: expect.any(Error) },
     );
-    warn.mockRestore();
   });
 
   test("does not run the command after the debugger target closes during setup", async () => {
@@ -713,15 +727,14 @@ describe("browser automation IPC adapter", () => {
       new Error("target closed while handling command"),
     );
     const tab = adaptWebContents(contents);
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warn = mainLog.warn;
+    warn.mockClear();
 
     await expect(
       tab.captureDialogs?.(() => tab.loadURL("https://replacement.example.com")),
     ).rejects.toThrow("target closed while handling command");
     expect(contents.loadedUrls).toEqual([]);
     expect(warn).not.toHaveBeenCalled();
-
-    warn.mockRestore();
   });
 
   test("runs without dialog capture after a live debugger session detaches", async () => {
@@ -734,7 +747,8 @@ describe("browser automation IPC adapter", () => {
     });
     contents.debugger.emitDetach();
     contents.debugger.failedCommandNames.add("Page.enable");
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warn = mainLog.warn;
+    warn.mockClear();
 
     await expect(
       tab.captureDialogs?.(() => tab.loadURL("https://replacement.example.com")),
@@ -745,8 +759,6 @@ describe("browser automation IPC adapter", () => {
       "[browser-automation] Dialog capture unavailable; running command without it",
       { contentsId: 32, error: expect.any(Error) },
     );
-
-    warn.mockRestore();
   });
 });
 

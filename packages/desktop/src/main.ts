@@ -1445,17 +1445,19 @@ function configureBrowserPasskeys(): void {
     return;
   }
   try {
+    const passkeyLog = (message: string, detail?: Record<string, unknown>) =>
+      log.info(message, detail);
+    // Only safeStorage's async API reaches the store: its keychain read runs on a worker
+    // thread, so a keychain prompt never holds the main thread (delta 92).
     const store = new PasskeyStore(
       path.join(app.getPath("userData"), "browser-passkeys.json"),
       safeStorage,
+      passkeyLog,
     );
-    const hub = new PaseoBrowserPasskeys({
-      store,
-      log: (message, detail) => log.info(message, detail),
-    });
+    const hub = new PaseoBrowserPasskeys({ store, log: passkeyLog });
     hub.bindSession(session.fromPartition(PASEO_BROWSER_PROFILE_PARTITION));
     setPaseoBrowserPasskeys(hub);
-    // Not `store.isEncrypted`: that asks the keychain, which must not happen before a window.
+    // Not `store.isEncrypted()`: that may ask the keychain, which must not happen before a window.
     log.info("[browser-passkeys] ready", { stored: store.list().length });
   } catch (error) {
     log.warn("[browser-passkeys] unavailable", error);

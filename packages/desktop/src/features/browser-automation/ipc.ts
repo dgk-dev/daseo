@@ -1,5 +1,6 @@
 import type { Rectangle } from "electron";
 import { ipcMain, nativeImage, webContents as electronWebContents } from "electron";
+import log from "electron-log/main";
 import { BrowserAutomationExecuteRequestSchema } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import type {
   BrowserAutomationConsoleLogEntry,
@@ -188,7 +189,7 @@ export function preparePersistentBrowserDialogMonitoring(
   const monitor = getDialogMonitor(contents, contentsId, getCdpQueue(contentsId));
   void monitor.start().catch((error) => {
     if (!contents.isDestroyed()) {
-      console.warn("[browser-automation] Persistent dialog monitoring unavailable", {
+      log.warn("[browser-automation] Persistent dialog monitoring unavailable", {
         contentsId,
         error,
       });
@@ -521,7 +522,7 @@ class DialogMonitor {
       if (this.contents.isDestroyed() || this.detachGeneration !== setupDetachGeneration) {
         throw error;
       }
-      console.warn("[browser-automation] Dialog capture unavailable; running command without it", {
+      log.warn("[browser-automation] Dialog capture unavailable; running command without it", {
         contentsId: this.contentsId,
         error,
       });
@@ -566,7 +567,7 @@ class DialogMonitor {
           return;
         }
         void this.handleOpening(params ?? {}).catch((error) => {
-          console.warn("[browser-automation] Failed to handle JavaScript dialog", {
+          log.warn("[browser-automation] Failed to handle JavaScript dialog", {
             contentsId: this.contentsId,
             error,
           });
@@ -802,6 +803,10 @@ function createRegistry(hostWebContentsId: number): BrowserRegistry {
 
 export function registerBrowserAutomationIpc(options?: { ipc?: IpcHandlerRegistry }): void {
   const ipc = options?.ipc ?? ipcMain;
+
+  // Delta 92: the renderer pings while a command is unanswered. The reply needs nothing but a
+  // free main thread, so a missing reply means main is blocked, not that the page is slow.
+  ipc.handle("paseo:browser:ping", () => true);
 
   ipc.handle("paseo:browser:execute-automation-command", async (event, rawRequest: unknown) => {
     const hostContents = (event as { sender?: HostWebContents }).sender;

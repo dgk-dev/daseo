@@ -172,6 +172,7 @@ import {
 import { DaemonConfigStore, type MutableDaemonConfig } from "./daemon-config-store.js";
 import { resolveConfigFromPersisted, type CliConfigOverrides } from "./config.js";
 import { BrowserToolsBroker } from "./browser-tools/broker.js";
+import { createMacSecurityPromptProbe } from "./browser-tools/host-stall.js";
 import { ClientDebugBroker } from "./client-debug/broker.js";
 import { DaemonConfigBrowserToolsPolicy } from "./browser-tools/policy.js";
 import { WorkspaceGitServiceImpl } from "./workspace-git-service.js";
@@ -636,7 +637,9 @@ export async function createPaseoDaemon(
     },
   });
   const browserToolsPolicy = new DaemonConfigBrowserToolsPolicy(daemonConfigStore);
-  const browserToolsBroker = new BrowserToolsBroker({});
+  const browserToolsBroker = new BrowserToolsBroker({
+    securityPromptProbe: createMacSecurityPromptProbe(),
+  });
   // Daseo delta 68: phone logs over the app's own connection.
   const clientDebugBroker = new ClientDebugBroker();
   const pluginRuntime = new PluginService(logger, daemonConfigStore);

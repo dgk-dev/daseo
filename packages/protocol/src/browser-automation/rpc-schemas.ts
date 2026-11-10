@@ -898,6 +898,11 @@ export const BrowserAutomationErrorSchema = z.object({
   code: BrowserAutomationErrorCodeSchema,
   message: z.string().min(1),
   retryable: z.boolean().default(false),
+  /**
+   * Daseo delta 92: the desktop app's main process did not answer a ping, so the failure is
+   * the app being blocked, not the page. Set by the desktop renderer; absent everywhere else.
+   */
+  hostUnresponsive: z.boolean().optional(),
 });
 
 export const BrowserAutomationDialogEventSchema = z.object({

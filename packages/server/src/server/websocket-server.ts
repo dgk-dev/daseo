@@ -101,6 +101,7 @@ import { getClientDebugCapability, type ClientDebugBroker } from "./client-debug
 import type { PreviewLinkService } from "./file-preview/service.js";
 import type { HistorySearchService } from "./history-search/history-search-service.js";
 import { BrowserStreamHub, createBrokerStreamStarter } from "./browser-tools/stream-hub.js";
+import { BrowserHostStallPushNotifier } from "./browser-tools/host-stall.js";
 import type { DaemonRuntimeConfig } from "./session/daemon/daemon-session.js";
 import { DirectorySyncService } from "./directory-sync/index.js";
 import {
@@ -773,6 +774,7 @@ export class VoiceAssistantWebSocketServer {
       filePath: join(paseoHome, "push-tokens.json"),
     });
     this.pushNotificationSender = pushNotificationSender ?? this.pushNotifications;
+    this.attachBrowserHostStallPush();
 
     this.agentManager.setAgentAttentionCallback((params) => {
       void this.broadcastAgentAttention(params).catch((err) => {
@@ -2960,6 +2962,18 @@ export class VoiceAssistantWebSocketServer {
 
       this.sendToClient(ws, message);
     }
+  }
+
+  /** Delta 92: one push per browser host stall (a macOS prompt blocking the desktop app). */
+  private attachBrowserHostStallPush(): void {
+    if (!this.browserToolsBroker) return;
+    this.browserToolsBroker.setHostStallListener(
+      new BrowserHostStallPushNotifier({
+        serverId: this.serverId,
+        send: (payload) => this.pushNotificationSender.send(payload),
+        logger: this.logger.child({ module: "browser-host-stall" }),
+      }),
+    );
   }
 
   private async broadcastTerminalAttention(params: {

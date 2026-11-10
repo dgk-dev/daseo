@@ -14,12 +14,31 @@ import {
   type WebAuthnAccountChoice,
 } from "./passkeys.js";
 
-// Reversible stand-in for Electron's safeStorage; tests check the file never holds the key.
+// Reversible stand-in for Electron's async safeStorage; tests check the file never holds the key.
 const cipher: PasskeyCipher = {
-  isEncryptionAvailable: () => true,
-  encryptString: (plain) => Buffer.from(`sealed:${plain}`, "utf8"),
-  decryptString: (sealed) => sealed.toString("utf8").replace(/^sealed:/, ""),
+  isAsyncEncryptionAvailable: async () => true,
+  encryptStringAsync: async (plain) => Buffer.from(`sealed:${plain}`, "utf8"),
+  decryptStringAsync: async (sealed) => ({
+    shouldReEncrypt: false,
+    result: sealed.toString("utf8").replace(/^sealed:/, ""),
+  }),
 };
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: Error) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 type Listener = (...args: unknown[]) => void;
 
@@ -136,6 +155,23 @@ async function settle(h: PaseoBrowserPasskeys, ...tabs: FakeTab[]) {
   // Navigation installs are deferred by a macrotask.
   await new Promise((resolve) => setTimeout(resolve, 1));
   for (const tab of tabs) await h.settle(tab.id);
+  await h.whenKeysLoaded();
+  await h.store.whenPersisted();
+  for (const tab of tabs) await h.settle(tab.id);
+}
+
+/** A store on disk holding SITE_CREDENTIAL, sealed by the reversible cipher. */
+async function seedStoredPasskey(): Promise<void> {
+  const store = new PasskeyStore(filePath, cipher);
+  store.add({
+    credentialId: SITE_CREDENTIAL_ID_URL,
+    rpId: "example.com",
+    privateKey: SITE_CREDENTIAL.privateKey,
+    userName: "alice@example.com",
+    signCount: 1,
+    createdAt: "2026-11-01T00:00:00.000Z",
+  });
+  await store.whenPersisted();
 }
 
 beforeEach(() => {
@@ -163,13 +199,20 @@ describe("base64url", () => {
 });
 
 describe("PasskeyStore", () => {
-  test("opening the store and listing passkeys never asks the keychain-backed cipher", () => {
+  test("opening the store and listing passkeys never asks the keychain-backed cipher", async () => {
     let asked = 0;
     const countingCipher: PasskeyCipher = {
-      ...cipher,
-      isEncryptionAvailable: () => {
+      isAsyncEncryptionAvailable: async () => {
         asked += 1;
         return true;
+      },
+      encryptStringAsync: async (plain) => {
+        asked += 1;
+        return cipher.encryptStringAsync(plain);
+      },
+      decryptStringAsync: async (sealed) => {
+        asked += 1;
+        return cipher.decryptStringAsync(sealed);
       },
     };
     const store = new PasskeyStore(filePath, countingCipher);
@@ -183,13 +226,63 @@ describe("PasskeyStore", () => {
       signCount: 0,
       createdAt: clock.toISOString(),
     });
-    expect(asked).toBe(1);
+    await store.whenPersisted();
+    expect(asked).toBe(2);
     expect(JSON.parse(readFileSync(filePath, "utf8"))).toMatchObject({ encrypted: true });
 
     const reopened = new PasskeyStore(filePath, countingCipher);
-    expect(reopened.isEncrypted).toBe(true);
     expect(reopened.list()).toHaveLength(1);
-    expect(asked).toBe(1);
+    expect(reopened.list()[0]?.privateKey).toBe("");
+    expect(asked).toBe(2);
+    expect(await reopened.isEncrypted()).toBe(true);
+    expect(asked).toBe(2);
+  });
+
+  test("a stored key is decrypted with the async cipher and re-encrypted when it asks", async () => {
+    await seedStoredPasskey();
+    const before = JSON.parse(readFileSync(filePath, "utf8")).passkeys[0].privateKey;
+    const rotating: PasskeyCipher = {
+      ...cipher,
+      encryptStringAsync: async (plain) => Buffer.from(`sealed2:${plain}`, "utf8"),
+      decryptStringAsync: async (sealed) => ({
+        shouldReEncrypt: true,
+        result: sealed.toString("utf8").replace(/^sealed:/, ""),
+      }),
+    };
+    const store = new PasskeyStore(filePath, rotating);
+    expect(store.keyOf(SITE_CREDENTIAL_ID_URL)).toBeUndefined();
+    await store.loadKeys();
+    expect(store.keyOf(SITE_CREDENTIAL_ID_URL)).toBe(SITE_CREDENTIAL.privateKey);
+    const after = JSON.parse(readFileSync(filePath, "utf8")).passkeys[0].privateKey;
+    expect(after).not.toBe(before);
+    expect(Buffer.from(after, "base64").toString("utf8")).toBe(
+      `sealed2:${SITE_CREDENTIAL.privateKey}`,
+    );
+  });
+
+  test("a new passkey waiting to be encrypted is usable at once and never written in plain text", async () => {
+    const sealed = deferred<Buffer>();
+    const slow: PasskeyCipher = { ...cipher, encryptStringAsync: () => sealed.promise };
+    const store = new PasskeyStore(filePath, slow);
+    store.add({
+      credentialId: SITE_CREDENTIAL_ID_URL,
+      rpId: "example.com",
+      privateKey: SITE_CREDENTIAL.privateKey,
+      signCount: 0,
+      createdAt: clock.toISOString(),
+    });
+    expect(store.get(SITE_CREDENTIAL_ID_URL)).toMatchObject({ rpId: "example.com" });
+    expect(store.keyOf(SITE_CREDENTIAL_ID_URL)).toBe(SITE_CREDENTIAL.privateKey);
+    store.touch(SITE_CREDENTIAL_ID_URL, 3, clock.toISOString());
+    expect(readFileSync(filePath, "utf8")).not.toContain(SITE_CREDENTIAL.privateKey);
+    expect(JSON.parse(readFileSync(filePath, "utf8")).passkeys).toEqual([]);
+
+    sealed.resolve(Buffer.from(`sealed:${SITE_CREDENTIAL.privateKey}`, "utf8"));
+    await store.whenPersisted();
+    const onDisk = JSON.parse(readFileSync(filePath, "utf8"));
+    expect(onDisk.passkeys).toHaveLength(1);
+    expect(onDisk.passkeys[0]).toMatchObject({ signCount: 3 });
+    expect(readFileSync(filePath, "utf8")).not.toContain(SITE_CREDENTIAL.privateKey);
   });
 });
 
@@ -360,6 +453,7 @@ describe("PaseoBrowserPasskeys", () => {
       privateKey: SITE_CREDENTIAL.privateKey,
     });
 
+    await h.store.whenPersisted();
     const reopened = hub(new PasskeyStore(filePath, cipher));
     const fresh = new FakeTab(4);
     reopened.attach(fresh, new CdpSessionQueue());
@@ -519,7 +613,120 @@ describe("PaseoBrowserPasskeys", () => {
     const h = hub(store);
     expect(h.listInfo("auth.chatgpt.com").map((p) => p.credentialId)).toEqual(["one"]);
     expect(h.listInfo().map((p) => p.credentialId)).toEqual(["two", "one"]);
-    expect(h.storage()).toEqual({ path: filePath, encrypted: true });
+    expect(await h.storage()).toEqual({ path: filePath, encrypted: true });
     expect(h.listInfo()[0]).not.toHaveProperty("privateKey");
+  });
+
+  test("a tab install never waits on a keychain decrypt that does not answer", async () => {
+    await seedStoredPasskey();
+    const decrypted = deferred<{ shouldReEncrypt: boolean; result: string }>();
+    let decryptCalls = 0;
+    const hanging: PasskeyCipher = {
+      ...cipher,
+      decryptStringAsync: () => {
+        decryptCalls += 1;
+        return decrypted.promise;
+      },
+    };
+    const h = hub(new PasskeyStore(filePath, hanging));
+    const first = new FakeTab(1);
+    const second = new FakeTab(2);
+    const firstQueue = new CdpSessionQueue();
+    h.attach(first, firstQueue);
+    h.attach(second, new CdpSessionQueue());
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    await h.settle(first.id);
+    await h.settle(second.id);
+
+    // Both installs finished with an empty authenticator; one decrypt is in flight.
+    expect(h.isInstalled(first.id)).toBe(true);
+    expect(h.isInstalled(second.id)).toBe(true);
+    expect(first.commandsNamed("WebAuthn.addCredential")).toHaveLength(0);
+    expect(decryptCalls).toBe(1);
+    // Other work on the tab's CDP queue is not held behind the decrypt.
+    await expect(firstQueue.run(async () => "screenshot")).resolves.toBe("screenshot");
+    // A navigation reinstalls without starting a second decrypt or waiting.
+    first.emit("did-navigate");
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    await h.settle(first.id);
+    expect(h.isInstalled(first.id)).toBe(true);
+    expect(decryptCalls).toBe(1);
+
+    decrypted.resolve({ shouldReEncrypt: false, result: SITE_CREDENTIAL.privateKey });
+    await h.whenKeysLoaded();
+    for (const tab of [first, second]) {
+      const added = tab.commandsNamed("WebAuthn.addCredential");
+      expect(added).toHaveLength(1);
+      expect(added[0]?.params).toMatchObject({
+        authenticatorId: tab === first ? "auth-1-2" : "auth-2-1",
+        credential: {
+          credentialId: SITE_CREDENTIAL.credentialId,
+          privateKey: SITE_CREDENTIAL.privateKey,
+        },
+      });
+    }
+    // A later tab gets the key during its own install.
+    const third = new FakeTab(3);
+    h.attach(third, new CdpSessionQueue());
+    await settle(h, third);
+    expect(third.commands.map((c) => c.command)).toEqual([
+      "WebAuthn.enable",
+      "WebAuthn.addVirtualAuthenticator",
+      "WebAuthn.addCredential",
+    ]);
+  });
+
+  test("a failed decrypt leaves tabs installed without the passkey and the next install retries", async () => {
+    await seedStoredPasskey();
+    let fail = true;
+    const logged: string[] = [];
+    const flaky: PasskeyCipher = {
+      ...cipher,
+      decryptStringAsync: async (sealed) => {
+        if (fail) throw new Error("safeStorage.decryptStringAsync is temporarily unavailable");
+        return cipher.decryptStringAsync(sealed);
+      },
+    };
+    const store = new PasskeyStore(filePath, flaky, (message) => logged.push(message));
+    const h = hub(store);
+    const tab = new FakeTab(1);
+    h.attach(tab, new CdpSessionQueue());
+    await settle(h, tab);
+    expect(h.isInstalled(tab.id)).toBe(true);
+    expect(tab.commandsNamed("WebAuthn.addCredential")).toHaveLength(0);
+    expect(logged).toEqual(["[browser-passkeys] could not decrypt a stored passkey"]);
+
+    fail = false;
+    tab.emit("did-navigate");
+    await settle(h, tab);
+    expect(tab.commandsNamed("WebAuthn.addCredential")).toHaveLength(1);
+  });
+
+  test("a site's new passkey reaches the other tabs before its encryption finishes", async () => {
+    const sealed = deferred<Buffer>();
+    const h = hub(
+      new PasskeyStore(filePath, { ...cipher, encryptStringAsync: () => sealed.promise }),
+    );
+    const first = new FakeTab(1);
+    const second = new FakeTab(2);
+    h.attach(first, new CdpSessionQueue());
+    h.attach(second, new CdpSessionQueue());
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    await h.settle(first.id);
+    await h.settle(second.id);
+    first.emitDebugger("WebAuthn.credentialAdded", {
+      authenticatorId: "auth-1-1",
+      credential: SITE_CREDENTIAL,
+    });
+    await h.settle(second.id);
+    expect(second.commandsNamed("WebAuthn.addCredential")[0]?.params?.credential).toMatchObject({
+      privateKey: SITE_CREDENTIAL.privateKey,
+    });
+    expect(h.chooseAccount([{ credentialId: SITE_CREDENTIAL_ID_URL }])).toBe(
+      SITE_CREDENTIAL_ID_URL,
+    );
+    sealed.resolve(Buffer.from(`sealed:${SITE_CREDENTIAL.privateKey}`, "utf8"));
+    await h.store.whenPersisted();
+    expect(JSON.parse(readFileSync(filePath, "utf8")).passkeys).toHaveLength(1);
   });
 });

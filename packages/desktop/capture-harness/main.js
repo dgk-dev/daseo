@@ -3313,9 +3313,12 @@ function createPasskeyHarnessHub() {
   const storePath = path.join(storeDir, "browser-passkeys.json");
   // Reversible stand-in for safeStorage: the harness Electron has no stable keychain identity.
   const cipher = {
-    isEncryptionAvailable: () => true,
-    encryptString: (plain) => Buffer.from(`sealed:${plain}`, "utf8"),
-    decryptString: (sealed) => sealed.toString("utf8").replace(/^sealed:/, ""),
+    isAsyncEncryptionAvailable: async () => true,
+    encryptStringAsync: async (plain) => Buffer.from(`sealed:${plain}`, "utf8"),
+    decryptStringAsync: async (sealed) => ({
+      shouldReEncrypt: false,
+      result: sealed.toString("utf8").replace(/^sealed:/, ""),
+    }),
   };
   const store = new passkeys.PasskeyStore(storePath, cipher);
   const hub = new passkeys.PaseoBrowserPasskeys({
@@ -3366,6 +3369,7 @@ async function verifyPasskeyRegistration({ checks, first, harness, page }) {
   const created = await page(first, "__create()");
   const deadline = Date.now() + 3000;
   while (harness.store.list().length === 0 && Date.now() < deadline) await delay(50);
+  await harness.store.whenPersisted();
   const stored = harness.store.list()[0];
   passkeyCheck(
     checks,
@@ -3385,7 +3389,7 @@ async function verifyPasskeyRegistration({ checks, first, harness, page }) {
     "the private key is encrypted at rest",
     passkeyProblems([
       [JSON.parse(onDisk).encrypted, true],
-      [onDisk.includes(harness.store.privateKeyOf(stored)), false],
+      [onDisk.includes(harness.store.keyOf(stored.credentialId)), false],
       [mode, 0o600],
     ]),
     { mode: mode.toString(8) },
@@ -3440,7 +3444,7 @@ async function verifyPasskeyTool({ checks, second, harness, page, created, store
       [status.passkeys.length, 1],
       [status.passkeys[0]?.credentialId, created.id],
       [status.storage.encrypted, true],
-      [JSON.stringify(status).includes(harness.store.privateKeyOf(stored)), false],
+      [JSON.stringify(status).includes(harness.store.keyOf(stored.credentialId)), false],
     ]),
     status,
   );

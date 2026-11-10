@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import log from "electron-log/main";
 import { webContents as allWebContents, type WebContents } from "electron";
 import { PASEO_BROWSER_PROFILE_PARTITION } from "../browser-profile.js";
 import {
@@ -26,10 +27,10 @@ const browserTabLifecycle = new BrowserTabLifecycle({
     (downloadsByWebContentsId.get(webContentsId) ?? 0) > 0 ||
     freezeExemptions.some((isExempt) => isExempt(webContentsId)),
   onError: (error, context) => {
-    console.warn("[browser-lifecycle] transition failed", { ...context, error });
+    log.warn("[browser-lifecycle] transition failed", { ...context, error });
   },
   onTransition: (webContentsId, state) => {
-    console.info(`[browser-lifecycle] ${state}`, {
+    log.info(`[browser-lifecycle] ${state}`, {
       webContentsId,
       browserId: browserRegistry.getBrowserIdForWebContents(webContentsId),
     });
@@ -43,14 +44,14 @@ const browserTabDiscarder = new BrowserTabDiscarder({
   readPressureLevel: readMacMemoryPressureLevel,
   isDiscardBlocked: isPaseoBrowserTabDiscardBlocked,
   onDiscard: (webContentsId, pressureLevel) => {
-    console.info("[browser-lifecycle] discarded under memory pressure", {
+    log.info("[browser-lifecycle] discarded under memory pressure", {
       webContentsId,
       browserId: browserRegistry.getBrowserIdForWebContents(webContentsId),
       pressureLevel,
     });
   },
   onError: (error) => {
-    console.warn("[browser-lifecycle] discard check failed", { error });
+    log.warn("[browser-lifecycle] discard check failed", { error });
   },
 });
 // Renderer-reported pane presentation, keyed by host window and browser id: a pane can present a

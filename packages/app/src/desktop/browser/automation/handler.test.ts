@@ -161,10 +161,18 @@ class BrowserAutomationHandlerHarness {
       host?: DesktopHostBridge | null;
       registrationWaitTimeoutMs?: number;
       registrationPollIntervalMs?: number;
+      hostStallCheckAfterMs?: number;
+      hostPingTimeoutMs?: number;
     } = {},
   ): void {
     this.unsubscribe = mountBrowserAutomationHandler({
       client: this.client,
+      ...(input.hostStallCheckAfterMs !== undefined
+        ? { hostStallCheckAfterMs: input.hostStallCheckAfterMs }
+        : {}),
+      ...(input.hostPingTimeoutMs !== undefined
+        ? { hostPingTimeoutMs: input.hostPingTimeoutMs }
+        : {}),
       ...(input.serverId ? { serverId: input.serverId } : {}),
       getHost: () => (input.host === undefined ? { browser: this.browser } : input.host),
       ensureResidentBrowserWebview: this.resident.ensure,
@@ -992,5 +1000,136 @@ describe("mountBrowserAutomationHandler", () => {
 
     expect(browser.browser.executedRequests).toEqual([]);
     expect(browser.client.sentResponses).toEqual([]);
+  });
+
+  describe("main process stall (delta 92)", () => {
+    function screenshotRequest(): BrowserAutomationExecuteRequest {
+      return {
+        type: "browser.automation.execute.request",
+        requestId: "req-shot",
+        command: { command: "screenshot", args: { browserId: "browser-1" } },
+      } as BrowserAutomationExecuteRequest;
+    }
+
+    function pending<T>() {
+      let resolve!: (value: T) => void;
+      const promise = new Promise<T>((res) => {
+        resolve = res;
+      });
+      return { promise, resolve };
+    }
+
+    function wait(ms: number): Promise<void> {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    test("a main process that does not answer its ping fails the request with that cause", async () => {
+      const harness = new BrowserAutomationHandlerHarness();
+      const command = pending<BrowserAutomationResponsePayload>();
+      let pings = 0;
+      harness.mount({
+        host: {
+          browser: {
+            executeAutomationCommand: () => command.promise,
+            ping: () => {
+              pings += 1;
+              return new Promise(() => {});
+            },
+          },
+        },
+        hostStallCheckAfterMs: 20,
+        hostPingTimeoutMs: 10,
+      });
+
+      const started = Date.now();
+      harness.receive(screenshotRequest());
+      await wait(15);
+      expect(harness.client.sentResponses).toEqual([]);
+      await wait(40);
+
+      expect(Date.now() - started).toBeLessThan(200);
+      expect(pings).toBe(1);
+      expect(harness.client.sentResponses).toHaveLength(1);
+      expect(harness.client.payloadAt(0)).toMatchObject({
+        requestId: "req-shot",
+        ok: false,
+        error: { code: "browser_timeout", retryable: true, hostUnresponsive: true },
+      });
+      const payload = harness.client.payloadAt(0);
+      expect(payload.ok ? "" : payload.error.message).toContain("keychain or permission prompt");
+
+      // The command's late answer is dropped: the request was answered once.
+      command.resolve({
+        requestId: "req-shot",
+        ok: true,
+        result: { command: "list_tabs", tabs: [] },
+      });
+      await flushAsyncWork();
+      expect(harness.client.sentResponses).toHaveLength(1);
+    });
+
+    test("a slow command whose main process answers pings is not cut short", async () => {
+      const harness = new BrowserAutomationHandlerHarness();
+      const command = pending<BrowserAutomationResponsePayload>();
+      let pings = 0;
+      harness.mount({
+        host: {
+          browser: {
+            executeAutomationCommand: () => command.promise,
+            ping: async () => {
+              pings += 1;
+              return true;
+            },
+          },
+        },
+        hostStallCheckAfterMs: 10,
+        hostPingTimeoutMs: 5,
+      });
+
+      harness.receive(screenshotRequest());
+      await wait(60);
+      expect(harness.client.sentResponses).toEqual([]);
+      expect(pings).toBeGreaterThanOrEqual(2);
+
+      command.resolve({
+        requestId: "desktop",
+        ok: true,
+        result: { command: "list_tabs", tabs: [] },
+      });
+      await flushAsyncWork();
+      expect(harness.client.sentResponses).toHaveLength(1);
+      expect(harness.client.payloadAt(0)).toEqual({
+        requestId: "req-shot",
+        ok: true,
+        result: { command: "list_tabs", tabs: [] },
+      });
+      const pingsAtAnswer = pings;
+      await wait(30);
+      expect(pings).toBe(pingsAtAnswer);
+    });
+
+    test("a ping the main process rejects still counts as an answer", async () => {
+      const harness = new BrowserAutomationHandlerHarness();
+      const command = pending<BrowserAutomationResponsePayload>();
+      harness.mount({
+        host: {
+          browser: {
+            executeAutomationCommand: () => command.promise,
+            ping: async () => {
+              throw new Error('No handler registered for "paseo:browser:ping"');
+            },
+          },
+        },
+        hostStallCheckAfterMs: 10,
+        hostPingTimeoutMs: 5,
+      });
+
+      harness.receive(screenshotRequest());
+      await wait(40);
+      expect(harness.client.sentResponses).toEqual([]);
+      command.resolve({ requestId: "x", ok: true, result: { command: "list_tabs", tabs: [] } });
+      await flushAsyncWork();
+      expect(harness.client.payloadAt(0)).toMatchObject({ requestId: "req-shot", ok: true });
+    });
   });
 });

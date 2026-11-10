@@ -81,7 +81,19 @@ export interface BrowserAutomationHandlerOptions {
   ensureResidentBrowserWebview?: typeof ensureResidentBrowserWebviewDefault;
   registrationWaitTimeoutMs?: number;
   registrationPollIntervalMs?: number;
+  hostStallCheckAfterMs?: number;
+  hostPingTimeoutMs?: number;
 }
+
+/**
+ * Daseo delta 92. A request the desktop host has not answered after this long gets a ping to
+ * the app's main process, and again at the same interval while it stays unanswered. A main
+ * process blocked in a system call (a keychain prompt held it 85+ minutes after the 0.5.105
+ * swap) answers no command; the agent then heard only the daemon's 15-second "did not respond".
+ */
+export const BROWSER_HOST_STALL_CHECK_AFTER_MS = 5_000;
+/** How long a ping may take before the main process counts as not responding. */
+export const BROWSER_HOST_PING_TIMEOUT_MS = 2_000;
 
 export function mountBrowserAutomationHandler(
   options: BrowserAutomationHandlerOptions,
@@ -110,6 +122,8 @@ export function mountBrowserAutomationHandler(
       ...(options.registrationPollIntervalMs !== undefined
         ? { registrationPollIntervalMs: options.registrationPollIntervalMs }
         : {}),
+      hostStallCheckAfterMs: options.hostStallCheckAfterMs ?? BROWSER_HOST_STALL_CHECK_AFTER_MS,
+      hostPingTimeoutMs: options.hostPingTimeoutMs ?? BROWSER_HOST_PING_TIMEOUT_MS,
     });
   });
   return () => {
@@ -128,17 +142,42 @@ export function mountBrowserAutomationDaemonClientHandler(
   });
 }
 
-async function handleBrowserAutomationRequest(params: {
-  client: BrowserAutomationHandlerOptions["client"];
+interface BrowserAutomationRequestContext {
   getHost: () => DesktopHostBridge | null;
   request: BrowserAutomationExecuteRequest;
   serverId?: string;
   ensureResidentBrowserWebview: typeof ensureResidentBrowserWebviewDefault;
   registrationWaitTimeoutMs?: number;
   registrationPollIntervalMs?: number;
-}): Promise<void> {
+}
+
+async function handleBrowserAutomationRequest(
+  params: BrowserAutomationRequestContext & {
+    client: BrowserAutomationHandlerOptions["client"];
+    hostStallCheckAfterMs: number;
+    hostPingTimeoutMs: number;
+  },
+): Promise<void> {
+  const { client, request } = params;
+  // Every request is answered exactly once: with its result, its error, or, when the app's main
+  // process stops answering, with a failure that says so (delta 91, delta 92).
+  const payload = await answerUnlessHostStalls({
+    requestId: request.requestId,
+    work: resolveBrowserAutomationRequest(params),
+    ping: params.getHost()?.browser?.ping,
+    checkAfterMs: params.hostStallCheckAfterMs,
+    pingTimeoutMs: params.hostPingTimeoutMs,
+  });
+  client.sendBrowserAutomationExecuteResponse({
+    type: "browser.automation.execute.response",
+    payload,
+  });
+}
+
+async function resolveBrowserAutomationRequest(
+  params: BrowserAutomationRequestContext,
+): Promise<BrowserAutomationResponsePayload> {
   const {
-    client,
     getHost,
     request,
     serverId,
@@ -149,90 +188,38 @@ async function handleBrowserAutomationRequest(params: {
   const browserHost = getHost()?.browser;
   const executeAutomationCommand = browserHost?.executeAutomationCommand;
 
-  if (request.command.command === "list_tabs" && serverId && request.workspaceId) {
-    // Daseo delta 91: every branch answers exactly once, a throw included; an unanswered request
-    // only surfaced as the daemon's 15-second "did not respond".
-    let payload: BrowserAutomationResponsePayload;
-    try {
-      payload = await listWorkspaceBrowserTabsForRequest({ request, serverId, browserHost });
-    } catch (error) {
-      payload = normalizeThrownBridgeError(request.requestId, error);
+  try {
+    if (request.command.command === "list_tabs" && serverId && request.workspaceId) {
+      return await listWorkspaceBrowserTabsForRequest({ request, serverId, browserHost });
     }
-    client.sendBrowserAutomationExecuteResponse({
-      type: "browser.automation.execute.response",
-      payload,
-    });
-    return;
-  }
 
-  if (request.command.command === "new_tab") {
-    try {
-      client.sendBrowserAutomationExecuteResponse({
-        type: "browser.automation.execute.response",
-        payload: await openBrowserTabForRequest({
-          request,
-          serverId,
-          browserHost,
-          ensureResidentBrowserWebview,
-          ...(registrationWaitTimeoutMs !== undefined ? { registrationWaitTimeoutMs } : {}),
-          ...(registrationPollIntervalMs !== undefined ? { registrationPollIntervalMs } : {}),
-        }),
-      });
-    } catch (error) {
-      client.sendBrowserAutomationExecuteResponse({
-        type: "browser.automation.execute.response",
-        payload: normalizeThrownBridgeError(request.requestId, error),
+    if (request.command.command === "new_tab") {
+      return await openBrowserTabForRequest({
+        request,
+        serverId,
+        browserHost,
+        ensureResidentBrowserWebview,
+        ...(registrationWaitTimeoutMs !== undefined ? { registrationWaitTimeoutMs } : {}),
+        ...(registrationPollIntervalMs !== undefined ? { registrationPollIntervalMs } : {}),
       });
     }
-    return;
-  }
 
-  if (request.command.command === "resize") {
-    let payload: BrowserAutomationResponsePayload;
-    try {
-      payload = await resizeBrowserTabForRequest({ request, serverId, browserHost });
-    } catch (error) {
-      payload = normalizeThrownBridgeError(request.requestId, error);
+    if (request.command.command === "resize") {
+      return await resizeBrowserTabForRequest({ request, serverId, browserHost });
     }
-    client.sendBrowserAutomationExecuteResponse({
-      type: "browser.automation.execute.response",
-      payload,
-    });
-    return;
-  }
 
-  if (request.command.command === "close_tab") {
-    try {
-      client.sendBrowserAutomationExecuteResponse({
-        type: "browser.automation.execute.response",
-        payload: await closeBrowserTabForRequest({
-          request,
-          serverId,
-          browserHost,
-        }),
-      });
-    } catch (error) {
-      client.sendBrowserAutomationExecuteResponse({
-        type: "browser.automation.execute.response",
-        payload: normalizeThrownBridgeError(request.requestId, error),
-      });
+    if (request.command.command === "close_tab") {
+      return await closeBrowserTabForRequest({ request, serverId, browserHost });
     }
-    return;
-  }
 
-  if (!executeAutomationCommand) {
-    client.sendBrowserAutomationExecuteResponse({
-      type: "browser.automation.execute.response",
-      payload: browserAutomationFailure({
+    if (!executeAutomationCommand) {
+      return browserAutomationFailure({
         requestId: request.requestId,
         code: "browser_unsupported",
         message: "Browser automation is not available in this app runtime.",
-      }),
-    });
-    return;
-  }
+      });
+    }
 
-  try {
     await materializeWorkspaceBrowserForCommand({
       request,
       serverId,
@@ -242,16 +229,97 @@ async function handleBrowserAutomationRequest(params: {
       ...(registrationPollIntervalMs !== undefined ? { registrationPollIntervalMs } : {}),
     });
     const payload = await executeAutomationCommand(request);
-    client.sendBrowserAutomationExecuteResponse({
-      type: "browser.automation.execute.response",
-      payload: normalizeBridgePayload(request.requestId, payload),
-    });
+    return normalizeBridgePayload(request.requestId, payload);
   } catch (error) {
-    client.sendBrowserAutomationExecuteResponse({
-      type: "browser.automation.execute.response",
-      payload: normalizeThrownBridgeError(request.requestId, error),
-    });
+    return normalizeThrownBridgeError(request.requestId, error);
   }
+}
+
+/**
+ * Resolves with the request's own answer, unless the app's main process stops answering
+ * first. While the answer is outstanding the main process is pinged every `checkAfterMs`; a
+ * ping without a reply in `pingTimeoutMs` ends the wait with a failure naming the stall, and the
+ * late answer is dropped. A slow command whose main process keeps answering pings is never cut
+ * short. Hosts without a ping (older builds, tests) keep today's behavior.
+ */
+async function answerUnlessHostStalls(params: {
+  requestId: string;
+  work: Promise<BrowserAutomationResponsePayload>;
+  ping: (() => Promise<unknown>) | undefined;
+  checkAfterMs: number;
+  pingTimeoutMs: number;
+}): Promise<BrowserAutomationResponsePayload> {
+  const { ping } = params;
+  if (!ping) {
+    return params.work;
+  }
+  let answered = false;
+  const work = params.work.finally(() => {
+    answered = true;
+  });
+  const stalled = watchForHostStall({
+    ping,
+    isAnswered: () => answered,
+    checkAfterMs: params.checkAfterMs,
+    pingTimeoutMs: params.pingTimeoutMs,
+  });
+  return Promise.race([
+    work,
+    stalled.then((isStalled) =>
+      isStalled ? browserHostUnresponsiveFailure(params.requestId, params.pingTimeoutMs) : work,
+    ),
+  ]);
+}
+
+/** Resolves true when a ping went unanswered before the request was; false once it was answered. */
+async function watchForHostStall(params: {
+  ping: () => Promise<unknown>;
+  isAnswered: () => boolean;
+  checkAfterMs: number;
+  pingTimeoutMs: number;
+}): Promise<boolean> {
+  for (;;) {
+    await delay(params.checkAfterMs);
+    if (params.isAnswered()) return false;
+    if (!(await pingWithin(params.ping, params.pingTimeoutMs))) return !params.isAnswered();
+  }
+}
+
+/** True when the ping settles in time; a rejected ping still proves the main process answers. */
+async function pingWithin(ping: () => Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const expired = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+  });
+  const answered = Promise.resolve()
+    .then(ping)
+    .then(
+      () => true as const,
+      () => true as const,
+    );
+  try {
+    return await Promise.race([answered, expired]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function browserHostUnresponsiveFailure(
+  requestId: string,
+  pingTimeoutMs: number,
+): BrowserAutomationFailurePayload {
+  return {
+    requestId,
+    ok: false,
+    error: {
+      code: "browser_timeout",
+      message:
+        `The Daseo desktop app is not responding: its main process did not answer a ping within ${pingTimeoutMs}ms, so no browser command can run. ` +
+        "A macOS dialog waiting on the Mac (a keychain or permission prompt) is the usual cause. Retry after it is answered.",
+      retryable: true,
+      hostUnresponsive: true,
+    },
+  };
 }
 
 /**

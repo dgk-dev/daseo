@@ -716,7 +716,7 @@ async function executePasskeys(
         action: "delete",
         passkeys: hub.listInfo(),
         deleted,
-        storage: hub.storage(),
+        storage: await hub.storage(),
       },
     };
   }
@@ -747,7 +747,7 @@ async function executePasskeys(
           ...(host ? { host } : {}),
           installed: hub.isInstalled(target.contents.id),
         },
-        storage: hub.storage(),
+        storage: await hub.storage(),
       },
     };
   }
@@ -758,7 +758,7 @@ async function executePasskeys(
       command: "passkeys",
       action: "list",
       passkeys: hub.listInfo(args.rpId),
-      storage: hub.storage(),
+      storage: await hub.storage(),
     },
   };
 }

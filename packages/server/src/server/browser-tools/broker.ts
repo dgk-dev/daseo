@@ -8,6 +8,7 @@ import {
   type BrowserAutomationExecuteResponse,
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import { browserToolsFailure, type BrowserToolsResponsePayload } from "./errors.js";
+import type { BrowserHostStallListener, SecurityPromptProbe } from "./host-stall.js";
 
 export interface BrowserHostClient {
   id: string;
@@ -41,6 +42,8 @@ interface RegisteredBrowserHost {
 export interface BrowserToolsBrokerOptions {
   defaultTimeoutMs?: number;
   createRequestId?: () => string;
+  /** Delta 92: asked when a host did not answer; true adds the security-prompt hint. */
+  securityPromptProbe?: SecurityPromptProbe;
 }
 
 const DEFAULT_BROWSER_TOOLS_TIMEOUT_MS = 15_000;
@@ -49,6 +52,12 @@ const DEFAULT_BROWSER_TOOLS_TIMEOUT_MS = 15_000;
 // load to stop, so a tab that never finishes loading times out every
 // tab-scoped tool; the agent should hear that instead of "did not respond".
 const LOADING_PROBE_LEAD_MS = 1_000;
+const SECURITY_PROMPT_HINT =
+  "A macOS security prompt (SecurityAgent) is open on the Mac and is the likely cause: the Daseo app waits until it is answered there. Tell the user, then retry.";
+
+// Timeouts the broker itself produced because the host sent no answer at all (not the
+// still-loading variant, which is about the page).
+const unansweredTimeouts = new WeakSet<BrowserToolsResponsePayload>();
 
 type ListTabsResult = Extract<
   Extract<BrowserToolsResponsePayload, { ok: true }>["result"],
@@ -64,10 +73,18 @@ export class BrowserToolsBroker {
   private readonly browserHostByBrowserId = new Map<string, string>();
   private readonly strandedBrowserHostByBrowserId = new Map<string, string>();
   private registrationSequence = 0;
+  private readonly securityPromptProbe: SecurityPromptProbe | null;
+  private stallListener: BrowserHostStallListener | null = null;
 
   public constructor(options: BrowserToolsBrokerOptions) {
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_BROWSER_TOOLS_TIMEOUT_MS;
     this.createRequestId = options.createRequestId ?? (() => `browser_${randomUUID()}`);
+    this.securityPromptProbe = options.securityPromptProbe ?? null;
+  }
+
+  /** Delta 92: told when a browser host stalls and when a command is answered again. */
+  public setHostStallListener(listener: BrowserHostStallListener | null): void {
+    this.stallListener = listener;
   }
 
   public registerClient(client: BrowserHostClient): () => void {
@@ -142,10 +159,13 @@ export class BrowserToolsBroker {
     }
 
     if (request.data.command.command === "list_tabs") {
-      return this.executeListTabs({
-        request: request.data,
-        timeoutMs: input.timeoutMs ?? this.defaultTimeoutMs,
-      });
+      return this.diagnoseStall(
+        "list_tabs",
+        await this.executeListTabs({
+          request: request.data,
+          timeoutMs: input.timeoutMs ?? this.defaultTimeoutMs,
+        }),
+      );
     }
 
     const host = this.selectHostForCommand(request.data.command, requestId);
@@ -162,11 +182,45 @@ export class BrowserToolsBroker {
       return unsupported;
     }
 
-    return this.sendRequest({
-      host: host.value,
-      request: request.data,
-      timeoutMs: input.timeoutMs ?? this.defaultTimeoutMs,
-    });
+    return this.diagnoseStall(
+      request.data.command.command,
+      await this.sendRequest({
+        host: host.value,
+        request: request.data,
+        timeoutMs: input.timeoutMs ?? this.defaultTimeoutMs,
+      }),
+    );
+  }
+
+  /**
+   * Delta 92. A host that sent no answer, or whose app reported its main process blocked, is
+   * checked for an open macOS security prompt: the tool result then names it, and the stall
+   * listener (the phone push) hears about it. An answered command ends the stall episode;
+   * list_tabs does not count, since the desktop renderer can answer it from its own state.
+   */
+  private async diagnoseStall(
+    commandName: BrowserAutomationCommandName,
+    payload: BrowserToolsResponsePayload,
+  ): Promise<BrowserToolsResponsePayload> {
+    if (payload.ok) {
+      if (commandName !== "list_tabs") this.stallListener?.answered();
+      return payload;
+    }
+    const hostUnresponsive = payload.error.hostUnresponsive === true;
+    if (!hostUnresponsive && !unansweredTimeouts.has(payload)) {
+      return payload;
+    }
+    const securityPrompt = (await this.securityPromptProbe?.()) === true;
+    if (hostUnresponsive || securityPrompt) {
+      this.stallListener?.stalled({ securityPrompt });
+    }
+    if (!securityPrompt) {
+      return payload;
+    }
+    return {
+      ...payload,
+      error: { ...payload.error, message: `${payload.error.message} ${SECURITY_PROMPT_HINT}` },
+    };
   }
 
   public receiveResponse(response: BrowserAutomationExecuteResponse): boolean {
@@ -256,7 +310,10 @@ export class BrowserToolsBroker {
     // the list a failure.
     const answered = hostResponses.filter(({ payload }) => payload.ok);
     if (answered.length === 0) {
-      return withBrowserToolsRequestId(hostResponses[0]!.payload, params.request.requestId);
+      const first = hostResponses[0]!.payload;
+      const failure = withBrowserToolsRequestId(first, params.request.requestId);
+      if (unansweredTimeouts.has(first)) unansweredTimeouts.add(failure);
+      return failure;
     }
 
     for (const { host, payload } of answered) {
@@ -469,16 +526,16 @@ export class BrowserToolsBroker {
         if (!this.pending.delete(request.requestId)) {
           return;
         }
-        resolve(
-          browserToolsFailure({
-            requestId: request.requestId,
-            code: "browser_timeout",
-            message: loadingTab
-              ? formatStillLoadingMessage(loadingTab)
-              : `The browser did not respond within ${timeoutMs}ms. Try again or check the browser host.`,
-            retryable: true,
-          }),
-        );
+        const failure = browserToolsFailure({
+          requestId: request.requestId,
+          code: "browser_timeout",
+          message: loadingTab
+            ? formatStillLoadingMessage(loadingTab)
+            : `The browser did not respond within ${timeoutMs}ms. Try again or check the browser host.`,
+          retryable: true,
+        });
+        if (!loadingTab) unansweredTimeouts.add(failure);
+        resolve(failure);
       }, timeoutMs);
 
       this.pending.set(request.requestId, {

@@ -7,6 +7,7 @@ import type {
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import { BROWSER_AUTOMATION_COMMAND_NAMES } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import { BrowserToolsBroker, type BrowserHostClient } from "./broker.js";
+import type { BrowserHostStall, BrowserHostStallListener } from "./host-stall.js";
 
 const BROWSER_ID = "11111111-1111-4111-8111-111111111111";
 const SECOND_BROWSER_ID = "22222222-2222-4222-8222-222222222222";
@@ -1065,5 +1066,126 @@ describe("BrowserToolsBroker", () => {
       },
     });
     expect(broker.getPendingRequestCount()).toBe(0);
+  });
+});
+
+describe("BrowserToolsBroker host stall diagnosis (delta 92)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  class RecordingStallListener implements BrowserHostStallListener {
+    public readonly events: Array<BrowserHostStall | "answered"> = [];
+    public stalled(stall: BrowserHostStall): void {
+      this.events.push(stall);
+    }
+    public answered(): void {
+      this.events.push("answered");
+    }
+  }
+
+  function stallBroker(securityPrompt: boolean) {
+    let probes = 0;
+    const broker = new BrowserToolsBroker({
+      defaultTimeoutMs: 50,
+      createRequestId: () => "req-1",
+      securityPromptProbe: async () => {
+        probes += 1;
+        return securityPrompt;
+      },
+    });
+    const listener = new RecordingStallListener();
+    broker.setHostStallListener(listener);
+    const client = new FakeBrowserHostClient("host-1", { supportedCommands: ["snapshot"] });
+    broker.registerClient(client);
+    return { broker, listener, client, probes: () => probes };
+  }
+
+  test("an unanswered request names an open macOS security prompt and reports the stall", async () => {
+    vi.useFakeTimers();
+    const { broker, listener } = stallBroker(true);
+    const result = broker.execute({ command: snapshotCommand() });
+    await vi.advanceTimersByTimeAsync(50);
+
+    const payload = await result;
+    expect(payload).toMatchObject({
+      ok: false,
+      error: { code: "browser_timeout", retryable: true },
+    });
+    expect(payload.ok ? "" : payload.error.message).toBe(
+      "The browser did not respond within 50ms. Try again or check the browser host. A macOS security prompt (SecurityAgent) is open on the Mac and is the likely cause: the Daseo app waits until it is answered there. Tell the user, then retry.",
+    );
+    expect(listener.events).toEqual([{ securityPrompt: true }]);
+  });
+
+  test("an unanswered request without a security prompt keeps its message and reports no stall", async () => {
+    vi.useFakeTimers();
+    const { broker, listener, probes } = stallBroker(false);
+    const result = broker.execute({ command: snapshotCommand() });
+    await vi.advanceTimersByTimeAsync(50);
+
+    await expect(result).resolves.toEqual({
+      requestId: "req-1",
+      ok: false,
+      error: {
+        code: "browser_timeout",
+        message: "The browser did not respond within 50ms. Try again or check the browser host.",
+        retryable: true,
+      },
+    });
+    expect(probes()).toBe(1);
+    expect(listener.events).toEqual([]);
+  });
+
+  test("a host that reports its main process blocked is a stall even with no prompt open", async () => {
+    const { broker, listener, client } = stallBroker(false);
+    const result = broker.execute({ command: snapshotCommand() });
+    client.resolveLatestWith(broker, {
+      requestId: "req-1",
+      ok: false,
+      error: {
+        code: "browser_timeout",
+        message: "The Daseo desktop app is not responding.",
+        retryable: true,
+        hostUnresponsive: true,
+      },
+    });
+
+    await expect(result).resolves.toMatchObject({
+      ok: false,
+      error: { message: "The Daseo desktop app is not responding.", hostUnresponsive: true },
+    });
+    expect(listener.events).toEqual([{ securityPrompt: false }]);
+  });
+
+  test("other failures are not probed, and an answered command ends the episode", async () => {
+    const { broker, listener, client, probes } = stallBroker(true);
+    const failed = broker.execute({ command: snapshotCommand() });
+    client.resolveLatestWith(broker, {
+      requestId: "req-1",
+      ok: false,
+      error: { code: "browser_tab_not_found", message: "No tab.", retryable: false },
+    });
+    await expect(failed).resolves.toMatchObject({ error: { message: "No tab." } });
+    expect(probes()).toBe(0);
+
+    const answered = broker.execute({ command: snapshotCommand() });
+    client.resolveLatestWith(broker, {
+      requestId: "req-1",
+      ok: true,
+      result: {
+        command: "snapshot",
+        browserId: BROWSER_ID,
+        workspaceId: "workspace-1",
+        url: "https://example.com",
+        title: "Example",
+        format: "aria-yaml",
+        snapshot: "- document",
+        truncated: false,
+        stats: { nodeCount: 1, refCount: 0, textLength: 10 },
+      },
+    });
+    await expect(answered).resolves.toMatchObject({ ok: true });
+    expect(listener.events).toEqual(["answered"]);
   });
 });
