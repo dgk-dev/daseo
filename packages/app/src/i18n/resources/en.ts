@@ -615,6 +615,14 @@ export const en = {
         close: "Close pop-up",
         closeFailed: "Unable to close pop-up",
       },
+      pageDialog: {
+        title: "{{host}} says",
+        titleNoHost: "This page says",
+        ok: "OK",
+        cancel: "Cancel",
+        answer: "Answer",
+        agentNote: "The agent using this tab can answer this too.",
+      },
       annotate: {
         title: "Annotate element",
         placeholder: "Message to the agent about this element…",

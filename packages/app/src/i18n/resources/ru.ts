@@ -622,6 +622,14 @@ export const ru: TranslationResources = {
         close: "Закрыть всплывающее окно",
         closeFailed: "Не удалось закрыть всплывающее окно",
       },
+      pageDialog: {
+        title: "{{host}} сообщает",
+        titleNoHost: "Эта страница сообщает",
+        ok: "ОК",
+        cancel: "Отмена",
+        answer: "Ответ",
+        agentNote: "Агент, который использует эту вкладку, тоже может ответить.",
+      },
       annotate: {
         title: "Аннотировать элемент",
         placeholder: "Сообщение агенту об этом элементе…",

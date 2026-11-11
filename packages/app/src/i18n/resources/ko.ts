@@ -617,6 +617,14 @@ export const ko: TranslationResources = {
         close: "팝업 닫기",
         closeFailed: "팝업을 닫을 수 없습니다",
       },
+      pageDialog: {
+        title: "{{host}} 페이지의 메시지",
+        titleNoHost: "이 페이지의 메시지",
+        ok: "확인",
+        cancel: "취소",
+        answer: "응답",
+        agentNote: "이 탭을 쓰는 에이전트도 답할 수 있습니다.",
+      },
       annotate: {
         title: "요소에 주석 달기",
         placeholder: "이 요소에 관해 에이전트에게 보낼 메시지…",

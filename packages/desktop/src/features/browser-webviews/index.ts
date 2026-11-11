@@ -445,6 +445,13 @@ export function getPaseoBrowserIdForWebContents(
   return browserRegistry.getBrowserIdForWebContents(contents.id);
 }
 
+/** The browser id and host window a tab or popup WebContents is registered under. */
+export function getPaseoBrowserRegistrationForWebContents(
+  webContentsId: number,
+): { browserId: string; hostWebContentsId: number } | null {
+  return browserRegistry.getRegistrationForWebContents(webContentsId);
+}
+
 export function unregisterPaseoBrowser(browserId: string): void {
   browserRegistry.unregisterBrowser(browserId);
 }

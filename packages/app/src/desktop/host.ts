@@ -184,6 +184,26 @@ export interface DesktopBrowserPopupPresentation {
   focus?: boolean;
 }
 
+/** Delta 93: a confirm, prompt, or alert a tab's page holds open, shown in that tab's pane. */
+export interface DesktopBrowserPageDialog {
+  id: string;
+  type: "alert" | "confirm" | "prompt";
+  message: string;
+  defaultValue?: string;
+  /** URL of the frame that opened it. */
+  url?: string;
+  openedAt: number;
+  /** "agent": an agent may answer it too, and it is dismissed at `expiresAt`. */
+  holder: "agent" | "person";
+  expiresAt?: number;
+}
+
+export interface DesktopBrowserPageDialogEvent {
+  browserId: string;
+  dialog: DesktopBrowserPageDialog | null;
+  dialogId?: string;
+}
+
 export interface DesktopBrowserBridge {
   setShortcutPolicy?: (input: BrowserKeyboardPolicy) => Promise<void>;
   readonly profilePartition?: string;
@@ -218,6 +238,18 @@ export interface DesktopBrowserBridge {
   ) => Promise<BrowserAutomationExecuteResponse["payload"]>;
   /** Answers at once unless the app's main process is blocked (delta 92). */
   ping?: () => Promise<unknown>;
+  /**
+   * Delta 93: this window's panes can show page dialogs. Returns the dialogs its tabs hold now;
+   * later changes arrive as the `browser-page-dialog` event.
+   */
+  watchPageDialogs?: () => Promise<DesktopBrowserPageDialogEvent[]>;
+  /** Delta 93: a person answered a tab's page dialog in its pane. */
+  answerPageDialog?: (input: {
+    browserId: string;
+    dialogId: string;
+    accept: boolean;
+    promptText?: string;
+  }) => Promise<boolean>;
   /** Subscribe to live screencast frames pushed from the Electron main process. */
   onStreamFrame?: (handler: (payload: unknown) => void) => () => void;
   /** Capture a PNG screenshot of the guest viewport cropped to `rect`. */

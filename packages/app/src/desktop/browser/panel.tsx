@@ -7,6 +7,7 @@ import { usePaneContext, usePaneFocus } from "@/panels/pane-context";
 import type { PanelDescriptor, PanelIconProps, PanelRegistration } from "@/panels/panel-registry";
 import { DEFAULT_BROWSER_URL, useBrowserStore } from "@/desktop/browser/store";
 import { useWorkspaceDirectory } from "@/stores/session-store-hooks";
+import { usePageDialog } from "@/desktop/browser/page-dialogs";
 
 function getBrowserLabel(input: { title: string; url: string }): string {
   const title = input.title.trim();
@@ -43,6 +44,8 @@ function useBrowserPanelDescriptor(target: {
   const url = browser?.url ?? DEFAULT_BROWSER_URL;
   const icon = createBrowserTabIcon(browser?.faviconUrl ?? null);
   const label = getBrowserLabel({ title: browser?.title ?? "", url });
+  // Delta 93: a page dialog waiting in the tab marks it like any tab that needs the user.
+  const pageDialog = usePageDialog(target.browserId);
 
   return {
     label,
@@ -50,8 +53,19 @@ function useBrowserPanelDescriptor(target: {
     tooltip: url || label,
     titleState: "ready",
     icon,
-    statusBucket: browser?.isLoading ? "running" : null,
+    statusBucket: browserTabStatus({
+      pageDialog: pageDialog !== null,
+      loading: browser?.isLoading,
+    }),
   };
+}
+
+function browserTabStatus(input: {
+  pageDialog: boolean;
+  loading: boolean | undefined;
+}): PanelDescriptor["statusBucket"] {
+  if (input.pageDialog) return "needs_input";
+  return input.loading ? "running" : null;
 }
 
 function BrowserPanel() {

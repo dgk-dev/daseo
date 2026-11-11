@@ -60,6 +60,28 @@ function monitor(options: { discarded?: Set<number> } = {}) {
 }
 
 describe("RendererHealthMonitor", () => {
+  test("a page waiting on its own dialog is not called busy (delta 93)", async () => {
+    const waiting = new Set<number>([7]);
+    const health = new RendererHealthMonitor({
+      checkAfterMs: 20,
+      pingTimeoutMs: 10,
+      precheckTimeoutMs: 15,
+      isWaitingOnDialog: (id) => waiting.has(id),
+    });
+    const guest = new FakeGuest(7);
+    health.observe(guest);
+    guest.busy = true;
+
+    expect(await health.blockingHealth(7)).toBeNull();
+    const script = health.runPageScript(guest, "click()", undefined, "tab A");
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(health.get(7)).toBeNull();
+    // The dialog is answered and the page runs on.
+    waiting.delete(7);
+    guest.unblock();
+    await expect(script).resolves.toBe("late");
+  });
+
   test("a page script on a busy page fails with not responding instead of waiting", async () => {
     const health = monitor();
     const guest = new FakeGuest(1);

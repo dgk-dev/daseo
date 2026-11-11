@@ -368,16 +368,17 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Click browser element",
       description:
-        "Click an element in a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes.",
+        "Click an element in a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes. Page dialogs: an alert is accepted on its own and reported; a confirm or prompt is held open and the result says so (openDialog), answer it with browser_handle_dialog, or pass dialog accept or dismiss (with promptText for a prompt) to answer one this call raises at once. Never override window.confirm or window.prompt.",
       inputSchema: {
         ref: BrowserRefInputSchema,
         browserId: BrowserAutomationBrowserIdSchema,
         button: BrowserClickButtonInputSchema.optional(),
         doubleClick: z.boolean().optional(),
         modifiers: z.array(BrowserClickModifierInputSchema).optional(),
+        ...BrowserDialogPreArmInputSchema,
       },
     },
-    async ({ ref, browserId, button, doubleClick, modifiers }) => {
+    async ({ ref, browserId, button, doubleClick, modifiers, dialog, promptText }) => {
       const context = resolveBrowserToolContext(options);
       const payload = await options.broker.execute({
         agentId: context.agentId,
@@ -392,6 +393,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
             button: button ?? "left",
             doubleClick: doubleClick ?? false,
             modifiers: modifiers ?? [],
+            ...dialogPreArmArgs(dialog, promptText),
           },
         },
       });
@@ -550,14 +552,15 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Press browser key",
       description:
-        "Dispatch a keypress to an element, or to the focused element when ref is omitted. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes.",
+        "Dispatch a keypress to an element, or to the focused element when ref is omitted. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes. Page dialogs: an alert is accepted on its own and reported; a confirm or prompt is held open and the result says so (openDialog), answer it with browser_handle_dialog, or pass dialog accept or dismiss (with promptText for a prompt) to answer one this call raises at once. Never override window.confirm or window.prompt.",
       inputSchema: {
         key: z.string().min(1),
         ref: BrowserRefInputSchema.optional(),
         browserId: BrowserAutomationBrowserIdSchema,
+        ...BrowserDialogPreArmInputSchema,
       },
     },
-    async ({ key, ref, browserId }) => {
+    async ({ key, ref, browserId, dialog, promptText }) => {
       const context = resolveBrowserToolContext(options);
       const payload = await options.broker.execute({
         agentId: context.agentId,
@@ -570,6 +573,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
             browserId,
             ...(ref ? { ref } : {}),
             key,
+            ...dialogPreArmArgs(dialog, promptText),
           },
         },
       });
@@ -938,14 +942,15 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Evaluate browser JavaScript",
       description:
-        "Evaluate a JavaScript function in a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; when ref is provided, refs come from the latest browser_snapshot and the resolved element is passed as the first argument.",
+        "Evaluate a JavaScript function in a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; when ref is provided, refs come from the latest browser_snapshot and the resolved element is passed as the first argument. Page dialogs: an alert is accepted on its own and reported; a confirm or prompt is held open and the result says so (openDialog), answer it with browser_handle_dialog, or pass dialog accept or dismiss (with promptText for a prompt) to answer one this call raises at once. Never override window.confirm or window.prompt. A function stopped by a held dialog returns no value.",
       inputSchema: {
         function: z.string().min(1),
         ref: BrowserRefInputSchema.optional(),
         browserId: BrowserAutomationBrowserIdSchema,
+        ...BrowserDialogPreArmInputSchema,
       },
     },
-    async ({ function: functionSource, ref, browserId }) => {
+    async ({ function: functionSource, ref, browserId, dialog, promptText }) => {
       const context = resolveBrowserToolContext(options);
       const payload = await options.broker.execute({
         agentId: context.agentId,
@@ -958,6 +963,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
             browserId,
             function: functionSource,
             ...(ref ? { ref } : {}),
+            ...dialogPreArmArgs(dialog, promptText),
           },
         },
       });
@@ -1140,6 +1146,56 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
       });
     },
   );
+
+  registerTool(
+    "browser_handle_dialog",
+    {
+      title: "Answer browser dialog",
+      description:
+        "Answer the confirm or prompt a page holds open in a Paseo browser tab (a result reported openDialog, or a tool said a dialog is open). accept true is OK, false is Cancel; promptText is what an accepted prompt returns (its default when omitted). The page then runs on; an alert it shows next is accepted and reported here, another confirm or prompt comes back as openDialog. A held dialog nobody answers is dismissed after 60 seconds and reported on the tab's next result. Alerts never need this: they are accepted on their own. While a dialog is open, tools that need the page say so at once; browser_navigate, browser_back, browser_forward, browser_reload, and browser_close_tab still work and dismiss it.",
+      inputSchema: {
+        browserId: BrowserAutomationBrowserIdSchema,
+        accept: z.boolean(),
+        promptText: z.string().max(10_000).optional(),
+      },
+    },
+    async ({ browserId, accept, promptText }) => {
+      const context = resolveBrowserToolContext(options);
+      const payload = await options.broker.execute({
+        agentId: context.agentId,
+        cwd: context.cwd,
+        ...(context.workspaceId ? { workspaceId: context.workspaceId } : {}),
+
+        command: {
+          command: "handle_dialog",
+          args: { browserId, accept, ...(promptText !== undefined ? { promptText } : {}) },
+        },
+      });
+      return browserToolResult({ payload, context: { ...context, browserId } });
+    },
+  );
+}
+
+const BrowserDialogPreArmInputSchema = {
+  dialog: z
+    .enum(["accept", "dismiss"])
+    .optional()
+    .describe(
+      "Answer a confirm or prompt this call makes the page open at once: accept (OK) or dismiss (Cancel). Omit to have it held for browser_handle_dialog.",
+    ),
+  promptText: z
+    .string()
+    .max(10_000)
+    .optional()
+    .describe("Text an accepted prompt returns; the prompt's default when omitted."),
+};
+
+function dialogPreArmArgs(
+  dialog: "accept" | "dismiss" | undefined,
+  promptText: string | undefined,
+): { dialog?: "accept" | "dismiss"; promptText?: string } {
+  if (!dialog) return {};
+  return { dialog, ...(promptText !== undefined ? { promptText } : {}) };
 }
 
 function resolveBrowserToolContext(options: RegisterBrowserToolsOptions): {
@@ -1261,6 +1317,7 @@ function browserToolResult(
         ok: true,
         result: browserToolStructuredResult(payload.result),
         ...(payload.dialogs ? { dialogs: payload.dialogs } : {}),
+        ...(payload.openDialog ? { openDialog: payload.openDialog } : {}),
         ...(payload.events ? { events: payload.events } : {}),
         context,
       },
@@ -1281,6 +1338,7 @@ function browserToolResult(
       ok: false,
       error: payload.error,
       ...(payload.dialogs ? { dialogs: payload.dialogs } : {}),
+      ...(payload.openDialog ? { openDialog: payload.openDialog } : {}),
       ...(payload.events ? { events: payload.events } : {}),
       context,
     },
@@ -1309,7 +1367,10 @@ function browserToolSuccessContent(
 ): PaseoToolResult["content"] {
   const textContent = {
     type: "text" as const,
-    text: appendTabEvents(summarizeBrowserSuccess(payload, options), payload.events),
+    text: appendTabEvents(
+      appendOpenDialog(summarizeBrowserSuccess(payload, options), payload.openDialog),
+      payload.events,
+    ),
   };
   const imageContent = browserToolImageContent(payload.result);
   return imageContent ? [textContent, imageContent] : [textContent];
@@ -1638,8 +1699,46 @@ function appendDialogSummary(
     return summary;
   }
   return `${summary}\nHandled browser dialog${dialogs.length === 1 ? "" : "s"}: ${dialogs
-    .map((dialog) => `${dialog.action} ${dialog.type} ${JSON.stringify(dialog.message)}`)
+    .map((dialog) => describeHandledDialog(dialog))
     .join("; ")}.`;
+}
+
+const DIALOG_REASON_LABELS: Record<string, string> = {
+  unanswered: "unanswered for 60s",
+  page_left: "the page navigated away",
+  person: "answered in the tab by the user",
+};
+
+function describeHandledDialog(
+  dialog: NonNullable<BrowserToolsResponsePayload["dialogs"]>[number],
+): string {
+  const text =
+    dialog.type === "prompt" && dialog.promptText !== undefined
+      ? ` with ${JSON.stringify(dialog.promptText)}`
+      : "";
+  const reason = dialog.reason ? ` (${DIALOG_REASON_LABELS[dialog.reason] ?? dialog.reason})` : "";
+  return `${dialog.action} ${dialog.type} ${JSON.stringify(dialog.message)}${text}${reason}`;
+}
+
+/** Delta 93: a confirm or prompt the page still holds open after a command that succeeded. */
+function appendOpenDialog(
+  summary: string,
+  openDialog: BrowserToolsResponsePayload["openDialog"],
+): string {
+  if (!openDialog) return summary;
+  const defaultText =
+    openDialog.type === "prompt" && openDialog.defaultValue !== undefined
+      ? ` (default ${JSON.stringify(openDialog.defaultValue)})`
+      : "";
+  const deadline =
+    openDialog.expiresAt !== undefined
+      ? ` It is dismissed in ${Math.max(0, Math.round((openDialog.expiresAt - Date.now()) / 1000))}s if unanswered.`
+      : "";
+  const answer =
+    openDialog.type === "prompt"
+      ? "browser_handle_dialog with accept true and promptText, or accept false"
+      : "browser_handle_dialog with accept true or false";
+  return `${summary}\nDialog open: the page shows a ${openDialog.type} ${JSON.stringify(openDialog.message)}${defaultText} and waits for an answer. Call ${answer}.${deadline}`;
 }
 
 function summarizeBrowserMediaSuccess(
@@ -1670,7 +1769,25 @@ function summarizeBrowserKeyboardSuccess(
       : `Pressed ${result.key} in the browser.`;
   }
 
+  if (result.command === "handle_dialog") {
+    return describeDialogAnswer(result.answered);
+  }
+
   return null;
+}
+
+function describeDialogAnswer(
+  answered: Extract<
+    Extract<BrowserToolsResponsePayload, { ok: true }>["result"],
+    { command: "handle_dialog" }
+  >["answered"],
+): string {
+  const text =
+    answered.type === "prompt" && answered.promptText !== undefined
+      ? ` with ${JSON.stringify(answered.promptText)}`
+      : "";
+  const button = answered.action === "accepted" ? "OK" : "Cancel";
+  return `Answered the ${answered.type} ${JSON.stringify(answered.message)}: ${button}${text}.`;
 }
 
 function summarizeBrowserNavigationSuccess(

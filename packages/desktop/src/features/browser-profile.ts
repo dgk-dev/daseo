@@ -255,6 +255,45 @@ export function installPaseoBrowserClientHints(
     });
 }
 
+interface PermissionPolicySession {
+  setPermissionRequestHandler(
+    handler: (
+      webContents: unknown,
+      permission: string,
+      callback: (granted: boolean) => void,
+    ) => void,
+  ): void;
+  setPermissionCheckHandler(handler: (webContents: unknown, permission: string) => boolean): void;
+}
+
+/**
+ * Delta 93: sites in the browser profile cannot raise macOS notifications. Without handlers
+ * Electron grants every permission request and passes every check except
+ * `deprecated-sync-clipboard-read` (electron_permission_manager.cc), so these handlers keep exactly
+ * that and deny `notifications` alone. Both are needed: `Notification.permission` and showing a
+ * notification read the check, `Notification.requestPermission()` the request. Notification
+ * checks carry no WebContents, so the decision is by permission name only.
+ */
+function browserProfilePermissionGranted(permission: string): boolean {
+  return permission !== "notifications";
+}
+
+function browserProfilePermissionCheck(permission: string): boolean {
+  return permission !== "notifications" && permission !== "deprecated-sync-clipboard-read";
+}
+
+export function installPaseoBrowserPermissionPolicy(sessions: {
+  fromPartition(partition: string): PermissionPolicySession;
+}): void {
+  const profileSession = sessions.fromPartition(PASEO_BROWSER_PROFILE_PARTITION);
+  profileSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    callback(browserProfilePermissionGranted(permission));
+  });
+  profileSession.setPermissionCheckHandler((_webContents, permission) =>
+    browserProfilePermissionCheck(permission),
+  );
+}
+
 export function readLegacyPaseoBrowserIds(input: unknown): string[] {
   if (!Array.isArray(input)) {
     return [];

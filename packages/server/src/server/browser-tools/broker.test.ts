@@ -689,6 +689,47 @@ describe("BrowserToolsBroker", () => {
     expect(client.receivedRequests).toEqual([]);
   });
 
+  test("a host without handle_dialog gets no dialog argument it would reject (delta 93)", async () => {
+    const broker = createBroker();
+    const oldDesktop = BROWSER_AUTOMATION_COMMAND_NAMES.filter((name) => name !== "handle_dialog");
+    const client = new FakeBrowserHostClient("host-1", {
+      supportedCommands: oldDesktop,
+      hostKind: "desktop app",
+    });
+    broker.registerClient(client);
+
+    await expect(
+      broker.execute({
+        command: {
+          command: "click",
+          args: {
+            browserId: BROWSER_ID,
+            ref: "@e1",
+            button: "left",
+            doubleClick: false,
+            modifiers: [],
+            dialog: "accept",
+          },
+        },
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "browser_unsupported", message: expect.stringContaining("dialog argument") },
+    });
+    await expect(
+      broker.execute({
+        command: { command: "handle_dialog", args: { browserId: BROWSER_ID, accept: true } },
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "browser_unsupported",
+        message: 'Browser automation command "handle_dialog" is not supported by the desktop app.',
+      },
+    });
+    expect(client.receivedRequests).toEqual([]);
+  });
+
   test("unregistering a host strands its browser ids instead of routing them to another host", async () => {
     const broker = createBroker();
     const owner = new FakeBrowserHostClient("host-1");

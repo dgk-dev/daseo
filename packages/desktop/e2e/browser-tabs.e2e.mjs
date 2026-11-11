@@ -218,6 +218,17 @@ async function startTargetPage() {
         </html>`);
       return;
     }
+    if (requestUrl.pathname === "/dialog-fixture") {
+      response.end(`<!doctype html>
+        <html>
+          <head><title>Dialog fixture</title></head>
+          <body>
+            <h1>Dialog fixture</h1>
+            <script>setTimeout(() => { window.__answer = window.confirm('Human confirm?'); }, 1500)</script>
+          </body>
+        </html>`);
+      return;
+    }
     if (requestUrl.pathname === "/focus-attempt") {
       response.end(`<!doctype html>
         <html>
@@ -730,6 +741,26 @@ async function ensureHumanPopupPresented({ page, originalDeck, rootBrowserId, po
   await waitForPopupVisibility(page, rootBrowserId, popupBrowserId, true);
 }
 
+// Delta 93: a confirm the page opens right after the agent's click waits for the agent, and a tool
+// that needs the page says so at once instead of timing out; browser_handle_dialog answers it.
+async function answerHeldPopupConfirm(client, popupBrowserId, afterDelayedDialog) {
+  const payload = afterDelayedDialog.structuredContent;
+  assert(
+    payload?.ok === false &&
+      payload?.openDialog?.type === "confirm" &&
+      payload?.openDialog?.message === "delayed-confirm",
+    `Background popup confirm was not held for the agent: ${JSON.stringify(payload)}`,
+  );
+  const answered = await callBrowserTool(client, "browser_handle_dialog", {
+    browserId: popupBrowserId,
+    accept: false,
+  });
+  assert(
+    answered.answered?.message === "delayed-confirm" && answered.answered?.action === "dismissed",
+    `browser_handle_dialog did not answer the popup confirm: ${JSON.stringify(answered)}`,
+  );
+}
+
 async function runPopupRegression({
   page,
   client,
@@ -861,15 +892,7 @@ async function runPopupRegression({
     name: "browser_snapshot",
     args: { browserId: agentPopup.browserId },
   });
-  assert(
-    afterDelayedDialog.structuredContent?.dialogs?.some(
-      (dialog) =>
-        dialog.type === "confirm" &&
-        dialog.message === "delayed-confirm" &&
-        dialog.action === "dismissed",
-    ),
-    `Background popup dialog was not queued for the agent: ${JSON.stringify(afterDelayedDialog.structuredContent)}`,
-  );
+  await answerHeldPopupConfirm(client, agentPopup.browserId, afterDelayedDialog);
   await callBrowserTool(client, "browser_wait", {
     browserId,
     text: "popup-ready:Agent",
@@ -1703,6 +1726,147 @@ async function runRegression({
   };
 }
 
+// Delta 93: a dialog on a tab a person uses shows only inside that tab's pane. Another workspace
+// shows nothing of it, and its composer keeps focus and takes typing while the dialog waits.
+async function readPageDialogCard(page) {
+  return await page.evaluate(() => {
+    const card = document.querySelector('[data-testid="browser-page-dialog"]');
+    if (!(card instanceof HTMLElement)) return null;
+    const rect = card.getBoundingClientRect();
+    const center = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    const hit = document.elementFromPoint(center.x, center.y);
+    return {
+      rect: {
+        left: Math.round(rect.left),
+        top: Math.round(rect.top),
+        right: Math.round(rect.right),
+        bottom: Math.round(rect.bottom),
+      },
+      visibleAtCenter: hit !== null && card.contains(hit),
+      text: card.innerText,
+    };
+  });
+}
+
+async function readClipRect(page, browserId) {
+  return await page.evaluate((id) => {
+    const clip = document.querySelector(`[data-testid="browser-webview-clip-${id}"]`);
+    if (!(clip instanceof HTMLElement)) return null;
+    const rect = clip.getBoundingClientRect();
+    return {
+      left: Math.round(rect.left),
+      top: Math.round(rect.top),
+      right: Math.round(rect.right),
+      bottom: Math.round(rect.bottom),
+    };
+  }, browserId);
+}
+
+async function runPageDialogSurfaceRegression({ page, serverId, targetUrl, artifactDir }) {
+  const fixtureUrl = new URL("/dialog-fixture", targetUrl).toString();
+  const [workspaceA, workspaceB] = workspaceIds;
+  await page.getByTestId(`sidebar-workspace-row-${serverId}:${workspaceA}`).click();
+  const deckA = page.getByTestId(`workspace-deck-entry-${serverId}:${workspaceA}`);
+  await deckA.waitFor({ state: "visible", timeout: timeoutMs });
+
+  // A person opens a browser tab and types the address: no agent touches this tab.
+  await deckA.getByTestId("workspace-header-menu-trigger").click();
+  await page.getByTestId("workspace-header-new-browser").click();
+  const urlInput = deckA.getByRole("textbox", { name: "Browser URL" }).last();
+  await urlInput.click();
+  await urlInput.fill(fixtureUrl);
+  await urlInput.press("Enter");
+  const browserId = await page.waitForFunction(
+    (url) => {
+      for (const webview of document.querySelectorAll("[data-paseo-browser-id]")) {
+        if (typeof webview.getURL === "function" && webview.getURL() === url) {
+          return webview.getAttribute("data-paseo-browser-id");
+        }
+      }
+      return null;
+    },
+    fixtureUrl,
+    { timeout: timeoutMs },
+  );
+  const id = await browserId.jsonValue();
+
+  await page.getByTestId("browser-page-dialog").waitFor({ state: "attached", timeout: 10_000 });
+  await page.waitForFunction(
+    () => {
+      const card = document.querySelector('[data-testid="browser-page-dialog"]');
+      if (!(card instanceof HTMLElement)) return false;
+      const rect = card.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return hit !== null && card.contains(hit);
+    },
+    null,
+    { timeout: 10_000 },
+  );
+  const shown = await readPageDialogCard(page);
+  const clip = await readClipRect(page, id);
+  await page.screenshot({ path: path.join(artifactDir, "page-dialog-in-pane.png") });
+  assert(shown?.text.includes("Human confirm?"), `Dialog card text: ${JSON.stringify(shown)}`);
+  assert(
+    clip &&
+      shown.rect.left >= clip.left &&
+      shown.rect.right <= clip.right &&
+      shown.rect.top >= clip.top &&
+      shown.rect.bottom <= clip.bottom,
+    `Dialog card is not inside its tab's pane: ${JSON.stringify({ card: shown, clip })}`,
+  );
+
+  // Another workspace: nothing of the dialog, and its composer keeps focus and takes typing.
+  await page.getByTestId(`sidebar-workspace-row-${serverId}:${workspaceB}`).click();
+  const deckB = page.getByTestId(`workspace-deck-entry-${serverId}:${workspaceB}`);
+  await deckB.waitFor({ state: "visible", timeout: timeoutMs });
+  const composer = page.locator("textarea[data-composer-input]").filter({ visible: true }).first();
+  await composer.waitFor({ state: "visible", timeout: timeoutMs });
+  await composer.click();
+  const typed = "typing while a page dialog waits elsewhere";
+  await page.keyboard.type(typed);
+  await delay(500);
+  const away = await readPageDialogCard(page);
+  const composerState = await composer.evaluate((input) => ({
+    value: input.value,
+    focused: document.activeElement === input,
+  }));
+  await page.screenshot({ path: path.join(artifactDir, "page-dialog-other-workspace.png") });
+  assert(
+    !away?.visibleAtCenter,
+    `Dialog card shows over another workspace: ${JSON.stringify(away)}`,
+  );
+  assert(
+    composerState.focused && composerState.value.includes(typed),
+    `Composer lost focus or typing while a page dialog waited: ${JSON.stringify(composerState)}`,
+  );
+  await composer.fill("");
+
+  // Back to the tab: the card is there again, and answering it reaches the page.
+  await page.getByTestId(`sidebar-workspace-row-${serverId}:${workspaceA}`).click();
+  await deckA.waitFor({ state: "visible", timeout: timeoutMs });
+  await page.waitForFunction(
+    () => {
+      const card = document.querySelector('[data-testid="browser-page-dialog"]');
+      if (!(card instanceof HTMLElement)) return false;
+      const rect = card.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return hit !== null && card.contains(hit);
+    },
+    null,
+    { timeout: 10_000 },
+  );
+  await page.getByTestId("browser-page-dialog").getByRole("button", { name: "OK" }).click();
+  await page.getByTestId("browser-page-dialog").waitFor({ state: "detached", timeout: 10_000 });
+  const answer = await page.evaluate(async (browserIdValue) => {
+    const webview = document.querySelector(`[data-paseo-browser-id="${browserIdValue}"]`);
+    return webview && typeof webview.executeJavaScript === "function"
+      ? await webview.executeJavaScript("window.__answer")
+      : null;
+  }, id);
+  assert(answer === true, `The page did not get the person's OK: ${JSON.stringify(answer)}`);
+  return { browserId: id, card: shown.rect, clip, composer: composerState, answer };
+}
+
 async function main() {
   const artifactDir =
     process.env.PASEO_DESKTOP_BROWSER_E2E_ARTIFACT_DIR ??
@@ -1784,8 +1948,9 @@ async function main() {
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
     for (const context of browser.contexts()) {
       const observeElectronHandledDialog = (targetPage) => {
-        // Electron's per-target CDP monitor owns popup dialog policy. Registering a
-        // Playwright observer prevents its default auto-dismiss session from racing that owner.
+        // Daseo's page-dialog owner answers every page dialog (delta 93). A Playwright page with
+        // no dialog listener auto-dismisses dialogs over its own DevTools session, behind that
+        // owner's back; an observer that does nothing turns that off.
         targetPage.on("dialog", () => {});
       };
       context.on("page", observeElectronHandledDialog);
@@ -1827,6 +1992,13 @@ async function main() {
       targetUrl: target.url,
     });
     console.log(`Browser tab lifecycle regression passed: ${JSON.stringify(report.lifecycle)}`);
+    report.pageDialog = await runPageDialogSurfaceRegression({
+      page,
+      serverId: status.serverId,
+      targetUrl: target.url,
+      artifactDir,
+    });
+    console.log(`Page dialog surface regression passed: ${JSON.stringify(report.pageDialog)}`);
     writeJson(path.join(artifactDir, "result.json"), report);
     console.log(
       `Browser desktop browser E2E passed: WebContents ${report.originalWebContentsId} remained ${report.finalWebContentsId}; viewport, inactive capture, cross-session focus continuity, list, snapshot, click, local-page selectors passed.`,

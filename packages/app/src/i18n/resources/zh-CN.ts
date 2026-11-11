@@ -615,6 +615,14 @@ export const zhCN: TranslationResources = {
         close: "关闭弹出窗口",
         closeFailed: "无法关闭弹出窗口",
       },
+      pageDialog: {
+        title: "{{host}} 显示",
+        titleNoHost: "此网页显示",
+        ok: "确定",
+        cancel: "取消",
+        answer: "回答",
+        agentNote: "使用此标签页的智能体也可以回答。",
+      },
       annotate: {
         title: "标注元素",
         placeholder: "给智能体关于此元素的留言…",

@@ -50,6 +50,11 @@ interface Tracked {
 export interface RendererHealthOptions {
   /** True while the tab's renderer was ended on purpose (memory-pressure discard). */
   isIntentionalCrash?: (contentsId: number) => boolean;
+  /**
+   * Delta 93: true while the page waits on its own alert, confirm, or prompt. Its script thread
+   * answers nothing then, but it is not busy.
+   */
+  isWaitingOnDialog?: (contentsId: number) => boolean;
   now?: () => number;
   checkAfterMs?: number;
   pingTimeoutMs?: number;
@@ -118,6 +123,7 @@ export class RendererHealthMonitor {
     const entry = this.tracked.get(contentsId);
     if (!entry) return null;
     if (entry.health?.state === "crashed") return entry.health;
+    if (this.options.isWaitingOnDialog?.(contentsId)) return null;
     if (await this.ping(entry.contents, this.precheckTimeoutMs)) {
       entry.health = null;
       return null;
@@ -149,8 +155,9 @@ export class RendererHealthMonitor {
       for (;;) {
         await delay(this.checkAfterMs);
         if (answered || contents.isDestroyed()) return undefined;
+        if (this.options.isWaitingOnDialog?.(contentsId)) continue;
         if (await this.ping(contents)) continue;
-        if (answered) return undefined;
+        if (answered || this.options.isWaitingOnDialog?.(contentsId)) continue;
         const entry = this.tracked.get(contentsId);
         if (entry && entry.health?.state !== "crashed") {
           entry.health = { state: "not_responding", since: this.now() };

@@ -52,6 +52,7 @@ export const BROWSER_AUTOMATION_COMMAND_NAMES = [
   "find",
   "styles",
   "passkeys",
+  "handle_dialog",
 ] as const;
 
 export const BrowserAutomationCommandNameSchema = z.enum(BROWSER_AUTOMATION_COMMAND_NAMES);
@@ -68,6 +69,15 @@ const BrowserAutomationTabTargetSchema = z
   .strict();
 
 const BrowserAutomationRefSchema = z.string().regex(/^@e\d+$/);
+/**
+ * Daseo delta 93: how a confirm or prompt this command raises is answered at once. Without it
+ * the dialog is held open for browser_handle_dialog.
+ */
+const BrowserAutomationDialogPreArmFields = {
+  dialog: z.enum(["accept", "dismiss"]).optional(),
+  /** Text a prompt answered with `dialog: "accept"` returns; the prompt's default when absent. */
+  promptText: z.string().max(10_000).optional(),
+};
 const BrowserAutomationBase64UrlSchema = z.string().regex(/^[A-Za-z0-9_-]+$/);
 const BrowserAutomationMouseButtonSchema = z.enum(["left", "right", "middle"]);
 const BrowserAutomationInputModifierSchema = z.enum(["Alt", "Control", "Meta", "Shift"]);
@@ -111,6 +121,7 @@ export const BrowserAutomationClickCommandSchema = z.object({
     button: BrowserAutomationMouseButtonSchema.default("left"),
     doubleClick: z.boolean().default(false),
     modifiers: z.array(BrowserAutomationInputModifierSchema).default([]),
+    ...BrowserAutomationDialogPreArmFields,
   }),
 });
 
@@ -159,6 +170,7 @@ export const BrowserAutomationKeypressCommandSchema = z.object({
   args: BrowserAutomationTabTargetSchema.extend({
     ref: BrowserAutomationRefSchema.optional(),
     key: z.string().min(1),
+    ...BrowserAutomationDialogPreArmFields,
   }),
 });
 
@@ -240,6 +252,16 @@ export const BrowserAutomationEvaluateCommandSchema = z.object({
   args: BrowserAutomationTabTargetSchema.extend({
     function: z.string().min(1),
     ref: BrowserAutomationRefSchema.optional(),
+    ...BrowserAutomationDialogPreArmFields,
+  }),
+});
+
+/** Daseo delta 93: answers the confirm or prompt held open on the tab. */
+export const BrowserAutomationHandleDialogCommandSchema = z.object({
+  command: z.literal("handle_dialog"),
+  args: BrowserAutomationTabTargetSchema.extend({
+    accept: z.boolean(),
+    promptText: z.string().max(10_000).optional(),
   }),
 });
 
@@ -453,6 +475,7 @@ export const BrowserAutomationCommandSchema = z.discriminatedUnion("command", [
   BrowserAutomationFindCommandSchema,
   BrowserAutomationStylesCommandSchema,
   BrowserAutomationPasskeysCommandSchema,
+  BrowserAutomationHandleDialogCommandSchema,
 ]);
 
 export const BrowserAutomationTabInfoSchema = z.object({
@@ -881,6 +904,43 @@ export const BrowserAutomationPasskeysResultSchema = z.object({
   }),
 });
 
+export const BrowserAutomationDialogEventSchema = z.object({
+  type: z.enum(["alert", "confirm", "prompt", "beforeunload"]),
+  message: z.string(),
+  defaultValue: z.string().optional(),
+  action: z.enum(["accepted", "dismissed"]),
+  promptText: z.string().optional(),
+  timestamp: z.number(),
+  /**
+   * Daseo delta 93: who or what answered when it was not the policy of the command that saw it,
+   * e.g. "unanswered" (held 60 s), "page_left" (the tab navigated away), "person" (answered in
+   * the tab's pane), "agent". A plain string so a newer reason never fails an older parser.
+   */
+  reason: z.string().optional(),
+  /** Daseo delta 93: the page that opened it (the frame's URL). */
+  url: z.string().optional(),
+});
+
+/**
+ * Daseo delta 93: a confirm or prompt held open on the tab; the page waits for its answer.
+ * `expiresAt` is when it is dismissed if nobody answers (absent while a person holds it).
+ */
+export const BrowserAutomationOpenDialogSchema = z.object({
+  browserId: BrowserAutomationBrowserIdSchema,
+  type: z.enum(["alert", "confirm", "prompt"]),
+  message: z.string(),
+  defaultValue: z.string().optional(),
+  url: z.string().optional(),
+  openedAt: z.number(),
+  expiresAt: z.number().optional(),
+});
+
+export const BrowserAutomationHandleDialogResultSchema = z.object({
+  command: z.literal("handle_dialog"),
+  browserId: BrowserAutomationBrowserIdSchema,
+  answered: BrowserAutomationDialogEventSchema,
+});
+
 export const BrowserAutomationResultSchema = z.discriminatedUnion("command", [
   BrowserAutomationListTabsResultSchema,
   BrowserAutomationNewTabResultSchema,
@@ -912,6 +972,7 @@ export const BrowserAutomationResultSchema = z.discriminatedUnion("command", [
   BrowserAutomationFindResultSchema,
   BrowserAutomationStylesResultSchema,
   BrowserAutomationPasskeysResultSchema,
+  BrowserAutomationHandleDialogResultSchema,
 ]);
 
 export const BrowserAutomationErrorSchema = z.object({
@@ -923,15 +984,6 @@ export const BrowserAutomationErrorSchema = z.object({
    * the app being blocked, not the page. Set by the desktop renderer; absent everywhere else.
    */
   hostUnresponsive: z.boolean().optional(),
-});
-
-export const BrowserAutomationDialogEventSchema = z.object({
-  type: z.enum(["alert", "confirm", "prompt", "beforeunload"]),
-  message: z.string(),
-  defaultValue: z.string().optional(),
-  action: z.enum(["accepted", "dismissed"]),
-  promptText: z.string().optional(),
-  timestamp: z.number(),
 });
 
 /**
@@ -976,6 +1028,8 @@ export const BrowserAutomationExecuteResponseSchema = z.object({
       result: BrowserAutomationResultSchema,
       dialogs: z.array(BrowserAutomationDialogEventSchema).optional(),
       events: z.array(BrowserAutomationTabEventSchema).optional(),
+      /** Daseo delta 93: a confirm or prompt the page holds open after this command. */
+      openDialog: BrowserAutomationOpenDialogSchema.optional(),
     }),
     z.object({
       requestId: z.string().min(1),
@@ -983,6 +1037,8 @@ export const BrowserAutomationExecuteResponseSchema = z.object({
       error: BrowserAutomationErrorSchema,
       dialogs: z.array(BrowserAutomationDialogEventSchema).optional(),
       events: z.array(BrowserAutomationTabEventSchema).optional(),
+      /** Daseo delta 93: a confirm or prompt the page holds open after this command. */
+      openDialog: BrowserAutomationOpenDialogSchema.optional(),
     }),
   ]),
 });
@@ -999,6 +1055,10 @@ export type BrowserAutomationNetworkLogEntry = z.infer<
   typeof BrowserAutomationNetworkLogEntrySchema
 >;
 export type BrowserAutomationDialogEvent = z.infer<typeof BrowserAutomationDialogEventSchema>;
+export type BrowserAutomationOpenDialog = z.infer<typeof BrowserAutomationOpenDialogSchema>;
+export type BrowserAutomationHandleDialogResult = z.infer<
+  typeof BrowserAutomationHandleDialogResultSchema
+>;
 export type BrowserAutomationExecuteRequest = z.infer<typeof BrowserAutomationExecuteRequestSchema>;
 export type BrowserAutomationExecuteResponse = z.infer<
   typeof BrowserAutomationExecuteResponseSchema

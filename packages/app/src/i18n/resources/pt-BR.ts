@@ -623,6 +623,14 @@ export const ptBR: TranslationResources = {
         close: "Fechar pop-up",
         closeFailed: "Não foi possível fechar o pop-up",
       },
+      pageDialog: {
+        title: "{{host}} diz",
+        titleNoHost: "Esta página diz",
+        ok: "OK",
+        cancel: "Cancelar",
+        answer: "Resposta",
+        agentNote: "O agente que usa esta aba também pode responder.",
+      },
       annotate: {
         title: "Anotar elemento",
         placeholder: "Mensagem ao agente sobre este elemento…",

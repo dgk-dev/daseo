@@ -79,6 +79,8 @@ import {
   takeResidentBrowserWebview,
 } from "../resident-webviews";
 import { selectAvailablePopupTarget, useDesktopBrowserPopupTargets } from "../popup-targets";
+import { answerPageDialog, usePageDialog } from "../page-dialogs";
+import { BrowserPageDialogCard } from "./page-dialog-card.electron";
 import { shouldClaimBrowserSurfaceFocus, shouldRepelBrowserSurfaceFocus } from "../focus-policy";
 import { hasActiveWebOverlay, subscribeWebOverlayActivity } from "@/lib/overlay-root";
 import {
@@ -629,6 +631,12 @@ export function BrowserPane({
   const popupFocusRequestRef = useRef<string | null>(null);
   const lastHandledPopupActivationRevisionRef = useRef(-1);
   const lastHandledPopupFocusRevisionRef = useRef(-1);
+  // Delta 93: a dialog the tab's page (or its selected popup) holds open, shown in this pane.
+  const rootPageDialog = usePageDialog(browserId);
+  const popupPageDialog = usePageDialog(selectedPopup?.browserId ?? null);
+  const popupDialogOpenRef = useRef(false);
+  popupDialogOpenRef.current = popupPageDialog !== null;
+  const pageDialogFocusRef = useRef<{ dialogId: string; takeFocus: boolean } | null>(null);
   const [webOverlayActive, setWebOverlayActive] = useState(() => hasActiveWebOverlay());
   const webOverlayActiveRef = useRef(webOverlayActive);
   webOverlayActiveRef.current = webOverlayActive;
@@ -806,8 +814,12 @@ export function BrowserPane({
     (webview: ElectronWebview, host: HTMLElement, clip: HTMLElement) => {
       const popup = selectedPopupRef.current;
       const browserHost = getDesktopHost()?.browser;
+      // A popup's dialog shows in the pane itself, so the popup's native view steps aside.
       const shouldShowPopup =
-        isPresentedRef.current && popup !== null && !webOverlayActiveRef.current;
+        isPresentedRef.current &&
+        popup !== null &&
+        !webOverlayActiveRef.current &&
+        !popupDialogOpenRef.current;
       if (popup) {
         releaseResidentBrowserWebview(browserIdRef.current, webview);
         const bounds = shouldShowPopup ? measureBrowserPresentationBounds(host, clip) : null;
@@ -1095,6 +1107,7 @@ export function BrowserPane({
     browserId,
     browserViewport,
     isPresented,
+    popupPageDialog,
     selectedPopup,
     syncBrowserSurface,
     webOverlayActive,
@@ -1718,6 +1731,50 @@ export function BrowserPane({
     ? residentSurface
     : null;
 
+  const shownPageDialog = selectedPopup ? popupPageDialog : rootPageDialog;
+  const shownPageDialogBrowserId = selectedPopup ? selectedPopup.browserId : browserId;
+  // Decided once per dialog: the card takes focus only from this pane's own page or an idle
+  // window, never from a composer or another workspace (delta 14).
+  if (shownPageDialog && pageDialogFocusRef.current?.dialogId !== shownPageDialog.id) {
+    pageDialogFocusRef.current = {
+      dialogId: shownPageDialog.id,
+      takeFocus: shouldPageDialogTakeFocus({
+        isPresented,
+        isInteractive: Boolean(isInteractive),
+        webview: webviewRef.current,
+        clip: webviewClipRef.current,
+      }),
+    };
+  }
+  const shownPageDialogId = shownPageDialog?.id ?? null;
+  const answersRootPage = selectedPopup === null;
+  const handlePageDialogAnswer = useCallback(
+    (accept: boolean, promptText?: string) => {
+      if (!shownPageDialogId) return;
+      const active = typeof document === "undefined" ? null : document.activeElement;
+      const cardHadFocus =
+        active instanceof HTMLElement &&
+        active.closest("[data-testid='browser-page-dialog']") !== null;
+      answerPageDialog({
+        browserId: shownPageDialogBrowserId,
+        dialogId: shownPageDialogId,
+        accept,
+        ...(promptText !== undefined ? { promptText } : {}),
+      });
+      // Back to the page the person was in, as a browser does when its dialog closes.
+      if (cardHadFocus && answersRootPage) webviewRef.current?.focus();
+    },
+    [answersRootPage, shownPageDialogBrowserId, shownPageDialogId],
+  );
+  const pageDialogCard = shownPageDialog ? (
+    <BrowserPageDialogCard
+      key={shownPageDialog.id}
+      dialog={shownPageDialog}
+      takeFocus={pageDialogFocusRef.current?.takeFocus === true}
+      onAnswer={handlePageDialogAnswer}
+    />
+  ) : null;
+
   if (!isElectronRuntime()) {
     return (
       <View style={styles.unavailableState}>
@@ -1900,6 +1957,10 @@ export function BrowserPane({
           ref: setWebviewHostNode,
           style: webviewHostStyle,
         })}
+        {pageDialogCard && selectedPopup ? pageDialogCard : null}
+        {pageDialogCard && !selectedPopup && annotationPortalTarget
+          ? createPortal(pageDialogCard, annotationPortalTarget)
+          : null}
         {annotationDraft && annotationPortalTarget
           ? createPortal(
               <BrowserElementAnnotationCard
@@ -1913,6 +1974,22 @@ export function BrowserPane({
           : null}
       </View>
     </View>
+  );
+}
+
+function shouldPageDialogTakeFocus(input: {
+  isPresented: boolean;
+  isInteractive: boolean;
+  webview: HTMLElement | null;
+  clip: HTMLElement | null;
+}): boolean {
+  if (!input.isPresented || !input.isInteractive || typeof document === "undefined") return false;
+  const active = document.activeElement;
+  return (
+    active === null ||
+    active === document.body ||
+    (input.webview !== null && active === input.webview) ||
+    (input.clip !== null && input.clip.contains(active))
   );
 }
 

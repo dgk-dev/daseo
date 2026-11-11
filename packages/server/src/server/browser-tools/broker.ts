@@ -65,6 +65,15 @@ type ListTabsResult = Extract<
 >;
 type BrowserTabInfo = ListTabsResult["tabs"][number];
 
+function hasDialogPreArm(command: BrowserAutomationCommand): boolean {
+  return (
+    (command.command === "click" ||
+      command.command === "keypress" ||
+      command.command === "evaluate") &&
+    command.args.dialog !== undefined
+  );
+}
+
 export class BrowserToolsBroker {
   private readonly defaultTimeoutMs: number;
   private readonly createRequestId: () => string;
@@ -177,6 +186,7 @@ export class BrowserToolsBroker {
       host: host.value,
       commandName: request.data.command.command,
       requestId,
+      command: request.data.command,
     });
     if (unsupported) {
       return unsupported;
@@ -412,8 +422,22 @@ export class BrowserToolsBroker {
     host: RegisteredBrowserHost;
     commandName: BrowserAutomationCommandName;
     requestId: string;
+    command?: BrowserAutomationCommand;
   }): BrowserToolsResponsePayload | null {
     if (params.host.supportedCommands.has(params.commandName)) {
+      // Delta 93: a host that cannot answer dialogs predates the `dialog` argument, and its
+      // strict argument schema would reject the whole command.
+      if (
+        params.command &&
+        hasDialogPreArm(params.command) &&
+        !params.host.supportedCommands.has("handle_dialog")
+      ) {
+        return browserToolsFailure({
+          requestId: params.requestId,
+          code: "browser_unsupported",
+          message: `The dialog argument needs a newer Daseo desktop app than the ${describeBrowserHost(params.host)}. Call without it; the dialog is then handled by the app's own policy.`,
+        });
+      }
       return null;
     }
     return browserToolsFailure({

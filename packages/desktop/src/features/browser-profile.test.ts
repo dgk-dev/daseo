@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  installPaseoBrowserPermissionPolicy,
   applyPaseoBrowserProfileUserAgent,
   chromiumBrandVersionList,
   clearPaseoBrowserClientHintOverride,
@@ -421,5 +422,53 @@ describe("clearPaseoBrowserProfile", () => {
       }),
     ).rejects.toBe(clearError);
     expect(guest.reloads).toBe(0);
+  });
+});
+
+describe("browser profile permissions (delta 93)", () => {
+  test("denies notifications and keeps Electron's defaults for everything else", () => {
+    let request:
+      | ((wc: unknown, permission: string, callback: (granted: boolean) => void) => void)
+      | null = null;
+    let check: ((wc: unknown, permission: string) => boolean) | null = null;
+    const partitions: string[] = [];
+    installPaseoBrowserPermissionPolicy({
+      fromPartition: (partition) => {
+        partitions.push(partition);
+        return {
+          setPermissionRequestHandler: (handler) => {
+            request = handler;
+          },
+          setPermissionCheckHandler: (handler) => {
+            check = handler;
+          },
+        };
+      },
+    });
+    expect(partitions).toEqual(["persist:paseo-browser"]);
+    const granted = (permission: string) => {
+      let result: boolean | null = null;
+      request?.(null, permission, (value) => {
+        result = value;
+      });
+      return result;
+    };
+    expect(granted("notifications")).toBe(false);
+    expect(check?.(null, "notifications")).toBe(false);
+    for (const permission of [
+      "media",
+      "clipboard-read",
+      "clipboard-sanitized-write",
+      "fullscreen",
+      "pointerLock",
+      "geolocation",
+      "openExternal",
+      "storage-access",
+    ]) {
+      expect(granted(permission)).toBe(true);
+      expect(check?.(null, permission)).toBe(true);
+    }
+    // Electron's own check default refuses this one; it stays refused.
+    expect(check?.(null, "deprecated-sync-clipboard-read")).toBe(false);
   });
 });

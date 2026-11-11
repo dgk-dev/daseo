@@ -687,6 +687,7 @@ describe("registerBrowserTools", () => {
       "browser_close_tab",
       "browser_styles",
       "browser_passkeys",
+      "browser_handle_dialog",
     ]);
   });
 
@@ -838,6 +839,121 @@ describe("registerBrowserTools", () => {
         "  chatgpt.com  dgk@dfcorp.co.kr  credentialId=sPZ3IokjIrg4qoUzz7mCEXfH9NRTc3-DGVL6f9WjGF4  created 2026-11-02T03:00:00.000Z, last used 2026-11-02T04:00:00.000Z",
         "Store: /Users/me/Library/Application Support/Paseo/browser-passkeys.json (private keys encrypted with the OS keychain-backed key).",
       ].join("\n"),
+    });
+  });
+
+  test("a held confirm after a click is named with how to answer it (delta 93)", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-click",
+      ok: true,
+      result: { command: "click", browserId: BROWSER_ID, ref: "@e3" },
+      dialogs: [
+        {
+          type: "confirm",
+          message: "Discard?",
+          action: "dismissed",
+          timestamp: 1,
+          reason: "unanswered",
+        },
+      ],
+      openDialog: {
+        browserId: BROWSER_ID,
+        type: "confirm",
+        message: "저장하시겠습니까?",
+        openedAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+      },
+    });
+
+    const response = await harness.execute("browser_click", { browserId: BROWSER_ID, ref: "@e3" });
+
+    const text = (response.content[0] as { text: string }).text;
+    expect(text).toContain(
+      'Handled browser dialog: dismissed confirm "Discard?" (unanswered for 60s).',
+    );
+    expect(text).toContain(
+      'Dialog open: the page shows a confirm "저장하시겠습니까?" and waits for an answer. Call browser_handle_dialog with accept true or false.',
+    );
+    expect(text).toMatch(/dismissed in (59|60)s if unanswered/);
+    expect(response.structuredContent).toMatchObject({
+      openDialog: { type: "confirm", message: "저장하시겠습니까?" },
+    });
+  });
+
+  test("click, keypress, and evaluate pass a pre-armed dialog answer", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req",
+      ok: true,
+      result: { command: "click", browserId: BROWSER_ID, ref: "@e1" },
+    });
+    await harness.execute("browser_click", {
+      browserId: BROWSER_ID,
+      ref: "@e1",
+      dialog: "accept",
+      promptText: "x",
+    });
+    expect(harness.broker.calls.at(-1)?.command).toEqual({
+      command: "click",
+      args: {
+        browserId: BROWSER_ID,
+        ref: "@e1",
+        button: "left",
+        doubleClick: false,
+        modifiers: [],
+        dialog: "accept",
+        promptText: "x",
+      },
+    });
+    await harness.execute("browser_keypress", {
+      browserId: BROWSER_ID,
+      key: "Enter",
+      dialog: "dismiss",
+    });
+    expect(harness.broker.calls.at(-1)?.command).toEqual({
+      command: "keypress",
+      args: { browserId: BROWSER_ID, key: "Enter", dialog: "dismiss" },
+    });
+    await harness.execute("browser_evaluate", { browserId: BROWSER_ID, function: "() => 1" });
+    expect(harness.broker.calls.at(-1)?.command).toEqual({
+      command: "evaluate",
+      args: { browserId: BROWSER_ID, function: "() => 1" },
+    });
+  });
+
+  test("browser_handle_dialog answers and reports what the page did next", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-dialog",
+      ok: true,
+      result: {
+        command: "handle_dialog",
+        browserId: BROWSER_ID,
+        answered: {
+          type: "prompt",
+          message: "name?",
+          action: "accepted",
+          promptText: "Ada",
+          timestamp: 1,
+        },
+      },
+      dialogs: [{ type: "alert", message: "Saved", action: "accepted", timestamp: 2 }],
+    });
+
+    const response = await harness.execute("browser_handle_dialog", {
+      browserId: BROWSER_ID,
+      accept: true,
+      promptText: "Ada",
+    });
+
+    expect(harness.broker.calls.at(-1)?.command).toEqual({
+      command: "handle_dialog",
+      args: { browserId: BROWSER_ID, accept: true, promptText: "Ada" },
+    });
+    expect(response.content[0]).toEqual({
+      type: "text",
+      text: 'Answered the prompt "name?": OK with "Ada".\nHandled browser dialog: accepted alert "Saved".',
     });
   });
 

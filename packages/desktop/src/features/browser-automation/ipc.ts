@@ -1,11 +1,7 @@
 import type { Rectangle } from "electron";
 import { ipcMain, nativeImage, webContents as electronWebContents } from "electron";
-import log from "electron-log/main";
 import { BrowserAutomationExecuteRequestSchema } from "@getpaseo/protocol/browser-automation/rpc-schemas";
-import type {
-  BrowserAutomationConsoleLogEntry,
-  BrowserAutomationDialogEvent,
-} from "@getpaseo/protocol/browser-automation/rpc-schemas";
+import type { BrowserAutomationConsoleLogEntry } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import type { TabContents, BrowserRegistry } from "./service.js";
 import type { IsolatedKeyboardInputEvent } from "./trusted-input.js";
 import { collectElementStyles } from "./css-styles.js";
@@ -29,15 +25,15 @@ import {
   describeRendererHealth,
 } from "./renderer-health.js";
 import {
-  dialogAcceptValue,
-  handledDialogEvent,
-  MAX_DIALOGS_PER_COMMAND,
-  PROMPT_SHIM_DRAIN_FUNCTION,
-  PROMPT_SHIM_INSTALLED_FUNCTION,
-  PROMPT_SHIM_OBJECT_GROUP,
-  PROMPT_SHIM_RESTORE_FUNCTION,
-  promptShimInstallScript,
-} from "./dialog-handling.js";
+  attachPaseoBrowserPageDialogs,
+  getPaseoBrowserPageDialogs,
+  installPaseoBrowserPromptRestorer,
+  PAGE_DIALOG_SURFACE_EVENT,
+  setPaseoBrowserPageDialogSurfacePorts,
+  unwatchPaseoBrowserPageDialogs,
+  watchPaseoBrowserPageDialogs,
+  type PageDialogWebContents,
+} from "./page-dialog-hook.js";
 import { executeAutomationCommand } from "./service.js";
 import { startScreencast, stopScreencast } from "./screencast.js";
 import {
@@ -55,6 +51,7 @@ import {
   addPaseoBrowserFreezeExemption,
   getPaseoBrowserTabLifecycle,
   getPaseoBrowserTargetMetadata,
+  getPaseoBrowserRegistrationForWebContents,
   getPaseoBrowserWebContentsForHostWindow,
   getPaseoBrowserWorkspaceId,
   getWorkspaceActivePaseoBrowserIdForHostWindow,
@@ -78,11 +75,11 @@ const cdpQueuesByContentsId = new Map<number, CdpSessionQueue>();
 const rendererHealth = new RendererHealthMonitor({
   isIntentionalCrash: (contentsId) =>
     getPaseoBrowserTabLifecycle().getState(contentsId) === "discarded",
+  // Delta 93: a page waiting on its own dialog answers no script and is not busy.
+  isWaitingOnDialog: (contentsId) => getPaseoBrowserPageDialogs(contentsId)?.current() != null,
 });
-const DIALOG_MONITOR_SLOT_TIMEOUT_MS = 3_000;
 // The full-page capture's own deadline (30 s in service.ts) plus room for it to abort.
 const FULL_PAGE_CAPTURE_SLOT_TIMEOUT_MS = 35_000;
-const dialogMonitorsByContentsId = new Map<number, DialogMonitor>();
 const networkCapturesByContentsId = new Map<number, TabNetworkCapture>();
 const observedContentsIds = new Set<number>();
 // Tabs with device emulation on; a plain resize of any other tab needs no CDP.
@@ -94,6 +91,12 @@ const streamHoldReleasesByContentsId = new Map<number, () => void>();
 // makes none.
 addPaseoBrowserFreezeExemption(
   (contentsId) => networkCapturesByContentsId.get(contentsId)?.capturing === true,
+);
+// Delta 93: a page waiting on its own dialog runs nothing to save by freezing it, its freeze
+// command would wait behind the dialog, and discarding it under memory pressure would drop the
+// dialog a person or agent is about to answer.
+addPaseoBrowserFreezeExemption(
+  (contentsId) => getPaseoBrowserPageDialogs(contentsId)?.current() != null,
 );
 
 interface IpcHandlerRegistry {
@@ -165,11 +168,15 @@ interface ConsoleMessageEmitter {
     event: "render-process-gone",
     listener: (event: unknown, details: { reason: string; exitCode?: number }) => void,
   ): unknown;
+  // Page dialogs (delta 93).
+  on(event: "will-prevent-unload", listener: (event: { preventDefault(): void }) => void): unknown;
 }
 
 interface BrowserAutomationWebContents extends ConsoleMessageEmitter {
   readonly id: number;
   readonly debugger: WebContentsDebugger;
+  listenerCount(event: string): number;
+  removeAllListeners(event: string): unknown;
   getURL(): string;
   getTitle(): string;
   getUserAgent?(): string;
@@ -204,20 +211,13 @@ type DidNavigateListener = (
   httpStatusText?: string,
 ) => void;
 
-export function preparePersistentBrowserDialogMonitoring(
-  contents: BrowserAutomationWebContents,
-): void {
-  const contentsId = contents.id;
-  observeConsoleMessages(contents, contentsId);
-  const monitor = getDialogMonitor(contents, contentsId, getCdpQueue(contentsId));
-  void monitor.start().catch((error) => {
-    if (!contents.isDestroyed()) {
-      log.warn("[browser-automation] Persistent dialog monitoring unavailable", {
-        contentsId,
-        error,
-      });
-    }
-  });
+/**
+ * Delta 93: Daseo owns the page dialogs of every browser-profile WebContents (page-dialog-hook.ts).
+ * Called as soon as one is created, and again (a no-op) from adaptWebContents.
+ */
+export function preparePaseoBrowserPageDialogs(contents: PageDialogWebContents): void {
+  attachPaseoBrowserPageDialogs(contents);
+  installPaseoBrowserPromptRestorer(contents, getCdpQueue(contents.id));
 }
 
 export function adaptWebContents(contents: BrowserAutomationWebContents): TabContents {
@@ -235,7 +235,7 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
     onDestroyed: (listener) => contents.once("destroyed", listener),
   });
   const cdpQueue = getCdpQueue(contentsId);
-  const dialogMonitor = getDialogMonitor(contents, contentsId, cdpQueue);
+  const pageDialogs = attachPaseoBrowserPageDialogs(contents);
   rendererHealth.observe(contents);
   return {
     id: contentsId,
@@ -336,13 +336,25 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
       contents.addListener?.("did-navigate", handler);
       return () => contents.removeListener?.("did-navigate", handler);
     },
-    captureDialogs: async (task) => {
-      markPaseoBrowserAutomationActivity(contentsId);
-      try {
-        return await dialogMonitor.capture(task);
-      } finally {
+    pageDialogs: {
+      current: () => pageDialogs.current(),
+      refuseCommand: () => {
         markPaseoBrowserAutomationActivity(contentsId);
-      }
+        return pageDialogs.refuseCommand();
+      },
+      dismissForNavigation: () => pageDialogs.dismissForNavigation(),
+      answer: (input) => {
+        markPaseoBrowserAutomationActivity(contentsId);
+        return pageDialogs.answer(input);
+      },
+      runCommand: async (options, task) => {
+        markPaseoBrowserAutomationActivity(contentsId);
+        try {
+          return await pageDialogs.runCommand(options, task);
+        } finally {
+          markPaseoBrowserAutomationActivity(contentsId);
+        }
+      },
     },
     sendDebugCommand: (command: string, params?: Record<string, unknown>) => {
       markPaseoBrowserAutomationActivity(contentsId);
@@ -532,268 +544,9 @@ function observeConsoleMessages(contents: BrowserAutomationWebContents, contents
     emulatedContentsIds.delete(contentsId);
     clearPaseoBrowserClientHintOverride(contentsId);
     cdpQueuesByContentsId.delete(contentsId);
-    dialogMonitorsByContentsId.delete(contentsId);
     networkCapturesByContentsId.delete(contentsId);
     streamHoldReleasesByContentsId.delete(contentsId);
     clearPaseoBrowserAutomationActivity(contentsId);
-  });
-}
-
-function getDialogMonitor(
-  contents: BrowserAutomationWebContents,
-  contentsId: number,
-  cdpQueue: CdpSessionQueue,
-): DialogMonitor {
-  const existing = dialogMonitorsByContentsId.get(contentsId);
-  if (existing) {
-    return existing;
-  }
-  const monitor = new DialogMonitor(contents, contentsId, cdpQueue);
-  dialogMonitorsByContentsId.set(contentsId, monitor);
-  return monitor;
-}
-
-class DialogMonitor {
-  private enabled = false;
-  private persistent = false;
-  private listenerRegistered = false;
-  private detachGeneration = 0;
-  private promptShimObjectId: string | null = null;
-  private readonly activeCollectors: DialogCollector[] = [];
-  private readonly pendingDialogs: BrowserAutomationDialogEvent[] = [];
-
-  public constructor(
-    private readonly contents: BrowserAutomationWebContents,
-    private readonly contentsId: number,
-    private readonly cdpQueue: CdpSessionQueue,
-  ) {}
-
-  public async capture<T>(
-    task: () => Promise<T>,
-  ): Promise<{ result: T; dialogs: BrowserAutomationDialogEvent[] }> {
-    const collector: DialogCollector = { dialogs: [] };
-    const setupDetachGeneration = this.detachGeneration;
-    try {
-      await this.enable();
-      await this.installPromptShim();
-    } catch (error) {
-      if (this.contents.isDestroyed() || this.detachGeneration !== setupDetachGeneration) {
-        throw error;
-      }
-      log.warn("[browser-automation] Dialog capture unavailable; running command without it", {
-        contentsId: this.contentsId,
-        error,
-      });
-      return { result: await task(), dialogs: [] };
-    }
-    this.activeCollectors.push(collector);
-    this.recordDialogs(collector, this.pendingDialogs.splice(0));
-    try {
-      const result = await task();
-      this.recordPromptShimDialogs(await this.drainPromptShim());
-      return { result, dialogs: collector.dialogs };
-    } finally {
-      const index = this.activeCollectors.indexOf(collector);
-      if (index >= 0) {
-        this.activeCollectors.splice(index, 1);
-      }
-      if (this.activeCollectors.length === 0) {
-        await this.restorePromptShim();
-      }
-    }
-  }
-
-  public async start(): Promise<void> {
-    this.persistent = true;
-    await this.enable();
-  }
-
-  private async enable(): Promise<void> {
-    if (this.enabled) {
-      return;
-    }
-    if (!this.contents.debugger.on) {
-      return;
-    }
-    if (!this.listenerRegistered) {
-      this.listenerRegistered = true;
-      this.contents.debugger.on("message", (_event, method, params) => {
-        if (
-          method !== "Page.javascriptDialogOpening" ||
-          (this.activeCollectors.length === 0 && !this.persistent)
-        ) {
-          return;
-        }
-        void this.handleOpening(params ?? {}).catch((error) => {
-          log.warn("[browser-automation] Failed to handle JavaScript dialog", {
-            contentsId: this.contentsId,
-            error,
-          });
-        });
-      });
-      this.contents.debugger.on("detach", () => {
-        this.enabled = false;
-        this.detachGeneration += 1;
-      });
-    }
-    await this.sendDebugCommand("Page.enable");
-    this.enabled = true;
-  }
-
-  private async handleOpening(params: Record<string, unknown>): Promise<void> {
-    const event = handledDialogEvent(params);
-    if (this.activeCollectors.length === 0) {
-      this.recordPendingDialog(event);
-    } else {
-      for (const collector of this.activeCollectors) {
-        this.recordDialogs(collector, [event]);
-      }
-    }
-    await this.sendDialogResponseCommand("Page.handleJavaScriptDialog", {
-      accept: dialogAcceptValue(event.type),
-    });
-  }
-
-  private async installPromptShim(): Promise<void> {
-    // Overlapping captures share one shim; a navigation since the last install took it away.
-    if (this.promptShimObjectId && (await this.promptShimInstalled(this.promptShimObjectId))) {
-      return;
-    }
-    const result = (await this.sendDebugCommand("Runtime.evaluate", {
-      expression: promptShimInstallScript(),
-      objectGroup: PROMPT_SHIM_OBJECT_GROUP,
-    })) as { result?: { objectId?: unknown } };
-    const objectId = result.result?.objectId;
-    this.promptShimObjectId = typeof objectId === "string" ? objectId : null;
-  }
-
-  private async promptShimInstalled(objectId: string): Promise<boolean> {
-    try {
-      const result = (await this.callPromptShim(objectId, PROMPT_SHIM_INSTALLED_FUNCTION)) as {
-        result?: { value?: unknown };
-      };
-      return result.result?.value === true;
-    } catch {
-      return false;
-    }
-  }
-
-  private async drainPromptShim(): Promise<BrowserAutomationDialogEvent[]> {
-    if (!this.promptShimObjectId) {
-      return [];
-    }
-    try {
-      const result = (await this.callPromptShim(
-        this.promptShimObjectId,
-        PROMPT_SHIM_DRAIN_FUNCTION,
-      )) as { result?: { value?: unknown } };
-      return parsePromptShimDialogs(result.result?.value);
-    } catch {
-      return [];
-    }
-  }
-
-  private async restorePromptShim(): Promise<void> {
-    const objectId = this.promptShimObjectId;
-    this.promptShimObjectId = null;
-    if (!objectId) {
-      return;
-    }
-    try {
-      await this.callPromptShim(objectId, PROMPT_SHIM_RESTORE_FUNCTION);
-      await this.sendDebugCommand("Runtime.releaseObjectGroup", {
-        objectGroup: PROMPT_SHIM_OBJECT_GROUP,
-      });
-    } catch {
-      // Navigation can destroy the execution context before cleanup runs; the next page has no shim.
-    }
-  }
-
-  private callPromptShim(objectId: string, functionDeclaration: string): Promise<unknown> {
-    return this.sendDebugCommand("Runtime.callFunctionOn", {
-      objectId,
-      functionDeclaration,
-      returnByValue: true,
-    });
-  }
-
-  private recordDialogs(collector: DialogCollector, dialogs: BrowserAutomationDialogEvent[]): void {
-    for (const dialog of dialogs) {
-      if (collector.dialogs.length >= MAX_DIALOGS_PER_COMMAND) {
-        return;
-      }
-      collector.dialogs.push(dialog);
-    }
-  }
-
-  private recordPendingDialog(dialog: BrowserAutomationDialogEvent): void {
-    if (this.pendingDialogs.length >= MAX_DIALOGS_PER_COMMAND) {
-      this.pendingDialogs.shift();
-    }
-    this.pendingDialogs.push(dialog);
-  }
-
-  private recordPromptShimDialogs(dialogs: BrowserAutomationDialogEvent[]): void {
-    for (const collector of this.activeCollectors) {
-      this.recordDialogs(collector, dialogs);
-    }
-  }
-
-  private async sendDebugCommand(
-    command: string,
-    params?: Record<string, unknown>,
-  ): Promise<unknown> {
-    return this.cdpQueue.run(
-      async () => {
-        if (!this.contents.debugger.isAttached()) {
-          this.contents.debugger.attach("1.3");
-        }
-        return this.contents.debugger.sendCommand(command, params ?? {});
-      },
-      // Capture is optional (a failed setup runs the command without it), so its own commands
-      // hold the tab's queue briefly; a busy renderer answers no DevTools command (delta 92).
-      { label: command, timeoutMs: DIALOG_MONITOR_SLOT_TIMEOUT_MS },
-    );
-  }
-
-  private async sendDialogResponseCommand(
-    command: string,
-    params?: Record<string, unknown>,
-  ): Promise<unknown> {
-    // Dialogs can block the CDP command that opened them, so the unblocker must not wait behind
-    // the per-tab command queue.
-    if (!this.contents.debugger.isAttached()) {
-      this.contents.debugger.attach("1.3");
-    }
-    return this.contents.debugger.sendCommand(command, params ?? {});
-  }
-}
-
-interface DialogCollector {
-  dialogs: BrowserAutomationDialogEvent[];
-}
-
-function parsePromptShimDialogs(value: unknown): BrowserAutomationDialogEvent[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.flatMap((entry): BrowserAutomationDialogEvent[] => {
-    if (!entry || typeof entry !== "object") {
-      return [];
-    }
-    const record = entry as Record<string, unknown>;
-    if (record.type !== "prompt" || record.action !== "dismissed") {
-      return [];
-    }
-    return [
-      {
-        type: "prompt",
-        message: typeof record.message === "string" ? record.message : "",
-        ...(typeof record.defaultValue === "string" ? { defaultValue: record.defaultValue } : {}),
-        action: "dismissed",
-        timestamp: typeof record.timestamp === "number" ? record.timestamp : Date.now(),
-      },
-    ];
   });
 }
 
@@ -871,6 +624,43 @@ export function registerBrowserAutomationIpc(options?: { ipc?: IpcHandlerRegistr
   // free main thread, so a missing reply means main is blocked, not that the page is slow.
   ipc.handle("paseo:browser:ping", () => true);
 
+  // Delta 93: panes show a tab's held page dialog to a person and send the answer back.
+  setPaseoBrowserPageDialogSurfacePorts({
+    locate: getPaseoBrowserRegistrationForWebContents,
+    send: (hostWebContentsId, payload) => {
+      const host = electronWebContents.fromId(hostWebContentsId);
+      if (host && !host.isDestroyed()) host.send(PAGE_DIALOG_SURFACE_EVENT, payload);
+    },
+  });
+  ipc.handle("paseo:browser:watch-page-dialogs", (event) => {
+    const host = (event as { sender?: HostWebContents }).sender;
+    if (!host) return [];
+    const hostId = host.id;
+    if (!watchingHosts.has(hostId)) {
+      watchingHosts.add(hostId);
+      host.once("destroyed", () => {
+        watchingHosts.delete(hostId);
+        unwatchPaseoBrowserPageDialogs(hostId);
+      });
+    }
+    return watchPaseoBrowserPageDialogs(hostId);
+  });
+  ipc.handle("paseo:browser:answer-page-dialog", (event, rawInput: unknown) => {
+    const host = (event as { sender?: HostWebContents }).sender;
+    const input = readPageDialogAnswer(rawInput);
+    if (!host || !input) return false;
+    const contents = getPaseoBrowserWebContentsForHostWindow(input.browserId, host.id);
+    const dialogs = contents ? getPaseoBrowserPageDialogs(contents.id) : null;
+    return (
+      dialogs?.answer({
+        accept: input.accept,
+        ...(input.promptText !== undefined ? { promptText: input.promptText } : {}),
+        by: "person",
+        dialogId: input.dialogId,
+      }) != null
+    );
+  });
+
   ipc.handle("paseo:browser:execute-automation-command", async (event, rawRequest: unknown) => {
     const hostContents = (event as { sender?: HostWebContents }).sender;
     const hostWebContentsId = hostContents?.id;
@@ -921,7 +711,11 @@ export function registerBrowserAutomationIpc(options?: { ipc?: IpcHandlerRegistr
       if (target === null) return execute();
       // Delta 92: a busy or crashed page fails here, after the wake (a frozen page runs no script).
       const checkedExecute = async () => {
-        if (!RENDERER_RECOVERY_COMMANDS.has(parsed.data.command.command)) {
+        // A page waiting on its own dialog answers no script; the dialog owner answers for it.
+        if (
+          !RENDERER_RECOVERY_COMMANDS.has(parsed.data.command.command) &&
+          getPaseoBrowserPageDialogs(target)?.current() == null
+        ) {
           const health = await rendererHealth.blockingHealth(target);
           if (health) {
             return {
@@ -953,6 +747,28 @@ export function registerBrowserAutomationIpc(options?: { ipc?: IpcHandlerRegistr
     });
     return events.length > 0 ? { ...payload, events } : payload;
   });
+}
+
+const watchingHosts = new Set<number>();
+
+function readPageDialogAnswer(
+  input: unknown,
+): { browserId: string; dialogId: string; accept: boolean; promptText?: string } | null {
+  if (typeof input !== "object" || input === null) return null;
+  const record = input as Record<string, unknown>;
+  if (
+    typeof record.browserId !== "string" ||
+    typeof record.dialogId !== "string" ||
+    typeof record.accept !== "boolean"
+  ) {
+    return null;
+  }
+  return {
+    browserId: record.browserId,
+    dialogId: record.dialogId,
+    accept: record.accept,
+    ...(typeof record.promptText === "string" ? { promptText: record.promptText } : {}),
+  };
 }
 
 function resolveCommandTargetContents(

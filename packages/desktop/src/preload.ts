@@ -151,6 +151,13 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
     executeAutomationCommand: (request: Record<string, unknown>) =>
       ipcRenderer.invoke("paseo:browser:execute-automation-command", request),
     ping: () => ipcRenderer.invoke("paseo:browser:ping"),
+    watchPageDialogs: () => ipcRenderer.invoke("paseo:browser:watch-page-dialogs"),
+    answerPageDialog: (input: {
+      browserId: string;
+      dialogId: string;
+      accept: boolean;
+      promptText?: string;
+    }) => ipcRenderer.invoke("paseo:browser:answer-page-dialog", input),
     onStreamFrame: (handler: EventHandler): (() => void) => {
       const listener = (_ipcEvent: Electron.IpcRendererEvent, payload: unknown) => {
         handler(payload);

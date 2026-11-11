@@ -4,18 +4,12 @@ import type { FullPageCaptureImage } from "./full-page-capture.js";
 import {
   adaptWebContents,
   HostSnapshotEngineRegistry,
-  preparePersistentBrowserDialogMonitoring,
   registerBrowserAutomationIpc,
 } from "./ipc.js";
-import {
-  PROMPT_SHIM_DRAIN_FUNCTION,
-  PROMPT_SHIM_OBJECT_GROUP,
-  PROMPT_SHIM_RESTORE_FUNCTION,
-} from "./dialog-handling.js";
 import type { IsolatedKeyboardInputEvent } from "./trusted-input.js";
 import { getPaseoBrowserTabLifecycle } from "../browser-webviews/index.js";
 
-const mainLog = vi.hoisted(() => ({ warn: vi.fn(), info: vi.fn() }));
+const mainLog = vi.hoisted(() => ({ warn: vi.fn(), info: vi.fn(), error: vi.fn() }));
 vi.mock("electron-log/main", () => ({ default: mainLog }));
 
 class FakeImage implements FullPageCaptureImage {
@@ -32,22 +26,6 @@ class FakeImage implements FullPageCaptureImage {
   }
 }
 
-const INSTALL_PROMPT_SHIM = {
-  command: "Runtime.evaluate",
-  params: { expression: expect.any(String), objectGroup: PROMPT_SHIM_OBJECT_GROUP },
-};
-const RELEASE_PROMPT_SHIM = {
-  command: "Runtime.releaseObjectGroup",
-  params: { objectGroup: PROMPT_SHIM_OBJECT_GROUP },
-};
-
-function promptShimCall(functionDeclaration: string, objectId = "prompt-shim-1") {
-  return {
-    command: "Runtime.callFunctionOn",
-    params: { objectId, functionDeclaration, returnByValue: true },
-  };
-}
-
 class FakeDebugger {
   public attachedProtocolVersions: string[] = [];
   public commands: Array<{ command: string; params: Record<string, unknown> }> = [];
@@ -55,9 +33,6 @@ class FakeDebugger {
   public readonly blockedCommandNames = new Set<string>();
   public readonly failedCommandNames = new Set<string>();
   public readonly failedCommandErrors = new Map<string, Error>();
-  public readonly promptDialogs: unknown[] = [];
-  public failPromptDrain = false;
-  public promptShimHandles = 0;
   public beforeCommand: ((command: string) => void) | null = null;
   private messageListener:
     | ((event: unknown, method: string, params?: Record<string, unknown>) => void)
@@ -88,20 +63,10 @@ class FakeDebugger {
         this.blockedCommands.push(resolve);
       });
     }
-    if (command === "Runtime.evaluate" && params?.objectGroup === PROMPT_SHIM_OBJECT_GROUP) {
-      this.promptShimHandles += 1;
-      return { result: { type: "object", objectId: `prompt-shim-${this.promptShimHandles}` } };
-    }
     if (command === "Runtime.evaluate" && typeof params?.expression === "string") {
       return { result: { value: true } };
     }
     if (command === "Runtime.callFunctionOn") {
-      if (params?.functionDeclaration === PROMPT_SHIM_DRAIN_FUNCTION) {
-        if (this.failPromptDrain) {
-          throw new Error("execution context destroyed");
-        }
-        return { result: { value: this.promptDialogs.splice(0) } };
-      }
       return { result: { value: true } };
     }
     return { ok: true };
@@ -163,7 +128,20 @@ class FakeWebContents {
   private readonly destroyedListeners: Array<() => void> = [];
   public destroyed = false;
 
-  public constructor(private readonly webContentsId: number) {}
+  public constructor(private readonly webContentsId: number) {
+    // Electron's own page-dialog listener, which shows a native message box (delta 93 replaces it).
+    this.on("-run-dialog", () => {
+      throw new Error("Electron's native dialog listener must never run");
+    });
+  }
+
+  public listenerCount(event: string): number {
+    return this.eventListeners.get(event)?.length ?? 0;
+  }
+
+  public removeAllListeners(event: string): void {
+    this.eventListeners.delete(event);
+  }
 
   public get id(): number {
     if (this.destroyed) {
@@ -471,100 +449,32 @@ describe("browser automation IPC adapter", () => {
     await expect(second).resolves.toEqual({ ok: true });
   });
 
-  test("handles JavaScript dialogs through the per-tab CDP queue", async () => {
+  test("page dialogs reach Daseo's owner, never Electron's native listener (delta 93)", async () => {
     const contents = new FakeWebContents(24);
     const tab = adaptWebContents(contents);
+    const answers: Array<[boolean, string]> = [];
 
-    const captured = tab.captureDialogs?.(async () => {
-      contents.debugger.blockCommands = true;
-      const input = tab.sendDebugCommand?.("Input.dispatchMouseEvent", { type: "mouseReleased" });
-      await flushMicrotasks();
-
-      contents.debugger.emitMessage("Page.javascriptDialogOpening", {
-        type: "confirm",
-        message: "Delete item?",
-      });
-      await flushMicrotasks();
-
-      expect(contents.debugger.commands).toEqual([
-        { command: "Page.enable", params: {} },
-        INSTALL_PROMPT_SHIM,
-        { command: "Input.dispatchMouseEvent", params: { type: "mouseReleased" } },
-        { command: "Page.handleJavaScriptDialog", params: { accept: false } },
-      ]);
-
-      contents.debugger.blockCommands = false;
-      contents.debugger.finishNextCommand();
-      await input;
-      await flushMicrotasks();
-      return "done";
+    const record = (accept: boolean, text: string) => answers.push([accept, text]);
+    const outcome = tab.pageDialogs?.runCommand({ returnWhenHeld: true }, async () => {
+      contents.emit("-run-dialog", { dialogType: "confirm", messageText: "Delete item?" }, record);
+      return new Promise<never>(() => {});
     });
 
-    await expect(captured).resolves.toEqual({
-      result: "done",
-      dialogs: [
-        {
-          type: "confirm",
-          message: "Delete item?",
-          action: "dismissed",
-          timestamp: expect.any(Number),
-        },
-      ],
+    await expect(outcome).resolves.toMatchObject({
+      kind: "held",
+      dialog: { type: "confirm", message: "Delete item?", holder: "agent" },
+      dialogs: [],
     });
-    expect(contents.debugger.commands).toEqual([
-      { command: "Page.enable", params: {} },
-      INSTALL_PROMPT_SHIM,
-      { command: "Input.dispatchMouseEvent", params: { type: "mouseReleased" } },
-      { command: "Page.handleJavaScriptDialog", params: { accept: false } },
-      promptShimCall(PROMPT_SHIM_DRAIN_FUNCTION),
-      promptShimCall(PROMPT_SHIM_RESTORE_FUNCTION),
-      RELEASE_PROMPT_SHIM,
-    ]);
-  });
+    expect(contents.listenerCount("-run-dialog")).toBe(1);
+    expect(tab.pageDialogs?.current()).toMatchObject({ type: "confirm" });
+    expect(answers).toEqual([]);
 
-  test("handles JavaScript dialogs while the triggering CDP input command is still in flight", async () => {
-    const contents = new FakeWebContents(25);
-    const tab = adaptWebContents(contents);
-
-    const captured = tab.captureDialogs?.(async () => {
-      contents.debugger.blockedCommandNames.add("Input.dispatchMouseEvent");
-      const input = tab.sendDebugCommand?.("Input.dispatchMouseEvent", { type: "mousePressed" });
-      await flushMicrotasks();
-
-      contents.debugger.emitMessage("Page.javascriptDialogOpening", {
-        type: "alert",
-        message: "Saved",
-      });
-      await flushMicrotasks();
-
-      expect(contents.debugger.commands).toEqual([
-        { command: "Page.enable", params: {} },
-        INSTALL_PROMPT_SHIM,
-        { command: "Input.dispatchMouseEvent", params: { type: "mousePressed" } },
-        { command: "Page.handleJavaScriptDialog", params: { accept: true } },
-      ]);
-
-      contents.debugger.blockedCommandNames.clear();
-      contents.debugger.finishNextCommand();
-      await input;
-      return "done";
+    expect(tab.pageDialogs?.answer({ accept: true, by: "agent" })).toMatchObject({
+      type: "confirm",
+      action: "accepted",
     });
-
-    await expect(captured).resolves.toEqual({
-      result: "done",
-      dialogs: [
-        {
-          type: "alert",
-          message: "Saved",
-          action: "accepted",
-          timestamp: expect.any(Number),
-        },
-      ],
-    });
-    expect(contents.debugger.commands.slice(-2)).toEqual([
-      promptShimCall(PROMPT_SHIM_RESTORE_FUNCTION),
-      RELEASE_PROMPT_SHIM,
-    ]);
+    expect(answers).toEqual([[true, ""]]);
+    expect(tab.pageDialogs?.current()).toBeNull();
   });
 
   test("a dialog a page opens while it loads is answered at once, so the navigation finishes (delta 92)", async () => {
@@ -578,253 +488,48 @@ describe("browser automation IPC adapter", () => {
       });
     };
     const tab = adaptWebContents(contents);
+    const answers: boolean[] = [];
+    const answerAlert = (accept: boolean) => {
+      answers.push(accept);
+      finishLoad();
+    };
 
-    const navigated = tab.captureDialogs?.(async () => {
+    const navigated = tab.pageDialogs?.runCommand({ returnWhenHeld: true }, async () => {
       const load = tab.loadURL("https://site.example/welcome");
       await flushMicrotasks();
-      contents.debugger.emitMessage("Page.javascriptDialogOpening", {
-        type: "alert",
-        message: "Welcome",
-      });
-      await flushMicrotasks();
-      expect(contents.debugger.commands).toContainEqual({
-        command: "Page.handleJavaScriptDialog",
-        params: { accept: true },
-      });
-      finishLoad();
+      contents.emit(
+        "-run-dialog",
+        { dialogType: "alert", messageText: "Welcome", frame: { url: "https://site.example/" } },
+        answerAlert,
+      );
       await load;
       return "loaded";
     });
 
     await expect(navigated).resolves.toEqual({
+      kind: "done",
       result: "loaded",
       dialogs: [
-        { type: "alert", message: "Welcome", action: "accepted", timestamp: expect.any(Number) },
-      ],
-    });
-  });
-
-  test("keeps the prompt shim installed until overlapping captures finish", async () => {
-    const contents = new FakeWebContents(26);
-    const tab = adaptWebContents(contents);
-    const firstStarted = deferred<void>();
-    const secondStarted = deferred<void>();
-    const finishFirst = deferred<void>();
-    const finishSecond = deferred<void>();
-
-    const first = tab.captureDialogs?.(async () => {
-      firstStarted.resolve();
-      await finishFirst.promise;
-      return "first";
-    });
-    await firstStarted.promise;
-
-    const second = tab.captureDialogs?.(async () => {
-      secondStarted.resolve();
-      await finishSecond.promise;
-      return "second";
-    });
-    await secondStarted.promise;
-
-    contents.debugger.promptDialogs.push(
-      {
-        type: "prompt",
-        message: "First?",
-        defaultValue: "one",
-        action: "dismissed",
-        timestamp: 1,
-      },
-      {
-        type: "prompt",
-        message: "Second?",
-        defaultValue: "two",
-        action: "dismissed",
-        timestamp: 2,
-      },
-    );
-
-    finishFirst.resolve();
-    await expect(first).resolves.toEqual({
-      result: "first",
-      dialogs: [
         {
-          type: "prompt",
-          message: "First?",
-          defaultValue: "one",
-          action: "dismissed",
-          timestamp: 1,
-        },
-        {
-          type: "prompt",
-          message: "Second?",
-          defaultValue: "two",
-          action: "dismissed",
-          timestamp: 2,
-        },
-      ],
-    });
-    expect(contents.debugger.commands).not.toContainEqual(
-      promptShimCall(PROMPT_SHIM_RESTORE_FUNCTION),
-    );
-    // The second capture reused the first one's shim instead of wrapping it in another.
-    expect(contents.debugger.promptShimHandles).toBe(1);
-
-    finishSecond.resolve();
-    await expect(second).resolves.toEqual({
-      result: "second",
-      dialogs: [
-        {
-          type: "prompt",
-          message: "First?",
-          defaultValue: "one",
-          action: "dismissed",
-          timestamp: 1,
-        },
-        {
-          type: "prompt",
-          message: "Second?",
-          defaultValue: "two",
-          action: "dismissed",
-          timestamp: 2,
-        },
-      ],
-    });
-    expect(contents.debugger.commands.slice(-2)).toEqual([
-      promptShimCall(PROMPT_SHIM_RESTORE_FUNCTION),
-      RELEASE_PROMPT_SHIM,
-    ]);
-  });
-
-  test("leaves JavaScript dialogs alone when no capture is active", async () => {
-    const contents = new FakeWebContents(28);
-    const tab = adaptWebContents(contents);
-
-    await expect(tab.captureDialogs?.(async () => "done")).resolves.toEqual({
-      result: "done",
-      dialogs: [],
-    });
-    contents.debugger.emitMessage("Page.javascriptDialogOpening", {
-      type: "confirm",
-      message: "Unsaved changes?",
-    });
-    await flushMicrotasks();
-
-    expect(contents.debugger.commands).not.toContainEqual({
-      command: "Page.handleJavaScriptDialog",
-      params: { accept: false },
-    });
-  });
-
-  test("persistent monitoring dismisses a background dialog and reports it on the next command", async () => {
-    const contents = new FakeWebContents(33);
-    const tab = adaptWebContents(contents);
-    preparePersistentBrowserDialogMonitoring(contents);
-    await flushMicrotasks();
-
-    contents.debugger.emitMessage("Page.javascriptDialogOpening", {
-      type: "confirm",
-      message: "Background request?",
-    });
-    await flushMicrotasks();
-
-    expect(contents.debugger.commands).toContainEqual({
-      command: "Page.handleJavaScriptDialog",
-      params: { accept: false },
-    });
-    await expect(tab.captureDialogs?.(async () => "next-command")).resolves.toEqual({
-      result: "next-command",
-      dialogs: [
-        {
-          type: "confirm",
-          message: "Background request?",
-          action: "dismissed",
+          type: "alert",
+          message: "Welcome",
+          action: "accepted",
           timestamp: expect.any(Number),
+          url: "https://site.example/",
         },
       ],
     });
+    expect(answers).toEqual([true]);
   });
 
-  test("treats prompt shim drain failures after navigation as no dialogs", async () => {
-    const contents = new FakeWebContents(29);
-    contents.debugger.failPromptDrain = true;
-    const tab = adaptWebContents(contents);
+  test("lets a page with a beforeunload handler be left", () => {
+    const contents = new FakeWebContents(42);
+    adaptWebContents(contents);
+    const preventDefault = vi.fn();
 
-    await expect(tab.captureDialogs?.(async () => "navigated")).resolves.toEqual({
-      result: "navigated",
-      dialogs: [],
-    });
+    contents.emit("will-prevent-unload", { preventDefault });
 
-    expect(contents.debugger.commands).toEqual([
-      { command: "Page.enable", params: {} },
-      INSTALL_PROMPT_SHIM,
-      promptShimCall(PROMPT_SHIM_DRAIN_FUNCTION),
-      promptShimCall(PROMPT_SHIM_RESTORE_FUNCTION),
-      RELEASE_PROMPT_SHIM,
-    ]);
-  });
-
-  test("runs the command without dialog capture when CDP setup fails", async () => {
-    const contents = new FakeWebContents(30);
-    contents.debugger.failedCommandNames.add("Page.enable");
-    const tab = adaptWebContents(contents);
-    mainLog.warn.mockClear();
-
-    await expect(tab.captureDialogs?.(async () => "done")).resolves.toEqual({
-      result: "done",
-      dialogs: [],
-    });
-
-    // Main-process warnings go to electron-log, which writes main.log; console does not.
-    expect(mainLog.warn).toHaveBeenCalledWith(
-      "[browser-automation] Dialog capture unavailable; running command without it",
-      { contentsId: 30, error: expect.any(Error) },
-    );
-  });
-
-  test("does not run the command after the debugger target closes during setup", async () => {
-    const contents = new FakeWebContents(31);
-    contents.debugger.beforeCommand = (command) => {
-      if (command === "Page.enable") {
-        contents.destroy();
-      }
-    };
-    contents.debugger.failedCommandErrors.set(
-      "Page.enable",
-      new Error("target closed while handling command"),
-    );
-    const tab = adaptWebContents(contents);
-    const warn = mainLog.warn;
-    warn.mockClear();
-
-    await expect(
-      tab.captureDialogs?.(() => tab.loadURL("https://replacement.example.com")),
-    ).rejects.toThrow("target closed while handling command");
-    expect(contents.loadedUrls).toEqual([]);
-    expect(warn).not.toHaveBeenCalled();
-  });
-
-  test("runs without dialog capture after a live debugger session detaches", async () => {
-    const contents = new FakeWebContents(32);
-    const tab = adaptWebContents(contents);
-
-    await expect(tab.captureDialogs?.(async () => "captured")).resolves.toEqual({
-      result: "captured",
-      dialogs: [],
-    });
-    contents.debugger.emitDetach();
-    contents.debugger.failedCommandNames.add("Page.enable");
-    const warn = mainLog.warn;
-    warn.mockClear();
-
-    await expect(
-      tab.captureDialogs?.(() => tab.loadURL("https://replacement.example.com")),
-    ).resolves.toEqual({ result: undefined, dialogs: [] });
-    expect(contents.loadedUrls).toEqual(["https://replacement.example.com"]);
-    expect(contents.debugger.attachedProtocolVersions).toEqual(["1.3"]);
-    expect(warn).toHaveBeenCalledWith(
-      "[browser-automation] Dialog capture unavailable; running command without it",
-      { contentsId: 32, error: expect.any(Error) },
-    );
+    expect(preventDefault).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -848,14 +553,6 @@ async function flushMicrotasks(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
   await new Promise((resolve) => setTimeout(resolve, 0));
-}
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
 }
 
 describe("browser tab lifecycle holds", () => {

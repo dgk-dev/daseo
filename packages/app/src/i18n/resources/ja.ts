@@ -620,6 +620,14 @@ export const ja: TranslationResources = {
         close: "ポップアップを閉じる",
         closeFailed: "ポップアップを閉じられません",
       },
+      pageDialog: {
+        title: "{{host}} からのメッセージ",
+        titleNoHost: "このページからのメッセージ",
+        ok: "OK",
+        cancel: "キャンセル",
+        answer: "回答",
+        agentNote: "このタブを使っているエージェントも応答できます。",
+      },
       annotate: {
         title: "要素に注釈を付ける",
         placeholder: "この要素についてエージェントへのメッセージ…",

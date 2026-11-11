@@ -616,6 +616,14 @@ export const ar: TranslationResources = {
         close: "إغلاق النافذة المنبثقة",
         closeFailed: "تعذّر إغلاق النافذة المنبثقة",
       },
+      pageDialog: {
+        title: "{{host}} يقول",
+        titleNoHost: "هذه الصفحة تقول",
+        ok: "حسنًا",
+        cancel: "إلغاء",
+        answer: "الإجابة",
+        agentNote: "يمكن للوكيل الذي يستخدم علامة التبويب هذه الرد أيضًا.",
+      },
       annotate: {
         title: "التعليق على العنصر",
         placeholder: "رسالة إلى الوكيل حول هذا العنصر…",

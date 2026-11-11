@@ -622,6 +622,14 @@ export const fr: TranslationResources = {
         close: "Fermer la fenêtre contextuelle",
         closeFailed: "Impossible de fermer la fenêtre contextuelle",
       },
+      pageDialog: {
+        title: "{{host}} indique",
+        titleNoHost: "Cette page indique",
+        ok: "OK",
+        cancel: "Annuler",
+        answer: "Réponse",
+        agentNote: "L’agent qui utilise cet onglet peut aussi répondre.",
+      },
       annotate: {
         title: "Annoter l'élément",
         placeholder: "Message à l'agent concernant cet élément…",

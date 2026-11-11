@@ -4,12 +4,12 @@ import { describe, expect, test, vi } from "vitest";
 import type {
   BrowserAutomationCommand,
   BrowserAutomationConsoleLogEntry,
-  BrowserAutomationDialogEvent,
   BrowserAutomationExecuteRequest,
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import { CdpQueueTimeoutError } from "./cdp-session-queue.js";
 import { FullPageCaptureUnsupportedError } from "./full-page-capture.js";
 import { PageNotRespondingError } from "./renderer-health.js";
+import { PageDialogController } from "./page-dialogs.js";
 import { BrowserSnapshotEngine } from "./snapshot-engine.js";
 import type { BrowserRegistry, TabContents, TabImage } from "./service.js";
 import { clipElementRectToViewport, executeAutomationCommand } from "./service.js";
@@ -34,6 +34,8 @@ class FakeImage implements TabImage {
     return this.size;
   }
 }
+
+function ignoreAnswer(): void {}
 
 class FakeTab implements TabContents {
   public setDeviceEmulation?: TabContents["setDeviceEmulation"];
@@ -82,7 +84,21 @@ class FakeTab implements TabContents {
   };
   public networkEntries: unknown[] = [];
   public consoleMessages: BrowserAutomationConsoleLogEntry[] = [];
-  public dialogsToCapture: BrowserAutomationDialogEvent[] = [];
+  /** Delta 93: the tab's real dialog owner. */
+  public agentDriven = false;
+  public readonly pageDialogs = new PageDialogController({
+    wasAgentDriven: () => this.agentDriven,
+  });
+  /**
+   * A dialog the page opens when a script containing `needle` runs; the script waits for the
+   * answer, as a page blocked in alert() or confirm() does.
+   */
+  public dialogOnScript: {
+    needle: string;
+    type: "alert" | "confirm" | "prompt";
+    message: string;
+    defaultValue?: string;
+  } | null = null;
   public captureNeverPaints = false;
   public captureThrows = false;
   public captureErrorMessage = "capture failed";
@@ -148,9 +164,20 @@ class FakeTab implements TabContents {
 
   public async executeJavaScript(code: string): Promise<unknown> {
     this.scripts.push(code);
+    await this.raiseScriptDialog(code);
     return code.includes("__DASEO_STREAM_FOCUS__")
       ? (this.streamFocus ?? undefined)
       : this.executeScriptedJavaScript(code);
+  }
+
+  /** Opens `dialogOnScript` when its script runs and waits for the answer, as a blocked page does. */
+  private async raiseScriptDialog(code: string): Promise<void> {
+    const dialog = this.dialogOnScript;
+    if (!dialog || !code.includes(dialog.needle)) return;
+    this.dialogOnScript = null;
+    await new Promise<void>((resolve) => {
+      this.pageDialogs.handleOpening(dialog, () => resolve());
+    });
   }
 
   private async executeScriptedJavaScript(code: string): Promise<unknown> {
@@ -312,12 +339,6 @@ class FakeTab implements TabContents {
 
   public getConsoleMessages(): BrowserAutomationConsoleLogEntry[] {
     return this.consoleMessages;
-  }
-
-  public async captureDialogs<T>(
-    task: () => Promise<T>,
-  ): Promise<{ result: T; dialogs: BrowserAutomationDialogEvent[] }> {
-    return { result: await task(), dialogs: this.dialogsToCapture };
   }
 
   public async sendDebugCommand(
@@ -991,14 +1012,11 @@ describe("executeAutomationCommand", () => {
     browser.tab.snapshotNodes = formElements();
 
     requireSnapshotRefs(await browser.snapshot());
-    browser.tab.dialogsToCapture = [
-      {
-        type: "alert",
-        message: "Saved",
-        action: "accepted",
-        timestamp: 123,
-      },
-    ];
+    browser.tab.dialogOnScript = {
+      needle: "performance.now()",
+      type: "alert",
+      message: "Saved",
+    };
     const click = await browser.execute({
       command: "click",
       args: { browserId: BROWSER_A, ref: "@e1" },
@@ -1013,7 +1031,7 @@ describe("executeAutomationCommand", () => {
           type: "alert",
           message: "Saved",
           action: "accepted",
-          timestamp: 123,
+          timestamp: expect.any(Number),
         },
       ],
     });
@@ -1375,15 +1393,7 @@ describe("executeAutomationCommand", () => {
     browser.tab.actionabilityResult = { ok: false, reason: "timeout", detail: "disabled" };
 
     requireSnapshotRefs(await browser.snapshot());
-    browser.tab.dialogsToCapture = [
-      {
-        type: "prompt",
-        message: "Name?",
-        defaultValue: "Maya",
-        action: "dismissed",
-        timestamp: 124,
-      },
-    ];
+    browser.tab.dialogOnScript = { needle: "performance.now()", type: "alert", message: "Hold on" };
     const click = await browser.execute({
       command: "click",
       args: { browserId: BROWSER_A, ref: "@e2" },
@@ -1400,13 +1410,185 @@ describe("executeAutomationCommand", () => {
       },
       dialogs: [
         {
-          type: "prompt",
-          message: "Name?",
-          defaultValue: "Maya",
-          action: "dismissed",
-          timestamp: 124,
+          type: "alert",
+          message: "Hold on",
+          action: "accepted",
+          timestamp: expect.any(Number),
         },
       ],
+    });
+  });
+
+  describe("page dialogs (delta 93)", () => {
+    test("a confirm a click opens is held: the click returns at once with openDialog", async () => {
+      const browser = new BrowserAutomationHarness();
+      browser.tab.snapshotNodes = formElements();
+      requireSnapshotRefs(await browser.snapshot());
+      browser.tab.dialogOnScript = {
+        needle: "performance.now()",
+        type: "confirm",
+        message: "저장하시겠습니까?",
+      };
+
+      const click = await browser.execute({
+        command: "click",
+        args: { browserId: BROWSER_A, ref: "@e1" },
+      });
+
+      expect(click).toEqual({
+        requestId: "req-click",
+        ok: true,
+        result: { command: "click", browserId: BROWSER_A, ref: "@e1" },
+        openDialog: {
+          browserId: BROWSER_A,
+          type: "confirm",
+          message: "저장하시겠습니까?",
+          openedAt: expect.any(Number),
+          expiresAt: expect.any(Number),
+        },
+      });
+      expect(browser.tab.pageDialogs.current()).toMatchObject({ holder: "agent" });
+    });
+
+    test("while it is held, a tool that needs the page is refused at once; navigate dismisses it", async () => {
+      const browser = new BrowserAutomationHarness();
+      // An agent used the tab a moment ago, so the dialog waits for it.
+      browser.tab.agentDriven = true;
+      browser.tab.pageDialogs.handleOpening({ type: "confirm", message: "Leave?" }, ignoreAnswer);
+
+      const started = Date.now();
+      const snapshot = await browser.snapshot();
+      expect(Date.now() - started).toBeLessThan(500);
+      expect(snapshot).toMatchObject({
+        ok: false,
+        error: {
+          code: "browser_denied",
+          message: expect.stringContaining("browser_handle_dialog"),
+          retryable: true,
+        },
+        openDialog: { type: "confirm", message: "Leave?" },
+      });
+
+      const navigated = await browser.execute({
+        command: "navigate",
+        args: { browserId: BROWSER_A, url: "https://a.test/next" },
+      });
+      expect(navigated).toMatchObject({
+        ok: true,
+        dialogs: [{ type: "confirm", action: "dismissed", reason: "page_left" }],
+      });
+      expect(browser.tab.loadedUrls).toContain("https://a.test/next");
+      expect(browser.tab.pageDialogs.current()).toBeNull();
+    });
+
+    test("logs still answer while a confirm is held, and report it", async () => {
+      const browser = new BrowserAutomationHarness();
+      browser.tab.agentDriven = true;
+      browser.tab.consoleMessages = [{ level: "info", message: "hello", timestamp: 1 }];
+      browser.tab.pageDialogs.handleOpening({ type: "confirm", message: "Keep?" }, ignoreAnswer);
+
+      const logs = await browser.execute({
+        command: "logs",
+        args: { browserId: BROWSER_A, maxEntries: 50 },
+      });
+
+      expect(logs).toMatchObject({
+        ok: true,
+        result: { command: "logs" },
+        openDialog: { type: "confirm", message: "Keep?" },
+      });
+    });
+
+    test("an evaluate stopped by a held confirm has no value and says so", async () => {
+      const browser = new BrowserAutomationHarness();
+      browser.tab.dialogOnScript = { needle: "", type: "confirm", message: "Sure?" };
+
+      const evaluated = await browser.execute({
+        command: "evaluate",
+        args: { browserId: BROWSER_A, function: "() => confirm('Sure?')" },
+      });
+
+      expect(evaluated).toMatchObject({
+        ok: false,
+        error: { code: "browser_denied", message: expect.stringContaining("has no result") },
+        openDialog: { type: "confirm", message: "Sure?" },
+      });
+    });
+
+    test("browser_handle_dialog answers the held dialog and reports a follow-up alert", async () => {
+      const browser = new BrowserAutomationHarness();
+      browser.tab.agentDriven = true;
+      const answers: Array<[boolean, string]> = [];
+      const pageRunsOn = (accept: boolean, text: string) => {
+        answers.push([accept, text]);
+        // The page runs on and shows an alert.
+        browser.tab.pageDialogs.handleOpening({ type: "alert", message: "Thanks" }, ignoreAnswer);
+      };
+      browser.tab.pageDialogs.handleOpening(
+        { type: "prompt", message: "name?", defaultValue: "Ada" },
+        pageRunsOn,
+      );
+
+      const answered = await browser.execute({
+        command: "handle_dialog",
+        args: { browserId: BROWSER_A, accept: true, promptText: "x" },
+      });
+
+      expect(answers).toEqual([[true, "x"]]);
+      expect(answered).toEqual({
+        requestId: "req-handle_dialog",
+        ok: true,
+        result: {
+          command: "handle_dialog",
+          browserId: BROWSER_A,
+          answered: {
+            type: "prompt",
+            message: "name?",
+            defaultValue: "Ada",
+            action: "accepted",
+            promptText: "x",
+            timestamp: expect.any(Number),
+          },
+        },
+        dialogs: [
+          { type: "alert", message: "Thanks", action: "accepted", timestamp: expect.any(Number) },
+        ],
+      });
+
+      const nothingOpen = await browser.execute({
+        command: "handle_dialog",
+        args: { browserId: BROWSER_A, accept: true },
+      });
+      expect(nothingOpen).toMatchObject({
+        ok: false,
+        error: { message: expect.stringContaining("No dialog is open") },
+      });
+    });
+
+    test("a pre-armed click answers the confirm it opens in the same call", async () => {
+      const browser = new BrowserAutomationHarness();
+      browser.tab.snapshotNodes = formElements();
+      requireSnapshotRefs(await browser.snapshot());
+      browser.tab.dialogOnScript = {
+        needle: "performance.now()",
+        type: "confirm",
+        message: "Save?",
+      };
+
+      const click = await browser.execute({
+        command: "click",
+        args: { browserId: BROWSER_A, ref: "@e1", dialog: "accept" },
+      });
+
+      expect(click).toEqual({
+        requestId: "req-click",
+        ok: true,
+        result: { command: "click", browserId: BROWSER_A, ref: "@e1", x: 40, y: 30 },
+        dialogs: [
+          { type: "confirm", message: "Save?", action: "accepted", timestamp: expect.any(Number) },
+        ],
+      });
+      expect(browser.tab.pageDialogs.current()).toBeNull();
     });
   });
 

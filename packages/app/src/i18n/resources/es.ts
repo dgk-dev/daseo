@@ -623,6 +623,14 @@ export const es: TranslationResources = {
         close: "Cerrar ventana emergente",
         closeFailed: "No se pudo cerrar la ventana emergente",
       },
+      pageDialog: {
+        title: "{{host}} dice",
+        titleNoHost: "Esta página dice",
+        ok: "Aceptar",
+        cancel: "Cancelar",
+        answer: "Respuesta",
+        agentNote: "El agente que usa esta pestaña también puede responder.",
+      },
       annotate: {
         title: "Anotar elemento",
         placeholder: "Mensaje al agente sobre este elemento…",

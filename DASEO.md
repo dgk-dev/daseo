@@ -1166,10 +1166,8 @@ navigation/quick-ask.ts,composer/quick-ask/,screens/settings/quick-ask-workspace
 false`; 5.4.3's typings call it `includeFutureSessions` while its runtime reads the singular,
     so both are set), and Daseo's own console forwarding skips WebContents in the browser profile.
     (b) While a command ran, the prompt recorder kept its state on
-    `window.__PASEO_BROWSER_AUTOMATION_DIALOG_STATE__`; it now lives in a closure the main process
-    reaches through the CDP object handle the install expression returns (`Runtime.callFunctionOn`,
-    released with its object group). If the debugger detaches mid-command, the handle is lost and
-    the page keeps the recorder until it navigates. The snapshot ref registry moved from
+    `window.__PASEO_BROWSER_AUTOMATION_DIALOG_STATE__`; the recorder is gone since delta 93, which
+    puts Chromium's own `prompt` back instead. The snapshot ref registry moved from
     `window.__PASEO_BROWSER_AUTOMATION__` to `window[Symbol.for('paseo.browser-automation')]`:
     `Object.keys` and `Object.getOwnPropertyNames` no longer list it,
     `Object.getOwnPropertySymbols` still does. Hiding it fully needs an isolated world for every
@@ -1194,7 +1192,7 @@ acceptLanguages)`, so the header is now `en-US,en-KR;q=0.9,ko-KR;q=0.8`. `--lang
     `navigator.languages` and `navigator.userAgentData` with and without mobile emulation, and the
     non-interactive Turnstile test still issued a token in about 1 s. Key files:
     `packages/desktop/src/features/{renderer-console-log,browser-profile}.ts`,
-    `packages/desktop/src/features/browser-automation/{dialog-handling,ipc,device-emulation,aria-snapshot-script}.ts`.
+    `packages/desktop/src/features/browser-automation/{ipc,device-emulation,aria-snapshot-script}.ts`.
 
 66. **A project's "new workspace" button survives a reconnect** — the owner's report on
     2026-10-26: on the folded Fold 7 the project rows sometimes had the + button and sometimes
@@ -2023,8 +2021,8 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       answered, or 30 minutes passed.
     - **A DevTools command that never answers frees the tab.** Each slot of a tab's CDP queue has a
       deadline (10 s; full-page capture 35 s). A slot past it is released, its caller gets a
-      retryable `browser_timeout` naming the CDP method, and the late result is dropped. The
-      dialog unblocker stays outside the queue.
+      retryable `browser_timeout` naming the CDP method, and the late result is dropped. Page
+      dialogs are answered outside the queue (delta 93).
     - **A still-loading page answers.** `webContents.executeJavaScript` waits until the page stops
       loading; page scripts now run through `mainFrame.executeJavaScript`, which does not (measured
       with Electron 44.10.2: 3 ms against no answer in 3 s on a page holding one image open). It
@@ -2036,8 +2034,8 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       main-frame script must answer within 3 s; a page script still unanswered after 3 s gets
       another check of 1.5 s. A busy page fails with "not responding; try browser_reload or close
       the tab" in about 3 s (harness) instead of a 15 s timeout; reload, navigate, back, forward,
-      and close always run. The dialog monitor's own DevTools commands hold the queue for at most
-      3 s, since a busy renderer answers none. `render-process-gone` marks a crash until the page
+      and close always run. A page waiting on its own dialog is not busy (delta 93): neither check
+      runs on it. `render-process-gone` marks a crash until the page
       loads again; the memory-pressure discard is not a crash. Nothing kills a renderer.
     - **Downloads.** A download a tab starts within a minute of an agent's command on it (or on the
       tab that opened its popup) is saved without a dialog to `~/Downloads/Daseo/<unique name>`;
@@ -2047,9 +2045,9 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       download start, finish, or failure are queued per tab and handed out once (`events`, plus
       one line each) with the next result for that tab or for the agent that last used it. A
       root tab the user closes is not reported: the agent's next command on it says not found.
-    - **Dialogs during navigation** were already answered at once by the per-tab dialog monitor
-      while a navigate, reload, back, or forward runs; a unit test and the capture harness now
-      prove it for an `alert()` during the load.
+    - **Dialogs during navigation**: an `alert()` while a navigate, reload, back, or forward loads
+      is answered at once and reported (unit test and capture harness `delta92`); since delta 93
+      the page-dialog owner does it.
     - **Readable evaluate values.** `undefined`, `NaN`, `Infinity`, BigInt, circular objects, DOM
       nodes, Map, Set, errors, and regexes come back as readable tokens; a value JSON can hold is
       still exactly what `JSON.stringify` writes.
@@ -2060,6 +2058,76 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       `packages/desktop/src/preload.ts`, `packages/app/src/desktop/browser/automation/handler.ts`,
       `packages/server/src/server/browser-tools/{broker,host-stall,tools}.ts`,
       `packages/protocol/src/browser-automation/rpc-schemas.ts`; capture harness group `delta92`.
+
+93. **Page dialogs stay in their tab, and the agent answers them** — the owner's report on
+    2026-11-11 (page pop-ups and alert windows were not recognised or confirmed by agents and
+    appeared over whatever session he was in, worst on Cafe24 admin); plan approved the same day.
+    - **Why.** Electron 44 answers `alert` and `confirm` in a JS listener on the internal
+      per-WebContents event `-run-dialog` (`lib/browser/api/web-contents.ts`), which calls
+      `dialog.showMessageBox` parented to the owner window: a macOS sheet over the whole Daseo
+      window. The old per-tab DevTools monitor answered only while a command ran (and always for
+      popups), with a fixed policy that dismissed every confirm, so agents overrode
+      `window.confirm` by hand. `prompt()` never reached anyone: Electron's renderer replaces
+      `window.prompt` with a function that throws (`lib/renderer/window-setup.ts`).
+    - **One owner per tab, no native box.** For every browser-profile WebContents
+      (`web-contents-created` on the profile session, plus every adapted tab and popup) the
+      default `-run-dialog` listener is replaced with Daseo's (`page-dialog-hook.ts`), and
+      `-cancel-dialogs` closes a held dialog. `-run-dialog` is internal (electron/electron#26160 is
+      still open): a missing listener logs an error, and `webPreferences.disableDialogs`, set on
+      every browser webview and popup, keeps Electron's own listener from showing a box; capture
+      harness group `dialogs` fails if either breaks. The DevTools dialog monitor and the prompt
+      recorder are gone.
+    - **Prompt works.** A document-start DevTools script (`Page.addScriptToEvaluateOnNewDocument`,
+      `runImmediately`) puts Chromium's own `prompt` back, taken from a short-lived about:blank
+      frame and called on the page's window, so `prompt()` reaches the owner as type `prompt` and
+      an accepted answer returns its text (measured: head script, srcdoc frame, later call).
+      Cross-origin out-of-process frames keep Electron's throwing `prompt`.
+    - **Policy** (`page-dialogs.ts`). Alert: accepted at once when an agent is involved (a command
+      runs, or an agent used the tab in the last 60 s) and reported. Confirm and prompt: answered
+      at once only with the new `dialog: "accept" | "dismiss"` (and `promptText`) argument on
+      `browser_click`, `browser_keypress`, and `browser_evaluate`; otherwise held. A held dialog
+      ends the command that raised it at once with `openDialog` (an action command keeps its
+      result; evaluate, wait, and the readers say they have none), tools that need the page
+      answer `browser_denied` with `openDialog` at once instead of timing out, and navigate,
+      back, forward, reload, and close still run: a held dialog blocks Chromium's navigation
+      (`loadURL` waited 8 s and more), so an agent's navigation dismisses it first. The new
+      `browser_handle_dialog` (`accept`, `promptText`) answers it and reports the dialogs the
+      page shows next. Nobody answers within 60 s: dismissed, reported on the tab's next result
+      (`reason: "unanswered"`). No agent involved: the dialog waits in the tab's pane for the
+      person, with no deadline; an agent command on that tab accepts an alert left there and
+      starts the 60 s deadline for a confirm or prompt. No pane can show it (an old renderer):
+      alert accepted, confirm and prompt dismissed, recorded. A tab waiting on a dialog is neither
+      frozen nor discarded, and renderer health does not call it busy.
+    - **In the pane.** Main sends `browser-page-dialog` events to the host window that called
+      `watchPageDialogs`; the pane shows a card (site, message, a text field for prompt, OK and
+      Cancel) portaled into the tab's resident browser surface, which is parked 1x1 whenever the
+      tab is not presented, so another tab, workspace, or the phone shows nothing and nothing is
+      blocked. A popup's dialog shows in the pane while its native view steps aside. The card
+      takes focus only when focus was already in that pane's page or nowhere (delta 14); Enter
+      answers OK, Escape Cancel; focus returns to the page. The tab's strip icon shows the
+      existing needs-input mark while a dialog waits. First answer wins between the pane and an
+      agent; a person answering a dialog an agent waited on is reported (`reason: "person"`).
+    - **beforeunload.** `will-prevent-unload` is always let through: an agent's navigation is
+      reported as `accepted beforeunload`, and a person's navigation or tab close leaves the page
+      too (Electron decides synchronously, so an in-tab question cannot be asked; before, the page
+      silently stayed and could not be left).
+    - **Notifications.** The browser profile session gets permission request and check handlers
+      that deny `notifications` and keep Electron's defaults for everything else (grant all
+      requests; checks pass except `deprecated-sync-clipboard-read`): `Notification.permission`
+      reads `denied` (harness), passkeys and clipboard-write unchanged.
+    - **Protocol.** New command `handle_dialog`, gated through `browserHost.supportedCommands`; the
+      broker refuses a `dialog` argument for a host that lacks `handle_dialog`, since an older
+      desktop's strict args would reject the whole command. Optional `openDialog` on both
+      execute.response branches and optional `reason` and `url` on dialog events; the
+      `Handled browser dialog…` line keeps its shape.
+    - **Key files:** `packages/desktop/src/features/browser-automation/{page-dialogs,page-dialog-hook,service,ipc,renderer-health}.ts`,
+      `packages/desktop/src/features/browser-profile.ts`, `packages/desktop/src/main.ts`,
+      `packages/desktop/src/preload.ts`, `packages/app/src/desktop/browser/{page-dialogs.ts,panel.tsx}`,
+      `packages/app/src/desktop/browser/pane/{index,page-dialog-card}.electron.tsx`,
+      `packages/server/src/server/browser-tools/{broker,tools}.ts`,
+      `packages/protocol/src/browser-automation/rpc-schemas.ts`; capture harness group `dialogs`,
+      `packages/desktop/e2e/browser-tabs.e2e.mjs` (pane-only card, composer focus in another
+      workspace).
 
 ## Local reliability contracts
 

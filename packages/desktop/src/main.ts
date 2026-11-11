@@ -101,6 +101,7 @@ import {
   getPaseoBrowserProfileSession,
   getPaseoBrowserProfileSessions,
   installPaseoBrowserClientHints,
+  installPaseoBrowserPermissionPolicy,
   listPaseoBrowserProfileGuests,
   readLegacyPaseoBrowserIds,
   rendererAcceptLanguages,
@@ -124,7 +125,7 @@ import { autoUpdateInstalledSkills } from "./integrations/skills/index.js";
 import {
   adaptWebContents,
   getPaseoBrowserCdpQueue,
-  preparePersistentBrowserDialogMonitoring,
+  preparePaseoBrowserPageDialogs,
   registerBrowserAutomationIpc,
 } from "./features/browser-automation/ipc.js";
 import {
@@ -479,6 +480,9 @@ function getBrowserPopupWindowOptions(
       webviewTag: false,
       allowRunningInsecureContent: false,
       backgroundThrottling: false,
+      // Delta 93: Daseo answers page dialogs itself (page-dialog-hook.ts); should that hook ever
+      // be missing, Electron answers them without a native box instead of showing one.
+      disableDialogs: true,
     }),
   };
 }
@@ -552,7 +556,6 @@ function installBrowserWindowOpenHandler(input: {
             popupContents,
             getPaseoBrowserCdpQueue(popupContents.id),
           );
-          preparePersistentBrowserDialogMonitoring(popupContents);
           registerBrowserWebviewNavigationGuards(popupContents);
           popupContents.on("context-menu", (_event, params) => {
             showBrowserWebviewContextMenu(mainWindow, popupContents, params);
@@ -1327,6 +1330,8 @@ async function createWindow(
     webPreferences.webSecurity = true;
     webPreferences.webviewTag = false;
     webPreferences.allowRunningInsecureContent = false;
+    // Delta 93: see getBrowserPopupWindowOptions.
+    webPreferences.disableDialogs = true;
     disableFocusOnNavigation(webPreferences);
     delete webPreferences.preload;
     delete params.preload;
@@ -1597,6 +1602,14 @@ async function bootstrap(): Promise<void> {
     brands: chromiumBrandVersionList(process.versions.chrome, "major"),
     mobile: false,
     platform: userAgentDataPlatform(process.platform),
+  });
+  installPaseoBrowserPermissionPolicy(session);
+  // Delta 93: every browser-profile WebContents (tabs, popups, and anything a page opens) has its
+  // page dialogs answered by Daseo from the moment it exists, never by a native message box.
+  app.on("web-contents-created", (_event, contents) => {
+    if (contents.session === getPaseoBrowserProfileSession(session)) {
+      preparePaseoBrowserPageDialogs(contents);
+    }
   });
   await configureBrowserTabLifecycle();
   configureBrowserPasskeys();

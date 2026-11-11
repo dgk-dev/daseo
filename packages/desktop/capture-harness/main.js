@@ -4,7 +4,16 @@ const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 const { isDeepStrictEqual } = require("node:util");
-const { app, BrowserWindow, ipcMain, Menu, nativeImage, screen, session } = require("electron");
+const {
+  app,
+  BrowserWindow,
+  dialog: electronDialog,
+  ipcMain,
+  Menu,
+  nativeImage,
+  screen,
+  session,
+} = require("electron");
 
 const ROOT = __dirname;
 const OUT_DIR = process.env.PASEO_CAPTURE_HARNESS_OUT_DIR || path.join(ROOT, "out");
@@ -3767,6 +3776,536 @@ async function startDebuggingServer() {
   return { server, origin: `http://127.0.0.1:${server.address().port}` };
 }
 
+// Delta 93: page dialogs never open a native message box. Electron's own dialog listener calls
+// dialog.showMessageBox, so the group replaces that function with a recorder for its whole run:
+// any call is a failure, and the recorder answers at once so nothing ever waits on screen.
+async function startDialogsServer() {
+  const server = http.createServer((request, response) => {
+    const url = request.url ?? "/";
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    if (url.startsWith("/idle")) {
+      response.end(`<!doctype html><title>Idle dialogs</title><p>idle</p><script>
+        window.r = {};
+        setTimeout(() => {
+          r.alert = alert("idle alert");
+          r.confirm = confirm("idle confirm");
+          try { r.prompt = prompt("idle prompt", "d"); } catch (error) { r.promptThrew = String(error); }
+          r.done = true;
+        }, 200);
+      </script>`);
+      return;
+    }
+    if (url.startsWith("/opener")) {
+      response.end(
+        '<!doctype html><title>Opener</title><script>window.popup = window.open("/idle", "dialogs-popup", "width=400,height=300")</script>',
+      );
+      return;
+    }
+    if (url.startsWith("/save")) {
+      response.end(`<!doctype html><title>Save</title>
+        <button id="save" onclick="if (confirm('저장하시겠습니까?')) { window.saved = (window.saved || 0) + 1; }">Save</button>
+        <button id="name" onclick="window.named = prompt('name?', 'def')">Name</button>
+        <button id="chain" onclick="if (confirm('Delete?')) { alert('Deleted'); window.deleted = true; }">Chain</button>`);
+      return;
+    }
+    if (url.startsWith("/leave")) {
+      response.end(`<!doctype html><title>Leave</title><input id="field" style="width:400px;height:60px">
+        <script>addEventListener("beforeunload", (event) => { event.preventDefault(); event.returnValue = ""; });</script>`);
+      return;
+    }
+    if (url.startsWith("/notify")) {
+      response.end("<!doctype html><title>Notify</title><p>notify</p>");
+      return;
+    }
+    response.end("<!doctype html><title>Blank</title><p>blank</p>");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return { server, origin: `http://127.0.0.1:${server.address().port}` };
+}
+
+function dialogsCheck(checks, name, problems, detail) {
+  if (problems.length > 0) {
+    fail(`dialogs ${name} (${problems.join("; ")}): ${JSON.stringify(detail)}`);
+  }
+  pass(`dialogs ${name}`);
+  checks.push({ group: "dialogs", check: name, pass: true, detail });
+}
+
+async function waitFor(predicate, label, timeoutMs = 8000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = await predicate();
+    if (value) return value;
+    if (Date.now() > deadline) fail(`timed out waiting for ${label}`);
+    await delay(25);
+  }
+}
+
+async function runDialogsGroup() {
+  const target = await startDialogsServer();
+  const { getPaseoBrowserPageDialogs, isPaseoBrowserPageDialogHookMissing } = require(
+    path.join(PRODUCTION_BROWSER_AUTOMATION_DIR, "page-dialog-hook.js"),
+  );
+  const { preparePaseoBrowserPageDialogs } = require(PRODUCTION_BROWSER_AUTOMATION_IPC_PATH);
+  const { installPaseoBrowserPermissionPolicy } = require(
+    path.join(ROOT, "..", "dist", "features", "browser-profile.js"),
+  );
+  const nativeBoxes = [];
+  const realShowMessageBox = electronDialog.showMessageBox;
+  const realShowMessageBoxSync = electronDialog.showMessageBoxSync;
+  electronDialog.showMessageBox = (...args) => {
+    const options = args.length > 1 ? args[1] : args[0];
+    nativeBoxes.push({ message: options?.message, parented: args.length > 1 });
+    return Promise.resolve({ response: 0, checkboxChecked: false });
+  };
+  electronDialog.showMessageBoxSync = (...args) => {
+    const options = args.length > 1 ? args[1] : args[0];
+    nativeBoxes.push({ message: options?.message, sync: true });
+    return 0;
+  };
+  // What main.ts does on web-contents-created for the browser profile: every guest and popup gets
+  // its dialogs owned (and prompt restored) from the moment it exists.
+  const popups = [];
+  const onCreated = (_event, contents) => {
+    if (contents.session === session.defaultSession) return;
+    preparePaseoBrowserPageDialogs(contents);
+    if (contents.getType() === "window") popups.push(contents);
+  };
+  app.on("web-contents-created", onCreated);
+  const handle = createInactiveHarnessWindow({
+    width: 1000,
+    height: 700,
+    backgroundColor: "#202020",
+    webPreferences: { webviewTag: true, contextIsolation: true, nodeIntegration: false },
+  });
+  const { win } = handle;
+  let sheets = 0;
+  win.on("sheet-begin", () => {
+    sheets += 1;
+  });
+  installHarnessWebviewGuards(win);
+  const tracker = trackAttachedGuests(win, { disableGuestBackgroundThrottlingAtAttach: true });
+  const checks = [];
+  const extraWindows = [];
+  try {
+    await withTimeout(
+      win.loadFile(path.join(ROOT, "index.html"), {
+        query: { webviewCount: "0", permanentParkingState: "p1-overflow-1x1" },
+      }),
+      "dialogs harness window loadFile",
+    );
+    await waitForInactiveReveal(handle, "dialogs harness window");
+
+    await verifyIdleTabDialogs({
+      checks,
+      win,
+      tracker,
+      target,
+      nativeBoxes,
+      getSheets: () => sheets,
+      getPaseoBrowserPageDialogs,
+      isPaseoBrowserPageDialogHookMissing,
+    });
+    const { guest } = await appendPermanentWebview({
+      win,
+      tracker,
+      state: { id: "p1-overflow-1x1" },
+      sourceUrl: `${target.origin}/blank`,
+    });
+    await waitForGuestLoad(guest);
+    // Popups stay hidden windows here, as Daseo adopts them into views.
+    guest.setWindowOpenHandler(() => ({
+      action: "allow",
+      overrideBrowserWindowOptions: { show: false },
+    }));
+    await verifyPopupDialogs({ checks, guest, popups, target, nativeBoxes, extraWindows });
+    const harness = createFramesAutomation(guest);
+    await verifyAgentConfirmFlow({ checks, harness, guest, target });
+    await verifyAgentPromptFlow({ checks, harness, guest, target });
+    await verifyHeldDialogBlocksPageTools({ checks, harness, guest, target });
+    await verifyBeforeUnloadLeave({ checks, harness, guest, target });
+    await verifyNotificationsDenied({ checks, guest, target, installPaseoBrowserPermissionPolicy });
+    await verifyDisableDialogsFallback({ checks, target, nativeBoxes, extraWindows });
+    if (process.env.PASEO_CAPTURE_HARNESS_SKIP_UNANSWERED !== "1") {
+      await verifyUnansweredDismissal({ checks, harness, guest, target });
+    }
+    dialogsCheck(
+      checks,
+      "no page dialog opened a native message box or a sheet on the window, and the window still answers",
+      failedChecks({
+        noNativeBox: nativeBoxes.length === 0,
+        noSheet: sheets === 0,
+        windowAnswers:
+          (await withTimeout(renderer(win, "1 + 1"), "host renderer answers", 2000)) === 2,
+      }),
+      { nativeBoxes, sheets },
+    );
+    return checks;
+  } finally {
+    app.removeListener("web-contents-created", onCreated);
+    electronDialog.showMessageBox = realShowMessageBox;
+    electronDialog.showMessageBoxSync = realShowMessageBoxSync;
+    for (const extra of extraWindows) if (!extra.isDestroyed()) extra.destroy();
+    for (const popup of popups) if (!popup.isDestroyed()) popup.close();
+    if (!win.isDestroyed()) win.close();
+    await closeServer(target.server);
+  }
+}
+
+// Criterion 1, root tab: no command, nobody automating. No pane in the harness, so the policy
+// answers (alert OK, confirm Cancel, prompt Cancel) and records them; nothing native.
+async function verifyIdleTabDialogs(input) {
+  const { checks, win, tracker, target, nativeBoxes, getSheets } = input;
+  const { guest } = await appendPermanentWebview({
+    win,
+    tracker,
+    state: { id: "p1-overflow-1x1" },
+    sourceUrl: `${target.origin}/idle`,
+  });
+  await waitForGuestLoad(guest);
+  const result = await waitFor(
+    () => guest.mainFrame.executeJavaScript("window.r && window.r.done ? window.r : null", false),
+    "idle tab dialogs",
+  );
+  const recorded = input.getPaseoBrowserPageDialogs(guest.id)?.takePending() ?? [];
+  dialogsCheck(
+    checks,
+    "an idle root tab's alert, confirm, and prompt are answered by Daseo with no native box",
+    failedChecks({
+      hookInstalled: !input.isPaseoBrowserPageDialogHookMissing(guest.id),
+      alertReturned: result.alert === undefined || result.alert === null,
+      confirmCancelled: result.confirm === false,
+      promptReachesDaseo: result.prompt === null && result.promptThrew === undefined,
+      recorded:
+        recorded.map((event) => `${event.action} ${event.type}`).join(",") ===
+        "accepted alert,dismissed confirm,dismissed prompt",
+      noNativeBox: nativeBoxes.length === 0,
+      noSheet: getSheets() === 0,
+    }),
+    { result, recorded, nativeBoxes },
+  );
+}
+
+// Criterion 1, popup: a window.open popup of the browser profile, no command.
+async function verifyPopupDialogs({ checks, guest, popups, target, nativeBoxes }) {
+  const before = popups.length;
+  await guest.loadURL(`${target.origin}/opener`);
+  const popup = await waitFor(() => popups[before] ?? null, "popup created");
+  await waitFor(() => !popup.isLoading() && popup.getURL().includes("/idle"), "popup loaded");
+  const result = await waitFor(
+    () => popup.mainFrame.executeJavaScript("window.r && window.r.done ? window.r : null", false),
+    "popup dialogs",
+  );
+  dialogsCheck(
+    checks,
+    "a popup's alert, confirm, and prompt are answered by Daseo with no native box",
+    failedChecks({
+      confirmCancelled: result.confirm === false,
+      promptReachesDaseo: result.prompt === null && result.promptThrew === undefined,
+      noNativeBox: nativeBoxes.length === 0,
+    }),
+    { result, nativeBoxes },
+  );
+  popup.close();
+  await guest.loadURL(`${target.origin}/blank`);
+}
+
+function refFor(snapshotResult, role, name) {
+  const pattern = new RegExp(`${role} "${name}" \\[ref=(@e\\d+)\\]`);
+  const ref = snapshotResult?.result?.snapshot?.match(pattern)?.[1];
+  if (!ref) fail(`no ref for ${role} "${name}" in ${JSON.stringify(snapshotResult)}`);
+  return ref;
+}
+
+async function snapshotRefs(harness, names) {
+  const snapshot = await harness.execute({
+    command: "snapshot",
+    args: { browserId: harness.browserId },
+  });
+  return Object.fromEntries(names.map((name) => [name, refFor(snapshot, "button", name)]));
+}
+
+async function timedCall(task) {
+  const started = Date.now();
+  const value = await task();
+  return { value, ms: Date.now() - started };
+}
+
+// Criterion 2: confirm held → handle_dialog true / false; pre-armed click in one call; a confirm
+// followed by an alert.
+async function verifyAgentConfirmFlow({ checks, harness, guest, target }) {
+  const { browserId } = harness;
+  await harness.run("navigate to the save page", {
+    command: "navigate",
+    args: { browserId, url: `${target.origin}/save` },
+  });
+  const refs = await snapshotRefs(harness, ["Save", "Chain"]);
+  const saved = () => guest.mainFrame.executeJavaScript("window.saved || 0", false);
+
+  const click = await timedCall(() =>
+    harness.execute({ command: "click", args: { browserId, ref: refs.Save } }),
+  );
+  const accepted = await harness.execute({
+    command: "handle_dialog",
+    args: { browserId, accept: true },
+  });
+  const savedAfterAccept = await saved();
+  const secondClick = await harness.execute({
+    command: "click",
+    args: { browserId, ref: refs.Save },
+  });
+  const dismissed = await harness.execute({
+    command: "handle_dialog",
+    args: { browserId, accept: false },
+  });
+  const savedAfterDismiss = await saved();
+  const preArmed = await harness.execute({
+    command: "click",
+    args: { browserId, ref: refs.Save, dialog: "accept" },
+  });
+  const savedAfterPreArm = await saved();
+  dialogsCheck(
+    checks,
+    "a click's confirm is reported within a second, accept runs the page's save, Cancel does not, and dialog:accept does it in one call",
+    failedChecks({
+      clickOk: click.value.ok === true,
+      clickFast: click.ms < 1500,
+      reportedOpen:
+        click.value.openDialog?.type === "confirm" &&
+        click.value.openDialog?.message === "저장하시겠습니까?",
+      acceptedOk: accepted.ok && accepted.result.answered.action === "accepted",
+      savedOnAccept: savedAfterAccept === 1,
+      secondHeld: secondClick.openDialog?.type === "confirm",
+      dismissedOk: dismissed.ok && dismissed.result.answered.action === "dismissed",
+      notSavedOnCancel: savedAfterDismiss === 1,
+      preArmedOneCall:
+        preArmed.ok &&
+        preArmed.openDialog === undefined &&
+        preArmed.dialogs?.some((event) => event.type === "confirm" && event.action === "accepted"),
+      savedOnPreArm: savedAfterPreArm === 2,
+    }),
+    {
+      click,
+      accepted,
+      secondClick,
+      dismissed,
+      preArmed,
+      savedAfterAccept,
+      savedAfterDismiss,
+      savedAfterPreArm,
+    },
+  );
+
+  const chain = await harness.execute({ command: "click", args: { browserId, ref: refs.Chain } });
+  const chainAnswered = await harness.execute({
+    command: "handle_dialog",
+    args: { browserId, accept: true },
+  });
+  dialogsCheck(
+    checks,
+    "the alert a page shows after an accepted confirm comes back with the answer",
+    failedChecks({
+      held: chain.openDialog?.message === "Delete?",
+      followUp:
+        chainAnswered.ok &&
+        chainAnswered.dialogs?.some(
+          (event) => event.type === "alert" && event.message === "Deleted",
+        ),
+      pageRanOn:
+        (await guest.mainFrame.executeJavaScript("window.deleted === true", false)) === true,
+    }),
+    { chain, chainAnswered },
+  );
+}
+
+// Criterion 2: prompt text reaches the page, through handle_dialog and through dialog:accept.
+async function verifyAgentPromptFlow({ checks, harness, guest }) {
+  const { browserId } = harness;
+  const refs = await snapshotRefs(harness, ["Name"]);
+  const held = await harness.execute({ command: "click", args: { browserId, ref: refs.Name } });
+  const answered = await harness.execute({
+    command: "handle_dialog",
+    args: { browserId, accept: true, promptText: "x" },
+  });
+  const named = await guest.mainFrame.executeJavaScript("window.named", false);
+  const preArmed = await harness.execute({
+    command: "click",
+    args: { browserId, ref: refs.Name, dialog: "accept", promptText: "y" },
+  });
+  const namedPreArmed = await guest.mainFrame.executeJavaScript("window.named", false);
+  dialogsCheck(
+    checks,
+    "prompt('name?') answered with promptText returns that text to the page",
+    failedChecks({
+      heldPrompt: held.openDialog?.type === "prompt" && held.openDialog?.defaultValue === "def",
+      answered: answered.ok && answered.result.answered.promptText === "x",
+      pageGotX: named === "x",
+      preArmedOk: preArmed.ok && preArmed.openDialog === undefined,
+      pageGotY: namedPreArmed === "y",
+    }),
+    { held, answered, named, preArmed, namedPreArmed },
+  );
+}
+
+// Criterion 3: while a confirm is held, snapshot answers at once; navigate still works and clears it.
+async function verifyHeldDialogBlocksPageTools({ checks, harness, guest, target }) {
+  const { browserId } = harness;
+  const refs = await snapshotRefs(harness, ["Save"]);
+  await harness.execute({ command: "click", args: { browserId, ref: refs.Save } });
+  const snapshot = await timedCall(() =>
+    harness.execute({ command: "snapshot", args: { browserId } }),
+  );
+  const navigated = await timedCall(() =>
+    harness.execute({ command: "navigate", args: { browserId, url: `${target.origin}/blank` } }),
+  );
+  dialogsCheck(
+    checks,
+    "a held confirm makes snapshot say so at once, and navigate still runs and clears it",
+    failedChecks({
+      snapshotRefused:
+        snapshot.value.ok === false &&
+        snapshot.value.error.code === "browser_denied" &&
+        snapshot.value.openDialog?.type === "confirm",
+      snapshotFast: snapshot.ms < 1000,
+      navigated: navigated.value.ok === true && guest.getURL().endsWith("/blank"),
+      navigateFast: navigated.ms < 8000,
+      dismissedForNavigation: navigated.value.dialogs?.some(
+        (event) => event.type === "confirm" && event.reason === "page_left",
+      ),
+    }),
+    { snapshot, navigated },
+  );
+}
+
+// Criterion 5: an agent navigating away from a page with a live beforeunload handler (the page
+// got a trusted input first, so Chromium asks) leaves it and reports it.
+async function verifyBeforeUnloadLeave({ checks, harness, guest, target }) {
+  const { browserId } = harness;
+  await harness.run("navigate to the leave page", {
+    command: "navigate",
+    args: { browserId, url: `${target.origin}/leave` },
+  });
+  // The agent's own click (a background tab gets the page-local user-gesture click) gives the page
+  // the sticky activation Chromium requires before it asks about beforeunload.
+  const snapshot = await harness.execute({ command: "snapshot", args: { browserId } });
+  const fieldRef =
+    snapshot.result?.snapshot?.match(/textbox \[ref=(@e\d+)\]/)?.[1] ??
+    snapshot.result?.snapshot?.match(/textbox "[^"]*" \[ref=(@e\d+)\]/)?.[1];
+  if (!fieldRef) fail(`no textbox ref on the leave page: ${JSON.stringify(snapshot)}`);
+  await harness.run("click the field", { command: "click", args: { browserId, ref: fieldRef } });
+  await delay(100);
+  const activated = await guest.mainFrame.executeJavaScript(
+    "navigator.userActivation.hasBeenActive",
+    false,
+  );
+  const navigated = await timedCall(() =>
+    harness.execute({ command: "navigate", args: { browserId, url: `${target.origin}/blank` } }),
+  );
+  dialogsCheck(
+    checks,
+    "an agent's navigate leaves a page whose beforeunload handler asks to stay, and says so",
+    failedChecks({
+      pageActivated: activated === true,
+      navigated: navigated.value.ok === true && guest.getURL().endsWith("/blank"),
+      reported: navigated.value.dialogs?.some(
+        (event) => event.type === "beforeunload" && event.action === "accepted",
+      ),
+    }),
+    { activated, navigated },
+  );
+}
+
+// Criterion 7: notifications are denied for the browser profile (the policy main.ts installs).
+async function verifyNotificationsDenied({
+  checks,
+  guest,
+  target,
+  installPaseoBrowserPermissionPolicy,
+}) {
+  installPaseoBrowserPermissionPolicy({ fromPartition: () => guest.session });
+  await guest.loadURL(`${target.origin}/notify`);
+  const state = await guest.mainFrame.executeJavaScript(
+    `(async () => ({
+      permission: Notification.permission,
+      requested: await Notification.requestPermission(),
+      query: (await navigator.permissions.query({ name: "notifications" })).state,
+      clipboardWrite: (await navigator.permissions.query({ name: "clipboard-write" })).state,
+    }))()`,
+    true,
+  );
+  dialogsCheck(
+    checks,
+    "Notification.permission is denied in the browser profile; other permissions are unchanged",
+    failedChecks({
+      permission: state.permission === "denied",
+      requested: state.requested === "denied",
+      query: state.query === "denied",
+      clipboardWriteGranted: state.clipboardWrite === "granted",
+    }),
+    state,
+  );
+}
+
+// The fallback when Electron drops -run-dialog: disableDialogs (set by main.ts on every browser
+// webview and popup) keeps Electron's own listener from showing a box.
+async function verifyDisableDialogsFallback({ checks, target, nativeBoxes, extraWindows }) {
+  const before = nativeBoxes.length;
+  const fallback = new BrowserWindow({
+    show: false,
+    webPreferences: { partition: "paseo-dialogs-fallback", disableDialogs: true, sandbox: true },
+  });
+  extraWindows.push(fallback);
+  const contents = fallback.webContents;
+  await contents.loadURL(`${target.origin}/idle`);
+  const result = await waitFor(
+    () =>
+      contents.mainFrame.executeJavaScript("window.r && window.r.done ? window.r : null", false),
+    "fallback dialogs",
+  );
+  dialogsCheck(
+    checks,
+    "with disableDialogs and no Daseo hook, Electron answers without a native box",
+    failedChecks({
+      noNativeBox: nativeBoxes.length === before,
+      confirmCancelled: result.confirm === false,
+      electronListenerStillThere: contents.listenerCount("-run-dialog") === 1,
+    }),
+    { result },
+  );
+  fallback.destroy();
+}
+
+// Criterion 4: a held confirm nobody answers is dismissed after 60 s and the next result says so.
+async function verifyUnansweredDismissal({ checks, harness, guest, target }) {
+  const { browserId } = harness;
+  await harness.run("navigate to the save page", {
+    command: "navigate",
+    args: { browserId, url: `${target.origin}/save` },
+  });
+  const refs = await snapshotRefs(harness, ["Save"]);
+  const savedBefore = await guest.mainFrame.executeJavaScript("window.saved || 0", false);
+  const held = await harness.execute({ command: "click", args: { browserId, ref: refs.Save } });
+  const expiresIn = (held.openDialog?.expiresAt ?? 0) - Date.now();
+  await delay(61_000);
+  const next = await harness.execute({ command: "snapshot", args: { browserId } });
+  dialogsCheck(
+    checks,
+    "a held confirm nobody answers is dismissed after 60 s and reported on the next result",
+    failedChecks({
+      held: held.openDialog?.type === "confirm",
+      deadlineAbout60s: expiresIn > 58_000 && expiresIn <= 60_000,
+      nextOk: next.ok === true,
+      reported: next.dialogs?.some(
+        (event) =>
+          event.type === "confirm" && event.action === "dismissed" && event.reason === "unanswered",
+      ),
+      notSaved:
+        (await guest.mainFrame.executeJavaScript("window.saved || 0", false)) === savedBefore,
+    }),
+    { held, next },
+  );
+}
+
 // Delta 92: a page that never finishes loading still answers; a JS dialog during a load is
 // answered and reported; a download an agent starts lands in the Daseo folder without a dialog and
 // browser_wait download returns it; a busy page is named instead of waited on; a crash is recorded.
@@ -4277,6 +4816,7 @@ async function main() {
       "tab-lifecycle",
       "passkeys",
       "delta92",
+      "dialogs",
     ].includes(HARNESS_GROUP)
   ) {
     fail(`unknown harness group ${HARNESS_GROUP}`);
@@ -4289,6 +4829,16 @@ async function main() {
       `${JSON.stringify({ generatedAt: new Date().toISOString(), tabLifecycleResults }, null, 2)}\n`,
     );
     pass(`capture harness tab-lifecycle complete output=${OUT_DIR}`);
+    return;
+  }
+
+  if (HARNESS_GROUP === "dialogs") {
+    const dialogsResults = await runDialogsGroup();
+    await fsp.writeFile(
+      path.join(OUT_DIR, "results.json"),
+      `${JSON.stringify({ generatedAt: new Date().toISOString(), dialogsResults }, null, 2)}\n`,
+    );
+    pass(`capture harness dialogs complete output=${OUT_DIR}`);
     return;
   }
 

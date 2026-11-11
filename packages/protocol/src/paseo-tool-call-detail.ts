@@ -201,6 +201,7 @@ const TOOL_SPECS: Readonly<Record<string, ToolDetailSpec>> = {
   browser_find: { inputOrder: BROWSER_FIELDS },
   browser_styles: { inputOrder: BROWSER_FIELDS },
   browser_passkeys: { inputOrder: ["action", "browserId", "credentialId", "rpId"] },
+  browser_handle_dialog: { inputOrder: ["browserId", "accept", "promptText"] },
 };
 
 const FIELD_LABELS: Readonly<Record<string, string>> = {

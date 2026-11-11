@@ -66,6 +66,18 @@ busy page is reported as not responding within seconds, and that a crashed rende
 A `loadURL` issued while another load is still running is rejected with that load's abort, so
 the group stops the hanging load before the dialog check.
 
+The dialogs group (`PASEO_CAPTURE_HARNESS_GROUP=dialogs`) replaces `dialog.showMessageBox` with a
+recorder for its run, wires guests and popups the way `main.ts` does, and checks that an idle
+tab's and a popup's alert, confirm, and prompt are answered by Daseo with no native box or window
+sheet; that an agent click's confirm comes back as `openDialog` within a second and
+`handle_dialog` accept and Cancel reach the page; that `dialog: "accept"` answers in the same call;
+that prompt text reaches the page; that a held confirm makes snapshot answer at once while navigate
+still runs; that an agent leaves a page with a live `beforeunload`; that `Notification.permission`
+is `denied`; that `disableDialogs` alone keeps Electron from showing a box; and that a held confirm
+nobody answers is dismissed after 60 s (set `PASEO_CAPTURE_HARNESS_SKIP_UNANSWERED=1` to skip that
+minute). Electron gives the page sticky activation only through real input or a user-gesture
+script; the beforeunload check clicks with the agent's own background click.
+
 The frames-network group (`PASEO_CAPTURE_HARNESS_GROUP=frames-network`) serves a page with a
 same-origin and a cross-origin iframe from two local ports. It runs the compiled automation
 service against the guest and checks that the snapshot nests the same-origin frame's content
