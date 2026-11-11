@@ -16,6 +16,7 @@ import type {
   BrowserAutomationResizeCommandArgs,
   BrowserAutomationStylesCommandArgs,
   BrowserAutomationWaitLoadState,
+  BrowserAutomationDownload,
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import { waitForActionableTarget, type ActionabilityResult } from "./actionability.js";
 import { summarizeElementStyles, type RawElementStyles } from "./css-styles.js";
@@ -26,7 +27,14 @@ import { planStreamInputCdpSteps } from "./stream-input.js";
 import { FullPageCaptureUnsupportedError } from "./full-page-capture.js";
 import type { TabLoadingInfo } from "./load-tracker.js";
 import type { NetworkCaptureControl } from "./network-capture.js";
-import { getPaseoBrowserPasskeys, hostOf } from "./passkeys.js";
+import { CdpQueueTimeoutError } from "./cdp-session-queue.js";
+import { serializeEvaluateValue } from "./evaluate-serialize.js";
+import { PageNotRespondingError } from "./renderer-health.js";
+import {
+  getPaseoBrowserPasskeys,
+  getPaseoBrowserPasskeysUnavailableReason,
+  hostOf,
+} from "./passkeys.js";
 import { capReadContent, parseReadScriptResult } from "./read.js";
 import { buildReadScript } from "./read-script.js";
 import { BrowserSnapshotEngine } from "./snapshot-engine.js";
@@ -81,6 +89,10 @@ export interface TabContents {
   ): () => void;
   /** The tab's opt-in request capture; one per tab, idle until started. */
   getNetworkCapture?(): NetworkCaptureControl;
+  /**
+   * Delta 92: the tab's pending or next agent download, once it is done; null at the deadline.
+   */
+  waitForDownload?(timeoutMs: number): Promise<BrowserAutomationDownload | null>;
   /**
    * Turns device emulation on, changes it, or (all fields absent) clears it; returns what the
    * tab now emulates, null for none.
@@ -387,7 +399,7 @@ export function executeAutomationCommand(
   const snapshotEngine = options?.snapshotEngine ?? defaultSnapshotEngine;
   const handler = commandHandlers[command.command];
 
-  return handler({
+  const payload = handler({
     request,
     command,
     requestId,
@@ -395,6 +407,17 @@ export function executeAutomationCommand(
     registry,
     snapshotEngine,
     streamSink: options?.streamSink,
+  });
+  if (!(payload instanceof Promise)) {
+    return payload;
+  }
+  // Delta 92: a tab whose DevTools session stopped answering is a retryable timeout that names
+  // the CDP method, not an unknown error.
+  return payload.catch((error: unknown) => {
+    if (error instanceof CdpQueueTimeoutError || error instanceof PageNotRespondingError) {
+      return fail(requestId, "browser_timeout", error.message, true);
+    }
+    throw error;
   });
 }
 
@@ -468,6 +491,7 @@ const commandHandlers: Record<BrowserAutomationCommand["command"], CommandHandle
         selector: waitCommand.args.selector,
         script: waitCommand.args.script,
         load: waitCommand.args.load,
+        download: waitCommand.args.download,
         timeoutMs: waitCommand.args.timeoutMs,
       },
       registry,
@@ -697,10 +721,13 @@ async function executePasskeys(
 ): Promise<AutomationCommandPayload> {
   const hub = getPaseoBrowserPasskeys();
   if (!hub) {
+    const reason = getPaseoBrowserPasskeysUnavailableReason();
     return fail(
       requestId,
       "browser_unsupported",
-      "Browser passkeys are not available in this browser host.",
+      reason
+        ? `Browser passkeys are off for this run: ${reason}.`
+        : "Browser passkeys are not available in this browser host.",
     );
   }
   if (args.action === "delete") {
@@ -716,7 +743,7 @@ async function executePasskeys(
         action: "delete",
         passkeys: hub.listInfo(),
         deleted,
-        storage: await hub.storage(),
+        storage: hub.storage(),
       },
     };
   }
@@ -747,7 +774,7 @@ async function executePasskeys(
           ...(host ? { host } : {}),
           installed: hub.isInstalled(target.contents.id),
         },
-        storage: await hub.storage(),
+        storage: hub.storage(),
       },
     };
   }
@@ -758,7 +785,7 @@ async function executePasskeys(
       command: "passkeys",
       action: "list",
       passkeys: hub.listInfo(args.rpId),
-      storage: await hub.storage(),
+      storage: hub.storage(),
     },
   };
 }
@@ -878,6 +905,9 @@ async function executeRead(
       });
       settled = await settleEvaluate(target.contents, target.contents.executeJavaScript(script));
     } catch (error) {
+      if (error instanceof PageNotRespondingError) {
+        return fail(requestId, "browser_timeout", error.message, true);
+      }
       return fail(
         requestId,
         "browser_unknown_error",
@@ -922,13 +952,22 @@ async function executeRead(
           links: page.links,
           structuredDataFound: page.structuredDataFound,
         },
+        ...stillLoading(target.contents),
       },
     };
   });
 }
 
-// executeJavaScript waits for a load to stop, so a read of a stuck tab times out;
-// say so the way the broker does for any tab-scoped tool.
+/**
+ * Delta 92: page scripts run through the main frame, which does not wait for a load to stop, so
+ * a still-loading page answers; the result says so because its DOM may be partial.
+ */
+function stillLoading(contents: TabContents): { loading: true } | Record<string, never> {
+  return !contents.isDestroyed() && contents.isLoading() ? { loading: true } : {};
+}
+
+// Scripts no longer wait for a load to stop, so a read that times out on a loading page has a
+// page whose own script is busy; name the loading state the way the broker does.
 function readTimeoutFailure(requestId: string, target: ResolvedTabTarget): FailurePayload {
   if (!target.contents.isDestroyed() && target.contents.isLoading()) {
     const loading = target.contents.getLoadingInfo?.() ?? null;
@@ -1381,6 +1420,7 @@ async function executeSnapshot(
         url: target.contents.getURL(),
         title: target.contents.getTitle(),
         ...snapshot,
+        ...stillLoading(target.contents),
       },
     };
   });
@@ -1767,6 +1807,9 @@ async function executeEvaluate(
         target.contents.executeJavaScript(buildEvaluateScript(functionSource, elementExpression)),
       );
     } catch (error) {
+      if (error instanceof PageNotRespondingError) {
+        return fail(requestId, "browser_timeout", error.message, true);
+      }
       return fail(requestId, "browser_unknown_error", evaluateErrorMessage(error));
     }
     if (settled.kind === "navigated") {
@@ -1802,6 +1845,7 @@ async function executeEvaluate(
         browserId: target.browserId,
         resultJson: capped.resultJson,
         truncated: result.truncated || capped.truncated,
+        ...stillLoading(target.contents),
       },
     };
   });
@@ -1920,7 +1964,40 @@ interface WaitCondition {
   selector?: string;
   script?: string;
   load?: BrowserAutomationWaitLoadState;
+  download?: boolean;
   timeoutMs?: number;
+}
+
+async function waitForDownload(
+  requestId: string,
+  target: ResolvedTabTarget,
+  deadline: number,
+): Promise<AutomationCommandPayload> {
+  const wait = target.contents.waitForDownload?.bind(target.contents);
+  if (!wait) {
+    return fail(requestId, "browser_unsupported", "browser_wait download needs the desktop app.");
+  }
+  const download = await wait(Math.max(0, deadline - Date.now()));
+  if (!download) {
+    return fail(
+      requestId,
+      "browser_timeout",
+      `No download from tab ${target.browserId} finished before the wait ended. Downloads count only when an agent used the tab within the last minute.`,
+      true,
+    );
+  }
+  if (download.state !== "completed") {
+    return fail(
+      requestId,
+      "browser_unknown_error",
+      `The download of ${download.fileName} ended ${download.state} after ${download.receivedBytes} bytes (${download.path}).`,
+    );
+  }
+  return {
+    requestId,
+    ok: true,
+    result: { command: "wait", browserId: target.browserId, matched: "download", download },
+  };
 }
 
 async function executeWait(
@@ -1948,11 +2025,14 @@ async function executeWait(
     if (condition.load === "networkidle") {
       return waitForNetworkIdle(requestId, target, deadline);
     }
+    if (condition.download) {
+      return waitForDownload(requestId, target, deadline);
+    }
     if (!condition.text && !condition.url) {
       return fail(
         requestId,
         "browser_unsupported",
-        "browser_wait requires text, url, selector, script, or load",
+        "browser_wait requires text, url, selector, script, load, or download",
       );
     }
 
@@ -3159,6 +3239,9 @@ function evaluateFunctionSyntaxError(functionSource: string): string | null {
   }
 }
 
+// Delta 92: readable values where JSON would lose them; plain JSON stays byte-identical.
+const EVALUATE_SERIALIZER_SOURCE = serializeEvaluateValue.toString();
+
 // The function is inlined rather than passed to eval: pages whose CSP forbids
 // unsafe-eval or that require Trusted Types (Meta, Slack, Stripe) rejected the
 // eval, while the script Electron injects is not subject to either. The syntax
@@ -3185,7 +3268,7 @@ function buildEvaluateScript(
           : ""
       }
 	      const value = await userFunction(...args);
-	      const resultJson = JSON.stringify(value) ?? 'null';
+	      const resultJson = (${EVALUATE_SERIALIZER_SOURCE})(value, ${MAX_EVALUATE_RESULT_JSON_LENGTH});
 	      if (resultJson.length <= ${MAX_EVALUATE_RESULT_JSON_LENGTH}) {
 	        return { ok: true, resultJson, truncated: false };
 	      }

@@ -3311,15 +3311,12 @@ function createPasskeyHarnessHub() {
   );
   const storeDir = fs.mkdtempSync(path.join(os.tmpdir(), "paseo-passkeys-harness-"));
   const storePath = path.join(storeDir, "browser-passkeys.json");
-  // Reversible stand-in for safeStorage: the harness Electron has no stable keychain identity.
-  const cipher = {
-    isAsyncEncryptionAvailable: async () => true,
-    encryptStringAsync: async (plain) => Buffer.from(`sealed:${plain}`, "utf8"),
-    decryptStringAsync: async (sealed) => ({
-      shouldReEncrypt: false,
-      result: sealed.toString("utf8").replace(/^sealed:/, ""),
-    }),
-  };
+  // A fresh app key per run, as main.ts gets one from 1Password through the login shell env.
+  const keyed = passkeys.PasskeyCipher.fromBase64(
+    require("node:crypto").randomBytes(32).toString("base64"),
+  );
+  if (!keyed.ok) throw new Error(keyed.reason);
+  const cipher = keyed.cipher;
   const store = new passkeys.PasskeyStore(storePath, cipher);
   const hub = new passkeys.PaseoBrowserPasskeys({
     store,
@@ -3369,7 +3366,6 @@ async function verifyPasskeyRegistration({ checks, first, harness, page }) {
   const created = await page(first, "__create()");
   const deadline = Date.now() + 3000;
   while (harness.store.list().length === 0 && Date.now() < deadline) await delay(50);
-  await harness.store.whenPersisted();
   const stored = harness.store.list()[0];
   passkeyCheck(
     checks,
@@ -3388,7 +3384,8 @@ async function verifyPasskeyRegistration({ checks, first, harness, page }) {
     checks,
     "the private key is encrypted at rest",
     passkeyProblems([
-      [JSON.parse(onDisk).encrypted, true],
+      [JSON.parse(onDisk).version, 2],
+      [JSON.parse(onDisk).cipher, "aes-256-gcm"],
       [onDisk.includes(harness.store.keyOf(stored.credentialId)), false],
       [mode, 0o600],
     ]),
@@ -3770,6 +3767,282 @@ async function startDebuggingServer() {
   return { server, origin: `http://127.0.0.1:${server.address().port}` };
 }
 
+// Delta 92: a page that never finishes loading still answers; a JS dialog during a load is
+// answered and reported; a download an agent starts lands in the Daseo folder without a dialog and
+// browser_wait download returns it; a busy page is named instead of waited on; a crash is recorded.
+async function startDelta92Server() {
+  const server = http.createServer((request, response) => {
+    const url = request.url ?? "/";
+    if (url === "/never") return; // held open: the page never finishes loading
+    if (url === "/file.csv") {
+      response.writeHead(200, {
+        "content-type": "text/csv",
+        "content-disposition": 'attachment; filename="delta92.csv"',
+      });
+      response.end("a,b\n1,2\n");
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    if (url.startsWith("/hang-load")) {
+      response.end(
+        '<!doctype html><title>Hanging load</title><h1 id="t">ready text</h1><img src="/never">',
+      );
+      return;
+    }
+    if (url.startsWith("/alert-on-load")) {
+      response.end(
+        '<!doctype html><title>Alert on load</title><script>alert("Welcome from load")</script><p>after alert</p>',
+      );
+      return;
+    }
+    if (url.startsWith("/download")) {
+      response.end(
+        '<!doctype html><title>Download</title><a id="dl" href="/file.csv">Get the file</a>',
+      );
+      return;
+    }
+    if (url.startsWith("/busy")) {
+      response.end(
+        "<!doctype html><title>Busy</title><p>busy soon</p><script>setTimeout(() => { const end = Date.now() + 60000; while (Date.now() < end) {} }, 300)</script>",
+      );
+      return;
+    }
+    response.end("<!doctype html><title>Blank</title><p>blank</p>");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return { server, origin: `http://127.0.0.1:${server.address().port}` };
+}
+
+async function runDelta92Group() {
+  const target = await startDelta92Server();
+  const downloadDir = fs.mkdtempSync(path.join(os.tmpdir(), "paseo-delta92-downloads-"));
+  const { AgentDownloads, setPaseoBrowserAgentDownloads } = require(
+    path.join(PRODUCTION_BROWSER_AUTOMATION_DIR, "downloads.js"),
+  );
+  const downloads = new AgentDownloads({ directory: () => downloadDir });
+  setPaseoBrowserAgentDownloads(downloads);
+  const handle = createInactiveHarnessWindow({
+    width: 1000,
+    height: 700,
+    backgroundColor: "#202020",
+    webPreferences: { webviewTag: true, contextIsolation: true, nodeIntegration: false },
+  });
+  const { win } = handle;
+  installHarnessWebviewGuards(win);
+  const tracker = trackAttachedGuests(win, { disableGuestBackgroundThrottlingAtAttach: true });
+  const checks = [];
+  try {
+    await withTimeout(
+      win.loadFile(path.join(ROOT, "index.html"), {
+        query: { webviewCount: "0", permanentParkingState: "p1-overflow-1x1" },
+      }),
+      "delta92 harness window loadFile",
+    );
+    await waitForInactiveReveal(handle, "delta92 harness window");
+    const { guest } = await appendPermanentWebview({
+      win,
+      tracker,
+      state: { id: "p1-overflow-1x1" },
+      sourceUrl: `${target.origin}/blank`,
+    });
+    await waitForGuestLoad(guest);
+    routeDelta92Downloads(guest, downloads);
+    const harness = createFramesAutomation(guest);
+    await verifyDelta92StillLoading({ checks, harness, guest, origin: target.origin });
+    await verifyDelta92DialogDuringLoad({ checks, harness, guest, origin: target.origin });
+    await verifyDelta92Download({ checks, harness, origin: target.origin, downloadDir });
+    const { guest: busyGuest } = await appendPermanentWebview({
+      win,
+      tracker,
+      state: { id: "p1-overflow-1x1" },
+      sourceUrl: `${target.origin}/busy`,
+    });
+    await waitForGuestLoad(busyGuest);
+    await delay(800);
+    await verifyDelta92BusyAndCrash({ checks, busyGuest });
+    return checks;
+  } finally {
+    setPaseoBrowserAgentDownloads(null);
+    if (!win.isDestroyed()) win.close();
+    await closeServer(target.server);
+    fs.rmSync(downloadDir, { recursive: true, force: true });
+  }
+}
+
+function delta92Check(checks, name, problems, detail) {
+  if (problems.length > 0) {
+    fail(`delta92 ${name} (${problems.join("; ")}): ${JSON.stringify(detail)}`);
+  }
+  pass(`delta92 ${name}`);
+  checks.push({ group: "delta92", check: name, pass: true });
+}
+
+function routeDelta92Downloads(guest, downloads) {
+  const { wasPaseoBrowserAgentDriven } = require(
+    path.join(PRODUCTION_BROWSER_AUTOMATION_DIR, "activity.js"),
+  );
+  guest.session.on("will-download", (_event, item, contents) => {
+    if (contents && wasPaseoBrowserAgentDriven(contents.id)) {
+      downloads.handle({ item, contentsIds: [contents.id], browserId: null });
+    } else {
+      // Never let the harness open a save dialog.
+      item.cancel();
+    }
+  });
+}
+
+// Item 4: a load that never finishes.
+async function verifyDelta92StillLoading({ checks, harness, guest, origin }) {
+  const { browserId } = harness;
+  guest.loadURL(`${origin}/hang-load`).catch(() => {});
+  await withTimeout(
+    new Promise((resolve) => guest.once("dom-ready", resolve)),
+    "hang-load dom-ready",
+    10000,
+  );
+  const started = Date.now();
+  const snapshot = await withTimeout(
+    harness.execute({ command: "snapshot", args: { browserId } }),
+    "snapshot of a still-loading page",
+    10000,
+  );
+  const evaluated = await withTimeout(
+    harness.execute({
+      command: "evaluate",
+      args: { browserId, function: "() => document.getElementById('t').textContent" },
+    }),
+    "evaluate on a still-loading page",
+    10000,
+  );
+  delta92Check(
+    checks,
+    "a page whose load never finishes still answers snapshot and evaluate, marked loading",
+    failedChecks({
+      stillLoading: guest.isLoading(),
+      snapshotOk: snapshot.ok && snapshot.result.snapshot.includes("ready text"),
+      snapshotLoading: snapshot.ok && snapshot.result.loading === true,
+      fast: Date.now() - started < 5000,
+      evaluateOk: evaluated.ok && evaluated.result.resultJson === '"ready text"',
+    }),
+    { snapshot, evaluated, ms: Date.now() - started },
+  );
+}
+
+// Item 9: a dialog during a navigation's load. The hanging load is stopped first: Electron rejects
+// a loadURL issued while another load is still running with that load's abort.
+async function verifyDelta92DialogDuringLoad({ checks, harness, guest, origin }) {
+  guest.stop();
+  const stopDeadline = Date.now() + 3000;
+  while (guest.isLoading() && Date.now() < stopDeadline) await delay(20);
+  const started = Date.now();
+  const navigated = await withTimeout(
+    harness.execute({
+      command: "navigate",
+      args: { browserId: harness.browserId, url: `${origin}/alert-on-load` },
+    }),
+    "navigate to a page that alerts while it loads",
+    12000,
+  );
+  const dialogs = Array.isArray(navigated.dialogs) ? navigated.dialogs : [];
+  delta92Check(
+    checks,
+    "a dialog a page opens while it loads is answered and reported, and the navigation returns",
+    failedChecks({
+      ok: navigated.ok,
+      dialog: dialogs.some(
+        (dialog) => dialog.type === "alert" && dialog.message === "Welcome from load",
+      ),
+      fast: Date.now() - started < 8000,
+    }),
+    { navigated, ms: Date.now() - started },
+  );
+}
+
+// Item 7: a download the agent starts.
+async function verifyDelta92Download({ checks, harness, origin, downloadDir }) {
+  const { browserId } = harness;
+  await harness.run("navigate to the download page", {
+    command: "navigate",
+    args: { browserId, url: `${origin}/download` },
+  });
+  await harness.run("click the download link", {
+    command: "evaluate",
+    args: { browserId, function: "() => { document.getElementById('dl').click(); return true; }" },
+  });
+  const waited = await withTimeout(
+    harness.execute({ command: "wait", args: { browserId, download: true, timeoutMs: 10000 } }),
+    "browser_wait download",
+    15000,
+  );
+  const savedPath = waited.ok ? waited.result.download?.path : undefined;
+  const saved = savedPath && fs.existsSync(savedPath) ? fs.readFileSync(savedPath, "utf8") : null;
+  delta92Check(
+    checks,
+    "an agent's download lands in the Daseo folder without a dialog and browser_wait download returns it",
+    failedChecks({
+      ok: waited.ok && waited.result.matched === "download",
+      inFolder: Boolean(savedPath) && path.dirname(savedPath) === downloadDir,
+      name: Boolean(savedPath) && path.basename(savedPath) === "delta92.csv",
+      content: saved === "a,b\n1,2\n",
+    }),
+    { waited, saved },
+  );
+}
+
+// Item 6: a busy page, then a crash.
+async function verifyDelta92BusyAndCrash({ checks, busyGuest }) {
+  const { getPaseoBrowserRendererHealth } = require(PRODUCTION_BROWSER_AUTOMATION_IPC_PATH);
+  const busy = createFramesAutomation(busyGuest);
+  const health = getPaseoBrowserRendererHealth();
+  const busyGuestId = busyGuest.id;
+  // The check the IPC handler runs before every tab command (after the wake).
+  const precheckStarted = Date.now();
+  const precheck = await withTimeout(
+    health.blockingHealth(busyGuestId),
+    "check before a command on a busy page",
+    8000,
+  );
+  delta92Check(
+    checks,
+    "the check before a command reports a busy page in about 3 seconds",
+    failedChecks({
+      marked: precheck?.state === "not_responding",
+      fast: Date.now() - precheckStarted < 4000,
+    }),
+    { precheck, ms: Date.now() - precheckStarted },
+  );
+  const started = Date.now();
+  const result = await withTimeout(
+    busy.execute({ command: "snapshot", args: { browserId: busy.browserId } }),
+    "snapshot of a busy page",
+    12000,
+  );
+  delta92Check(
+    checks,
+    "a command that reaches a busy page is reported as not responding instead of a timeout",
+    failedChecks({
+      failed: !result.ok,
+      code: !result.ok && result.error.code === "browser_timeout",
+      message: !result.ok && result.error.message.includes("is not responding"),
+      // Dialog setup (3 s DevTools deadline) plus the in-command check (3 s + 1.5 s).
+      fast: Date.now() - started < 9000,
+      marked: health.get(busyGuestId)?.state === "not_responding",
+    }),
+    { result, ms: Date.now() - started, health: health.get(busyGuestId) },
+  );
+  busyGuest.forcefullyCrashRenderer();
+  const crashDeadline = Date.now() + 5000;
+  while (health.get(busyGuestId)?.state !== "crashed" && Date.now() < crashDeadline) {
+    await delay(50);
+  }
+  delta92Check(
+    checks,
+    "a crashed renderer is recorded with its reason",
+    failedChecks({ crashed: health.get(busyGuestId)?.state === "crashed" }),
+    { health: health.get(busyGuestId) },
+  );
+}
+
 async function runDebuggingGroup() {
   const target = await startDebuggingServer();
   const handle = createInactiveHarnessWindow({
@@ -4003,6 +4276,7 @@ async function main() {
       "debugging",
       "tab-lifecycle",
       "passkeys",
+      "delta92",
     ].includes(HARNESS_GROUP)
   ) {
     fail(`unknown harness group ${HARNESS_GROUP}`);
@@ -4015,6 +4289,16 @@ async function main() {
       `${JSON.stringify({ generatedAt: new Date().toISOString(), tabLifecycleResults }, null, 2)}\n`,
     );
     pass(`capture harness tab-lifecycle complete output=${OUT_DIR}`);
+    return;
+  }
+
+  if (HARNESS_GROUP === "delta92") {
+    const delta92Results = await runDelta92Group();
+    await fsp.writeFile(
+      path.join(OUT_DIR, "results.json"),
+      `${JSON.stringify({ generatedAt: new Date().toISOString(), delta92Results }, null, 2)}\n`,
+    );
+    pass(`capture harness delta92 complete output=${OUT_DIR}`);
     return;
   }
 

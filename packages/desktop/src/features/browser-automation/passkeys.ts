@@ -1,3 +1,4 @@
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type {
@@ -22,14 +23,21 @@ import { CdpSessionQueue } from "./cdp-session-queue.js";
 // on each main-frame commit and first removes the tab's previous authenticator, which is gone
 // already on the older engine. A discoverable-credential get() needs the session's
 // select-webauthn-account answer, otherwise Electron cancels it.
+//
+// Delta 92: private keys are sealed with an app key (AES-256-GCM, node:crypto) that lives in
+// 1Password and reaches the app through ~/.config/agent-secrets/common.env, which the login shell
+// environment brings into the main process. The macOS keychain is never asked: the app is signed
+// without a Team ID, so every new build lost the keychain's "Always Allow", and the prompt that
+// followed each swap held the main thread (85+ minutes after the 0.5.105 swap). Without the key
+// passkeys are off for that run; there is no keychain fallback.
 
 export interface StoredPasskey {
   /** base64url without padding, equal to PublicKeyCredential.id on the page. */
   credentialId: string;
   rpId: string;
   /**
-   * PKCS#8 private key, base64; encrypted at rest when the store has a cipher. Empty in the
-   * copies `PasskeyStore.list()` and `get()` return: the key comes from `keyOf`.
+   * On disk: the PKCS#8 private key sealed with the app key. Empty in the copies
+   * `PasskeyStore.list()` and `get()` return: the plain key comes from `keyOf`.
    */
   privateKey: string;
   /** Standard base64, as CDP carries it. */
@@ -43,62 +51,85 @@ export interface StoredPasskey {
 }
 
 interface StoreFile {
-  version: 1;
-  encrypted: boolean;
+  version: 2;
+  cipher: "aes-256-gcm";
+  /** Identifies the app key the entries are sealed with (sha256 prefix of the key). */
+  keyId: string;
   passkeys: StoredPasskey[];
 }
 
-/**
- * The subset of Electron's safeStorage the store needs: only the asynchronous API. Its key
- * comes from the macOS keychain on a worker thread (Chromium's KeychainKeyProvider), so a
- * keychain prompt waits there. The synchronous encryptString/decryptString read the keychain on
- * the main thread: after the 0.5.105 swap one such call waited on a keychain prompt for 85+
- * minutes inside a tab install and every main-process browser command timed out (delta 92).
- * Both APIs share the "v10" format and key, so the async one reads what the sync one wrote.
- */
-export interface PasskeyCipher {
-  isAsyncEncryptionAvailable(): Promise<boolean>;
-  encryptStringAsync(plainText: string): Promise<Buffer>;
-  decryptStringAsync(encrypted: Buffer): Promise<{ shouldReEncrypt: boolean; result: string }>;
+/** Environment variable holding the app key: 32 random bytes, standard base64. */
+export const PASSKEY_KEY_ENV = "PERSONAL_DASEO_PASSKEY_KEY";
+
+const AES_KEY_BYTES = 32;
+const GCM_IV_BYTES = 12;
+const GCM_TAG_BYTES = 16;
+
+/** AES-256-GCM with the app key. Sealed form: base64(iv | tag | ciphertext). */
+export class PasskeyCipher {
+  public readonly keyId: string;
+
+  private constructor(private readonly key: Buffer) {
+    this.keyId = createHash("sha256").update(key).digest("hex").slice(0, 16);
+  }
+
+  /** The cipher for a base64 32-byte key, or why there is none. Never logs the key. */
+  public static fromBase64(
+    value: string | undefined,
+  ): { ok: true; cipher: PasskeyCipher } | { ok: false; reason: string } {
+    if (!value || value.trim().length === 0) {
+      return { ok: false, reason: `${PASSKEY_KEY_ENV} is not set` };
+    }
+    const key = Buffer.from(value.trim(), "base64");
+    if (key.length !== AES_KEY_BYTES) {
+      return { ok: false, reason: `${PASSKEY_KEY_ENV} is not a base64 ${AES_KEY_BYTES}-byte key` };
+    }
+    return { ok: true, cipher: new PasskeyCipher(key) };
+  }
+
+  public seal(plain: string): string {
+    const iv = randomBytes(GCM_IV_BYTES);
+    const cipher = createCipheriv("aes-256-gcm", this.key, iv);
+    const body = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
+    return Buffer.concat([iv, cipher.getAuthTag(), body]).toString("base64");
+  }
+
+  /** Throws when the text was sealed with another key or was altered. */
+  public open(sealed: string): string {
+    const raw = Buffer.from(sealed, "base64");
+    if (raw.length < GCM_IV_BYTES + GCM_TAG_BYTES) throw new Error("sealed passkey is truncated");
+    const decipher = createDecipheriv("aes-256-gcm", this.key, raw.subarray(0, GCM_IV_BYTES));
+    decipher.setAuthTag(raw.subarray(GCM_IV_BYTES, GCM_IV_BYTES + GCM_TAG_BYTES));
+    return Buffer.concat([
+      decipher.update(raw.subarray(GCM_IV_BYTES + GCM_TAG_BYTES)),
+      decipher.final(),
+    ]).toString("utf8");
+  }
+}
+
+/** The store on disk was sealed with a different app key; it is left untouched. */
+export class PasskeyKeyMismatchError extends Error {
+  public constructor(filePath: string) {
+    super(`${filePath} was sealed with a different ${PASSKEY_KEY_ENV}`);
+    this.name = "PasskeyKeyMismatchError";
+  }
 }
 
 export type PasskeyLog = (message: string, detail?: Record<string, unknown>) => void;
 
 export class PasskeyStore {
-  private readonly file: StoreFile;
-  /**
-   * Whether `file.encrypted` is settled: true once the file was read from disk or the cipher
-   * was asked. The cipher may raise a keychain prompt; asked at startup it kept the app from
-   * opening a window (0.5.88 never activated). So it is asked only when a passkey is added or
-   * the storage mode is reported, never from the constructor.
-   */
-  private encryptionSettled: boolean;
+  private file: StoreFile;
   /** Plain private keys (base64) for this app run. Main process memory only; never logged. */
   private readonly keys = new Map<string, string>();
-  /** Credential ids added this run whose key is not sealed yet; they are not written. */
-  private readonly sealing = new Set<string>();
-  private readonly pendingSeals = new Set<Promise<void>>();
-  private keysLoading: Promise<void> | null = null;
-  private readonly decryptFailures = new Set<string>();
 
+  /** Throws PasskeyKeyMismatchError when the file belongs to another app key. */
   public constructor(
     public readonly filePath: string,
-    private readonly cipher: PasskeyCipher | null,
+    private readonly cipher: PasskeyCipher,
     private readonly log: PasskeyLog = () => {},
   ) {
-    const loaded = this.read();
-    this.file = loaded.file;
-    this.encryptionSettled = loaded.fromDisk;
-    if (!this.file.encrypted) {
-      for (const passkey of this.file.passkeys)
-        this.keys.set(passkey.credentialId, passkey.privateKey);
-    }
-  }
-
-  /** Whether keys rest encrypted (or will, once the first passkey is added). */
-  public async isEncrypted(): Promise<boolean> {
-    await this.settleEncryption();
-    return this.file.encrypted;
+    this.file = { version: 2, cipher: "aes-256-gcm", keyId: cipher.keyId, passkeys: [] };
+    this.load();
   }
 
   /** Records without private keys; use `keyOf` for the key. */
@@ -111,27 +142,9 @@ export class PasskeyStore {
     return found ? publicCopy(found) : undefined;
   }
 
-  /** The private key as CDP expects it (plain base64), when it is decrypted already. */
+  /** The private key as CDP expects it (plain base64). */
   public keyOf(credentialId: string): string | undefined {
     return this.keys.get(credentialId);
-  }
-
-  /** Whether every stored passkey's key is decrypted. */
-  public get keysReady(): boolean {
-    return this.file.passkeys.every((passkey) => this.keys.has(passkey.credentialId));
-  }
-
-  /**
-   * Decrypts the stored keys that are not decrypted yet. One run at a time; a failure is logged
-   * and the next call tries again. Never await this on a path that serves a command: a keychain
-   * prompt holds it until someone answers on the Mac.
-   */
-  public loadKeys(): Promise<void> {
-    if (this.keysReady) return Promise.resolve();
-    this.keysLoading ??= this.decryptMissing().finally(() => {
-      this.keysLoading = null;
-    });
-    return this.keysLoading;
   }
 
   /** Adds a passkey; returns false when one with that credential id already exists. */
@@ -139,18 +152,10 @@ export class PasskeyStore {
     if (this.file.passkeys.some((existing) => existing.credentialId === passkey.credentialId)) {
       return false;
     }
+    this.file.passkeys.push({ ...passkey, privateKey: this.cipher.seal(passkey.privateKey) });
     this.keys.set(passkey.credentialId, passkey.privateKey);
-    this.sealing.add(passkey.credentialId);
-    this.file.passkeys.push({ ...passkey, privateKey: "" });
-    const seal = this.seal(passkey.credentialId, passkey.privateKey);
-    this.pendingSeals.add(seal);
-    void seal.finally(() => this.pendingSeals.delete(seal));
+    this.write();
     return true;
-  }
-
-  /** Resolves when every passkey added so far is sealed and written (or failed to be). */
-  public async whenPersisted(): Promise<void> {
-    while (this.pendingSeals.size > 0) await Promise.all(this.pendingSeals);
   }
 
   public touch(credentialId: string, signCount: number, usedAt: string): StoredPasskey | undefined {
@@ -167,106 +172,50 @@ export class PasskeyStore {
     this.file.passkeys = this.file.passkeys.filter((p) => p.credentialId !== credentialId);
     if (this.file.passkeys.length === before) return false;
     this.keys.delete(credentialId);
-    this.sealing.delete(credentialId);
     this.write();
     return true;
   }
 
-  private async seal(credentialId: string, plainBase64: string): Promise<void> {
+  private load(): void {
+    let parsed: Record<string, unknown>;
     try {
-      const encrypted = await this.isEncrypted();
-      let sealed = plainBase64;
-      if (encrypted) {
-        if (!this.cipher) throw new Error("passkey store is encrypted but no cipher is available");
-        sealed = (await this.cipher.encryptStringAsync(plainBase64)).toString("base64");
-      }
-      const record = this.file.passkeys.find((p) => p.credentialId === credentialId);
-      if (!record || !this.sealing.has(credentialId)) return;
-      record.privateKey = sealed;
-      this.sealing.delete(credentialId);
-      this.write();
-    } catch (error) {
-      // Kept in memory for this run; never written in plain text to an encrypted store.
-      this.log("[browser-passkeys] could not encrypt a new passkey; it is not saved", {
-        error: String(error),
-      });
-    }
-  }
-
-  private async decryptMissing(): Promise<void> {
-    const missing = this.file.passkeys.filter(
-      (passkey) => !this.keys.has(passkey.credentialId) && !this.sealing.has(passkey.credentialId),
-    );
-    if (missing.length === 0) return;
-    if (!this.cipher) {
-      this.log("[browser-passkeys] store is encrypted but no cipher is available");
+      parsed = JSON.parse(readFileSync(this.filePath, "utf8")) as Record<string, unknown>;
+    } catch {
+      // Missing or unreadable: start empty. An unreadable file is only replaced, atomically,
+      // when a passkey is added.
       return;
     }
-    const cipher = this.cipher;
-    let reEncrypted = false;
-    await Promise.all(
-      missing.map(async (passkey) => {
-        const sealed = passkey.privateKey;
+    if (parsed.version === 2) {
+      if (parsed.keyId !== this.cipher.keyId) throw new PasskeyKeyMismatchError(this.filePath);
+      const entries = Array.isArray(parsed.passkeys) ? parsed.passkeys.filter(isStoredPasskey) : [];
+      for (const entry of entries) {
         try {
-          const { result, shouldReEncrypt } = await cipher.decryptStringAsync(
-            Buffer.from(sealed, "base64"),
-          );
-          if (!this.file.passkeys.includes(passkey) || passkey.privateKey !== sealed) return;
-          this.keys.set(passkey.credentialId, result);
-          if (shouldReEncrypt) {
-            passkey.privateKey = (await cipher.encryptStringAsync(result)).toString("base64");
-            reEncrypted = true;
-          }
+          this.keys.set(entry.credentialId, this.cipher.open(entry.privateKey));
+          this.file.passkeys.push(entry);
         } catch (error) {
-          // Retried on the next install; logged once per passkey so navigations do not repeat it.
-          if (this.decryptFailures.has(passkey.credentialId)) return;
-          this.decryptFailures.add(passkey.credentialId);
-          this.log("[browser-passkeys] could not decrypt a stored passkey", {
-            rpId: passkey.rpId,
+          // Kept on disk; a damaged entry is skipped for this run instead of failing installs.
+          this.log("[browser-passkeys] skipped a stored passkey that does not decrypt", {
+            rpId: entry.rpId,
             error: String(error),
           });
         }
-      }),
-    );
-    if (reEncrypted) this.write();
-  }
-
-  private async settleEncryption(): Promise<void> {
-    if (this.encryptionSettled) return;
-    const available = (await this.cipher?.isAsyncEncryptionAvailable().catch(() => false)) === true;
-    if (this.encryptionSettled) return;
-    this.file.encrypted = available;
-    this.encryptionSettled = true;
-  }
-
-  private read(): { file: StoreFile; fromDisk: boolean } {
-    try {
-      const parsed = JSON.parse(readFileSync(this.filePath, "utf8")) as Partial<StoreFile>;
-      if (parsed.version === 1 && Array.isArray(parsed.passkeys)) {
-        return {
-          file: {
-            version: 1,
-            encrypted: parsed.encrypted === true,
-            passkeys: parsed.passkeys.filter(isStoredPasskey),
-          },
-          fromDisk: true,
-        };
       }
-    } catch {
-      // Missing or unreadable: start empty. An unreadable file is never overwritten with
-      // an empty one until a passkey is added, and then the write is atomic.
+      return;
     }
-    return { file: { version: 1, encrypted: false, passkeys: [] }, fromDisk: false };
+    // The format before delta 92 sealed keys with the macOS keychain. Reading it would ask the
+    // keychain, so its passkeys are dropped and registered again at the next sign-in.
+    const legacy = Array.isArray(parsed.passkeys) ? parsed.passkeys.filter(isStoredPasskey) : [];
+    this.write();
+    this.log("[browser-passkeys] dropped passkeys stored in the keychain-sealed format", {
+      count: legacy.length,
+      rpIds: legacy.map((passkey) => passkey.rpId),
+    });
   }
 
   private write(): void {
-    const file: StoreFile = {
-      ...this.file,
-      passkeys: this.file.passkeys.filter((passkey) => !this.sealing.has(passkey.credentialId)),
-    };
     mkdirSync(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
     const tmp = `${this.filePath}.tmp`;
-    writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+    writeFileSync(tmp, `${JSON.stringify(this.file, null, 2)}\n`, { mode: 0o600 });
     chmodSync(tmp, 0o600);
     renameSync(tmp, this.filePath);
   }
@@ -403,7 +352,6 @@ export class PaseoBrowserPasskeys {
   private readonly boundSessions = new WeakSet<object>();
   private readonly now: () => Date;
   private readonly log: (message: string, detail?: Record<string, unknown>) => void;
-  private keysLoading: Promise<void> | null = null;
 
   public constructor(private readonly options: PasskeyHubOptions) {
     this.now = options.now ?? (() => new Date());
@@ -485,18 +433,10 @@ export class PaseoBrowserPasskeys {
     return state !== undefined && state.authenticatorId !== null;
   }
 
-  /**
-   * Resolves when stored keys are decrypted and added to the installed tabs. Tests and the
-   * capture harness only; no command waits on it.
-   */
-  public async whenKeysLoaded(): Promise<void> {
-    while (this.keysLoading) await this.keysLoading;
-  }
-
   /** Waits for a pending install of the tab, for callers that want the truth right now. */
   public async settle(contentsId: number): Promise<void> {
     const state = this.tabs.get(contentsId);
-    if (state) await state.queue.run(async () => {});
+    if (state) await state.queue.run(async () => {}, { label: "passkey install" }).catch(() => {});
   }
 
   public listInfo(rpIdFilter?: string): BrowserAutomationPasskeyInfo[] {
@@ -507,8 +447,8 @@ export class PaseoBrowserPasskeys {
       .map(toInfo);
   }
 
-  public async storage(): Promise<BrowserAutomationPasskeysResult["storage"]> {
-    return { path: this.store.filePath, encrypted: await this.store.isEncrypted() };
+  public storage(): BrowserAutomationPasskeysResult["storage"] {
+    return { path: this.store.filePath, encrypted: true };
   }
 
   public async delete(credentialId: string): Promise<boolean> {
@@ -516,16 +456,23 @@ export class PaseoBrowserPasskeys {
     if (!removed) return false;
     await Promise.all(
       [...this.tabs.values()].map((state) =>
-        state.queue.run(async () => {
-          if (!state.authenticatorId || !state.loaded.has(credentialId)) return;
-          await state.contents.debugger
-            .sendCommand("WebAuthn.removeCredential", {
-              authenticatorId: state.authenticatorId,
-              credentialId: fromBase64Url(credentialId),
-            })
-            .catch(() => undefined);
-          state.loaded.delete(credentialId);
-        }),
+        state.queue
+          .run(
+            async () => {
+              if (!state.authenticatorId || !state.loaded.has(credentialId)) return;
+              await state.contents.debugger
+                .sendCommand("WebAuthn.removeCredential", {
+                  authenticatorId: state.authenticatorId,
+                  credentialId: fromBase64Url(credentialId),
+                })
+                .catch(() => undefined);
+              state.loaded.delete(credentialId);
+            },
+            { label: "WebAuthn.removeCredential" },
+          )
+          .catch(() => {
+            // A tab whose session did not answer drops the credential at its next install.
+          }),
       ),
     );
     return true;
@@ -533,59 +480,69 @@ export class PaseoBrowserPasskeys {
 
   private async install(state: TabState): Promise<void> {
     const generation = (state.generation += 1);
-    await state.queue.run(async () => {
-      if (state.contents.isDestroyed() || generation !== state.generation) return;
-      const { debugger: dbg } = state.contents;
-      let added: { authenticatorId: string } | null = null;
-      try {
-        if (!dbg.isAttached()) dbg.attach("1.3");
-        await dbg.sendCommand("WebAuthn.enable", { enableUI: false });
-        const previous = state.authenticatorId;
+    await state.queue
+      .run(
+        async () => {
+          if (state.contents.isDestroyed() || generation !== state.generation) return;
+          const { debugger: dbg } = state.contents;
+          let added: { authenticatorId: string } | null = null;
+          try {
+            if (!dbg.isAttached()) dbg.attach("1.3");
+            await dbg.sendCommand("WebAuthn.enable", { enableUI: false });
+            const previous = state.authenticatorId;
+            state.authenticatorId = null;
+            state.loaded.clear();
+            if (previous !== null) {
+              // Rejects with "not found" when the navigation already dropped the environment.
+              await dbg
+                .sendCommand("WebAuthn.removeVirtualAuthenticator", { authenticatorId: previous })
+                .catch(() => undefined);
+            }
+            added = (await dbg.sendCommand("WebAuthn.addVirtualAuthenticator", {
+              options: VIRTUAL_AUTHENTICATOR_OPTIONS,
+            })) as { authenticatorId: string };
+            const loaded = new Set<string>();
+            for (const passkey of this.store.list()) {
+              const privateKey = this.store.keyOf(passkey.credentialId);
+              if (privateKey === undefined) continue;
+              await dbg.sendCommand("WebAuthn.addCredential", {
+                authenticatorId: added.authenticatorId,
+                credential: toCdpCredential(passkey, privateKey),
+              });
+              loaded.add(passkey.credentialId);
+            }
+            state.authenticatorId = added.authenticatorId;
+            state.loaded = loaded;
+          } catch (error) {
+            state.authenticatorId = null;
+            state.loaded.clear();
+            if (added && !state.contents.isDestroyed()) {
+              // A half-loaded authenticator would hold the environment's only internal slot.
+              await dbg
+                .sendCommand("WebAuthn.removeVirtualAuthenticator", {
+                  authenticatorId: added.authenticatorId,
+                })
+                .catch(() => undefined);
+            }
+            if (!state.contents.isDestroyed()) {
+              this.log("[browser-passkeys] install failed", {
+                contentsId: state.contents.id,
+                error: String(error),
+              });
+            }
+          }
+        },
+        { label: "passkey install" },
+      )
+      .catch((error: unknown) => {
+        // The slot outlived its deadline (delta 92); the next navigation installs again.
         state.authenticatorId = null;
         state.loaded.clear();
-        if (previous !== null) {
-          // Rejects with "not found" when the navigation already dropped the environment.
-          await dbg
-            .sendCommand("WebAuthn.removeVirtualAuthenticator", { authenticatorId: previous })
-            .catch(() => undefined);
-        }
-        added = (await dbg.sendCommand("WebAuthn.addVirtualAuthenticator", {
-          options: VIRTUAL_AUTHENTICATOR_OPTIONS,
-        })) as { authenticatorId: string };
-        const loaded = new Set<string>();
-        // Only keys decrypted already: the install never waits on the keychain. The rest are
-        // added to this tab by `loadMissingKeys` once they are decrypted.
-        for (const passkey of this.store.list()) {
-          const privateKey = this.store.keyOf(passkey.credentialId);
-          if (privateKey === undefined) continue;
-          await dbg.sendCommand("WebAuthn.addCredential", {
-            authenticatorId: added.authenticatorId,
-            credential: toCdpCredential(passkey, privateKey),
-          });
-          loaded.add(passkey.credentialId);
-        }
-        state.authenticatorId = added.authenticatorId;
-        state.loaded = loaded;
-        if (!this.store.keysReady) void this.loadMissingKeys();
-      } catch (error) {
-        state.authenticatorId = null;
-        state.loaded.clear();
-        if (added && !state.contents.isDestroyed()) {
-          // A half-loaded authenticator would hold the environment's only internal slot.
-          await dbg
-            .sendCommand("WebAuthn.removeVirtualAuthenticator", {
-              authenticatorId: added.authenticatorId,
-            })
-            .catch(() => undefined);
-        }
-        if (!state.contents.isDestroyed()) {
-          this.log("[browser-passkeys] install failed", {
-            contentsId: state.contents.id,
-            error: String(error),
-          });
-        }
-      }
-    });
+        this.log("[browser-passkeys] install timed out", {
+          contentsId: state.contents.id,
+          error: String(error),
+        });
+      });
   }
 
   private handleDebuggerMessage(
@@ -625,46 +582,6 @@ export class PaseoBrowserPasskeys {
     if (updated) void this.syncOthers(state, credentialId);
   }
 
-  /**
-   * Decrypts the stored keys off every command path, then adds each newly available
-   * credential to every installed tab that lacks it. Started by an install that found keys
-   * missing; a keychain prompt holds only this, never a tab install or a command.
-   */
-  private loadMissingKeys(): Promise<void> {
-    this.keysLoading ??= (async () => {
-      try {
-        await this.store.loadKeys();
-        await Promise.all(
-          [...this.tabs.values()].map((state) =>
-            state.queue.run(async () => {
-              if (!state.authenticatorId || state.contents.isDestroyed()) return;
-              for (const passkey of this.store.list()) {
-                if (state.loaded.has(passkey.credentialId)) continue;
-                const privateKey = this.store.keyOf(passkey.credentialId);
-                if (privateKey === undefined) continue;
-                try {
-                  await state.contents.debugger.sendCommand("WebAuthn.addCredential", {
-                    authenticatorId: state.authenticatorId,
-                    credential: toCdpCredential(passkey, privateKey),
-                  });
-                  state.loaded.add(passkey.credentialId);
-                } catch (error) {
-                  this.log("[browser-passkeys] adding a decrypted passkey failed", {
-                    contentsId: state.contents.id,
-                    error: String(error),
-                  });
-                }
-              }
-            }),
-          ),
-        );
-      } finally {
-        this.keysLoading = null;
-      }
-    })();
-    return this.keysLoading;
-  }
-
   /** Puts the stored copy of one credential into every other installed tab. */
   private async syncOthers(origin: TabState, credentialId: string): Promise<void> {
     const passkey = this.store.get(credentialId);
@@ -674,28 +591,38 @@ export class PaseoBrowserPasskeys {
       [...this.tabs.values()]
         .filter((state) => state !== origin)
         .map((state) =>
-          state.queue.run(async () => {
-            if (!state.authenticatorId || state.contents.isDestroyed()) return;
-            const { debugger: dbg } = state.contents;
-            try {
-              if (state.loaded.has(credentialId)) {
-                await dbg.sendCommand("WebAuthn.removeCredential", {
-                  authenticatorId: state.authenticatorId,
-                  credentialId: fromBase64Url(credentialId),
-                });
-              }
-              await dbg.sendCommand("WebAuthn.addCredential", {
-                authenticatorId: state.authenticatorId,
-                credential: toCdpCredential(passkey, privateKey),
-              });
-              state.loaded.add(credentialId);
-            } catch (error) {
-              this.log("[browser-passkeys] sync failed", {
+          state.queue
+            .run(
+              async () => {
+                if (!state.authenticatorId || state.contents.isDestroyed()) return;
+                const { debugger: dbg } = state.contents;
+                try {
+                  if (state.loaded.has(credentialId)) {
+                    await dbg.sendCommand("WebAuthn.removeCredential", {
+                      authenticatorId: state.authenticatorId,
+                      credentialId: fromBase64Url(credentialId),
+                    });
+                  }
+                  await dbg.sendCommand("WebAuthn.addCredential", {
+                    authenticatorId: state.authenticatorId,
+                    credential: toCdpCredential(passkey, privateKey),
+                  });
+                  state.loaded.add(credentialId);
+                } catch (error) {
+                  this.log("[browser-passkeys] sync failed", {
+                    contentsId: state.contents.id,
+                    error: String(error),
+                  });
+                }
+              },
+              { label: "passkey sync" },
+            )
+            .catch((error: unknown) => {
+              this.log("[browser-passkeys] sync timed out", {
                 contentsId: state.contents.id,
                 error: String(error),
               });
-            }
-          }),
+            }),
         ),
     );
   }
@@ -735,11 +662,23 @@ export function hostMatchesRpId(host: string, rpId: string): boolean {
 // One hub per app; the automation service reaches it through this accessor so the service
 // stays free of Electron imports (the capture harness sets its own).
 let activeHub: PaseoBrowserPasskeys | null = null;
+let unavailableReason: string | null = null;
 
 export function setPaseoBrowserPasskeys(hub: PaseoBrowserPasskeys | null): void {
   activeHub = hub;
+  if (hub) unavailableReason = null;
 }
 
 export function getPaseoBrowserPasskeys(): PaseoBrowserPasskeys | null {
   return activeHub;
+}
+
+/** Records why this run has no passkeys, so the tool can say it instead of a generic refusal. */
+export function setPaseoBrowserPasskeysUnavailable(reason: string): void {
+  activeHub = null;
+  unavailableReason = reason;
+}
+
+export function getPaseoBrowserPasskeysUnavailableReason(): string | null {
+  return unavailableReason;
 }

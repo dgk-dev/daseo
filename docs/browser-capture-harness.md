@@ -57,6 +57,15 @@ a passkey the page registers lands in the store encrypted and signs in from a se
 after a navigation with a rising counter, and `browser_passkeys status` and `delete` run through
 the production service.
 
+The delta92 group (`PASEO_CAPTURE_HARNESS_GROUP=delta92`) serves a page that holds one image
+open forever, a page that alerts while it loads, a download link, and a page that busy-loops. It
+checks that snapshot and evaluate answer on the never-finishing load (marked `loading`), that the
+alert is answered and reported while the navigation returns, that a download the agent clicks
+lands in the downloads folder with no dialog and `browser_wait download` returns it, that the
+busy page is reported as not responding within seconds, and that a crashed renderer is recorded.
+A `loadURL` issued while another load is still running is rejected with that load's abort, so
+the group stops the hanging load before the dialog check.
+
 The frames-network group (`PASEO_CAPTURE_HARNESS_GROUP=frames-network`) serves a page with a
 same-origin and a cross-origin iframe from two local ports. It runs the compiled automation
 service against the guest and checks that the snapshot nests the same-origin frame's content

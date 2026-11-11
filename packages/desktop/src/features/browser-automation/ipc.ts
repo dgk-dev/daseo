@@ -21,6 +21,13 @@ import {
   resolveDeviceEmulation,
 } from "./device-emulation.js";
 import { CdpSessionQueue } from "./cdp-session-queue.js";
+import { getPaseoBrowserAgentDownloads } from "./downloads.js";
+import { getPaseoBrowserTabEvents } from "./tab-events.js";
+import {
+  RENDERER_RECOVERY_COMMANDS,
+  RendererHealthMonitor,
+  describeRendererHealth,
+} from "./renderer-health.js";
 import {
   dialogAcceptValue,
   handledDialogEvent,
@@ -66,6 +73,15 @@ interface RecordedConsoleMessage {
 const consoleMessagesByContentsId = new Map<number, RecordedConsoleMessage[]>();
 const mainFrameNavigationsByContentsId = new Map<number, number>();
 const cdpQueuesByContentsId = new Map<number, CdpSessionQueue>();
+// Delta 92: busy and crashed tab renderers are reported instead of waited on. The memory-pressure
+// discard ends a renderer on purpose; that is not a crash.
+const rendererHealth = new RendererHealthMonitor({
+  isIntentionalCrash: (contentsId) =>
+    getPaseoBrowserTabLifecycle().getState(contentsId) === "discarded",
+});
+const DIALOG_MONITOR_SLOT_TIMEOUT_MS = 3_000;
+// The full-page capture's own deadline (30 s in service.ts) plus room for it to abort.
+const FULL_PAGE_CAPTURE_SLOT_TIMEOUT_MS = 35_000;
 const dialogMonitorsByContentsId = new Map<number, DialogMonitor>();
 const networkCapturesByContentsId = new Map<number, TabNetworkCapture>();
 const observedContentsIds = new Set<number>();
@@ -143,6 +159,12 @@ interface ConsoleMessageEmitter {
     ) => void,
   ): void;
   once(event: "destroyed", listener: () => void): void;
+  // Renderer health (delta 92).
+  on(event: "unresponsive" | "responsive" | "did-start-loading", listener: () => void): unknown;
+  on(
+    event: "render-process-gone",
+    listener: (event: unknown, details: { reason: string; exitCode?: number }) => void,
+  ): unknown;
 }
 
 interface BrowserAutomationWebContents extends ConsoleMessageEmitter {
@@ -155,7 +177,8 @@ interface BrowserAutomationWebContents extends ConsoleMessageEmitter {
   canGoForward(): boolean;
   isLoading(): boolean;
   isDestroyed(): boolean;
-  executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>;
+  /** Re-read at every use: a cross-origin navigation replaces the main frame. */
+  readonly mainFrame: { executeJavaScript(code: string, userGesture?: boolean): Promise<unknown> };
   insertText(text: string): Promise<void>;
   loadURL(url: string): Promise<void>;
   goBack(): void;
@@ -213,6 +236,7 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
   });
   const cdpQueue = getCdpQueue(contentsId);
   const dialogMonitor = getDialogMonitor(contents, contentsId, cdpQueue);
+  rendererHealth.observe(contents);
   return {
     id: contentsId,
     getURL: () => contents.getURL(),
@@ -222,9 +246,13 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
     isLoading: () => contents.isLoading(),
     getLoadingInfo: () => tabLoadingInfo(contentsId, contents.isLoading()),
     isDestroyed: () => contents.isDestroyed(),
+    // Delta 92: through the main frame. webContents.executeJavaScript waits "until web page stop
+    // loading" (Electron docs), so a page with one subresource that never finishes timed out every
+    // snapshot, read, and evaluate; WebFrameMain runs at once (measured with Electron 44.10.2:
+    // 3 ms against no answer in 3 s).
     executeJavaScript: (code: string, userGesture?: boolean) => {
       markPaseoBrowserAutomationActivity(contentsId);
-      return contents.executeJavaScript(code, userGesture);
+      return rendererHealth.runPageScript(contents, code, userGesture, "this tab");
     },
     insertText: (text: string) => {
       markPaseoBrowserAutomationActivity(contentsId);
@@ -255,27 +283,33 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
     // lifecycle's back.
     withFrameProduction: (capture) => getPaseoBrowserTabLifecycle().runAwake(contentsId, capture),
     captureFullPage: (options) =>
-      cdpQueue.run(async () => {
-        if (!contents.debugger.isAttached()) {
-          contents.debugger.attach("1.3");
-        }
-        return captureFullPageImage(
-          {
-            executeJavaScript: (code) => contents.executeJavaScript(code),
-            invalidate: () => contents.invalidate(),
-            sendDebugCommand: (command, params) =>
-              contents.debugger.sendCommand(command, params ?? {}),
-            createImageFromPng: (dataBase64) =>
-              nativeImage.createFromBuffer(Buffer.from(dataBase64, "base64")),
-            createImageFromBitmap: (bitmap, size) =>
-              nativeImage.createFromBitmap(Buffer.from(bitmap), {
-                ...size,
-                scaleFactor: 1,
-              }),
-          },
-          options,
-        );
-      }),
+      cdpQueue.run(
+        async () => {
+          if (!contents.debugger.isAttached()) {
+            contents.debugger.attach("1.3");
+          }
+          return captureFullPageImage(
+            {
+              executeJavaScript: (code) =>
+                rendererHealth.runPageScript(contents, code, undefined, "this tab"),
+              invalidate: () => contents.invalidate(),
+              sendDebugCommand: (command, params) =>
+                contents.debugger.sendCommand(command, params ?? {}),
+              createImageFromPng: (dataBase64) =>
+                nativeImage.createFromBuffer(Buffer.from(dataBase64, "base64")),
+              createImageFromBitmap: (bitmap, size) =>
+                nativeImage.createFromBitmap(Buffer.from(bitmap), {
+                  ...size,
+                  scaleFactor: 1,
+                }),
+            },
+            options,
+          );
+          // The capture's own deadline is 30 s (service.ts); the slot outlives it briefly so the
+          // capture can abort cleanly, and is released even if it never settles (delta 92).
+        },
+        { label: "full-page capture", timeoutMs: FULL_PAGE_CAPTURE_SLOT_TIMEOUT_MS },
+      ),
     invalidate: () => contents.invalidate(),
     sendInputEvent: (event) => {
       markPaseoBrowserAutomationActivity(contentsId);
@@ -312,12 +346,15 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
     },
     sendDebugCommand: (command: string, params?: Record<string, unknown>) => {
       markPaseoBrowserAutomationActivity(contentsId);
-      return cdpQueue.run(async () => {
-        if (!contents.debugger.isAttached()) {
-          contents.debugger.attach("1.3");
-        }
-        return contents.debugger.sendCommand(command, params ?? {});
-      });
+      return cdpQueue.run(
+        async () => {
+          if (!contents.debugger.isAttached()) {
+            contents.debugger.attach("1.3");
+          }
+          return contents.debugger.sendCommand(command, params ?? {});
+        },
+        { label: command },
+      );
     },
     startScreencast: async (options, onFrame) => {
       if (!streamHoldReleasesByContentsId.has(contentsId)) {
@@ -326,11 +363,13 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
           getPaseoBrowserTabLifecycle().hold(contentsId),
         );
       }
-      await cdpQueue.run(() => startScreencast(contents, options, onFrame));
+      await cdpQueue.run(() => startScreencast(contents, options, onFrame), {
+        label: "Page.startScreencast",
+      });
     },
     stopScreencast: async () => {
       try {
-        await cdpQueue.run(() => stopScreencast(contents));
+        await cdpQueue.run(() => stopScreencast(contents), { label: "Page.stopScreencast" });
       } finally {
         streamHoldReleasesByContentsId.get(contentsId)?.();
         streamHoldReleasesByContentsId.delete(contentsId);
@@ -339,6 +378,11 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
     getNetworkCapture: () => {
       markPaseoBrowserAutomationActivity(contentsId);
       return getNetworkCapture(contents, contentsId, cdpQueue);
+    },
+    waitForDownload: (timeoutMs) => {
+      markPaseoBrowserAutomationActivity(contentsId);
+      const downloads = getPaseoBrowserAgentDownloads();
+      return downloads ? downloads.waitForDownload(contentsId, timeoutMs) : Promise.resolve(null);
     },
     setDeviceEmulation: async (request) => {
       markPaseoBrowserAutomationActivity(contentsId);
@@ -349,16 +393,19 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
       if (!emulation && !emulatedContentsIds.has(contentsId)) {
         return null;
       }
-      await cdpQueue.run(async () => {
-        if (!contents.debugger.isAttached()) {
-          contents.debugger.attach("1.3");
-        }
-        await applyDeviceEmulation(
-          (command, params) => contents.debugger.sendCommand(command, params ?? {}),
-          emulation,
-          deviceEmulationHost(),
-        );
-      });
+      await cdpQueue.run(
+        async () => {
+          if (!contents.debugger.isAttached()) {
+            contents.debugger.attach("1.3");
+          }
+          await applyDeviceEmulation(
+            (command, params) => contents.debugger.sendCommand(command, params ?? {}),
+            emulation,
+            deviceEmulationHost(),
+          );
+        },
+        { label: "device emulation" },
+      );
       if (emulation) {
         emulatedContentsIds.add(contentsId);
         setPaseoBrowserClientHintOverride(
@@ -374,21 +421,24 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
     collectElementStyles: (elementExpression) => {
       markPaseoBrowserAutomationActivity(contentsId);
       // One queue slot for the whole exchange, so no other command runs while CSS is enabled.
-      return cdpQueue.run(async () => {
-        if (!contents.debugger.isAttached()) {
-          contents.debugger.attach("1.3");
-        }
-        return collectElementStyles({
-          send: (command, params) => contents.debugger.sendCommand(command, params ?? {}),
-          subscribe: (listener) => {
-            const handler = (_event: unknown, method: string, params?: Record<string, unknown>) =>
-              listener(method, params);
-            contents.debugger.on?.("message", handler);
-            return () => contents.debugger.removeListener?.("message", handler);
-          },
-          elementExpression,
-        });
-      });
+      return cdpQueue.run(
+        async () => {
+          if (!contents.debugger.isAttached()) {
+            contents.debugger.attach("1.3");
+          }
+          return collectElementStyles({
+            send: (command, params) => contents.debugger.sendCommand(command, params ?? {}),
+            subscribe: (listener) => {
+              const handler = (_event: unknown, method: string, params?: Record<string, unknown>) =>
+                listener(method, params);
+              contents.debugger.on?.("message", handler);
+              return () => contents.debugger.removeListener?.("message", handler);
+            },
+            elementExpression,
+          });
+        },
+        { label: "CSS styles" },
+      );
     },
   };
 }
@@ -404,12 +454,15 @@ function getNetworkCapture(
   }
   const capture = new TabNetworkCapture({
     sendCommand: (command, params) =>
-      cdpQueue.run(async () => {
-        if (!contents.debugger.isAttached()) {
-          contents.debugger.attach("1.3");
-        }
-        return contents.debugger.sendCommand(command, params ?? {});
-      }),
+      cdpQueue.run(
+        async () => {
+          if (!contents.debugger.isAttached()) {
+            contents.debugger.attach("1.3");
+          }
+          return contents.debugger.sendCommand(command, params ?? {});
+        },
+        { label: command },
+      ),
   });
   contents.debugger.on?.("message", (_event, method, params) =>
     capture.handleDebuggerMessage(method, params),
@@ -425,6 +478,11 @@ function deviceEmulationHost(): DeviceEmulationHost {
     platform: userAgentDataPlatform(process.platform),
     platformVersion: process.getSystemVersion(),
   };
+}
+
+/** Delta 92: busy and crashed tab renderers (the capture harness reads it). */
+export function getPaseoBrowserRendererHealth(): RendererHealthMonitor {
+  return rendererHealth;
 }
 
 /** The tab's CDP command queue, shared by every feature that talks to its debugger. */
@@ -685,12 +743,17 @@ class DialogMonitor {
     command: string,
     params?: Record<string, unknown>,
   ): Promise<unknown> {
-    return this.cdpQueue.run(async () => {
-      if (!this.contents.debugger.isAttached()) {
-        this.contents.debugger.attach("1.3");
-      }
-      return this.contents.debugger.sendCommand(command, params ?? {});
-    });
+    return this.cdpQueue.run(
+      async () => {
+        if (!this.contents.debugger.isAttached()) {
+          this.contents.debugger.attach("1.3");
+        }
+        return this.contents.debugger.sendCommand(command, params ?? {});
+      },
+      // Capture is optional (a failed setup runs the command without it), so its own commands
+      // hold the tab's queue briefly; a busy renderer answers no DevTools command (delta 92).
+      { label: command, timeoutMs: DIALOG_MONITOR_SLOT_TIMEOUT_MS },
+    );
   }
 
   private async sendDialogResponseCommand(
@@ -847,13 +910,48 @@ export function registerBrowserAutomationIpc(options?: { ipc?: IpcHandlerRegistr
           },
         }),
       );
-    const target = resolveCommandTargetContents(parsed.data, hostWebContentsId);
-    if (target !== null && BROWSER_AUTOMATION_EDITING_COMMANDS.has(parsed.data.command.command)) {
-      markPaseoBrowserEdited(target);
-    }
-    // An idle tab may be throttled or frozen. Every command that touches one wakes it first and
-    // holds it awake until the command answers.
-    return target === null ? execute() : getPaseoBrowserTabLifecycle().runAwake(target, execute);
+    // Delta 92: what happened in the agent's tabs since its last call rides on this result.
+    const args = parsed.data.command.args as { browserId?: unknown } | undefined;
+    const browserId = typeof args?.browserId === "string" ? args.browserId : undefined;
+    const respond = async () => {
+      const target = resolveCommandTargetContents(parsed.data, hostWebContentsId);
+      if (target !== null && BROWSER_AUTOMATION_EDITING_COMMANDS.has(parsed.data.command.command)) {
+        markPaseoBrowserEdited(target);
+      }
+      if (target === null) return execute();
+      // Delta 92: a busy or crashed page fails here, after the wake (a frozen page runs no script).
+      const checkedExecute = async () => {
+        if (!RENDERER_RECOVERY_COMMANDS.has(parsed.data.command.command)) {
+          const health = await rendererHealth.blockingHealth(target);
+          if (health) {
+            return {
+              requestId: parsed.data.requestId,
+              ok: false as const,
+              error: {
+                code:
+                  health.state === "crashed"
+                    ? ("browser_unknown_error" as const)
+                    : ("browser_timeout" as const),
+                message: describeRendererHealth(browserId ?? "this tab", health),
+                retryable: true,
+              },
+            };
+          }
+        }
+        return execute();
+      };
+      // An idle tab may be throttled or frozen. Every command that touches one wakes it first and
+      // holds it awake until the command answers.
+      return getPaseoBrowserTabLifecycle().runAwake(target, checkedExecute);
+    };
+    const tabEvents = getPaseoBrowserTabEvents();
+    if (browserId && parsed.data.agentId) tabEvents.linkAgent(browserId, parsed.data.agentId);
+    const payload = await respond();
+    const events = tabEvents.drain({
+      ...(browserId ? { browserId } : {}),
+      ...(parsed.data.agentId ? { agentId: parsed.data.agentId } : {}),
+    });
+    return events.length > 0 ? { ...payload, events } : payload;
   });
 }
 

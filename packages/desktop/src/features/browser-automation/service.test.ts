@@ -7,7 +7,9 @@ import type {
   BrowserAutomationDialogEvent,
   BrowserAutomationExecuteRequest,
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
+import { CdpQueueTimeoutError } from "./cdp-session-queue.js";
 import { FullPageCaptureUnsupportedError } from "./full-page-capture.js";
+import { PageNotRespondingError } from "./renderer-health.js";
 import { BrowserSnapshotEngine } from "./snapshot-engine.js";
 import type { BrowserRegistry, TabContents, TabImage } from "./service.js";
 import { clipElementRectToViewport, executeAutomationCommand } from "./service.js";
@@ -2990,5 +2992,98 @@ describe("clipElementRectToViewport", () => {
     expect(
       clipElementRectToViewport({ left: 1200, top: 5, width: 50, height: 10, ...viewport }),
     ).toBeNull();
+  });
+});
+
+describe("delta 92: loading pages, stuck sessions, busy pages, downloads", () => {
+  test("a result from a page that is still loading carries loading", async () => {
+    const browser = new BrowserAutomationHarness();
+    browser.tab.loading = true;
+    browser.tab.evaluateScriptResult = { ok: true, resultJson: "1" };
+    const result = await browser.execute({
+      command: "evaluate",
+      args: { browserId: BROWSER_A, function: "() => 1" },
+    });
+    expect(result).toMatchObject({ ok: true, result: { command: "evaluate", loading: true } });
+
+    browser.tab.loading = false;
+    const settled = await browser.execute({
+      command: "evaluate",
+      args: { browserId: BROWSER_A, function: "() => 1" },
+    });
+    expect(settled.ok && "loading" in settled.result).toBe(false);
+  });
+
+  test("a DevTools slot that timed out is a retryable timeout naming what it ran", async () => {
+    const browser = new BrowserAutomationHarness();
+    browser.tab.setDeviceEmulation = async () => {
+      throw new CdpQueueTimeoutError("device emulation", 10_000);
+    };
+    const result = await browser.execute({
+      command: "resize",
+      args: { browserId: BROWSER_A, width: 390, height: 844, mobile: true },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "browser_timeout",
+        message: expect.stringContaining("did not answer device emulation within 10000ms"),
+        retryable: true,
+      },
+    });
+  });
+
+  test("a busy page is reported as not responding", async () => {
+    const browser = new BrowserAutomationHarness();
+    browser.tab.executeJavaScript = async () => {
+      throw new PageNotRespondingError("this tab");
+    };
+    const result = await browser.execute({
+      command: "evaluate",
+      args: { browserId: BROWSER_A, function: "() => 1" },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "browser_timeout",
+        message: expect.stringContaining("is not responding"),
+        retryable: true,
+      },
+    });
+  });
+
+  test("browser_wait download returns the saved file, or says why not", async () => {
+    const browser = new BrowserAutomationHarness();
+    const download = {
+      fileName: "a.csv",
+      path: "/Users/me/Downloads/Daseo/a.csv",
+      state: "completed" as const,
+      receivedBytes: 3,
+    };
+    let next: typeof download | null | { state: "interrupted" } = download;
+    const waits: number[] = [];
+    browser.tab.waitForDownload = async (timeoutMs) => {
+      waits.push(timeoutMs);
+      return next as never;
+    };
+    const wait = { command: "wait" as const, args: { browserId: BROWSER_A, download: true } };
+
+    await expect(browser.execute(wait)).resolves.toMatchObject({
+      ok: true,
+      result: { command: "wait", matched: "download", download },
+    });
+    expect(waits[0]).toBeGreaterThan(4_000);
+
+    next = null;
+    await expect(browser.execute(wait)).resolves.toMatchObject({
+      ok: false,
+      error: { code: "browser_timeout", retryable: true },
+    });
+
+    next = { ...download, state: "interrupted" };
+    await expect(browser.execute(wait)).resolves.toMatchObject({
+      ok: false,
+      error: { message: expect.stringContaining("ended interrupted") },
+    });
   });
 });

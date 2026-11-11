@@ -28,9 +28,21 @@ export class BrowserAutomationActivityTracker {
 }
 
 const browserAutomationActivity = new BrowserAutomationActivityTracker();
+// Delta 92: a download within a minute of an agent's last command on the tab is the agent's (the
+// click that starts one can take a moment to turn into a response).
+export const BROWSER_AGENT_DRIVEN_WINDOW_MS = 60_000;
+const agentDrivenActivity = new BrowserAutomationActivityTracker(
+  Date.now,
+  BROWSER_AGENT_DRIVEN_WINDOW_MS,
+);
 
 export function markPaseoBrowserAutomationActivity(webContentsId: number): void {
   browserAutomationActivity.mark(webContentsId);
+  agentDrivenActivity.mark(webContentsId);
+}
+
+export function wasPaseoBrowserAgentDriven(webContentsId: number): boolean {
+  return agentDrivenActivity.wasRecent(webContentsId);
 }
 
 export function wasPaseoBrowserRecentlyAutomated(webContentsId: number): boolean {
@@ -39,4 +51,5 @@ export function wasPaseoBrowserRecentlyAutomated(webContentsId: number): boolean
 
 export function clearPaseoBrowserAutomationActivity(webContentsId: number): void {
   browserAutomationActivity.clear(webContentsId);
+  agentDrivenActivity.clear(webContentsId);
 }

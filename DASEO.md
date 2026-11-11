@@ -1989,40 +1989,74 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       `packages/server/src/server/browser-tools/broker.ts`,
       `packages/app/src/composer/input/input.tsx`, `packages/app/src/composer/index.tsx`.
 
-92. **A macOS prompt never stalls the browser, and when the app does stall the agent is told
-    why** — the owner approved on 2026-11-11 ("권장대로 모두 진행"). Shipped in two waves; wave 1
-    is 0.5.106.
+92. **No macOS keychain prompt from Daseo, and a stalled browser is named instead of waited
+    on** — the owner approved on 2026-11-11 ("권장대로 모두 진행", and for the keychain "어떤 상황에서도
+    여기 맥에서 비번 요구 안하게"). Wave 1 shipped as 0.5.106, wave 2 as 0.5.107.
     - **Why every browser tool went silent after 0.5.105.** The first tab install after the swap
       loaded the stored passkey with `safeStorage.decryptString`, which reads the keychain on the
       main thread. macOS showed a keychain prompt (SecurityAgent), and `sample` showed the main
       thread inside `SecItemCopyMatching` for 85+ minutes: every command that needs the main
-      process timed out at 15 s, `main.log` stopped, and only renderer-side calls answered. Why
-      the prompt came back although the signing requirement did not change is not known.
-    - **Passkey keys (wave 1).** The store uses only safeStorage's async API. Its keychain read
-      runs on a Chromium worker thread (`KeychainKeyProvider::GetKey` posts a `MayBlock` task),
-      and it reads what the sync API wrote: both use the `v10` format and key (measured with
-      Electron 44.10.2: sync-encrypted text decrypts async and the reverse, `shouldReEncrypt`
-      false). Decrypted keys stay in main-process memory for the app run. A tab install never
-      waits for them: it installs the authenticator with the keys it already has, and the rest
-      are added to every installed tab when decryption finishes. A passkey a site registers is
-      served to other tabs at once and written to disk only after it is encrypted, never in plain
-      text. A failed decrypt is logged once and retried on the next install.
-    - **A stalled app is named (wave 1).** While a browser request is unanswered, the desktop
-      renderer pings the main process every 5 s (`paseo:browser:ping`); a ping without a reply in
-      2 s answers the request with `browser_timeout`, `hostUnresponsive: true` (an optional error
+      process timed out at 15 s, `main.log` stopped, and only renderer-side calls answered. The
+      app is signed without a Team ID, so the keychain trusted each build separately; the unified
+      log shows a prompt at every swap since the first passkey was stored (11-09).
+    - **Passkey keys never touch the keychain.** Private keys are sealed with AES-256-GCM
+      (`node:crypto`) under an app key that lives in 1Password (`Daseo — PERSONAL_DASEO_PASSKEY_KEY`,
+      vault 개인 로그인) and reaches the main process through `~/.config/agent-secrets/common.env`,
+      which the login-shell environment brings in at startup. Without the key, or with a store sealed
+      under another key, passkeys are off for that run and `browser_passkeys` says why; there is no
+      keychain fallback. The keychain-sealed store from before (one unused accounts.meta.com
+      passkey) is dropped once, with one log line, without reading it. A test fails if any desktop
+      source names `safeStorage`, `keytar`, `SecItem`, or `find-generic-password`;
+      `EnableCookieEncryption` is off in the built app (`@electron/fuses read`). Wave 1's async
+      `safeStorage` store (worker-thread keychain read) is gone with it.
+    - **A stalled app is named.** While a browser request is unanswered, the desktop renderer
+      pings the main process every 5 s (`paseo:browser:ping`); a ping without a reply in 2 s
+      answers the request with `browser_timeout`, `hostUnresponsive: true` (an optional error
       field) and a message that names the main process and the usual cause. A slow command
       whose main process keeps answering is not cut short. The daemon runs
       `pgrep -x SecurityAgent` (cached 3 s) on that failure and on its own 15 s timeout, adds "a
       macOS security prompt is open on the Mac" to the message, and sends one push per stall episode
       ("Mac의 Daseo가 macOS 확인 창 때문에 멈췄습니다…"): not again until a browser command is
       answered, or 30 minutes passed.
-    - **main.log (wave 1).** Browser lifecycle and automation warnings in the main process went
-      to `console`, which electron-log never writes to `main.log`; they use electron-log now.
-    - **Key files:** `packages/desktop/src/features/browser-automation/{passkeys,ipc}.ts`,
-      `packages/desktop/src/features/browser-webviews/index.ts`, `packages/desktop/src/preload.ts`,
-      `packages/app/src/desktop/browser/automation/handler.ts`,
-      `packages/server/src/server/browser-tools/{broker,host-stall}.ts`,
-      `packages/protocol/src/browser-automation/rpc-schemas.ts`.
+    - **A DevTools command that never answers frees the tab.** Each slot of a tab's CDP queue has a
+      deadline (10 s; full-page capture 35 s). A slot past it is released, its caller gets a
+      retryable `browser_timeout` naming the CDP method, and the late result is dropped. The
+      dialog unblocker stays outside the queue.
+    - **A still-loading page answers.** `webContents.executeJavaScript` waits until the page stops
+      loading; page scripts now run through `mainFrame.executeJavaScript`, which does not (measured
+      with Electron 44.10.2: 3 ms against no answer in 3 s on a page holding one image open). It
+      needs an explicit boolean `userGesture`. Snapshot, read, and evaluate results from a page
+      still loading carry `loading: true` and a one-line note.
+    - **Busy and crashed tabs.** Electron's `unresponsive` never fired for a busy-looping agent tab
+      (no event in 25 s, window shown, a mouse event sent), so the page is checked directly.
+      Before every tab command, after the wake (a frozen page runs no script), one trivial
+      main-frame script must answer within 3 s; a page script still unanswered after 3 s gets
+      another check of 1.5 s. A busy page fails with "not responding; try browser_reload or close
+      the tab" in about 3 s (harness) instead of a 15 s timeout; reload, navigate, back, forward,
+      and close always run. The dialog monitor's own DevTools commands hold the queue for at most
+      3 s, since a busy renderer answers none. `render-process-gone` marks a crash until the page
+      loads again; the memory-pressure discard is not a crash. Nothing kills a renderer.
+    - **Downloads.** A download a tab starts within a minute of an agent's command on it (or on the
+      tab that opened its popup) is saved without a dialog to `~/Downloads/Daseo/<unique name>`;
+      downloads a person starts keep the save dialog. `browser_wait download` returns the tab's
+      oldest unreturned download, or the next one, once it is done, with its path.
+    - **Tab events.** A popup or new tab a page opened, a popup that closed by itself, and
+      download start, finish, or failure are queued per tab and handed out once (`events`, plus
+      one line each) with the next result for that tab or for the agent that last used it. A
+      root tab the user closes is not reported: the agent's next command on it says not found.
+    - **Dialogs during navigation** were already answered at once by the per-tab dialog monitor
+      while a navigate, reload, back, or forward runs; a unit test and the capture harness now
+      prove it for an `alert()` during the load.
+    - **Readable evaluate values.** `undefined`, `NaN`, `Infinity`, BigInt, circular objects, DOM
+      nodes, Map, Set, errors, and regexes come back as readable tokens; a value JSON can hold is
+      still exactly what `JSON.stringify` writes.
+    - **main.log.** Browser lifecycle and automation warnings in the main process went to
+      `console`, which electron-log never writes to `main.log`; they use electron-log now.
+    - **Key files:** `packages/desktop/src/features/browser-automation/{passkeys,ipc,cdp-session-queue,renderer-health,downloads,tab-events,evaluate-serialize}.ts`,
+      `packages/desktop/src/features/browser-webviews/index.ts`, `packages/desktop/src/main.ts`,
+      `packages/desktop/src/preload.ts`, `packages/app/src/desktop/browser/automation/handler.ts`,
+      `packages/server/src/server/browser-tools/{broker,host-stall,tools}.ts`,
+      `packages/protocol/src/browser-automation/rpc-schemas.ts`; capture harness group `delta92`.
 
 ## Local reliability contracts
 

@@ -28,7 +28,6 @@ import {
   nativeImage,
   net,
   protocol,
-  safeStorage,
   screen,
   session,
   webContents,
@@ -129,12 +128,25 @@ import {
   registerBrowserAutomationIpc,
 } from "./features/browser-automation/ipc.js";
 import {
+  PASSKEY_KEY_ENV,
   PaseoBrowserPasskeys,
+  PasskeyCipher,
+  PasskeyKeyMismatchError,
   PasskeyStore,
   getPaseoBrowserPasskeys,
   setPaseoBrowserPasskeys,
+  setPaseoBrowserPasskeysUnavailable,
 } from "./features/browser-automation/passkeys.js";
-import { wasPaseoBrowserRecentlyAutomated } from "./features/browser-automation/activity.js";
+import {
+  wasPaseoBrowserAgentDriven,
+  wasPaseoBrowserRecentlyAutomated,
+} from "./features/browser-automation/activity.js";
+import {
+  AgentDownloads,
+  getPaseoBrowserAgentDownloads,
+  setPaseoBrowserAgentDownloads,
+} from "./features/browser-automation/downloads.js";
+import { getPaseoBrowserTabEvents } from "./features/browser-automation/tab-events.js";
 import {
   disableFocusOnNavigation,
   shouldRequestBrowserPopupActivation,
@@ -344,6 +356,36 @@ function createBrowserPopupHostViewPort(mainWindow: BrowserWindow): BrowserPopup
   };
 }
 
+// Delta 92: which tab opened each popup (for downloads and tab events), and popup closes the app
+// asked for itself (the agent's browser_close_tab or the popup's own close button), which are
+// not news to the agent.
+const popupOpenerContentsIdByContentsId = new Map<number, number>();
+const popupRootContentsIdByBrowserId = new Map<string, number>();
+const expectedPopupCloses = new Set<string>();
+
+/** The tab and the tabs that opened it, nearest first. */
+function browserContentsWithOpeners(contentsId: number): number[] {
+  const chain = [contentsId];
+  let current = popupOpenerContentsIdByContentsId.get(contentsId);
+  while (current !== undefined && !chain.includes(current)) {
+    chain.push(current);
+    current = popupOpenerContentsIdByContentsId.get(current);
+  }
+  return chain;
+}
+
+function reportBrowserPopupClosed(browserId: string): void {
+  const rootContentsId = popupRootContentsIdByBrowserId.get(browserId);
+  popupRootContentsIdByBrowserId.delete(browserId);
+  const expected = expectedPopupCloses.delete(browserId);
+  const root = rootContentsId === undefined ? undefined : webContents.fromId(rootContentsId);
+  // A popup that closes with its tab, or because the app closed it, is no news.
+  if (!expected && root && !root.isDestroyed()) {
+    getPaseoBrowserTabEvents().record(browserId, { type: "tab_closed" });
+  }
+  getPaseoBrowserTabEvents().forgetLinks(browserId);
+}
+
 const browserPopupTargets = new BrowserPopupTargetManager({
   createBrowserId: randomUUID,
   onRegisterTarget: (target) => {
@@ -367,6 +409,7 @@ const browserPopupTargets = new BrowserPopupTargetManager({
   },
   onUnregisterTarget: (browserId) => {
     unregisterPaseoBrowser(browserId);
+    reportBrowserPopupClosed(browserId);
     log.info("[browser-popup] unregistered", { browserId });
   },
   onSetActiveTarget: ({ browserId, workspaceId, hostWebContentsId }) => {
@@ -515,6 +558,11 @@ function installBrowserWindowOpenHandler(input: {
             showBrowserWebviewContextMenu(mainWindow, popupContents, params);
           });
           const popupView = createBrowserPopupViewPort(popupContents);
+          popupOpenerContentsIdByContentsId.set(popupContents.id, contents.id);
+          const popupContentsId = popupContents.id;
+          popupContents.once("destroyed", () => {
+            popupOpenerContentsIdByContentsId.delete(popupContentsId);
+          });
           const popupBrowserId = browserPopupTargets.adopt({
             rootWebContentsId: sourceContents.id,
             openerWebContentsId: contents.id,
@@ -525,6 +573,13 @@ function installBrowserWindowOpenHandler(input: {
             initialBounds: { width: options.width, height: options.height },
             requestActivation,
           });
+          popupRootContentsIdByBrowserId.set(popupBrowserId, sourceContents.id);
+          const openerBrowserId = getPaseoBrowserIdForWebContents(contents);
+          if (openerBrowserId) {
+            const tabEvents = getPaseoBrowserTabEvents();
+            tabEvents.linkPopup(popupBrowserId, openerBrowserId);
+            tabEvents.record(openerBrowserId, { type: "popup_opened", popupBrowserId, url });
+          }
           installBrowserWindowOpenHandler({
             contents: popupContents,
             sourceContents,
@@ -565,6 +620,14 @@ function installBrowserWindowOpenHandler(input: {
         sourceBrowserId,
         url: decision.url,
       });
+      // Delta 92: the agent hears that the page opened a tab (browser_list_tabs shows its id).
+      getPaseoBrowserTabEvents().record(
+        getPaseoBrowserIdForWebContents(contents) ?? sourceBrowserId,
+        {
+          type: "tab_opened",
+          url: decision.url,
+        },
+      );
     } else {
       pendingBrowserWindowOpenRequests.add(sourceContents.id, decision.url);
     }
@@ -860,10 +923,13 @@ ipcMain.handle("paseo:browser:close-popup-target", (event, rawInput: unknown): b
   if (!browserId || !workspaceId || getPaseoBrowserWorkspaceId(browserId) !== workspaceId) {
     return false;
   }
-  return browserPopupTargets.closeTarget({
+  expectedPopupCloses.add(browserId);
+  const closed = browserPopupTargets.closeTarget({
     browserId,
     hostWebContentsId: event.sender.id,
   });
+  if (!closed) expectedPopupCloses.delete(browserId);
+  return closed;
 });
 
 ipcMain.handle("paseo:browser:resize-popup-target", (event, rawInput: unknown) => {
@@ -1437,7 +1503,7 @@ async function runCliPassthroughIfRequested(): Promise<boolean> {
 // sets browser.suspendIdleTabs to false. A tab with a download in progress is never frozen.
 // Delta 78: every browser tab carries an agent-owned software passkey authenticator, so a
 // site's passkey sign-in completes at once and a passkey a site registers is kept for later
-// tabs. Private keys rest in userData encrypted with the OS keychain-backed key.
+// tabs. Private keys rest in userData sealed with the app key from 1Password (delta 92).
 // PASEO_BROWSER_PASSKEYS=0 turns it off; the tool then reports browser_unsupported.
 function configureBrowserPasskeys(): void {
   if (process.env.PASEO_BROWSER_PASSKEYS === "0") {
@@ -1445,22 +1511,33 @@ function configureBrowserPasskeys(): void {
     return;
   }
   try {
+    // Delta 92: the app key comes from 1Password through common.env (login shell env); the
+    // macOS keychain is never asked, so no Daseo build can raise a keychain prompt.
+    const keyed = PasskeyCipher.fromBase64(process.env[PASSKEY_KEY_ENV]);
+    if (!keyed.ok) {
+      const reason = `${keyed.reason} (1Password item "Daseo — ${PASSKEY_KEY_ENV}", wired into ~/.config/agent-secrets/common.env)`;
+      setPaseoBrowserPasskeysUnavailable(reason);
+      log.warn("[browser-passkeys] unavailable", { reason });
+      return;
+    }
     const passkeyLog = (message: string, detail?: Record<string, unknown>) =>
       log.info(message, detail);
-    // Only safeStorage's async API reaches the store: its keychain read runs on a worker
-    // thread, so a keychain prompt never holds the main thread (delta 92).
     const store = new PasskeyStore(
       path.join(app.getPath("userData"), "browser-passkeys.json"),
-      safeStorage,
+      keyed.cipher,
       passkeyLog,
     );
     const hub = new PaseoBrowserPasskeys({ store, log: passkeyLog });
     hub.bindSession(session.fromPartition(PASEO_BROWSER_PROFILE_PARTITION));
     setPaseoBrowserPasskeys(hub);
-    // Not `store.isEncrypted()`: that may ask the keychain, which must not happen before a window.
     log.info("[browser-passkeys] ready", { stored: store.list().length });
   } catch (error) {
-    log.warn("[browser-passkeys] unavailable", error);
+    const reason =
+      error instanceof PasskeyKeyMismatchError
+        ? `${error.message}; the store is left as it is`
+        : `the passkey store could not be opened: ${String(error)}`;
+    setPaseoBrowserPasskeysUnavailable(reason);
+    log.warn("[browser-passkeys] unavailable", { reason });
   }
 }
 
@@ -1474,11 +1551,28 @@ async function configureBrowserTabLifecycle(): Promise<void> {
   // Delta 43: under macOS memory pressure, tabs frozen and unused for an hour (30 minutes when
   // critical) give their renderer memory back and reload when next used. Off with the lifecycle.
   startPaseoBrowserTabDiscarder();
+  setPaseoBrowserAgentDownloads(
+    new AgentDownloads({
+      directory: () => path.join(app.getPath("downloads"), "Daseo"),
+      events: getPaseoBrowserTabEvents(),
+    }),
+  );
   session
     .fromPartition(PASEO_BROWSER_PROFILE_PARTITION)
     .on("will-download", (_event, item, contents) => {
       if (!contents || contents.isDestroyed()) return;
       item.once("done", trackPaseoBrowserDownload(contents.id));
+      // Delta 92: a download an agent-driven tab (or a popup it opened) starts is saved to
+      // ~/Downloads/Daseo without a dialog and reported; one a person starts keeps the dialog.
+      const tabs = browserContentsWithOpeners(contents.id);
+      const downloads = getPaseoBrowserAgentDownloads();
+      if (downloads && tabs.some((contentsId) => wasPaseoBrowserAgentDriven(contentsId))) {
+        downloads.handle({
+          item,
+          contentsIds: tabs,
+          browserId: getPaseoBrowserIdForWebContents(contents),
+        });
+      }
     });
 }
 

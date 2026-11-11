@@ -18,7 +18,7 @@ const BROWSER_AUTOMATION_BROWSER_ID_PATTERN =
 const BROWSER_AUTOMATION_BROWSER_ID_MESSAGE =
   "browserId must be a real id returned by browser_new_tab or browser_list_tabs";
 const BROWSER_AUTOMATION_WAIT_CONDITION_MESSAGE =
-  "browser_wait requires exactly one of text, url, selector, script, or load";
+  "browser_wait requires exactly one of text, url, selector, script, load, or download";
 const BROWSER_AUTOMATION_FIND_QUERY_MESSAGE = "browser_find requires role, name, or both";
 
 export const BROWSER_AUTOMATION_COMMAND_NAMES = [
@@ -135,10 +135,13 @@ export const BrowserAutomationWaitCommandSchema = z.object({
     /** JavaScript expression (or function) polled until it returns a truthy value. */
     script: z.string().min(1).optional(),
     load: BrowserAutomationWaitLoadStateSchema.optional(),
+    /** Daseo delta 92: the tab's pending or next download, until it finishes. */
+    download: z.boolean().optional(),
     timeoutMs: z.number().int().positive().max(30_000).optional(),
   }).refine(
     (args) =>
-      [args.text, args.url, args.selector, args.script, args.load].filter(Boolean).length === 1,
+      [args.text, args.url, args.selector, args.script, args.load, args.download].filter(Boolean)
+        .length === 1,
     { message: BROWSER_AUTOMATION_WAIT_CONDITION_MESSAGE },
   ),
 });
@@ -500,6 +503,8 @@ export const BrowserAutomationSnapshotResultSchema = z.object({
   snapshot: z.string(),
   truncated: z.boolean(),
   stats: BrowserAutomationSnapshotStatsSchema,
+  /** Daseo delta 92: the page was still loading when this ran, so the DOM may be partial. */
+  loading: z.boolean().optional(),
 });
 
 export const BrowserAutomationClickResultSchema = z.object({
@@ -516,10 +521,21 @@ export const BrowserAutomationFillResultSchema = z.object({
   ref: BrowserAutomationRefSchema,
 });
 
+/** Daseo delta 92: a file an agent tab downloaded into ~/Downloads/Daseo. */
+export const BrowserAutomationDownloadSchema = z.object({
+  fileName: z.string(),
+  path: z.string(),
+  url: z.string().optional(),
+  state: z.enum(["progressing", "completed", "cancelled", "interrupted"]),
+  receivedBytes: z.number().int().nonnegative(),
+  totalBytes: z.number().int().nonnegative().optional(),
+});
+
 export const BrowserAutomationWaitResultSchema = z.object({
   command: z.literal("wait"),
   browserId: BrowserAutomationBrowserIdSchema,
-  matched: z.enum(["text", "url", "selector", "script", "load", "networkidle"]),
+  matched: z.enum(["text", "url", "selector", "script", "load", "networkidle", "download"]),
+  download: BrowserAutomationDownloadSchema.optional(),
 });
 
 export const BrowserAutomationTypeResultSchema = z.object({
@@ -649,6 +665,8 @@ export const BrowserAutomationEvaluateResultSchema = z.object({
   browserId: BrowserAutomationBrowserIdSchema,
   resultJson: z.string(),
   truncated: z.boolean(),
+  /** Daseo delta 92: the page was still loading when this ran, so the DOM may be partial. */
+  loading: z.boolean().optional(),
 });
 
 export const BrowserAutomationScrollResultSchema = z.object({
@@ -763,6 +781,8 @@ export const BrowserAutomationReadResultSchema = z.object({
     links: z.number().int().nonnegative(),
     structuredDataFound: z.boolean(),
   }),
+  /** Daseo delta 92: the page was still loading when this ran, so the DOM may be partial. */
+  loading: z.boolean().optional(),
 });
 
 export const BrowserAutomationFindMatchSchema = z.object({
@@ -914,6 +934,28 @@ export const BrowserAutomationDialogEventSchema = z.object({
   timestamp: z.number(),
 });
 
+/**
+ * Daseo delta 92: something that happened in a tab between tool calls (a popup or new tab it
+ * opened, a popup that closed, a download), delivered once with the next result for that tab or
+ * for the agent that used it.
+ */
+export const BrowserAutomationTabEventSchema = z.object({
+  type: z.enum([
+    "popup_opened",
+    "tab_opened",
+    "tab_closed",
+    "download_started",
+    "download_finished",
+    "download_failed",
+  ]),
+  browserId: z.string(),
+  timestamp: z.number(),
+  url: z.string().optional(),
+  /** popup_opened: the popup's own browserId. */
+  popupBrowserId: z.string().optional(),
+  download: BrowserAutomationDownloadSchema.optional(),
+});
+
 export const BrowserAutomationExecuteRequestSchema = z
   .object({
     type: z.literal("browser.automation.execute.request"),
@@ -933,12 +975,14 @@ export const BrowserAutomationExecuteResponseSchema = z.object({
       ok: z.literal(true),
       result: BrowserAutomationResultSchema,
       dialogs: z.array(BrowserAutomationDialogEventSchema).optional(),
+      events: z.array(BrowserAutomationTabEventSchema).optional(),
     }),
     z.object({
       requestId: z.string().min(1),
       ok: z.literal(false),
       error: BrowserAutomationErrorSchema,
       dialogs: z.array(BrowserAutomationDialogEventSchema).optional(),
+      events: z.array(BrowserAutomationTabEventSchema).optional(),
     }),
   ]),
 });
@@ -992,3 +1036,5 @@ export type BrowserAutomationResizeCommandArgs = z.infer<
   typeof BrowserAutomationResizeCommandSchema
 >["args"];
 export type BrowserAutomationResizeResult = z.infer<typeof BrowserAutomationResizeResultSchema>;
+export type BrowserAutomationDownload = z.infer<typeof BrowserAutomationDownloadSchema>;
+export type BrowserAutomationTabEvent = z.infer<typeof BrowserAutomationTabEventSchema>;

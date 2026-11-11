@@ -383,7 +383,7 @@ describe("mountBrowserAutomationHandler", () => {
       {
         type: "browser.automation.execute.request",
         requestId: "req-new:list_tabs",
-        agentId: "agent-1",
+        // The registration poll carries no agentId, so it cannot take the agent's tab events.
         workspaceId: "wks_workspace_a",
         command: { command: "list_tabs", args: {} },
       },
@@ -1130,6 +1130,46 @@ describe("mountBrowserAutomationHandler", () => {
       command.resolve({ requestId: "x", ok: true, result: { command: "list_tabs", tabs: [] } });
       await flushAsyncWork();
       expect(harness.client.payloadAt(0)).toMatchObject({ requestId: "req-shot", ok: true });
+    });
+  });
+
+  test("workspace list_tabs keeps the tab events the desktop host hands out (delta 92)", async () => {
+    const browser = new BrowserAutomationHandlerHarness();
+    const workspaceKey = buildWorkspaceTabPersistenceKey({
+      serverId: "server-1",
+      workspaceId: "wks_workspace_a",
+    });
+    if (!workspaceKey) throw new Error("workspace key");
+    const browserId = useBrowserStore
+      .getState()
+      .createBrowser({ initialUrl: "https://one.example" });
+    useWorkspaceLayoutStore.getState().openTabFocused(workspaceKey, { kind: "browser", browserId });
+    const event = {
+      type: "download_finished" as const,
+      browserId: "tab-a",
+      timestamp: 5,
+      download: {
+        fileName: "a.csv",
+        path: "/Users/me/Downloads/Daseo/a.csv",
+        state: "completed" as const,
+        receivedBytes: 3,
+      },
+    };
+    browser.browser.response = {
+      requestId: "x",
+      ok: true,
+      result: { command: "list_tabs", tabs: [] },
+      events: [event],
+    };
+    browser.mount({ serverId: "server-1" });
+
+    browser.receive(workspaceBrowserListRequest());
+    await flushAsyncWork();
+
+    expect(browser.client.payloadAt(0)).toMatchObject({
+      ok: true,
+      result: { command: "list_tabs" },
+      events: [event],
     });
   });
 });

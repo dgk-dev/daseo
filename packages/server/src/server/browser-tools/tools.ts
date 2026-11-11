@@ -89,6 +89,7 @@ const BrowserWaitInputSchema = strictBrowserInput("browser_wait", {
   selector: z.string().min(1).optional(),
   script: z.string().min(1).optional(),
   load: BrowserAutomationWaitLoadStateSchema.optional(),
+  download: z.boolean().optional(),
   timeoutMs: BrowserWaitTimeoutInputSchema.optional(),
   browserId: BrowserAutomationBrowserIdSchema,
 }).refine(
@@ -98,7 +99,7 @@ const BrowserWaitInputSchema = strictBrowserInput("browser_wait", {
   },
   {
     message:
-      "browser_wait requires one condition (text, url, selector, script, or load), or timeoutMs alone to pause",
+      "browser_wait requires one condition (text, url, selector, script, load, or download), or timeoutMs alone to pause",
   },
 );
 const BrowserReadMaxCharsInputSchema = z
@@ -187,8 +188,11 @@ function countWaitConditions(input: {
   selector?: string;
   script?: string;
   load?: string;
+  download?: boolean;
 }): number {
-  return [input.text, input.url, input.selector, input.script, input.load].filter(Boolean).length;
+  return [input.text, input.url, input.selector, input.script, input.load, input.download].filter(
+    Boolean,
+  ).length;
 }
 
 /** null for a plain name; the compiled pattern or why it does not compile for `/pattern/flags`. */
@@ -432,12 +436,15 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Wait for browser condition",
       description:
-        "Wait for one condition in a Paseo browser tab: text the page contains, a URL fragment, a CSS selector that matches an element (attached, visible or not; searches same-origin iframes and open shadow roots), a JavaScript script expression or function polled until it returns a truthy value (a throw fails at once), or load: load for the load event or networkidle for no requests in flight for 500ms (long polling or streaming keeps some pages from ever going idle). Pass only timeoutMs to pause. Use browserId from browser_new_tab or browser_list_tabs; conditions wait up to 5s by default and timeoutMs is capped at 30000.",
+        "Wait for one condition in a Paseo browser tab: text the page contains, a URL fragment, a CSS selector that matches an element (attached, visible or not; searches same-origin iframes and open shadow roots), a JavaScript script expression or function polled until it returns a truthy value (a throw fails at once), or load: load for the load event or networkidle for no requests in flight for 500ms (long polling or streaming keeps some pages from ever going idle), or download: true for the tab's pending or next download to finish (files an agent-driven tab downloads go to ~/Downloads/Daseo without a dialog; returns the path). Pass only timeoutMs to pause. Use browserId from browser_new_tab or browser_list_tabs; conditions wait up to 5s by default and timeoutMs is capped at 30000.",
       inputSchema: BrowserWaitInputSchema,
     },
-    async ({ text, url, selector, script, load, timeoutMs, browserId }, executionContext) => {
+    async (
+      { text, url, selector, script, load, download, timeoutMs, browserId },
+      executionContext,
+    ) => {
       const context = resolveBrowserToolContext(options);
-      if (countWaitConditions({ text, url, selector, script, load }) === 0) {
+      if (countWaitConditions({ text, url, selector, script, load, download }) === 0) {
         const waitedMs = await pause(timeoutMs ?? 0, executionContext?.signal);
         return {
           content: [{ type: "text", text: `Browser wait paused ${waitedMs}ms.` }],
@@ -463,6 +470,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
             ...(selector ? { selector } : {}),
             ...(script ? { script } : {}),
             ...(load ? { load } : {}),
+            ...(download ? { download } : {}),
             ...(timeoutMs ? { timeoutMs } : {}),
           },
         },
@@ -1253,6 +1261,7 @@ function browserToolResult(
         ok: true,
         result: browserToolStructuredResult(payload.result),
         ...(payload.dialogs ? { dialogs: payload.dialogs } : {}),
+        ...(payload.events ? { events: payload.events } : {}),
         context,
       },
     };
@@ -1262,13 +1271,17 @@ function browserToolResult(
     content: [
       {
         type: "text",
-        text: appendDialogSummary(summarizeBrowserError(payload.error), payload.dialogs),
+        text: appendTabEvents(
+          appendDialogSummary(summarizeBrowserError(payload.error), payload.dialogs),
+          payload.events,
+        ),
       },
     ],
     structuredContent: {
       ok: false,
       error: payload.error,
       ...(payload.dialogs ? { dialogs: payload.dialogs } : {}),
+      ...(payload.events ? { events: payload.events } : {}),
       context,
     },
   };
@@ -1294,7 +1307,10 @@ function browserToolSuccessContent(
   payload: Extract<BrowserToolsResponsePayload, { ok: true }>,
   options: BrowserToolSummaryOptions,
 ): PaseoToolResult["content"] {
-  const textContent = { type: "text" as const, text: summarizeBrowserSuccess(payload, options) };
+  const textContent = {
+    type: "text" as const,
+    text: appendTabEvents(summarizeBrowserSuccess(payload, options), payload.events),
+  };
   const imageContent = browserToolImageContent(payload.result);
   return imageContent ? [textContent, imageContent] : [textContent];
 }
@@ -1321,7 +1337,8 @@ function summarizeBrowserSuccess(
   payload: Extract<BrowserToolsResponsePayload, { ok: true }>,
   options: BrowserToolSummaryOptions,
 ): string {
-  const withDialogs = (summary: string) => appendDialogSummary(summary, payload.dialogs);
+  const withDialogs = (summary: string) =>
+    appendDialogSummary(appendLoadingNote(summary, payload.result), payload.dialogs);
   if (payload.result.command === "read") {
     return withDialogs(summarizeBrowserRead(payload.result, options.readScope ?? "main"));
   }
@@ -1402,7 +1419,7 @@ function summarizeBrowserSuccess(
   }
 
   if (payload.result.command === "wait") {
-    return withDialogs(`Browser wait matched ${payload.result.matched}.`);
+    return withDialogs(summarizeBrowserWait(payload.result));
   }
 
   return withDialogs(`Browser ${payload.result.command} complete.`);
@@ -1554,6 +1571,63 @@ function summarizeBrowserFind(
     `Found ${result.total} match${result.total === 1 ? "" : "es"} for ${description}${shown}.`,
     ...lines,
   ].join("\n");
+}
+
+/** Delta 92: one line per thing that happened in the agent's tabs since its last call. */
+function appendTabEvents(summary: string, events: BrowserToolsResponsePayload["events"]): string {
+  if (!events || events.length === 0) {
+    return summary;
+  }
+  return [summary, "Since the last browser call:", ...events.map(describeTabEvent)].join("\n");
+}
+
+type BrowserTabEvent = NonNullable<BrowserToolsResponsePayload["events"]>[number];
+
+const TAB_EVENT_LINES: Record<BrowserTabEvent["type"], (event: BrowserTabEvent) => string> = {
+  popup_opened: (event) =>
+    `tab ${event.browserId} opened popup browserId=${event.popupBrowserId ?? "unknown"}${event.url ? ` url=${event.url}` : ""}`,
+  tab_opened: (event) =>
+    `tab ${event.browserId} opened ${event.url ?? "a page"} in a new tab (browser_list_tabs shows its browserId)`,
+  tab_closed: (event) => `popup ${event.browserId} closed`,
+  download_started: (event) =>
+    `tab ${event.browserId} started downloading ${downloadName(event)} to ${downloadPath(event)}`,
+  download_finished: (event) =>
+    `tab ${event.browserId} finished downloading ${downloadName(event)} (${event.download?.receivedBytes ?? 0} bytes) to ${downloadPath(event)}`,
+  download_failed: (event) =>
+    `tab ${event.browserId} download of ${downloadName(event)} ended ${event.download?.state ?? "failed"}`,
+};
+
+function downloadName(event: BrowserTabEvent): string {
+  return event.download?.fileName ?? "a file";
+}
+
+function downloadPath(event: BrowserTabEvent): string {
+  return event.download?.path ?? "~/Downloads/Daseo";
+}
+
+function describeTabEvent(event: BrowserTabEvent): string {
+  return `- ${TAB_EVENT_LINES[event.type](event)}`;
+}
+
+function summarizeBrowserWait(
+  result: Extract<
+    Extract<BrowserToolsResponsePayload, { ok: true }>["result"],
+    { command: "wait" }
+  >,
+): string {
+  const download = result.download;
+  return download
+    ? `Download finished: ${download.fileName} (${download.receivedBytes} bytes) saved to ${download.path}.`
+    : `Browser wait matched ${result.matched}.`;
+}
+
+function appendLoadingNote(
+  summary: string,
+  result: Extract<BrowserToolsResponsePayload, { ok: true }>["result"],
+): string {
+  return "loading" in result && result.loading === true
+    ? `${summary}\nNote: the page was still loading, so this may not show all of it yet.`
+    : summary;
 }
 
 function appendDialogSummary(

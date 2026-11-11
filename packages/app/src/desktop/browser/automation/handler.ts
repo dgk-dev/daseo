@@ -432,9 +432,12 @@ async function listWorkspaceBrowserTabsForRequest(params: {
   });
 
   let liveTabs: BrowserAutomationTabInfo[] = [];
+  let events: BrowserAutomationSuccessPayload["events"];
   if (browserHost?.executeAutomationCommand) {
     try {
       const livePayload = await browserHost.executeAutomationCommand(request);
+      // Delta 92: the desktop host hands the agent's tab events out once; keep them.
+      events = livePayload.events;
       if (livePayload.ok && livePayload.result.command === "list_tabs") {
         liveTabs = livePayload.result.tabs.filter(
           (tab) => !tab.workspaceId || tab.workspaceId === workspaceId,
@@ -474,6 +477,7 @@ async function listWorkspaceBrowserTabsForRequest(params: {
     requestId: request.requestId,
     ok: true,
     result: { command: "list_tabs", tabs },
+    ...(events && events.length > 0 ? { events } : {}),
   };
 }
 
@@ -831,7 +835,7 @@ async function waitForBrowserRegistration(params: {
     const payload = await params.executeAutomationCommand({
       type: "browser.automation.execute.request",
       requestId: `${params.request.requestId}:list_tabs`,
-      agentId: params.request.agentId,
+      // No agentId: this poll must not take the agent's tab events (delta 92).
       cwd: params.request.cwd,
       workspaceId: params.workspaceId,
       command: { command: "list_tabs", args: {} },

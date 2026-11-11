@@ -200,8 +200,20 @@ class FakeWebContents {
     this.insertedTexts.push(text);
   }
 
-  public async executeJavaScript(): Promise<unknown> {
-    return null;
+  public readonly mainFrameScripts: Array<{ code: string; userGesture?: boolean }> = [];
+  public readonly mainFrame = {
+    executeJavaScript: async (code: string, userGesture?: boolean): Promise<unknown> => {
+      if (typeof userGesture !== "boolean") {
+        throw new TypeError("userGesture must be a boolean");
+      }
+      this.mainFrameScripts.push({ code, userGesture });
+      return null;
+    },
+  };
+
+  /** webContents.executeJavaScript waits for a load to stop; the adapter must never use it. */
+  public executeJavaScript(): Promise<unknown> {
+    throw new Error("webContents.executeJavaScript must not be used");
   }
 
   public async loadURL(url: string): Promise<void> {
@@ -249,9 +261,19 @@ class FakeWebContents {
     }
   }
 
-  public on(event: "console-message", listener: ConsoleMessageListener): void {
-    expect(event).toBe("console-message");
-    this.consoleMessageListener = listener;
+  public on(
+    event: string,
+    listener: ConsoleMessageListener | ((...args: unknown[]) => void),
+  ): void {
+    if (event === "console-message") {
+      this.consoleMessageListener = listener as ConsoleMessageListener;
+      return;
+    }
+    // Renderer health (delta 92) listens for unresponsive, responsive, render-process-gone, and
+    // did-start-loading.
+    const list = this.eventListeners.get(event) ?? [];
+    list.push(listener);
+    this.eventListeners.set(event, list);
   }
 
   public once(event: "destroyed", listener: () => void): void {
@@ -279,6 +301,13 @@ class FakeWebContents {
 }
 
 describe("browser automation IPC adapter", () => {
+  test("runs page scripts in the main frame, which does not wait for loading to stop", async () => {
+    const contents = new FakeWebContents(40);
+    const tab = adaptWebContents(contents);
+    await tab.executeJavaScript("document.title", true);
+    expect(contents.mainFrameScripts).toEqual([{ code: "document.title", userGesture: true }]);
+  });
+
   test("answers the renderer's ping with nothing but a free main thread", async () => {
     const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
     registerBrowserAutomationIpc({
@@ -536,6 +565,43 @@ describe("browser automation IPC adapter", () => {
       promptShimCall(PROMPT_SHIM_RESTORE_FUNCTION),
       RELEASE_PROMPT_SHIM,
     ]);
+  });
+
+  test("a dialog a page opens while it loads is answered at once, so the navigation finishes (delta 92)", async () => {
+    const contents = new FakeWebContents(41);
+    let finishLoad = () => {};
+    contents.loadURL = async (url: string) => {
+      contents.loadedUrls.push(url);
+      // An alert in an inline script holds the load until it is answered.
+      await new Promise<void>((resolve) => {
+        finishLoad = resolve;
+      });
+    };
+    const tab = adaptWebContents(contents);
+
+    const navigated = tab.captureDialogs?.(async () => {
+      const load = tab.loadURL("https://site.example/welcome");
+      await flushMicrotasks();
+      contents.debugger.emitMessage("Page.javascriptDialogOpening", {
+        type: "alert",
+        message: "Welcome",
+      });
+      await flushMicrotasks();
+      expect(contents.debugger.commands).toContainEqual({
+        command: "Page.handleJavaScriptDialog",
+        params: { accept: true },
+      });
+      finishLoad();
+      await load;
+      return "loaded";
+    });
+
+    await expect(navigated).resolves.toEqual({
+      result: "loaded",
+      dialogs: [
+        { type: "alert", message: "Welcome", action: "accepted", timestamp: expect.any(Number) },
+      ],
+    });
   });
 
   test("keeps the prompt shim installed until overlapping captures finish", async () => {

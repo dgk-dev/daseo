@@ -17,7 +17,7 @@ const POPUP_BROWSER_ID = "22222222-2222-4222-8222-222222222222";
 const BROWSER_ID_MESSAGE =
   "browserId must be a real id returned by browser_new_tab or browser_list_tabs";
 const WAIT_CONDITION_MESSAGE =
-  "browser_wait requires one condition (text, url, selector, script, or load), or timeoutMs alone to pause";
+  "browser_wait requires one condition (text, url, selector, script, load, or download), or timeoutMs alone to pause";
 const HTTP_URL_MESSAGE = "URL must use http/https only";
 const WORKSPACE_CONTEXT_MESSAGE =
   "This browser tool needs a workspace. Start the agent from a Paseo workspace before calling browser_new_tab or browser_list_tabs.";
@@ -1304,6 +1304,112 @@ describe("registerBrowserTools", () => {
         browserId: BROWSER_ID,
       },
     });
+  });
+
+  test("results carry what happened in the agent's tabs since its last call (delta 92)", async () => {
+    const harness = new BrowserToolHarness();
+    const download = {
+      fileName: "report.pdf",
+      path: "/Users/me/Downloads/Daseo/report.pdf",
+      state: "completed" as const,
+      receivedBytes: 2048,
+    };
+    const payload: Extract<BrowserToolsResponsePayload, { ok: true }> = {
+      requestId: "req-click",
+      ok: true,
+      result: { command: "click", browserId: BROWSER_ID, ref: "@e1" },
+      events: [
+        {
+          type: "popup_opened",
+          browserId: BROWSER_ID,
+          timestamp: 1,
+          popupBrowserId: "22222222-2222-4222-8222-222222222222",
+          url: "https://accounts.example.com/oauth",
+        },
+        { type: "download_finished", browserId: BROWSER_ID, timestamp: 2, download },
+        { type: "tab_closed", browserId: "22222222-2222-4222-8222-222222222222", timestamp: 3 },
+      ],
+    };
+    harness.broker.setResponse(payload);
+
+    const response = await harness.execute("browser_click", { browserId: BROWSER_ID, ref: "@e1" });
+
+    expect(response.content).toEqual([
+      {
+        type: "text",
+        text: [
+          "Clicked browser element @e1.",
+          "Since the last browser call:",
+          `- tab ${BROWSER_ID} opened popup browserId=22222222-2222-4222-8222-222222222222 url=https://accounts.example.com/oauth`,
+          `- tab ${BROWSER_ID} finished downloading report.pdf (2048 bytes) to /Users/me/Downloads/Daseo/report.pdf`,
+          "- popup 22222222-2222-4222-8222-222222222222 closed",
+        ].join("\n"),
+      },
+    ]);
+    expect(response.structuredContent).toMatchObject({ ok: true, events: payload.events });
+  });
+
+  test("a result from a page that was still loading says so (delta 92)", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-eval",
+      ok: true,
+      result: {
+        command: "evaluate",
+        browserId: BROWSER_ID,
+        resultJson: "undefined",
+        truncated: false,
+        loading: true,
+      },
+    });
+
+    const response = await harness.execute("browser_evaluate", {
+      browserId: BROWSER_ID,
+      function: "() => window.app",
+    });
+
+    expect(response.content).toEqual([
+      {
+        type: "text",
+        text: "Browser evaluate returned:\nundefined\nNote: the page was still loading, so this may not show all of it yet.",
+      },
+    ]);
+  });
+
+  test("browser_wait download sends the condition and names the saved file (delta 92)", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-wait",
+      ok: true,
+      result: {
+        command: "wait",
+        browserId: BROWSER_ID,
+        matched: "download",
+        download: {
+          fileName: "data.csv",
+          path: "/Users/me/Downloads/Daseo/data.csv",
+          state: "completed",
+          receivedBytes: 12,
+        },
+      },
+    });
+
+    const response = await harness.execute("browser_wait", {
+      browserId: BROWSER_ID,
+      download: true,
+      timeoutMs: 20_000,
+    });
+
+    expect(harness.broker.calls.at(-1)?.command).toEqual({
+      command: "wait",
+      args: { browserId: BROWSER_ID, download: true, timeoutMs: 20_000 },
+    });
+    expect(response.content).toEqual([
+      {
+        type: "text",
+        text: "Download finished: data.csv (12 bytes) saved to /Users/me/Downloads/Daseo/data.csv.",
+      },
+    ]);
   });
 
   test("failure responses include handled dialog metadata and a text note", async () => {
