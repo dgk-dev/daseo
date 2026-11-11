@@ -1,12 +1,4 @@
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -309,29 +301,6 @@ describe("PasskeyStore", () => {
     const reopened = new PasskeyStore(filePath, cipher, (message) => logged.push(message));
     expect(reopened.list().map((p) => p.credentialId)).toEqual(["good"]);
     expect(logged).toEqual(["[browser-passkeys] skipped a stored passkey that does not decrypt"]);
-  });
-});
-
-describe("no macOS keychain access (delta 92)", () => {
-  test("no desktop main-process source uses Electron's keychain encryption or a keychain API", () => {
-    const srcRoot = path.resolve(__dirname, "..", "..");
-    const offenders: string[] = [];
-    const walk = (folder: string) => {
-      for (const entry of readdirSync(folder, { withFileTypes: true })) {
-        const full = path.join(folder, entry.name);
-        if (entry.isDirectory()) {
-          walk(full);
-        } else if (/\.(ts|js|mjs|cjs)$/.test(entry.name) && !/\.test\./.test(entry.name)) {
-          const text = readFileSync(full, "utf8");
-          if (/\bsafeStorage\b|\bkeytar\b|SecItem|SecKeychain|find-generic-password/.test(text)) {
-            offenders.push(path.relative(srcRoot, full));
-          }
-        }
-      }
-    };
-    walk(srcRoot);
-    expect(srcRoot.endsWith(path.join("desktop", "src"))).toBe(true);
-    expect(offenders).toEqual([]);
   });
 });
 

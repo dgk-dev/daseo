@@ -1,8 +1,6 @@
-import { execFile } from "node:child_process";
 import { existsSync, promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import type { Logger } from "pino";
 import { z } from "zod";
 import type {
@@ -19,11 +17,8 @@ import {
   windowFromUsedPct,
 } from "../usage.js";
 
-const execFileAsync = promisify(execFile);
-const CLAUDE_KEYCHAIN_TIMEOUT_MS = 2_000;
 const CLAUDE_OAUTH_BETA = "oauth-2025-04-20";
 const CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-const CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials";
 
 const ClaudeCredentialsSchema = z.object({
   claudeAiOauth: z
@@ -85,14 +80,12 @@ const SCOPED_WEEKLY_KIND = "weekly_scoped";
 
 interface ClaudeCredentialRecord {
   oauth: { accessToken: string } & NonNullable<ClaudeCredentials["claudeAiOauth"]>;
-  filePath: string | null;
+  filePath: string;
 }
 
 interface ClaudeQuotaProviderOptions {
   logger: Logger;
   claudeHome?: string;
-  claudeKeychainReader?: () => Promise<unknown | null>;
-  platform?: typeof process.platform;
   fetch?: ProviderApiFetch;
 }
 
@@ -301,37 +294,18 @@ function scopedWindows(limits: ScopedLimit[]): ProviderUsageWindow[] {
   });
 }
 
-async function readClaudeKeychainCredentials(): Promise<unknown | null> {
-  try {
-    const { stdout } = await execFileAsync(
-      "security",
-      ["find-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE, "-w"],
-      { timeout: CLAUDE_KEYCHAIN_TIMEOUT_MS },
-    );
-    const raw = stdout.trim();
-    if (!raw) return null;
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
 export class ClaudeQuotaProvider implements ProviderUsageFetcher {
   readonly providerId = "claude";
   readonly displayName = "Claude";
 
   private readonly logger: Logger;
   private readonly claudeHome: string;
-  private readonly readKeychainCredentials: () => Promise<unknown | null>;
-  private readonly platform: typeof process.platform;
   private readonly fetchApi: ProviderApiFetch;
 
   constructor(options: ClaudeQuotaProviderOptions) {
     this.logger = options.logger.child({ module: "claude-quota-provider" });
     this.claudeHome =
       options.claudeHome || process.env["CLAUDE_HOME"] || join(homedir(), ".claude");
-    this.readKeychainCredentials = options.claudeKeychainReader ?? readClaudeKeychainCredentials;
-    this.platform = options.platform ?? process.platform;
     this.fetchApi = options.fetch ?? fetch;
   }
 
@@ -346,7 +320,7 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
     let resp = await this.callClaudeApi(oauth.accessToken);
 
     if (resp === "NEEDS_AUTH") {
-      if (!filePath || !oauth.refreshToken) {
+      if (!oauth.refreshToken) {
         return unavailableUsage(this);
       }
 
@@ -430,31 +404,23 @@ export class ClaudeQuotaProvider implements ProviderUsageFetcher {
     return parsed;
   }
 
+  /**
+   * Only `~/.claude/.credentials.json`. Daseo delta 92: the macOS Keychain copy Claude Code keeps
+   * is never read, because reading it from the daemon can raise a keychain prompt on
+   * the Mac; without the file the card says Unavailable, like any missing credential.
+   */
   private async readCredentials(): Promise<ClaudeCredentialRecord | null> {
     const credPath = join(this.claudeHome, ".credentials.json");
-
-    if (existsSync(credPath)) {
-      try {
-        const creds = ClaudeCredentialsSchema.parse(
-          JSON.parse(await fs.readFile(credPath, "utf8")),
-        );
-        const oauth = creds.claudeAiOauth;
-        if (oauth?.accessToken) {
-          return { oauth: { ...oauth, accessToken: oauth.accessToken }, filePath: credPath };
-        }
-      } catch {
-        // Fall through to the macOS Keychain below.
-      }
-    }
-
-    if (this.platform === "darwin") {
-      const creds = ClaudeCredentialsSchema.safeParse(await this.readKeychainCredentials());
-      const oauth = creds.success ? creds.data.claudeAiOauth : undefined;
+    if (!existsSync(credPath)) return null;
+    try {
+      const creds = ClaudeCredentialsSchema.parse(JSON.parse(await fs.readFile(credPath, "utf8")));
+      const oauth = creds.claudeAiOauth;
       if (oauth?.accessToken) {
-        return { oauth: { ...oauth, accessToken: oauth.accessToken }, filePath: null };
+        return { oauth: { ...oauth, accessToken: oauth.accessToken }, filePath: credPath };
       }
+    } catch {
+      // An unreadable file is the same as no credentials.
     }
-
     return null;
   }
 

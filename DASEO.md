@@ -1991,7 +1991,7 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
 
 92. **No macOS keychain prompt from Daseo, and a stalled browser is named instead of waited
     on** — the owner approved on 2026-11-11 ("권장대로 모두 진행", and for the keychain "어떤 상황에서도
-    여기 맥에서 비번 요구 안하게"). Wave 1 shipped as 0.5.106, wave 2 as 0.5.107.
+    여기 맥에서 비번 요구 안하게"). Wave 1 was built as 0.5.106 and wave 2 as 0.5.107 (neither activated); both ship in 0.5.108.
     - **Why every browser tool went silent after 0.5.105.** The first tab install after the swap
       loaded the stored passkey with `safeStorage.decryptString`, which reads the keychain on the
       main thread. macOS showed a keychain prompt (SecurityAgent), and `sample` showed the main
@@ -2005,8 +2005,11 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       which the login-shell environment brings in at startup. Without the key, or with a store sealed
       under another key, passkeys are off for that run and `browser_passkeys` says why; there is no
       keychain fallback. The keychain-sealed store from before (one unused accounts.meta.com
-      passkey) is dropped once, with one log line, without reading it. A test fails if any desktop
-      source names `safeStorage`, `keytar`, `SecItem`, or `find-generic-password`;
+      passkey) is dropped once, with one log line, without reading it. The daemon's Claude quota
+      card no longer falls back to the keychain copy of Claude Code's login (it ran the `security`
+      tool); without `~/.claude/.credentials.json` the card says Unavailable. A test
+      (`packages/desktop/src/no-keychain.test.ts`) fails if desktop, server, or CLI source uses
+      `safeStorage`, `keytar`, the keychain C API, or the keychain command-line tool;
       `EnableCookieEncryption` is off in the built app (`@electron/fuses read`). Wave 1's async
       `safeStorage` store (worker-thread keychain read) is gone with it.
     - **A stalled app is named.** While a browser request is unanswered, the desktop renderer

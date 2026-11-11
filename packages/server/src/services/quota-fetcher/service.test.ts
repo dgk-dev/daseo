@@ -395,8 +395,6 @@ describe("real provider usage fetchers", () => {
 
   function service(
     options: {
-      platform?: typeof process.platform;
-      keychain?: () => Promise<unknown | null>;
       kimiHomeDir?: string;
       cursorHomeDir?: string;
       miniMaxConfigPath?: string;
@@ -413,8 +411,6 @@ describe("real provider usage fetchers", () => {
         new ClaudeQuotaProvider({
           logger,
           claudeHome,
-          claudeKeychainReader: options.keychain ?? (async () => null),
-          platform: options.platform,
           fetch: fetchThroughTestDouble,
         }),
         new CodexQuotaProvider({ logger, codexHome, fetch: fetchThroughTestDouble }),
@@ -579,27 +575,17 @@ describe("real provider usage fetchers", () => {
     expect(findProvider(result, "claude").status).toBe("unavailable");
   });
 
-  it("does not refresh Claude tokens read from the macOS Keychain", async () => {
+  it("never asks the macOS Keychain: without the credentials file Claude is unavailable", async () => {
+    // Delta 92: the daemon must not read the keychain; that can raise a prompt on the Mac.
     const usageFetch = vi.fn(async () => new Response(null, { status: 401 }));
     fetchApi = usageFetch as never;
 
-    const result = await service({
-      platform: "darwin",
-      keychain: async () => ({
-        claudeAiOauth: {
-          accessToken: "at_expired",
-          refreshToken: "rt_valid",
-        },
-      }),
-    }).listUsage();
+    const result = await service().listUsage();
 
-    expect(findProvider(result, "claude").status).toBe("unavailable");
-    expect(usageFetch).toHaveBeenCalledTimes(1);
-    expect(usageFetch).toHaveBeenCalledWith(
+    expect(findProvider(result, "claude")).toMatchObject({ status: "unavailable", error: null });
+    expect(usageFetch).not.toHaveBeenCalledWith(
       "https://api.anthropic.com/api/oauth/usage",
-      expect.objectContaining({
-        headers: expect.objectContaining({ Authorization: "Bearer at_expired" }),
-      }),
+      expect.anything(),
     );
   });
 
@@ -1430,7 +1416,6 @@ describe("usage bars escalate as they fill", () => {
     return new ClaudeQuotaProvider({
       logger: createLogger(),
       claudeHome,
-      claudeKeychainReader: async () => null,
       fetch: mockFetch(
         new Map([
           [
@@ -1518,7 +1503,6 @@ describe("ClaudeQuotaProvider scoped weekly limits", () => {
     const provider = new ClaudeQuotaProvider({
       logger: logger as never,
       claudeHome,
-      claudeKeychainReader: async () => null,
       fetch: mockFetch(
         new Map([["https://api.anthropic.com/api/oauth/usage", () => jsonResponse(body)]]),
       ),
@@ -1670,7 +1654,6 @@ describe("ClaudeQuotaProvider scoped limit reconciliation", () => {
     const usage = await new ClaudeQuotaProvider({
       logger: createLogger(),
       claudeHome,
-      claudeKeychainReader: async () => null,
       fetch: mockFetch(
         new Map([["https://api.anthropic.com/api/oauth/usage", () => jsonResponse(body)]]),
       ),
