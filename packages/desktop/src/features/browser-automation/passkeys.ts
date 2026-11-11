@@ -276,13 +276,43 @@ export function fromBase64Url(base64url: string): string {
   return base64 + "=".repeat((4 - (base64.length % 4)) % 4);
 }
 
-function toCdpCredential(passkey: StoredPasskey, privateKey: string): CdpCredential {
+// Delta 94. Chromium's virtual authenticator refuses a site's create() once it holds three
+// discoverable credentials (CTAP2_ERR_KEY_STORE_FULL, surfaced to the page as NotAllowedError
+// within milliseconds; measured on Electron 44.10.2, 2026-11-11). Loading every stored passkey
+// as discoverable made the fourth registration fail on every site. Credentials loaded as
+// non-discoverable do not count (20 loaded, create() still succeeded) and still sign in when
+// the site names them in allowCredentials. So a tab holds at most two discoverable credentials,
+// the most recently used ones of its own site; every other stored passkey rides along
+// non-discoverable, and one slot stays free for a registration.
+export const DISCOVERABLE_SLOTS = 2;
+
+/** Stored passkeys in load order with their role in a tab that shows `host`. */
+export function planTabCredentials(
+  passkeys: readonly StoredPasskey[],
+  host: string | undefined,
+): Array<{ passkey: StoredPasskey; discoverable: boolean }> {
+  const recent = (passkey: StoredPasskey) => passkey.lastUsedAt ?? passkey.createdAt;
+  const own = passkeys
+    .filter((passkey) => host !== undefined && hostMatchesRpId(host, passkey.rpId))
+    .sort((a, b) => recent(b).localeCompare(recent(a)));
+  const discoverable = new Set(own.slice(0, DISCOVERABLE_SLOTS).map((p) => p.credentialId));
+  return passkeys.map((passkey) => ({
+    passkey,
+    discoverable: discoverable.has(passkey.credentialId),
+  }));
+}
+
+function toCdpCredential(
+  passkey: StoredPasskey,
+  privateKey: string,
+  discoverable: boolean,
+): CdpCredential {
   return {
     credentialId: fromBase64Url(passkey.credentialId),
-    isResidentCredential: true,
+    isResidentCredential: discoverable,
     rpId: passkey.rpId,
     privateKey,
-    ...(passkey.userHandle ? { userHandle: passkey.userHandle } : {}),
+    ...(discoverable && passkey.userHandle ? { userHandle: passkey.userHandle } : {}),
     signCount: passkey.signCount,
     ...(passkey.userName ? { userName: passkey.userName } : {}),
     ...(passkey.userDisplayName ? { userDisplayName: passkey.userDisplayName } : {}),
@@ -337,6 +367,8 @@ interface TabState {
   authenticatorId: string | null;
   /** Credential ids (base64url) currently loaded into this tab's authenticator. */
   loaded: Set<string>;
+  /** The loaded ids that are discoverable; kept at or under DISCOVERABLE_SLOTS by install. */
+  discoverable: Set<string>;
   /** Increments per install so a stale install cannot overwrite a newer one. */
   generation: number;
 }
@@ -403,6 +435,7 @@ export class PaseoBrowserPasskeys {
       queue,
       authenticatorId: null,
       loaded: new Set(),
+      discoverable: new Set(),
       generation: 0,
     };
     this.tabs.set(contents.id, state);
@@ -412,6 +445,7 @@ export class PaseoBrowserPasskeys {
     contents.debugger.on?.("detach", () => {
       state.authenticatorId = null;
       state.loaded.clear();
+      state.discoverable.clear();
     });
     // Deferred past the navigation's other observers: DevTools resets the virtual environment
     // for the new document in the same DidFinishNavigation pass, and an enable sent from inside
@@ -467,6 +501,7 @@ export class PaseoBrowserPasskeys {
                 })
                 .catch(() => undefined);
               state.loaded.delete(credentialId);
+              state.discoverable.delete(credentialId);
             },
             { label: "WebAuthn.removeCredential" },
           )
@@ -492,6 +527,7 @@ export class PaseoBrowserPasskeys {
             const previous = state.authenticatorId;
             state.authenticatorId = null;
             state.loaded.clear();
+            state.discoverable.clear();
             if (previous !== null) {
               // Rejects with "not found" when the navigation already dropped the environment.
               await dbg
@@ -502,20 +538,25 @@ export class PaseoBrowserPasskeys {
               options: VIRTUAL_AUTHENTICATOR_OPTIONS,
             })) as { authenticatorId: string };
             const loaded = new Set<string>();
-            for (const passkey of this.store.list()) {
+            const discoverable = new Set<string>();
+            const plan = planTabCredentials(this.store.list(), hostOf(state.contents.getURL()));
+            for (const { passkey, discoverable: isDiscoverable } of plan) {
               const privateKey = this.store.keyOf(passkey.credentialId);
               if (privateKey === undefined) continue;
               await dbg.sendCommand("WebAuthn.addCredential", {
                 authenticatorId: added.authenticatorId,
-                credential: toCdpCredential(passkey, privateKey),
+                credential: toCdpCredential(passkey, privateKey, isDiscoverable),
               });
               loaded.add(passkey.credentialId);
+              if (isDiscoverable) discoverable.add(passkey.credentialId);
             }
             state.authenticatorId = added.authenticatorId;
             state.loaded = loaded;
+            state.discoverable = discoverable;
           } catch (error) {
             state.authenticatorId = null;
             state.loaded.clear();
+            state.discoverable.clear();
             if (added && !state.contents.isDestroyed()) {
               // A half-loaded authenticator would hold the environment's only internal slot.
               await dbg
@@ -538,6 +579,7 @@ export class PaseoBrowserPasskeys {
         // The slot outlived its deadline (delta 92); the next navigation installs again.
         state.authenticatorId = null;
         state.loaded.clear();
+        state.discoverable.clear();
         this.log("[browser-passkeys] install timed out", {
           contentsId: state.contents.id,
           error: String(error),
@@ -571,11 +613,15 @@ export class PaseoBrowserPasskeys {
       };
       if (!this.store.add(stored)) return;
       state.loaded.add(credentialId);
+      if (credential.isResidentCredential !== false) state.discoverable.add(credentialId);
       this.log("[browser-passkeys] passkey registered", {
         rpId: stored.rpId,
         userName: stored.userName,
       });
       void this.syncOthers(state, credentialId);
+      // The registration took the free slot; loading again demotes the least recently used
+      // discoverable credential so the next registration in this tab has a slot too.
+      if (state.discoverable.size > DISCOVERABLE_SLOTS) void this.install(state);
       return;
     }
     const updated = this.store.touch(credentialId, credential.signCount ?? 0, at);
@@ -597,6 +643,14 @@ export class PaseoBrowserPasskeys {
                 if (!state.authenticatorId || state.contents.isDestroyed()) return;
                 const { debugger: dbg } = state.contents;
                 try {
+                  // A credential the tab already holds keeps its role; a new one takes a
+                  // discoverable slot only on its own site and only while one is free.
+                  const host = hostOf(state.contents.getURL());
+                  const isDiscoverable = state.loaded.has(credentialId)
+                    ? state.discoverable.has(credentialId)
+                    : host !== undefined &&
+                      hostMatchesRpId(host, passkey.rpId) &&
+                      state.discoverable.size < DISCOVERABLE_SLOTS;
                   if (state.loaded.has(credentialId)) {
                     await dbg.sendCommand("WebAuthn.removeCredential", {
                       authenticatorId: state.authenticatorId,
@@ -605,9 +659,10 @@ export class PaseoBrowserPasskeys {
                   }
                   await dbg.sendCommand("WebAuthn.addCredential", {
                     authenticatorId: state.authenticatorId,
-                    credential: toCdpCredential(passkey, privateKey),
+                    credential: toCdpCredential(passkey, privateKey, isDiscoverable),
                   });
                   state.loaded.add(credentialId);
+                  if (isDiscoverable) state.discoverable.add(credentialId);
                 } catch (error) {
                   this.log("[browser-passkeys] sync failed", {
                     contentsId: state.contents.id,

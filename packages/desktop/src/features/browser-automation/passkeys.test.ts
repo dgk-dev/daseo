@@ -5,6 +5,8 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { CdpSessionQueue } from "./cdp-session-queue.js";
 import {
+  DISCOVERABLE_SLOTS,
+  planTabCredentials,
   PASSKEY_KEY_ENV,
   PaseoBrowserPasskeys,
   PasskeyCipher,
@@ -305,6 +307,82 @@ describe("PasskeyStore", () => {
 });
 
 describe("PaseoBrowserPasskeys", () => {
+  // Delta 94: Chromium's virtual authenticator refuses create() at three discoverable credentials.
+  test("a tab holds at most two discoverable credentials, the latest used of its own site", async () => {
+    const h = hub();
+    const first = new FakeTab(1);
+    h.attach(first, new CdpSessionQueue());
+    await settle(h, first);
+    const register = async (suffix: string, rpId: string) => {
+      first.url = `https://${rpId}/`;
+      clock = new Date(clock.getTime() + 60_000);
+      first.emitDebugger("WebAuthn.credentialAdded", {
+        authenticatorId: "auth-1-1",
+        credential: {
+          ...SITE_CREDENTIAL,
+          credentialId: `${suffix}${SITE_CREDENTIAL.credentialId.slice(suffix.length)}`,
+          rpId,
+        },
+      });
+      await settle(h, first);
+    };
+    await register("AAA1", "example.com");
+    await register("AAA2", "example.com");
+    await register("AAA3", "example.com");
+    await register("BBB1", "other.test");
+    expect(h.store.list()).toHaveLength(4);
+
+    const plan = planTabCredentials(h.store.list(), "app.example.com");
+    expect(
+      plan
+        .filter((entry) => entry.discoverable)
+        .map((entry) => entry.passkey.credentialId.slice(0, 4)),
+    ).toEqual(["AAA2", "AAA3"]);
+    expect(planTabCredentials(h.store.list(), undefined).some((entry) => entry.discoverable)).toBe(
+      false,
+    );
+    expect(DISCOVERABLE_SLOTS).toBe(2);
+
+    const tab = new FakeTab(2);
+    h.attach(tab, new CdpSessionQueue());
+    await settle(h, tab);
+    const loaded = tab
+      .commandsNamed("WebAuthn.addCredential")
+      .map((entry) => entry.params?.credential as Record<string, unknown>);
+    expect(loaded).toHaveLength(4);
+    const discoverable = loaded.filter((credential) => credential.isResidentCredential === true);
+    expect(discoverable.map((credential) => String(credential.credentialId).slice(0, 4))).toEqual([
+      "AAA2",
+      "AAA3",
+    ]);
+    for (const credential of loaded.filter((entry) => entry.isResidentCredential === false)) {
+      expect(credential).not.toHaveProperty("userHandle");
+    }
+
+    // A registration fills the third slot; the tab loads again and is back at two.
+    const before = tab.commandsNamed("WebAuthn.addVirtualAuthenticator").length;
+    clock = new Date(clock.getTime() + 60_000);
+    tab.emitDebugger("WebAuthn.credentialAdded", {
+      authenticatorId: "auth-2-1",
+      credential: {
+        ...SITE_CREDENTIAL,
+        credentialId: `AAA4${SITE_CREDENTIAL.credentialId.slice(4)}`,
+      },
+    });
+    await settle(h, tab);
+    expect(tab.commandsNamed("WebAuthn.addVirtualAuthenticator").length).toBe(before + 1);
+    const reloaded = tab
+      .commandsNamed("WebAuthn.addCredential")
+      .slice(-5)
+      .map((entry) => entry.params?.credential as Record<string, unknown>);
+    expect(
+      reloaded
+        .filter((credential) => credential.isResidentCredential === true)
+        .map((credential) => String(credential.credentialId).slice(0, 4))
+        .sort(),
+    ).toEqual(["AAA3", "AAA4"]);
+  });
+
   test("installs a virtual authenticator in a tab and again after every navigation", async () => {
     const h = hub();
     const tab = new FakeTab(1);

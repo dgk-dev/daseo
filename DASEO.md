@@ -2129,6 +2129,22 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       `packages/desktop/e2e/browser-tabs.e2e.mjs` (pane-only card, composer focus in another
       workspace).
 
+94. **A fourth passkey can be registered** — measured 2026-11-11 on Electron 44.10.2: Chromium's
+    virtual authenticator answers a site's `create()` with `CTAP2_ERR_KEY_STORE_FULL` once it holds
+    three discoverable credentials, and the page sees `NotAllowedError` within milliseconds. Delta 78
+    loaded every stored passkey into every tab as discoverable, so with three passkeys stored
+    (github.com and two google.com accounts) every further registration failed on every site
+    (first seen on `auth.openai.com`, reproduced on webauthn.io). Credentials loaded as
+    non-discoverable do not count (20 loaded, `create()` succeeded) and still sign in when the
+    site names them in `allowCredentials`. A tab now loads at most two discoverable credentials,
+    the most recently used ones of its own site (`planTabCredentials`, `DISCOVERABLE_SLOTS`);
+    every other stored passkey is loaded non-discoverable, a registration that fills the third
+    slot reloads the tab's authenticator, and a credential synced from another tab takes a
+    discoverable slot only on its own site while one is free. Limit: a site with three or more
+    stored accounts offers only the two latest used in a username-less prompt; the others sign in
+    after the site asks for the account first. Key files:
+    `packages/desktop/src/features/browser-automation/passkeys.ts`, `passkeys.test.ts`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including
