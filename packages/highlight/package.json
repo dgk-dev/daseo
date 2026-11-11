@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/highlight",
-  "version": "0.5.108",
+  "version": "0.5.109",
   "files": [
     "dist",
     "!dist/**/*.map"
