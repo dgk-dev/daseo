@@ -1,12 +1,15 @@
-import { memo, useCallback, useMemo, useState } from "react";
-import { View } from "react-native";
+import { memo, type ReactNode, useCallback, useMemo, useState } from "react";
+import { ScrollView, useWindowDimensions, View } from "react-native";
 import { ChevronDown, ChevronRight } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
 import { Button } from "@/components/ui/button";
 import { TaskListRow } from "@/components/task-list-row";
+import { useKeyboardHeight } from "@/hooks/use-keyboard-height";
 import { useSessionStore } from "@/stores/session-store";
 import type { TodoEntry } from "@/types/stream";
+import { resolveMaxTaskListHeight } from "./list-height";
+import { formatTaskBoardLabel, summarizeTasks } from "./summary";
 
 export const AgentTaskList = memo(function AgentTaskList({
   serverId,
@@ -23,29 +26,17 @@ export const AgentTaskList = memo(function AgentTaskList({
 const TaskListCard = memo(function TaskListCard({ tasks }: { tasks: TodoEntry[] }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
-  const completed = useMemo(
-    () => tasks.filter((task) => task.completed || task.status === "completed").length,
-    [tasks],
-  );
-  const currentTask = useMemo(
-    () =>
-      tasks.find((task) => task.status === "in_progress") ??
-      tasks.find((task) => !task.completed && task.status !== "completed"),
-    [tasks],
-  );
-  const currentTaskText =
-    currentTask?.status === "in_progress" && currentTask.activeForm
-      ? currentTask.activeForm
-      : currentTask?.text;
-  const label = currentTaskText
-    ? t("message.todo.tasksProgressCurrent", {
-        completed,
-        total: tasks.length,
-        task: currentTaskText,
-      })
-    : t("message.todo.tasksProgress", { completed, total: tasks.length });
+  const [droppedExpanded, setDroppedExpanded] = useState(false);
+  const summary = useMemo(() => summarizeTasks(tasks), [tasks]);
+  const label = formatTaskBoardLabel(summary, t);
   const toggle = useCallback(() => setExpanded((current) => !current), []);
+  const toggleDropped = useCallback(() => setDroppedExpanded((current) => !current), []);
   const accessibilityState = useMemo(() => ({ expanded }), [expanded]);
+  const droppedAccessibilityState = useMemo(
+    () => ({ expanded: droppedExpanded }),
+    [droppedExpanded],
+  );
+  const droppedLabel = t("message.todo.dropped", { count: summary.dropped.length });
 
   return (
     <View style={styles.container} accessibilityLabel={t("message.todo.title")}>
@@ -64,17 +55,57 @@ const TaskListCard = memo(function TaskListCard({ tasks }: { tasks: TodoEntry[] 
             {label}
           </Button>
           {expanded ? (
-            <View style={styles.list}>
-              {tasks.map((task, index) => (
-                <TaskListRow key={task.id ?? `${index}:${task.text}`} task={task} />
-              ))}
-            </View>
+            <TaskListScroll>
+              <View style={styles.list}>
+                {summary.listed.map((task, index) => (
+                  <TaskListRow key={task.id ?? `${index}:${task.text}`} task={task} />
+                ))}
+              </View>
+              {summary.dropped.length > 0 ? (
+                <View style={styles.dropped}>
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    onPress={toggleDropped}
+                    accessibilityLabel={droppedLabel}
+                    accessibilityState={droppedAccessibilityState}
+                    leftIcon={droppedExpanded ? ChevronDown : ChevronRight}
+                    style={styles.header}
+                    textStyle={styles.droppedText}
+                  >
+                    {droppedLabel}
+                  </Button>
+                  {droppedExpanded ? (
+                    <View style={styles.droppedList}>
+                      {summary.dropped.map((task, index) => (
+                        <TaskListRow key={task.id ?? `${index}:${task.text}`} task={task} />
+                      ))}
+                    </View>
+                  ) : null}
+                </View>
+              ) : null}
+            </TaskListScroll>
           ) : null}
         </View>
       </View>
     </View>
   );
 });
+
+// Daseo delta 95: a long list scrolls inside a cap so the prompt stays on screen.
+function TaskListScroll({ children }: { children: ReactNode }) {
+  const { height: windowHeight } = useWindowDimensions();
+  const keyboardHeight = useKeyboardHeight();
+  const scrollStyle = useMemo(
+    () => [styles.scroll, { maxHeight: resolveMaxTaskListHeight(windowHeight, keyboardHeight) }],
+    [windowHeight, keyboardHeight],
+  );
+  return (
+    <ScrollView style={scrollStyle} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+      {children}
+    </ScrollView>
+  );
+}
 
 const styles = StyleSheet.create((theme) => ({
   container: {
@@ -99,12 +130,25 @@ const styles = StyleSheet.create((theme) => ({
   headerText: {
     color: theme.colors.foregroundMuted,
   },
-  list: {
+  scroll: {
     borderTopWidth: theme.borderWidth[1],
     borderTopColor: theme.colors.border,
+  },
+  list: {
     paddingHorizontal: theme.spacing[3],
     paddingTop: theme.spacing[2],
     paddingBottom: theme.spacing[2],
+    gap: theme.spacing[1],
+  },
+  dropped: {
+    paddingBottom: theme.spacing[1],
+  },
+  droppedText: {
+    color: theme.colors.foregroundExtraMuted,
+  },
+  droppedList: {
+    paddingHorizontal: theme.spacing[3],
+    paddingBottom: theme.spacing[1],
     gap: theme.spacing[1],
   },
 }));

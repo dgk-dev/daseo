@@ -699,6 +699,18 @@ const ToolCallTimelineItemPayloadSchema: z.ZodType<ToolCallTimelineItem, unknown
     ToolCallCanceledPayloadSchema,
   ]);
 
+// `state` and `note` arrived with Daseo 0.5.111 (delta 95). An older app strips them and shows
+// a held, waiting, or dropped task as plain pending; `status` stays three-valued so it parses.
+export const AgentTaskItemPayloadSchema = z.object({
+  text: z.string(),
+  completed: z.boolean(),
+  id: z.string().optional(),
+  status: z.enum(["pending", "in_progress", "completed"]).optional(),
+  activeForm: z.string().optional(),
+  state: z.enum(["hold", "decision", "deleted"]).optional(),
+  note: z.string().optional(),
+});
+
 // zod-aot 0.20.4 miscompiles this as a nested discriminated union by omitting
 // the inner tool_call branch from the generated outer dispatch.
 export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknown> = z.union([
@@ -726,15 +738,7 @@ export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknow
   ToolCallTimelineItemPayloadSchema,
   z.object({
     type: z.literal("todo"),
-    items: z.array(
-      z.object({
-        text: z.string(),
-        completed: z.boolean(),
-        id: z.string().optional(),
-        status: z.enum(["pending", "in_progress", "completed"]).optional(),
-        activeForm: z.string().optional(),
-      }),
-    ),
+    items: z.array(AgentTaskItemPayloadSchema),
   }),
   z.object({
     type: z.literal("error"),
@@ -4339,6 +4343,10 @@ export const FetchAgentTimelineResponseMessageSchema = z.object({
     hasNewer: z.boolean(),
     mergeWindow: z.boolean().optional(),
     entries: z.array(AgentTimelineEntryPayloadSchema),
+    // The newest task list at or before the page end, on tail and after pages, so a chat whose
+    // last task update is older than the page still shows its task list. Absent from older
+    // daemons and on before pages; an empty array means the list was cleared.
+    tasks: z.array(AgentTaskItemPayloadSchema).optional(),
     error: z.string().nullable(),
   }),
 });

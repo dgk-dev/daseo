@@ -96,6 +96,7 @@ import {
   type PiToolResult,
   type PiTrackedToolCall,
 } from "./tool-call-mapper.js";
+import { mapPiTodoToolResult, PiTodoSnapshotTracker, readPiResultDetails } from "./todo-mapper.js";
 
 const PI_PROVIDER = "pi";
 const DEFAULT_PI_THINKING_LEVEL: PiThinkingLevel = "medium";
@@ -1745,6 +1746,7 @@ export class PiRpcAgentSession implements AgentSession {
 
   private readonly subscribers = new Set<(event: AgentStreamEvent) => void>();
   private readonly activeToolCalls = new Map<string, PiTrackedToolCall>();
+  private readonly todoSnapshots = new PiTodoSnapshotTracker();
   private readonly pendingExtensionUiRequests = new Map<string, AgentPermissionRequest>();
   private activeAskUserDialog: ActiveAskUserDialog | null = null;
   private pendingCombinedAskUserResponse: PendingCombinedAskUserResponse | null = null;
@@ -3287,6 +3289,27 @@ export class PiRpcAgentSession implements AgentSession {
     const error = event.isError ? event.result : null;
     const status = event.isError ? "failed" : "completed";
     this.emitToolCallEvent(event.toolCallId, toolCall, status, result, error);
+    this.emitTodoSnapshot(event);
+  }
+
+  /** Daseo delta 95: an rpiv-todo call becomes the session's task list (the composer status line). */
+  private emitTodoSnapshot(
+    event: Extract<PiAgentSessionEvent, { type: "tool_execution_end" }>,
+  ): void {
+    const item = mapPiTodoToolResult({
+      toolName: event.toolName,
+      details: readPiResultDetails(event.result),
+      isError: Boolean(event.isError),
+    });
+    if (!item || !this.todoSnapshots.accept(item)) {
+      return;
+    }
+    this.emit({
+      type: "timeline",
+      provider: this.provider,
+      turnId: this.currentTurnIdForEvent(),
+      item,
+    });
   }
 
   private handleCompactionStart(

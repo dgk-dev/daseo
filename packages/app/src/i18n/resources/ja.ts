@@ -391,7 +391,14 @@ export const ja: TranslationResources = {
       title: "タスク",
       empty: "タスクがまだありません。",
       tasksProgress: "{{completed}}/{{total}}タスク",
-      tasksProgressCurrent: "{{completed}}/{{total}}タスク · {{task}}",
+      decisionCount: "決定待ち {{count}}",
+      holdCount: "保留 {{count}}",
+      now: "現在: {{task}}",
+      state: {
+        decision: "決定待ち",
+        hold: "保留",
+      },
+      dropped: "取り下げ {{count}}",
       activity: {
         created: "{{count}}件のタスクを作成",
         added: "追加",

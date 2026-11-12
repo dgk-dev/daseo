@@ -388,7 +388,14 @@ export const ar: TranslationResources = {
       title: "المهام",
       empty: "لا توجد مهام حتى الآن.",
       tasksProgress: "{{completed}}/{{total}} مهام",
-      tasksProgressCurrent: "{{completed}}/{{total}} مهام · {{task}}",
+      decisionCount: "{{count}} بانتظار القرار",
+      holdCount: "{{count}} معلّقة",
+      now: "الآن: {{task}}",
+      state: {
+        decision: "بانتظار القرار",
+        hold: "معلّقة",
+      },
+      dropped: "{{count}} متروكة",
       activity: {
         created: "تم إنشاء {{count}} مهام",
         added: "أُضيفت",

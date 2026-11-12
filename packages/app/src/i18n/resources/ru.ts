@@ -392,7 +392,14 @@ export const ru: TranslationResources = {
       title: "Задачи",
       empty: "Заданий пока нет.",
       tasksProgress: "{{completed}}/{{total}} задач",
-      tasksProgressCurrent: "{{completed}}/{{total}} задач · {{task}}",
+      decisionCount: "Ждут решения: {{count}}",
+      holdCount: "Отложено: {{count}}",
+      now: "Сейчас: {{task}}",
+      state: {
+        decision: "Ждёт решения",
+        hold: "Отложено",
+      },
+      dropped: "Отброшено: {{count}}",
       activity: {
         created: "Создано задач: {{count}}",
         added: "Добавлена",

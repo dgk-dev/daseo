@@ -394,7 +394,14 @@ export const fr: TranslationResources = {
       title: "Tâches",
       empty: "Aucune tâche pour l'instant.",
       tasksProgress: "{{completed}}/{{total}} tâches",
-      tasksProgressCurrent: "{{completed}}/{{total}} tâches · {{task}}",
+      decisionCount: "{{count}} à décider",
+      holdCount: "{{count}} en attente",
+      now: "En cours : {{task}}",
+      state: {
+        decision: "À décider",
+        hold: "En attente",
+      },
+      dropped: "{{count}} abandonnées",
       activity: {
         created: "{{count}} tâches créées",
         added: "Ajoutée",

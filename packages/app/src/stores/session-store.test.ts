@@ -10,7 +10,7 @@ import {
   useSessionStore,
   type WorkspaceDescriptor,
 } from "./session-store";
-import type { StreamItem } from "../types/stream";
+import type { StreamItem, TodoEntry } from "../types/stream";
 import { patchWorkspaceScripts } from "../contexts/session-workspace-scripts";
 
 function createWorkspace(
@@ -128,10 +128,80 @@ describe("agent task state", () => {
       newer: false,
       synchronized: true,
       acknowledgedClientMessageIds: [],
+      direction: "tail",
     });
 
     expect(useSessionStore.getState().sessions["test-server"]?.agentTasks.get("agent-1")).toEqual(
       todo.items,
+    );
+  });
+
+  it("keeps the daemon's task list when the page is newer than the last task update", () => {
+    initializeTestSession();
+    const tasks: TodoEntry[] = [
+      { id: "1", text: "Board", status: "completed", completed: true },
+      { id: "2", text: "Pick model", status: "pending", completed: false, state: "decision" },
+      { id: "3", text: "Old idea", status: "pending", completed: false, state: "deleted" },
+    ];
+    const answer: StreamItem = {
+      kind: "assistant_message",
+      id: "answer",
+      text: "done",
+      timestamp: new Date("2026-11-13T10:00:00.000Z"),
+    };
+
+    useSessionStore.getState().applyAgentTimelineResponseState("test-server", "agent-1", {
+      items: [answer],
+      head: [],
+      range: null,
+      older: "available",
+      newer: false,
+      synchronized: true,
+      acknowledgedClientMessageIds: [],
+      direction: "tail",
+      taskSnapshot: tasks,
+    });
+    expect(useSessionStore.getState().sessions["test-server"]?.agentTasks.get("agent-1")).toEqual(
+      tasks,
+    );
+
+    // An older page that holds an earlier list does not roll the board back.
+    const earlier: StreamItem = {
+      kind: "todo_list",
+      id: "todo-early",
+      provider: "pi",
+      timestamp: new Date("2026-11-13T09:00:00.000Z"),
+      activity: { type: "created", count: 1 },
+      items: [{ id: "1", text: "Board", status: "pending", completed: false }],
+    };
+    useSessionStore.getState().applyAgentTimelineResponseState("test-server", "agent-1", {
+      items: [earlier, answer],
+      head: [],
+      range: null,
+      older: "none",
+      newer: false,
+      synchronized: true,
+      acknowledgedClientMessageIds: [],
+      direction: "before",
+    });
+    expect(useSessionStore.getState().sessions["test-server"]?.agentTasks.get("agent-1")).toEqual(
+      tasks,
+    );
+
+    // A cleared list from the daemon removes the board.
+    useSessionStore.getState().applyAgentTimelineResponseState("test-server", "agent-1", {
+      items: [answer],
+      head: [],
+      range: null,
+      older: "available",
+      newer: false,
+      synchronized: true,
+      acknowledgedClientMessageIds: [],
+      direction: "tail",
+      taskSnapshot: [],
+    });
+    expect(useSessionStore.getState().sessions["test-server"]?.agentTasks.has("agent-1")).toBe(
+      false,
     );
   });
 });
@@ -156,6 +226,7 @@ describe("agent timeline state", () => {
       newer: false,
       synchronized: true,
       acknowledgedClientMessageIds: [],
+      direction: "tail",
     });
 
     expect(
@@ -179,6 +250,7 @@ describe("agent timeline state", () => {
       newer: false,
       synchronized: true,
       acknowledgedClientMessageIds: [],
+      direction: "tail",
     });
 
     expect(
@@ -197,6 +269,7 @@ describe("agent timeline state", () => {
       newer: false,
       synchronized: true,
       acknowledgedClientMessageIds: [],
+      direction: "tail",
     });
 
     store.applyAgentTimelineResponseState("test-server", "agent-1", {
@@ -207,6 +280,7 @@ describe("agent timeline state", () => {
       newer: false,
       synchronized: false,
       acknowledgedClientMessageIds: [],
+      direction: "tail",
     });
 
     expect(

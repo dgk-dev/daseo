@@ -966,7 +966,8 @@ edits · 1 command · 2 file reads`; the counts end in an ellipsis before the ti
     composer became a prompt line (delta 53), the two cards above it still had a surface1 fill, side
     borders, rounded top corners, and a 16 px tuck under the composer, which now showed through the
     transparent prompt. Both are now a header row under one top rule in the border color, with no
-    fill, sides, corners, or overlap (`composer/task-list/index.tsx`, `subagents/track.tsx`).
+    fill, sides, corners, or overlap (`composer/task-list/index.tsx`, `subagents/track.tsx`). The
+    task line carries held, waiting, and dropped tasks since delta 95.
 
 58. **Opening an unloaded chat answers from storage, and the agent loads behind it** — the owner's
     call on 2026-10-24 ("어떤 세션이든 누르면 즉시"). Opening an agent that delta 33(d) unloaded, or one
@@ -2144,6 +2145,61 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
     stored accounts offers only the two latest used in a username-less prompt; the others sign in
     after the site asks for the account first. Key files:
     `packages/desktop/src/features/browser-automation/passkeys.ts`, `passkeys.test.ts`.
+
+95. **A Pi session's task list is the board above the composer** — the owner's ask on
+    2026-11-13: inside one long session he loses track of the items a research turn proposed (69
+    "what is left?" questions in 46 sessions from 2026-10-14 to 11-13). Claude Code and Codex
+    already fed delta 57's task line; Pi sessions only showed `todo` tool rows.
+    - **Source.** The list is rpiv-todo's own, one per session. Its `todo` tool (also accepted as
+      `mcp__custom-tools__todo`) returns the whole list after every call in `details.tasks`; the
+      Pi provider turns each successful mutating call into the provider `todo` item, live and in
+      history replay. A failed call, `list` and `get`, and an unchanged list add nothing; the tool
+      row stays as before.
+    - **States.** A pending task with `metadata.state` `hold` or `decision` is held or waits for
+      the owner; `metadata.note` is its one-line reason on any task; a deleted task is kept with
+      its note. On the wire these are optional `state` (`hold | decision | deleted`) and `note`;
+      `status` stays three-valued (a dropped task travels as `pending`), so an app from before
+      parses every item and shows held, waiting, and dropped tasks as plain pending. Any other
+      `metadata.state` reads as pending.
+    - **Board.** The collapsed line reads done/total with dropped tasks left out, then the
+      waiting and held counts when non-zero, then `Now: <activeForm>` or the next plain pending
+      task (`작업 3/9개 · 결정 대기 2 · 보류 2 · 지금: …`). Expanded, tasks keep the agent's
+      order, so "items 1 and 3" still match; each row has a state icon (a decision uses the
+      warning color of an agent that needs the owner) and a muted `state: note` suffix; dropped
+      tasks sit dimmed in their own collapsed group. The list scrolls inside 30% of the height
+      left above the keyboard (at least 120 dp), which with delta 59's input cap keeps the
+      prompt below the header on the Fold 7 inner screen. Claude Code and Codex lines change only
+      by the `Now:` word on a task in progress.
+    - **Reopening.** The board used to be derived from the loaded timeline page alone (40 rows),
+      so a chat whose last task update was older than the page lost its board on reopen, and a
+      page without a `todo` row deleted it, for every provider. Tail and after pages now carry
+      `tasks`, the newest list at or before the page end; the app takes live rows first, then
+      that list, then the page. A before page never moves the list.
+    - **Key files:** `packages/server/src/server/agent/providers/pi/todo-mapper.ts`,
+      `providers/pi/{agent,history-mapper}.ts`, `agent/agent-timeline-store.ts`
+      (`getLatestTasks`), `session.ts` (`readTimelinePageTasks`),
+      `packages/protocol/src/{agent-types,messages}.ts` (`AgentTaskItemPayloadSchema`),
+      `packages/app/src/composer/task-list/{index,summary,list-height}.ts{,x}`,
+      `components/task-list-row.tsx`, `stores/session-store.ts` (`resolveTimelinePageTasks`).
+
+96. **A sent prompt stays sent on Android** — the owner's report on 2026-11-13 ("엄청 긴
+    프롬프트를 보낼 때 보내지긴 하는데 입력창에 그대로 프롬프트가 남아 있고, 갑자기 입력창이
+    높아지는 버그"). Delta 18 guards a native replacement: Fabric drops a replace command whose
+    event count is stale, and the IME event that made it stale arrives afterwards carrying the
+    text from before, so the composer pushes the replacement out again instead of taking that
+    text as typing. Sending clears through that replacement, and the draft echoes every
+    replacement back through `textReplacementKey`; the input then applied the same empty text a
+    second time, and that reset the guard. When the IME still held text when send was pressed (a
+    voice-typed phrase not yet committed, which long dictated prompts end with), its late commit
+    was accepted as new input: the whole prompt came back into the field and the draft, and the
+    field grew back to full height. Re-applying the text a replacement is already waiting for
+    now keeps that replacement's guard (the command is still sent again). Only native inputs get
+    the guard: the web input writes the DOM value at once, and a guard there would only reject
+    pasting the text just sent. On web, measured 2026-11-13 on the dev app with 4,465 and 7,749
+    Korean characters, sending idle, steering a running agent, and sampling 90 frames after
+    Enter all left an empty 46 px input; the bug did not reproduce there. Key files:
+    `packages/app/src/components/ui/text-input/native-replacement.ts`,
+    `packages/app/src/composer/input/input.tsx` (`replaceNativeText`).
 
 ## Local reliability contracts
 

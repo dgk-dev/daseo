@@ -1,5 +1,6 @@
 import type {
   AgentProvider,
+  AgentTaskState,
   AssistantMessagePhase,
   ToolCallDetail,
 } from "@getpaseo/protocol/agent-types";
@@ -1023,6 +1024,9 @@ export interface TodoEntry {
   id?: string;
   status?: "pending" | "in_progress" | "completed";
   activeForm?: string;
+  /** Daseo delta 95: a held, waiting-for-a-decision, or dropped task. */
+  state?: AgentTaskState;
+  note?: string;
 }
 
 export type TaskActivity =
@@ -1553,6 +1557,8 @@ function appendTodoList(
     ...(item.id ? { id: item.id } : {}),
     ...(item.status ? { status: item.status } : {}),
     ...(item.activeForm ? { activeForm: item.activeForm } : {}),
+    ...(item.state ? { state: item.state } : {}),
+    ...(item.note ? { note: item.note } : {}),
   }));
 
   const previousIndex = state.findLastIndex(
@@ -1834,6 +1840,8 @@ function reduceTimelineEvent(
         id: todo.id,
         status: todo.status,
         activeForm: todo.activeForm,
+        state: todo.state,
+        note: todo.note,
       }));
       return finalizeActiveThoughts(
         appendTodoList(state, event.provider, items, timestamp, timelineCursor),

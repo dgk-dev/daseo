@@ -387,7 +387,14 @@ export const zhCN: TranslationResources = {
       title: "任务",
       empty: "还没有任务。",
       tasksProgress: "{{completed}}/{{total}} 项任务",
-      tasksProgressCurrent: "{{completed}}/{{total}} 项任务 · {{task}}",
+      decisionCount: "待决定 {{count}}",
+      holdCount: "搁置 {{count}}",
+      now: "当前：{{task}}",
+      state: {
+        decision: "待决定",
+        hold: "搁置",
+      },
+      dropped: "已放弃 {{count}}",
       activity: {
         created: "已创建 {{count}} 项任务",
         added: "已添加",

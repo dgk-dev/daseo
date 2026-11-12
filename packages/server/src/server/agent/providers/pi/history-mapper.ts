@@ -10,6 +10,7 @@ import {
   type PiToolResult,
   type PiTrackedToolCall,
 } from "./tool-call-mapper.js";
+import { mapPiTodoToolResult, PiTodoSnapshotTracker } from "./todo-mapper.js";
 
 export interface PiCapturedUserMessageEntry {
   id: string;
@@ -109,6 +110,7 @@ export function getPiAssistantMessageEndPhase(
 
 export class PiHistoryMapper {
   private readonly pendingToolCalls = new Map<string, PiTrackedToolCall>();
+  private readonly todoSnapshots = new PiTodoSnapshotTracker();
   private userIndex = 0;
   private assistantIndex = 0;
   private hasUserInCurrentTurn = false;
@@ -139,6 +141,10 @@ export class PiHistoryMapper {
           const event = this.mapToolResultMessage(message);
           if (event) {
             events.push(event);
+          }
+          const todo = this.mapTodoSnapshot(message);
+          if (todo) {
+            events.push(todo);
           }
           break;
         }
@@ -285,6 +291,21 @@ export class PiHistoryMapper {
         errorText: extractTextFromToolResult(result) ?? "Tool call failed",
       }),
     };
+  }
+
+  /** Daseo delta 95: the task list an rpiv-todo call left behind, as on the live stream. */
+  private mapTodoSnapshot(
+    message: Extract<PiAgentMessage, { role: "toolResult" }>,
+  ): AgentStreamEvent | null {
+    const item = mapPiTodoToolResult({
+      toolName: message.toolName,
+      details: message.details,
+      isError: Boolean(message.isError),
+    });
+    if (!item || !this.todoSnapshots.accept(item)) {
+      return null;
+    }
+    return { type: "timeline", provider: this.provider, item };
   }
 
   private mapBashExecutionMessage(

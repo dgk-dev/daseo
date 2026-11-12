@@ -394,7 +394,14 @@ export const ptBR: TranslationResources = {
       title: "Tarefas",
       empty: "Nenhuma tarefa ainda.",
       tasksProgress: "{{completed}}/{{total}} tarefas",
-      tasksProgressCurrent: "{{completed}}/{{total}} tarefas · {{task}}",
+      decisionCount: "{{count}} aguardando decisão",
+      holdCount: "{{count}} em espera",
+      now: "Agora: {{task}}",
+      state: {
+        decision: "Aguardando decisão",
+        hold: "Em espera",
+      },
+      dropped: "{{count}} descartadas",
       activity: {
         created: "{{count}} tarefas criadas",
         added: "Adicionada",

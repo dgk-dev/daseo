@@ -292,6 +292,50 @@ describe("wire schema compatibility", () => {
     });
   });
 
+  test("held, waiting, and dropped tasks parse on an app from before Daseo delta 95", () => {
+    // The todo item schema as shipped through 0.5.110.
+    const legacyTodo = z.object({
+      type: z.literal("todo"),
+      items: z.array(
+        z.object({
+          text: z.string(),
+          completed: z.boolean(),
+          id: z.string().optional(),
+          status: z.enum(["pending", "in_progress", "completed"]).optional(),
+          activeForm: z.string().optional(),
+        }),
+      ),
+    });
+    const current = {
+      type: "todo" as const,
+      items: [
+        {
+          id: "1",
+          text: "Wiki",
+          status: "pending" as const,
+          completed: false,
+          state: "hold" as const,
+          note: "later",
+        },
+        {
+          id: "2",
+          text: "Old",
+          status: "pending" as const,
+          completed: false,
+          state: "deleted" as const,
+        },
+      ],
+    };
+    expect(AgentTimelineItemPayloadSchema.parse(current)).toEqual(current);
+    expect(legacyTodo.parse(current)).toEqual({
+      type: "todo",
+      items: [
+        { id: "1", text: "Wiki", status: "pending", completed: false },
+        { id: "2", text: "Old", status: "pending", completed: false },
+      ],
+    });
+  });
+
   test("sub_agent tool-call payload still parses against the v0.1.65-beta.3 schema", () => {
     const parsed = LegacySubAgentToolCallSchema.parse({
       type: "tool_call",

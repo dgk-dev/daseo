@@ -135,6 +135,7 @@ import {
   type AgentPermissionResponse,
   type AgentRunOptions,
   type AgentSessionConfig,
+  type AgentTaskItem,
 } from "./agent/agent-sdk-types.js";
 import type { StoredAgentRecord } from "./agent/agent-storage.js";
 import type { AgentStorage } from "./agent/agent-storage.js";
@@ -639,6 +640,21 @@ interface AgentTimelinePageSource {
   agent: AgentSnapshotPayload;
   provider: string;
   fetchTimeline(options: AgentTimelineFetchOptions): AgentTimelineFetchResult;
+  getLatestTasks(atOrBeforeSeq: number): AgentTaskItem[] | null;
+}
+
+/**
+ * Daseo delta 95: the task list as of the page end, for a chat whose last task update is
+ * older than the page. A before page never moves the list, so it carries none.
+ */
+function readTimelinePageTasks(
+  pageSource: AgentTimelinePageSource,
+  direction: AgentTimelineFetchDirection,
+  endSeq: number | null,
+): { tasks?: AgentTaskItem[] } {
+  if (direction === "before" || endSeq === null) return {};
+  const tasks = pageSource.getLatestTasks(endSeq);
+  return tasks ? { tasks } : {};
 }
 
 /** A stored agent that is not loaded and would resume with this committed timeline. */
@@ -7129,6 +7145,7 @@ export class Session {
       agent: this.buildStoredAgentPayload(unloaded.record),
       provider: unloaded.record.provider,
       fetchTimeline: (options) => unloaded.timeline.fetch(options),
+      getLatestTasks: (atOrBeforeSeq) => unloaded.timeline.getLatestTasks(atOrBeforeSeq),
     };
   }
 
@@ -7142,6 +7159,8 @@ export class Session {
       agent: await this.buildAgentPayload(snapshot),
       provider: snapshot.provider,
       fetchTimeline: (options) => this.agentManager.fetchTimeline(agentId, options),
+      getLatestTasks: (atOrBeforeSeq) =>
+        this.agentManager.getLatestTimelineTasks(agentId, atOrBeforeSeq),
     };
   }
 
@@ -7260,7 +7279,6 @@ export class Session {
         selectedTimeline.endSeq !== null
           ? { epoch: selectedTimeline.timeline.epoch, seq: selectedTimeline.endSeq }
           : null;
-
       this.emitForSource(
         {
           type: "fetch_agent_timeline_response",
@@ -7280,6 +7298,7 @@ export class Session {
             hasOlder: selectedTimeline.hasOlder,
             hasNewer: selectedTimeline.hasNewer,
             ...(msg.mergeWindow === true ? { mergeWindow: true } : {}),
+            ...readTimelinePageTasks(pageSource, direction, selectedTimeline.endSeq),
             entries: selectedTimeline.entries.map((entry) => ({
               provider: pageSource.provider,
               item: entry.item,

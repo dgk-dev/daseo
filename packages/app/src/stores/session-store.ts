@@ -367,12 +367,33 @@ export function selectAgentTurnPresentation(
   );
 }
 
-function latestTasksFromStream(items: readonly StreamItem[]): TodoEntry[] {
+/** The newest task list among `items`, or null when they hold none. */
+function latestTasksFromStream(items: readonly StreamItem[]): TodoEntry[] | null {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
     if (item?.kind === "todo_list") return item.items;
   }
-  return [];
+  return null;
+}
+
+/**
+ * The task list after a timeline page is applied (Daseo delta 95). Live rows not yet in
+ * the page come first, then the daemon's list as of the page end, which covers a chat
+ * whose last task update is older than the page. A before page only adds older rows, so
+ * it never replaces a list the chat already has.
+ */
+export function resolveTimelinePageTasks(input: {
+  direction: "tail" | "before" | "after";
+  items: readonly StreamItem[];
+  head: readonly StreamItem[];
+  taskSnapshot: TodoEntry[] | undefined;
+  current: TodoEntry[] | undefined;
+}): TodoEntry[] {
+  const live = latestTasksFromStream(input.head);
+  if (live) return live;
+  if (input.direction === "before" && input.current) return input.current;
+  if (input.taskSnapshot !== undefined) return input.taskSnapshot;
+  return latestTasksFromStream(input.items) ?? [];
 }
 
 function updateAgentTasks(
@@ -580,6 +601,9 @@ interface SessionStoreActions {
       newer: boolean;
       synchronized: boolean;
       acknowledgedClientMessageIds: string[];
+      direction: "tail" | "before" | "after";
+      /** The daemon's task list as of the page end; absent on before pages and older daemons. */
+      taskSnapshot?: TodoEntry[];
     },
   ) => void;
 
@@ -809,7 +833,7 @@ export const useSessionStore = create<SessionStore>()(
           for (const timeline of timelines) {
             agentStreamTail.set(timeline.agentId, timeline.items);
             const tasks = latestTasksFromStream(timeline.items);
-            if (tasks.length > 0) agentTasks.set(timeline.agentId, tasks);
+            if (tasks?.length) agentTasks.set(timeline.agentId, tasks);
             if (!timeline.range) continue;
             agentTimelineCursor.set(timeline.agentId, timeline.range);
             agentTimelineHasOlder.set(timeline.agentId, timeline.hasOlder);
@@ -1589,7 +1613,13 @@ export const useSessionStore = create<SessionStore>()(
             nextAuthoritative.set(agentId, true);
             nextSyncGeneration.set(agentId, session.historySyncGeneration);
           }
-          const tasks = latestTasksFromStream([...state.items, ...state.head]);
+          const tasks = resolveTimelinePageTasks({
+            direction: state.direction,
+            items: state.items,
+            head: state.head,
+            taskSnapshot: state.taskSnapshot,
+            current: session.agentTasks.get(agentId),
+          });
           const agentTasks = new Map(session.agentTasks);
           if (tasks.length > 0) agentTasks.set(agentId, tasks);
           else agentTasks.delete(agentId);

@@ -16,6 +16,68 @@ async function collectHistory(
 }
 
 describe("Pi history mapper", () => {
+  test("rebuilds the task list from stored rpiv-todo results (Daseo delta 95)", async () => {
+    const tasks = [
+      { id: 1, subject: "Board", status: "completed" },
+      { id: 2, subject: "Wiki", status: "pending", metadata: { state: "hold", note: "later" } },
+    ];
+    const events = await collectHistory([
+      {
+        role: "assistant",
+        responseId: "response-1",
+        content: [
+          { type: "toolCall", id: "todo-1", name: "todo", arguments: { action: "create" } },
+        ],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "todo-1",
+        toolName: "todo",
+        content: [{ type: "text", text: "Created #1" }],
+        details: { action: "create", params: {}, tasks, nextId: 3 },
+      },
+      {
+        role: "toolResult",
+        toolCallId: "todo-2",
+        toolName: "todo",
+        content: [{ type: "text", text: "Error: no such task" }],
+        details: { action: "update", params: {}, tasks: [], nextId: 3, error: "no such task" },
+      },
+      {
+        role: "toolResult",
+        toolCallId: "todo-3",
+        toolName: "todo",
+        content: [{ type: "text", text: "No change" }],
+        details: { action: "update", params: {}, tasks, nextId: 3 },
+      },
+    ]);
+
+    expect(
+      events.flatMap((event) =>
+        event.type === "timeline" && event.item.type === "todo" ? [event.item] : [],
+      ),
+    ).toEqual([
+      {
+        type: "todo",
+        items: [
+          { id: "1", text: "Board", status: "completed", completed: true },
+          {
+            id: "2",
+            text: "Wiki",
+            status: "pending",
+            completed: false,
+            state: "hold",
+            note: "later",
+          },
+        ],
+      },
+    ]);
+    // The todo tool rows are still replayed.
+    expect(
+      events.filter((event) => event.type === "timeline" && event.item.type === "tool_call"),
+    ).toHaveLength(4);
+  });
+
   test("replays user, assistant, reasoning, and completed tool calls", async () => {
     await expect(
       collectHistory([

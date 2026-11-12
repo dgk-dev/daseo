@@ -47,11 +47,21 @@ export function replaceNativeInputText(
   }
 }
 
+/**
+ * The guard for a replacement about to be sent to the native input. Re-applying the text that a
+ * replacement already in flight is waiting for keeps that replacement's guard: the draft echoes
+ * every replacement back through `textReplacementKey`, and resetting the guard on that echo let
+ * the late IME event it exists for put a sent prompt back into the composer (Daseo delta 96).
+ */
 export function createPendingNativeTextReplacement(
   previousText: string,
   expectedText: string,
+  inFlight: PendingNativeTextReplacement | null = null,
 ): PendingNativeTextReplacement | null {
-  return previousText === expectedText ? null : { previousText, expectedText };
+  if (previousText === expectedText) {
+    return inFlight?.expectedText === expectedText ? inFlight : null;
+  }
+  return { previousText, expectedText };
 }
 
 /**

@@ -387,7 +387,14 @@ export const en = {
       title: "Tasks",
       empty: "No tasks yet.",
       tasksProgress: "{{completed}}/{{total}} tasks",
-      tasksProgressCurrent: "{{completed}}/{{total}} tasks · {{task}}",
+      decisionCount: "{{count}} awaiting decision",
+      holdCount: "{{count}} on hold",
+      now: "Now: {{task}}",
+      state: {
+        decision: "Awaiting decision",
+        hold: "On hold",
+      },
+      dropped: "{{count}} dropped",
       activity: {
         created: "Created {{count}} tasks",
         added: "Added",

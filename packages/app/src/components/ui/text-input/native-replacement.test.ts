@@ -89,3 +89,38 @@ describe("resolveNativeTextChangeAfterReplacement", () => {
     });
   });
 });
+
+describe("a sent prompt stays sent (Daseo delta 96)", () => {
+  // The composer clears itself on send, the draft echoes that clear back through
+  // textReplacementKey, and the input re-applies the same empty text. Android can drop the first
+  // clear as stale while an IME commit is in flight; that commit then arrives with the whole
+  // prompt and must be pushed back out, not taken as new typing.
+  it("keeps the guard when the same replacement is applied again", () => {
+    const prompt = "엄청 긴 프롬프트 ".repeat(400);
+    const sent = createPendingNativeTextReplacement(prompt, "");
+    const echoed = createPendingNativeTextReplacement("", "", sent);
+
+    expect(echoed).toBe(sent);
+    expect(resolveNativeTextChangeAfterReplacement(echoed, prompt)).toEqual({
+      action: "reassert",
+      pending: { previousText: prompt, expectedText: "" },
+    });
+  });
+
+  it("drops the guard once the native input reports the replaced text", () => {
+    const sent = createPendingNativeTextReplacement("prompt", "");
+    const settled = resolveNativeTextChangeAfterReplacement(sent, "");
+
+    expect(settled).toEqual({ action: "ignore", pending: null });
+    expect(createPendingNativeTextReplacement("", "", settled.pending)).toBeNull();
+  });
+
+  it("starts a new guard for a different replacement", () => {
+    const sent = createPendingNativeTextReplacement("prompt", "");
+
+    expect(createPendingNativeTextReplacement("", "restored", sent)).toEqual({
+      previousText: "",
+      expectedText: "restored",
+    });
+  });
+});

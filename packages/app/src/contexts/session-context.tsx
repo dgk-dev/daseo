@@ -10,7 +10,7 @@ import {
   createSetAgentInitializing,
   refreshAgentInitializationTimeout,
 } from "@/hooks/use-agent-initialization";
-import type { StreamItem } from "@/types/stream";
+import type { StreamItem, TodoEntry } from "@/types/stream";
 import {
   createSessionAgentStreamReducerQueue,
   deriveAgentStreamTurnLiveness,
@@ -81,6 +81,25 @@ type TimelineResponsePayload = Extract<
   SessionOutboundMessage,
   { type: "fetch_agent_timeline_response" }
 >["payload"];
+
+// Daseo delta 95: the daemon's task list as of the page end, when it sent one.
+function timelineTaskPatch(tasks: TimelineResponsePayload["tasks"]): {
+  taskSnapshot?: TodoEntry[];
+} {
+  return tasks === undefined ? {} : { taskSnapshot: tasks };
+}
+
+/** What a page the stream already holds still changes: acknowledgements and the task list. */
+function buildDiscardedTimelinePatch(
+  acknowledgedClientMessageIds: string[],
+  tasks: TimelineResponsePayload["tasks"],
+): { acknowledgedClientMessageIds?: string[]; taskSnapshot?: TodoEntry[] } | null {
+  if (acknowledgedClientMessageIds.length === 0 && tasks === undefined) return null;
+  return {
+    ...(acknowledgedClientMessageIds.length > 0 ? { acknowledgedClientMessageIds } : {}),
+    ...timelineTaskPatch(tasks),
+  };
+}
 
 function consumeForcedTimelineTailReplacement(
   payload: TimelineResponsePayload,
@@ -619,10 +638,12 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       }
 
       if (result.commit === "discard") {
-        if (result.acknowledgedClientMessageIds.length > 0) {
-          setAgentStreamState(serverId, agentId, {
-            acknowledgedClientMessageIds: result.acknowledgedClientMessageIds,
-          });
+        const discardedPatch = buildDiscardedTimelinePatch(
+          result.acknowledgedClientMessageIds,
+          payload.tasks,
+        );
+        if (discardedPatch) {
+          setAgentStreamState(serverId, agentId, discardedPatch);
         }
         if (payload.direction !== "before") {
           setAgentTimelineHasNewer(serverId, (current) => {
@@ -644,6 +665,8 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
               : payload.hasNewer,
           synchronized: shouldMarkAuthoritativeHistoryApplied,
           acknowledgedClientMessageIds: result.acknowledgedClientMessageIds,
+          direction: payload.direction,
+          ...timelineTaskPatch(payload.tasks),
         });
       }
 

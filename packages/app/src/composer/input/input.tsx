@@ -67,7 +67,7 @@ import { type ShortcutKey } from "@/utils/format-shortcut";
 import { MOTION_DURATION_MS, MOTION_EASING_CSS } from "@/styles/motion";
 import type { MessageInputKeyboardActionKind } from "@/keyboard/actions";
 import { isImeComposingKeyboardEvent } from "@/utils/keyboard-ime";
-import { isWeb } from "@/constants/platform";
+import { isNative, isWeb } from "@/constants/platform";
 import { useComposerQuickAsk } from "@/composer/quick-ask/use-quick-ask-voice";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useComposerHeightMirror } from "./height-mirror";
@@ -1275,10 +1275,16 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           clearTimeout(nativeReassertTimerRef.current);
           nativeReassertTimerRef.current = null;
         }
-        pendingNativeReplacementRef.current = createPendingNativeTextReplacement(
-          valueRef.current,
-          nextText,
-        );
+        // Only a native input can drop a replacement as stale (Fabric event counts); the web
+        // input writes the DOM value at once, so a guard there would only reject a paste of the
+        // text just sent.
+        pendingNativeReplacementRef.current = isNative
+          ? createPendingNativeTextReplacement(
+              valueRef.current,
+              nextText,
+              pendingNativeReplacementRef.current,
+            )
+          : null;
         valueRef.current = nextText;
         textInputRef.current?.replaceText(nextText, selection);
       },

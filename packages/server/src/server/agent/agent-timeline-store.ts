@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { lastAssistantRun } from "@getpaseo/protocol/wait-noted";
 import { limitAgentTimelineItemContent } from "./agent-timeline-content.js";
-import type { AgentTimelineItem, AssistantTurnOutcome } from "./agent-sdk-types.js";
+import type { AgentTaskItem, AgentTimelineItem, AssistantTurnOutcome } from "./agent-sdk-types.js";
 import type {
   AgentTimelineFetchOptions,
   AgentTimelineFetchResult,
@@ -364,6 +364,21 @@ export class InMemoryAgentTimelineStore {
   getLastItem(agentId: string): AgentTimelineItem | null {
     const state = this.requireState(agentId);
     return state.rows[state.rows.length - 1]?.item ?? null;
+  }
+
+  /**
+   * The newest task list at or before `atOrBeforeSeq`, or null when no task list was
+   * recorded by then. A timeline page carries it so a chat whose last task update is
+   * older than the page still shows its tasks (Daseo delta 95).
+   */
+  getLatestTasks(agentId: string, atOrBeforeSeq: number): AgentTaskItem[] | null {
+    const rows = this.requireState(agentId).rows;
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      const row = rows[index];
+      if (!row || row.seq > atOrBeforeSeq) continue;
+      if (row.item.type === "todo") return [...row.item.items];
+    }
+    return null;
   }
 
   getLastAssistantMessage(agentId: string): string | null {

@@ -664,6 +664,124 @@ describe("PiRpcAgentSession", () => {
     ]);
   });
 
+  test("turns rpiv-todo results into the session task list (Daseo delta 95)", async () => {
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+    const tasks = [
+      { id: 1, subject: "Board", status: "completed" },
+      { id: 2, subject: "Mapping", status: "in_progress", activeForm: "Mapping todo results" },
+      {
+        id: 3,
+        subject: "Pick a model",
+        status: "pending",
+        metadata: { state: "decision", note: "Opus or Sonnet" },
+      },
+      {
+        id: 4,
+        subject: "Wiki",
+        status: "pending",
+        metadata: { state: "hold", note: "after the release" },
+      },
+      { id: 5, subject: "Old idea", status: "deleted", metadata: { note: "covered by #2" } },
+      { id: 6, subject: "Odd state", status: "pending", metadata: { state: "someday" } },
+    ];
+
+    await session.startTurn("plan");
+    fakeSession.emit({
+      type: "tool_execution_end",
+      toolCallId: "todo-1",
+      toolName: "todo",
+      result: {
+        content: [{ type: "text", text: "Created" }],
+        details: { action: "create", params: {}, tasks, nextId: 7 },
+      },
+      isError: false,
+    });
+    // Reads and failures leave the list alone; an unchanged list adds no row.
+    fakeSession.emit({
+      type: "tool_execution_end",
+      toolCallId: "todo-2",
+      toolName: "todo",
+      result: { content: [], details: { action: "list", params: {}, tasks: [], nextId: 7 } },
+      isError: false,
+    });
+    fakeSession.emit({
+      type: "tool_execution_end",
+      toolCallId: "todo-3",
+      toolName: "todo",
+      result: {
+        content: [],
+        details: { action: "update", params: {}, tasks: [], nextId: 7, error: "no such task" },
+      },
+      isError: false,
+    });
+    fakeSession.emit({
+      type: "tool_execution_end",
+      toolCallId: "todo-4",
+      toolName: "mcp__custom-tools__todo",
+      result: { content: [], details: { action: "update", params: {}, tasks, nextId: 7 } },
+      isError: false,
+    });
+    fakeSession.emit({
+      type: "tool_execution_end",
+      toolCallId: "todo-5",
+      toolName: "todo",
+      result: { content: [], details: { action: "clear", params: {}, tasks: [], nextId: 7 } },
+      isError: false,
+    });
+    fakeSession.finishTurn();
+    await events.nextTurnCompletion();
+
+    const todoItems = events.timelineItems().filter((item) => item.type === "todo");
+    expect(todoItems).toEqual([
+      {
+        type: "todo",
+        items: [
+          { id: "1", text: "Board", status: "completed", completed: true },
+          {
+            id: "2",
+            text: "Mapping",
+            activeForm: "Mapping todo results",
+            status: "in_progress",
+            completed: false,
+          },
+          {
+            id: "3",
+            text: "Pick a model",
+            status: "pending",
+            completed: false,
+            state: "decision",
+            note: "Opus or Sonnet",
+          },
+          {
+            id: "4",
+            text: "Wiki",
+            status: "pending",
+            completed: false,
+            state: "hold",
+            note: "after the release",
+          },
+          {
+            id: "5",
+            text: "Old idea",
+            status: "pending",
+            completed: false,
+            state: "deleted",
+            note: "covered by #2",
+          },
+          { id: "6", text: "Odd state", status: "pending", completed: false },
+        ],
+      },
+      { type: "todo", items: [] },
+    ]);
+    // The tool row stays as before.
+    expect(
+      events
+        .timelineItems()
+        .filter((item) => item.type === "tool_call" && item.callId === "todo-1"),
+    ).toHaveLength(1);
+  });
+
   test("steers multiple prompts through one Pi turn and settles only after the queue drains", async () => {
     const { pi, session, events } = await createSession();
     const fakeSession = pi.latestSession();

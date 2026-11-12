@@ -372,7 +372,17 @@ export interface AgentTaskItem {
   id?: string;
   status?: "pending" | "in_progress" | "completed";
   activeForm?: string;
+  /**
+   * Why a task is not being worked on. `hold` is deliberately not now, `decision` waits for
+   * the user's choice, `deleted` was dropped (kept so it does not vanish silently; `status`
+   * stays `pending` for it on the wire). Absent means an ordinary task.
+   */
+  state?: AgentTaskState;
+  /** One short line: the hold reason, the decision needed, why it was dropped, or a status note. */
+  note?: string;
 }
+
+export type AgentTaskState = "hold" | "decision" | "deleted";
 
 export type AgentTimelineItem =
   | {

@@ -389,7 +389,14 @@ export const ko: TranslationResources = {
       title: "작업",
       empty: "아직 작업이 없습니다.",
       tasksProgress: "작업 {{completed}}/{{total}}개",
-      tasksProgressCurrent: "작업 {{completed}}/{{total}}개 · {{task}}",
+      decisionCount: "결정 대기 {{count}}",
+      holdCount: "보류 {{count}}",
+      now: "지금: {{task}}",
+      state: {
+        decision: "결정 대기",
+        hold: "보류",
+      },
+      dropped: "버림 {{count}}",
       activity: {
         created: "작업 {{count}}개 생성",
         added: "추가됨",

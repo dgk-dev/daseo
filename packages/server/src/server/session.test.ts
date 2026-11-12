@@ -1,3 +1,4 @@
+import type { AgentTimelineItem } from "./agent/agent-sdk-types.js";
 import { execSync } from "child_process";
 import {
   existsSync,
@@ -5945,6 +5946,9 @@ test("projected tail page for a long turn begins at the turn's user message", as
       getAgent: vi.fn(() => snapshot),
       waitForAgentClose: vi.fn().mockResolvedValue(undefined),
       fetchTimeline: vi.fn((agentId: string, options) => timelineStore.fetch(agentId, options)),
+      getLatestTimelineTasks: vi.fn((agentId: string, atOrBeforeSeq: number) =>
+        timelineStore.getLatestTasks(agentId, atOrBeforeSeq),
+      ),
     },
   });
 
@@ -6009,7 +6013,10 @@ describe("opening an unloaded agent answers from its committed timeline", () => 
     return bound;
   }
 
-  async function createUnloadedAgent(input: { withHistory: boolean }) {
+  async function createUnloadedAgent(input: {
+    withHistory: boolean;
+    extraItems?: AgentTimelineItem[];
+  }) {
     const root = mkdtempSync(join(tmpdir(), "session-durable-first-open-"));
     tempDirs.push(root);
     const logger = pino({ level: "silent" });
@@ -6041,6 +6048,9 @@ describe("opening an unloaded agent answers from its committed timeline", () => 
         type: "assistant_message",
         text: "second answer",
       });
+    }
+    for (const item of input.extraItems ?? []) {
+      await manager.appendTimelineItem(AGENT_ID, item);
     }
     await manager.flush();
     const before = manager.fetchTimeline(AGENT_ID, { direction: "tail", limit: 0 });
@@ -6138,6 +6148,81 @@ describe("opening an unloaded agent answers from its committed timeline", () => 
       appVisible,
     };
   }
+
+  test("a page newer than the last task update carries the task list (Daseo delta 95)", async () => {
+    const tasks = [
+      { id: "1", text: "Board", status: "completed" as const, completed: true },
+      {
+        id: "2",
+        text: "Pick a model",
+        status: "pending" as const,
+        completed: false,
+        state: "decision" as const,
+        note: "Opus or Sonnet",
+      },
+    ];
+    const { session, manager, messages, before } = await createUnloadedAgent({
+      withHistory: true,
+      extraItems: [
+        { type: "todo", items: [{ id: "1", text: "Board", status: "pending", completed: false }] },
+        { type: "todo", items: tasks },
+        { type: "assistant_message", text: "worked for hours" },
+        { type: "assistant_message", text: "still working" },
+      ],
+    });
+
+    // Unloaded: the stored timeline answers.
+    await session.handleMessage({
+      type: "fetch_agent_timeline_request",
+      requestId: "open-tail",
+      agentId: AGENT_ID,
+      direction: "tail",
+      projection: "canonical",
+      limit: 2,
+    });
+    const tail = findResponse(messages, "fetch_agent_timeline_response");
+    expect(tail?.payload.entries.map((entry) => entry.item.type)).toEqual([
+      "assistant_message",
+      "assistant_message",
+    ]);
+    expect(tail?.payload.tasks).toEqual(tasks);
+
+    // A before page never moves the list; an after page reports it as of its end.
+    messages.length = 0;
+    await session.handleMessage({
+      type: "fetch_agent_timeline_request",
+      requestId: "older-page",
+      agentId: AGENT_ID,
+      direction: "before",
+      cursor: { epoch: before.epoch, seq: 7 },
+      limit: 2,
+    });
+    expect(findResponse(messages, "fetch_agent_timeline_response")?.payload.tasks).toBeUndefined();
+
+    // Loaded: the live timeline answers the same.
+    await vi.waitFor(() => expect(manager.getAgent(AGENT_ID)?.lifecycle).toBe("idle"));
+    messages.length = 0;
+    await session.handleMessage({
+      type: "fetch_agent_timeline_request",
+      requestId: "loaded-tail",
+      agentId: AGENT_ID,
+      direction: "tail",
+      limit: 1,
+    });
+    expect(findResponse(messages, "fetch_agent_timeline_response")?.payload.tasks).toEqual(tasks);
+  });
+
+  test("a page with no task list ever recorded carries none", async () => {
+    const { session, messages } = await createUnloadedAgent({ withHistory: true });
+    await session.handleMessage({
+      type: "fetch_agent_timeline_request",
+      requestId: "open-tail",
+      agentId: AGENT_ID,
+      direction: "tail",
+      limit: 200,
+    });
+    expect(findResponse(messages, "fetch_agent_timeline_response")?.payload.tasks).toBeUndefined();
+  });
 
   test("a catch-up fetch answers from storage and never loads the agent", async () => {
     const { session, manager, messages, before, resumeCalls } = await createUnloadedAgent({

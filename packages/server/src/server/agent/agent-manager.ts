@@ -41,6 +41,7 @@ import {
   type AgentSession,
   type AgentSessionConfig,
   type AgentStreamEvent,
+  type AgentTaskItem,
   type AgentTimelineItem,
   type AssistantTurnOutcome,
   type AgentUsage,
@@ -338,6 +339,7 @@ export interface ResumeAgentRegistrationOptions {
 export interface CommittedAgentTimeline {
   fetch(options?: AgentTimelineFetchOptions): AgentTimelineFetchResult;
   getRows(): AgentTimelineRow[];
+  getLatestTasks(atOrBeforeSeq: number): AgentTaskItem[] | null;
 }
 
 type AttentionState =
@@ -1145,6 +1147,11 @@ export class AgentManager {
     return this.timelineStore.fetch(id, options);
   }
 
+  getLatestTimelineTasks(id: string, atOrBeforeSeq: number): AgentTaskItem[] | null {
+    this.requireAgent(id);
+    return this.timelineStore.getLatestTasks(id, atOrBeforeSeq);
+  }
+
   /**
    * Reads an agent's committed timeline without loading the agent, the way
    * Codex app-server answers `thread/read` without `thread/resume`. The view is
@@ -1166,6 +1173,7 @@ export class AgentManager {
     return {
       fetch: (options) => store.fetch(agentId, options),
       getRows: () => store.getRows(agentId),
+      getLatestTasks: (atOrBeforeSeq) => store.getLatestTasks(agentId, atOrBeforeSeq),
     };
   }
 
