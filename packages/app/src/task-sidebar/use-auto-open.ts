@@ -8,8 +8,8 @@ import { useTaskSidebarStore } from "./store";
 
 /**
  * Opens the task sidebar once when a task list first appears live in the viewed session
- * (Daseo delta 101). `enabled` is false where the sidebar does not exist (compact layouts, focus
- * mode, a workspace not on screen).
+ * (Daseo delta 101). `enabled` is false where the pinned sidebar does not exist (focus mode, a
+ * workspace not on screen) and on compact layouts, whose overlay would cover the chat.
  */
 export function useTaskSidebarAutoOpen(input: {
   serverId: string;

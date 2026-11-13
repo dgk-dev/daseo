@@ -2172,8 +2172,8 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       left above the keyboard (at least 120 dp), which with delta 59's input cap keeps the
       prompt below the header on the Fold 7 inner screen. Claude Code and Codex lines change only
       by the `Now:` word on a task in progress.
-      Since delta 101 this board is the compact layouts' (phone, folded Fold) and desktop focus
-      mode's; on wide layouts the right sidebar shows the tasks grouped by state.
+      Since delta 101 this board shows only in desktop focus mode; everywhere else the right
+      panel shows the tasks grouped by state.
     - **Reopening.** The board used to be derived from the loaded timeline page alone (40 rows),
       so a chat whose last task update was older than the page lost its board on reopen, and a
       page without a `todo` row deleted it, for every provider. Tail and after pages now carry
@@ -2423,11 +2423,14 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        `packages/protocol/src/browser-automation/rpc-schemas.ts`,
        `packages/server/src/server/browser-tools/tools.ts`, `packages/desktop/capture-harness/main.js`.
 
-101. **The task list lives in the right sidebar on wide layouts** — the owner's ask on 2026-11-13:
-     above the composer the subagents track and the task board together were too busy, and he
-     never uses the explorer ("explorer는 아예 안써서 그거 그냥 없애고 대신에 tasks list뜨게 …
-     tasks 처음으로 생기면 자동으로 열리고"; then "그 토글 그거 그대로 갖다 쓰는데 안에 내용만
-     달라지는거지").
+101. **The task list lives in the right panel** — the owner's ask on 2026-11-13: above the
+     composer the subagents track and the task board together were too busy, and he never uses
+     the explorer ("explorer는 아예 안써서 그거 그냥 없애고 대신에 tasks list뜨게 … tasks
+     처음으로 생기면 자동으로 열리고"; then "그 토글 그거 그대로 갖다 쓰는데 안에 내용만
+     달라지는거지"). Later the same day, for the phone ("닫은 좁은 화면 티피컬한 모바일
+     스크린에서도 오른쪽 상단 사이드패널 아이콘 있고 이거 누르면 현재는 files뜨는데 이것도 다
+     교체해주고 task list로", "모바일에서는 왜 여전히 task list가 입력창 위에 뜨지"): compact
+     layouts get the same task list in their right panel.
      - **Sidebar.** Wherever the right sidebar is a pinned panel (desktop app, browser, unfolded
        Fold) and focus mode is off, it keeps its toggle button, icon, `Cmd+E` shortcut, width,
        resize handle, close button, and persisted open state (`desktop.fileExplorerOpen`), and
@@ -2437,6 +2440,17 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        below show the task in progress and count what waits and what is held. A tab that is not an
        agent session, or a session without a list, shows "No task list yet". Read-only. The toggle
        says "Open/Close/Toggle tasks" in every locale.
+     - **Compact panel.** On compact layouts (phone, folded Fold, a narrow browser window) the
+       header's right toggle (`PanelRight` icon, never the source-control icon, no count) and the
+       swipe in from the right edge open the right overlay (mobile panel target `file-explorer`,
+       see `docs/mobile-panels.md`) with the same header and sections. `Cmd+E` does not: every
+       keyboard shortcut is off on compact layouts and in the native app
+       (`keyboard/availability.ts`), so the workspace screen's handler for it never runs there. The
+       overlay is mounted at app level, outside the workspace screen, so it reads the viewed tab
+       from the workspace layout store (the focused pane's active tab, the same pure function the
+       workspace screen uses: `task-sidebar/viewed-agent.ts`). It needs no workspace directory and
+       starts no checkout, file-tree, diff, branch, or PR request. Compact never opens it by itself
+       (it would cover the chat), and the terminal's swipe-left stays off.
      - **Sections.** The owner's follow-up the same day ("상태에 따라서 섹션 나눠서 정리되면 …
        기존 순서대로 섞여있으니까 헷갈려서. 그 폰트 크기도 적당히 크게"): the sidebar groups the
        tasks as In progress, Needs your decision, To do, On hold, Done, Dropped, each under the
@@ -2452,9 +2466,9 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        (`composer/task-list/sections.ts`, on `resolveTaskRowState`); the board above the composer
        keeps its full line, the agent's flat order, and its one-line rows (`TaskListBody`, the
        row's `board` variant).
-     - **Board.** The board above the composer is not rendered where that sidebar exists; it stays
-       unchanged on compact layouts and in desktop focus mode (`task-sidebar/layout.ts`). The
-       subagents track is unchanged.
+     - **Board.** The board above the composer is drawn only in desktop focus mode, which is a
+       wide-layout state that compact layouts ignore (`task-sidebar/layout.ts`). The subagents
+       track is unchanged.
      - **Auto-open.** When a live stream event gives the viewed session its first task list (it
        had none and its timeline was already synced), the sidebar opens once. Timeline pages,
        reopening a session, switching tabs, a reload, a list in another session, and a layout that
@@ -2463,17 +2477,19 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        was emptied and refilled counts as already opened. Not covered: after a reconnect, a live
        update that lands before the timeline page can read as a first list in a session whose
        replica held none.
-     - **Explorer retired from the UI.** No button, shortcut, or swipe opens it: the compact
-       header toggle, the right-edge swipe, the terminal's swipe-left, and `Cmd+E` on compact are
-       gone, and an explorer request on wide layouts (a review attachment, a folder link in the
-       chat) no longer opens the sidebar. On compact the overlay stays mounted, so those two
-       requests still reveal the folder or the changes there. The explorer, diff, PR, commit
-       history, and branch-switcher code, stores, and RPCs stay for upstream cherry-picks. File
-       links in answers open a file tab as before and never needed the sidebar. Browser specs
+     - **Explorer retired from the UI.** No button, shortcut, or swipe opens it on any layout. The
+       toggles, the swipe, and `Cmd+E` (wide) open the task list through their own store action
+       (`openFileExplorerForLayout`, `toggleFileExplorerForLayout`); an explorer request (a review
+       attachment, a folder link in the chat) only remembers the checkout's explorer tab and never
+       changes a panel. The explorer, diff, PR, commit history, and branch-switcher panes, stores,
+       and RPCs stay for upstream cherry-picks; the explorer's tab composition in
+       `explorer-sidebar.tsx` and the compact host's checkout model are deleted (no caller left).
+       File links in answers open a file tab as before and never needed the sidebar. Browser specs
        that drive the explorer skip where they would open it
        (`e2e/support/helpers/explorer-retired.ts`); `sidebar-workspace.spec.ts` checks the task
-       sidebar instead.
-     - **No longer reachable on wide layouts** (each can come back on request):
+       sidebar instead. The iOS agent-device flow `e2e/mobile/agent-device/file-context-menu.ios.ad`
+       drives the compact explorer and cannot pass.
+     - **No longer reachable** (each can come back on request):
        - the Changes diff view of uncommitted changes, and its compare-against-base mode;
        - its view options: unified or side-by-side, tree or flat list, hide whitespace, wrap long
          lines, expand or collapse all;
@@ -2493,7 +2509,11 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
          (view, create, merge), and the left sidebar's PR badge stays.
      - **Checks.** `task-sidebar/auto-open.test.ts` (first live list in the viewed session opens
        once; closing then updating, or clearing and refilling, does not reopen; another session;
-       reopen and reload; history replay; compact then wide), `summary.test.ts` (line without
+       reopen and reload; history replay; compact then wide), `task-sidebar/layout.test.ts` (board
+       only in wide focus mode, pinned sidebar only on wide outside focus mode),
+       `task-sidebar/viewed-agent.test.ts` (focused pane's active tab, background tab, non-agent
+       tab), `stores/panel-store/state.test.ts` (open and toggle per layout without a checkout,
+       explorer requests change no panel), `summary.test.ts` (line without
        `Now:`; the sidebar's progress-only line), `sections.test.ts` (section order, order kept
        inside a section, empty sections left out, an unknown state reads as To do, a list without
        states), `task-list-row.test.tsx` (the sidebar row's lines and sizes; the board row
@@ -2507,8 +2527,9 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        `components/sidebar/{sidebar-section-rule,pinned-section-header}.tsx`,
        `packages/app/src/task-sidebar/{auto-open,store,use-auto-open,layout}.ts`,
        `timeline/session-stream-reducers.ts` (`onLiveTaskListAppeared`),
-       `contexts/session-context.tsx`, `stores/panel-store/index.ts`
-       (`openDesktopFileExplorer`, `openFileExplorerForCheckout`),
+       `task-sidebar/viewed-agent.ts`, `contexts/session-context.tsx`,
+       `stores/panel-store/{index,state}.ts` (`openFileExplorerForLayout`,
+       `toggleFileExplorerForLayout`, `openFileExplorerForCheckout`),
        `screens/workspace/workspace-screen.tsx`, `panels/{agent,terminal}-panel.tsx`,
        `components/{compact-explorer-sidebar-host,terminal-pane}.tsx`.
 
@@ -2686,6 +2707,17 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        `packages/protocol/src/browser-automation/rpc-schemas.ts`,
        `packages/server/src/server/browser-tools/{tools,broker}.ts`,
        `packages/desktop/capture-harness/main.js`.
+
+105. **The phone app's left sidebar is narrower** — the owner's ask on 2026-11-13 about the
+     unfolded Fold 7 (875 dp wide): "왼쪽 사이드바 너비를 좀 줄이고". The pinned left sidebar's
+     default on the native app is 260 (it was 320, over a third of that screen); the web app and the
+     desktop app keep 320. The panel store's persist version goes 12 -> 13, and its migration moves
+     a native width of exactly 320 to 260, since that is the old default nobody chose by hand; any
+     other width stays, and a missing width takes the platform default. Checks in
+     `stores/panel-store/state.test.ts` (native 320 at v12, a custom native width, web 320, a
+     missing width, a native 320 already at v13). Key files:
+     `packages/app/src/stores/panel-store/{state,index}.ts` (`DEFAULT_NATIVE_SIDEBAR_WIDTH`,
+     `defaultSidebarWidth`, `migratePanelSidebarWidth`).
 
 ## Local reliability contracts
 

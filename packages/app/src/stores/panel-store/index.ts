@@ -4,11 +4,11 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   buildExplorerCheckoutKey,
   coerceExplorerTabForCheckout,
-  resolveExplorerTabForCheckout,
   type ExplorerTab,
 } from "../explorer-tab-memory";
 import { type ExplorerCheckoutContext } from "../explorer-checkout-context";
 import {
+  buildExplorerTabForCheckoutPatch,
   buildOpenFileExplorerPatch,
   buildToggleFileExplorerPatch,
   clampExplorerFilesSplitRatio,
@@ -17,6 +17,7 @@ import {
   DEFAULT_EXPLORER_FILES_SPLIT_RATIO,
   DEFAULT_EXPLORER_SIDEBAR_WIDTH,
   DEFAULT_SIDEBAR_WIDTH,
+  defaultSidebarWidth,
   MAX_EXPLORER_FILES_SPLIT_RATIO,
   MAX_EXPLORER_SIDEBAR_WIDTH,
   MAX_SIDEBAR_WIDTH,
@@ -99,13 +100,16 @@ export interface PanelState {
   openDesktopAgentList: () => void;
   closeDesktopAgentList: () => void;
   toggleDesktopAgentList: () => void;
-  openDesktopFileExplorer: () => void;
   closeDesktopFileExplorer: () => void;
   openAgentListForLayout: (input: PanelLayoutInput) => void;
   closeAgentListForLayout: (input: PanelLayoutInput) => void;
   toggleAgentListForLayout: (input: PanelLayoutInput) => void;
+  /** Opens the right panel (the task list, Daseo delta 101); no checkout needed. */
+  openFileExplorerForLayout: (input: PanelLayoutInput) => void;
+  /** The header toggle on either layout, and `Cmd+E` where shortcuts run (wide layouts). */
+  toggleFileExplorerForLayout: (input: PanelLayoutInput) => void;
+  /** An explorer request: remembers the checkout's explorer tab, never opens a panel. */
   openFileExplorerForCheckout: (input: ExplorerPanelIntent) => void;
-  toggleFileExplorerForCheckout: (input: ExplorerPanelIntent) => void;
 
   // File explorer settings actions
   setExplorerTab: (tab: ExplorerTab) => void;
@@ -150,7 +154,7 @@ export const usePanelStore = create<PanelState>()(
       expandedPathsByWorkspace: {},
       diffExpandedPathsByWorkspace: {},
       diffCollapsedFoldersByWorkspace: {},
-      sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
+      sidebarWidth: defaultSidebarWidth(isWeb),
       explorerWidth: DEFAULT_EXPLORER_SIDEBAR_WIDTH,
       explorerSortOption: "name",
       explorerShowHiddenFiles: true,
@@ -201,14 +205,6 @@ export const usePanelStore = create<PanelState>()(
           desktop: { ...state.desktop, agentListOpen: !state.desktop.agentListOpen },
         })),
 
-      openDesktopFileExplorer: () =>
-        set((state) => {
-          if (state.desktop.fileExplorerOpen) {
-            return state;
-          }
-          return { desktop: { ...state.desktop, fileExplorerOpen: true } };
-        }),
-
       closeDesktopFileExplorer: () =>
         set((state) => {
           if (!state.desktop.fileExplorerOpen) {
@@ -250,14 +246,17 @@ export const usePanelStore = create<PanelState>()(
           };
         }),
 
-      // Daseo delta 101: on wide layouts the right sidebar holds the task list and the explorer is
-      // gone from the UI, so a request to show the explorer (a review attachment, a folder link)
-      // does not open that sidebar. The toggle opens it through its own patch.
-      openFileExplorerForCheckout: (input) =>
-        set((state) => (input.isCompact ? buildOpenFileExplorerPatch(state, input) : state)),
+      openFileExplorerForLayout: (input) =>
+        set((state) => buildOpenFileExplorerPatch(state, input) ?? state),
 
-      toggleFileExplorerForCheckout: (input) =>
+      toggleFileExplorerForLayout: (input) =>
         set((state) => buildToggleFileExplorerPatch(state, input)),
+
+      // Daseo delta 101: the right panel holds the task list on every layout and the explorer is
+      // gone from the UI, so a request to show the explorer (a review attachment, a folder link)
+      // only remembers the explorer tab.
+      openFileExplorerForCheckout: (input) =>
+        set((state) => buildExplorerTabForCheckoutPatch(state, input.checkout)),
 
       setExplorerTab: (tab) => set({ explorerTab: tab }),
       setExplorerTabForCheckout: ({ serverId, cwd, isGit, tab }) =>
@@ -302,14 +301,7 @@ export const usePanelStore = create<PanelState>()(
           },
         })),
       activateExplorerTabForCheckout: (checkout) =>
-        set((state) => ({
-          explorerTab: resolveExplorerTabForCheckout({
-            serverId: checkout.serverId,
-            cwd: checkout.cwd,
-            isGit: checkout.isGit,
-            explorerTabByCheckout: state.explorerTabByCheckout,
-          }),
-        })),
+        set((state) => buildExplorerTabForCheckoutPatch(state, checkout)),
       setSidebarWidth: (width) => set({ sidebarWidth: clampSidebarWidth(width) }),
       setExplorerWidth: (width) => set({ explorerWidth: clampExplorerWidth(width) }),
       setExplorerSortOption: (option) => set({ explorerSortOption: option }),
@@ -324,7 +316,7 @@ export const usePanelStore = create<PanelState>()(
     }),
     {
       name: "panel-state",
-      version: 12,
+      version: 13,
       storage: createValidatedPersistStorage(AsyncStorage, PanelPersistedStateSchema),
       migrate: (persistedState, version) => migratePanelState(persistedState, version, { isWeb }),
       partialize: (state) => ({

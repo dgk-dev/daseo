@@ -1,20 +1,14 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useRef } from "react";
+import { type ReactNode, useCallback, useEffect } from "react";
 import { View } from "react-native";
 import { GestureDetector } from "react-native-gesture-handler";
 import { useActiveWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
-import { useWorkspace } from "@/stores/session-store-hooks";
 import { CompactExplorerSidebar } from "@/components/explorer-sidebar";
 import { useOpenFileExplorerGesture } from "@/mobile-panels/gestures";
-import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { selectIsFileExplorerOpen, usePanelStore } from "@/stores/panel-store";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
-import { useWorkspaceCheckoutStatus } from "@/screens/workspace/use-workspace-checkout-status";
-import { openWorkspaceFileFromExplorer } from "@/screens/workspace/workspace-file-open-command";
+import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
+import { resolveWorkspaceViewedAgentId } from "@/task-sidebar/viewed-agent";
 import { isWeb } from "@/constants/platform";
-import {
-  resolveCompactExplorerSidebarHostModel,
-  type CompactExplorerSidebarHostModel,
-} from "@/components/compact-explorer-sidebar-host-state";
 
 interface CompactExplorerOpenGestureSurfaceProps {
   children: ReactNode;
@@ -23,10 +17,6 @@ interface CompactExplorerOpenGestureSurfaceProps {
 }
 
 const COMPACT_WEB_GESTURE_TOUCH_ACTION = isWeb ? "auto" : "pan-y";
-// Daseo delta 101: the explorer is retired from the UI, so swiping in from the right edge no longer
-// opens it on compact layouts. The overlay stays mounted for the requests that still open it
-// (a review attachment, a folder link in the chat).
-const COMPACT_EXPLORER_SWIPE_OPENS = false;
 
 function CompactExplorerOpenGestureSurface({
   children,
@@ -45,55 +35,45 @@ function CompactExplorerOpenGestureSurface({
   );
 }
 
-function useActiveCompactExplorerSidebarModel(
-  enabled: boolean,
-): CompactExplorerSidebarHostModel | null {
+interface CompactTaskPanelTarget {
+  serverId: string;
+  /** The agent session in the active workspace's viewed tab, or null when it is not one. */
+  agentId: string | null;
+}
+
+/**
+ * Daseo delta 101: the compact right panel shows the task list of the viewed tab's agent session in
+ * the active workspace. It needs only the selection and the workspace layout, so it starts no
+ * checkout, file-tree, diff, branch, or PR request.
+ */
+function useActiveCompactTaskPanelTarget(enabled: boolean): CompactTaskPanelTarget | null {
   const selection = useActiveWorkspaceSelection();
-  const workspace = useWorkspace(selection?.serverId ?? null, selection?.workspaceId ?? null);
-  const isExplorerOpen = usePanelStore((state) =>
+  const isPanelOpen = usePanelStore((state) =>
     selectIsFileExplorerOpen(state, { isCompact: true }),
   );
   const showMobileAgent = usePanelStore((state) => state.showMobileAgent);
-  const client = useHostRuntimeClient(selection?.serverId ?? "");
-  const isConnected = useHostRuntimeIsConnected(selection?.serverId ?? "");
-  const retainedModelRef = useRef<CompactExplorerSidebarHostModel | null>(null);
-  const { checkoutQuery } = useWorkspaceCheckoutStatus({
-    client,
-    isConnected,
-    isRouteFocused: enabled && selection !== null,
-    normalizedServerId: selection?.serverId ?? "",
-    normalizedWorkspaceId: selection?.workspaceId ?? "",
-    workspaceDirectory: workspace?.workspaceDirectory || null,
-  });
-  const resolvedModel = useMemo(
-    () =>
-      resolveCompactExplorerSidebarHostModel({
-        previous: isExplorerOpen ? retainedModelRef.current : null,
-        selection,
-        workspace,
-        isGit: checkoutQuery.data?.isGit ?? false,
-      }),
-    [checkoutQuery.data?.isGit, isExplorerOpen, selection, workspace],
+  const persistenceKey = selection
+    ? buildWorkspaceTabPersistenceKey({
+        serverId: selection.serverId,
+        workspaceId: selection.workspaceId,
+      })
+    : null;
+  const agentId = useWorkspaceLayoutStore((state) =>
+    persistenceKey
+      ? resolveWorkspaceViewedAgentId(state.layoutByWorkspace[persistenceKey] ?? null)
+      : null,
   );
 
   useEffect(() => {
-    if (!selection) {
-      retainedModelRef.current = null;
-      if (enabled && isExplorerOpen) {
-        showMobileAgent();
-      }
-      return;
+    if (!persistenceKey && enabled && isPanelOpen) {
+      showMobileAgent();
     }
-    if (!isExplorerOpen) {
-      retainedModelRef.current = null;
-      return;
-    }
-    if (resolvedModel) {
-      retainedModelRef.current = resolvedModel;
-    }
-  }, [enabled, isExplorerOpen, resolvedModel, selection, showMobileAgent]);
+  }, [enabled, isPanelOpen, persistenceKey, showMobileAgent]);
 
-  return selection ? (resolvedModel ?? (isExplorerOpen ? retainedModelRef.current : null)) : null;
+  if (!selection || !persistenceKey) {
+    return null;
+  }
+  return { serverId: selection.serverId, agentId };
 }
 
 interface CompactExplorerSidebarHostProps {
@@ -102,58 +82,23 @@ interface CompactExplorerSidebarHostProps {
 }
 
 export function CompactExplorerSidebarHost({ children, enabled }: CompactExplorerSidebarHostProps) {
-  const model = useActiveCompactExplorerSidebarModel(enabled);
-  const openFileExplorerForCheckout = usePanelStore((state) => state.openFileExplorerForCheckout);
-  const showMobileAgent = usePanelStore((state) => state.showMobileAgent);
-  const openWorkspaceTabFocused = useWorkspaceLayoutStore((state) => state.openTabFocused);
-  const focusWorkspaceTab = useWorkspaceLayoutStore((state) => state.focusTab);
+  const target = useActiveCompactTaskPanelTarget(enabled);
+  const openFileExplorerForLayout = usePanelStore((state) => state.openFileExplorerForLayout);
 
-  const handleOpenExplorer = useCallback(() => {
-    if (!model?.workspaceRoot) {
-      return;
-    }
-    openFileExplorerForCheckout({
-      isCompact: true,
-      checkout: {
-        serverId: model.serverId,
-        cwd: model.workspaceRoot,
-        isGit: model.isGit,
-      },
-    });
-  }, [model, openFileExplorerForCheckout]);
-
-  const handleOpenFile = useCallback(
-    (filePath: string) => {
-      if (!model) {
-        return;
-      }
-      openWorkspaceFileFromExplorer({
-        filePath,
-        persistenceKey: model.persistenceKey,
-        showMobileAgent,
-        openWorkspaceTabFocused,
-        focusWorkspaceTab,
-      });
-    },
-    [focusWorkspaceTab, model, openWorkspaceTabFocused, showMobileAgent],
-  );
+  const handleOpenPanel = useCallback(() => {
+    openFileExplorerForLayout({ isCompact: true });
+  }, [openFileExplorerForLayout]);
 
   return (
     <>
       <CompactExplorerOpenGestureSurface
-        enabled={COMPACT_EXPLORER_SWIPE_OPENS && enabled && Boolean(model?.workspaceRoot)}
-        onOpenExplorer={handleOpenExplorer}
+        enabled={enabled && target !== null}
+        onOpenExplorer={handleOpenPanel}
       >
         {children}
       </CompactExplorerOpenGestureSurface>
-      {enabled && model ? (
-        <CompactExplorerSidebar
-          serverId={model.serverId}
-          workspaceId={model.workspaceId}
-          workspaceRoot={model.workspaceRoot}
-          isGit={model.isGit}
-          onOpenFile={handleOpenFile}
-        />
+      {enabled && target ? (
+        <CompactExplorerSidebar serverId={target.serverId} agentId={target.agentId} />
       ) : null}
     </>
   );

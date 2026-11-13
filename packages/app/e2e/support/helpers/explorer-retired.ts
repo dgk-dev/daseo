@@ -1,6 +1,6 @@
 import { test } from "@playwright/test";
 
-// Daseo delta 101: the right sidebar holds the viewed session's task list on wide layouts, and the
+// Daseo delta 101: the right panel holds the viewed session's task list on every layout, and the
 // explorer (Changes, Files, PR, commit history, and the branch switcher in the Changes header) is
 // retired from the UI, so no button, shortcut, or swipe opens it. Its code stays for upstream
 // cherry-picks; a spec that drives it skips at the point it would open it.

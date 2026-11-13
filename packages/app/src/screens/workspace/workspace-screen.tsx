@@ -59,7 +59,8 @@ import {
 } from "@/components/ui/floating-panel-portal";
 import { ExplorerSidebar } from "@/components/explorer-sidebar";
 import { useTaskSidebarAutoOpen } from "@/task-sidebar/use-auto-open";
-import { isTaskListInSidebar } from "@/task-sidebar/layout";
+import { hasPinnedTaskSidebar } from "@/task-sidebar/layout";
+import { resolveViewedAgentId } from "@/task-sidebar/viewed-agent";
 import { SplitContainer } from "@/components/split-container";
 import { RetainedPanel } from "@/components/retained-panel";
 import { WindowChromeRegion } from "@/utils/desktop-window";
@@ -71,7 +72,6 @@ import { ImportSessionSheet } from "@/components/import-session-sheet";
 import { useToast } from "@/contexts/toast-context";
 import { getOrCreateClientId } from "@/utils/client-id";
 import { selectIsFileExplorerOpen, usePanelStore } from "@/stores/panel-store";
-import { type ExplorerCheckoutContext } from "@/stores/explorer-checkout-context";
 import { traceInstant } from "@/performance/native-trace";
 import { useSessionStore, type WorkspaceDescriptor } from "@/stores/session-store";
 import {
@@ -1607,16 +1607,11 @@ function shouldShowWorkspaceExplorerSidebar(input: {
 }): boolean {
   return (
     input.isRouteFocused &&
-    isTaskListInSidebar({
+    hasPinnedTaskSidebar({
       isCompact: input.isMobile,
       isFocusModeEnabled: input.isFocusModeEnabled,
     })
   );
-}
-
-/** The agent session in the viewed tab, whose task list the right sidebar shows (delta 101). */
-function resolveViewedAgentId(descriptor: WorkspaceTabDescriptor | null): string | null {
-  return descriptor?.target.kind === "agent" ? descriptor.target.agentId : null;
 }
 
 interface WorkspaceChromeRowProps extends ComponentProps<typeof ExplorerSidebar> {
@@ -2006,31 +2001,13 @@ function WorkspaceScreenContent({
   const isExplorerOpen = usePanelStore((state) =>
     selectIsFileExplorerOpen(state, { isCompact: isMobile }),
   );
-  const toggleFileExplorerForCheckout = usePanelStore(
-    (state) => state.toggleFileExplorerForCheckout,
-  );
+  const toggleFileExplorerForLayout = usePanelStore((state) => state.toggleFileExplorerForLayout);
   const showMobileAgent = usePanelStore((state) => state.showMobileAgent);
 
-  const activeExplorerCheckout = useMemo<ExplorerCheckoutContext | null>(() => {
-    if (!normalizedServerId || !workspaceDirectory) {
-      return null;
-    }
-    return {
-      serverId: normalizedServerId,
-      cwd: workspaceDirectory,
-      isGit: isGitCheckout,
-    };
-  }, [isGitCheckout, normalizedServerId, workspaceDirectory]);
-
+  // Daseo delta 101: the right panel holds the task list, which needs no workspace directory.
   const handleToggleExplorer = useCallback(() => {
-    if (!activeExplorerCheckout) {
-      return;
-    }
-    toggleFileExplorerForCheckout({
-      isCompact: isMobile,
-      checkout: activeExplorerCheckout,
-    });
-  }, [activeExplorerCheckout, isMobile, toggleFileExplorerForCheckout]);
+    toggleFileExplorerForLayout({ isCompact: isMobile });
+  }, [isMobile, toggleFileExplorerForLayout]);
 
   // Daseo delta 101: the toggle opens the task list, so it carries no changes count.
   const explorerToggleStyle = useCallback(
@@ -3292,14 +3269,13 @@ function WorkspaceScreenContent({
 
   const handleWorkspaceSidebarAction = useCallback(
     (action: KeyboardActionDefinition): boolean => {
-      // Daseo delta 101: compact layouts have no right sidebar entry point.
-      if (action.id !== "sidebar.toggle.right" || isMobile) {
+      if (action.id !== "sidebar.toggle.right") {
         return false;
       }
       handleToggleExplorer();
       return true;
     },
-    [handleToggleExplorer, isMobile],
+    [handleToggleExplorer],
   );
 
   const handleWorkspacePaneAction = useCallback(
@@ -3767,6 +3743,27 @@ function WorkspaceScreenContent({
             }}
           </HeaderToggleButton>
         ) : null}
+        {isMobile ? (
+          // Daseo delta 101: the compact toggle opens the task list overlay.
+          <HeaderToggleButton
+            testID="workspace-explorer-toggle"
+            onPress={handleToggleExplorer}
+            tooltipLabel={t("workspace.tabs.tasks.toggle")}
+            tooltipKeys={EXPLORER_TOGGLE_KEYS}
+            tooltipSide="left"
+            style={styles.headerActionButton}
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel={explorerToggleLabel}
+            accessibilityState={explorerToggleAccessibilityState}
+          >
+            {({ hovered }) => {
+              const colorMapping =
+                isExplorerOpen || hovered ? foregroundColorMapping : mutedColorMapping;
+              return <ThemedPanelRight size={20} uniProps={colorMapping} />;
+            }}
+          </HeaderToggleButton>
+        ) : null}
       </View>
     ),
     [
@@ -3786,6 +3783,7 @@ function WorkspaceScreenContent({
       explorerToggleLabel,
       explorerToggleAccessibilityState,
       explorerToggleStyle,
+      isExplorerOpen,
       t,
     ],
   );
@@ -3801,12 +3799,16 @@ function WorkspaceScreenContent({
   // Daseo delta 101: the right sidebar shows the viewed session's task list and opens by itself
   // once when a list first appears live there.
   const viewedAgentId = resolveViewedAgentId(activeTabDescriptor);
-  const openDesktopFileExplorer = usePanelStore((state) => state.openDesktopFileExplorer);
+  const openFileExplorerForLayout = usePanelStore((state) => state.openFileExplorerForLayout);
+  const openTaskSidebar = useCallback(
+    () => openFileExplorerForLayout({ isCompact: false }),
+    [openFileExplorerForLayout],
+  );
   useTaskSidebarAutoOpen({
     serverId: normalizedServerId,
     agentId: viewedAgentId,
     enabled: showExplorerSidebar,
-    open: openDesktopFileExplorer,
+    open: openTaskSidebar,
   });
   const createTerminalDisabled = useMemo(
     () => createTerminalMutation.isPending || pendingTerminalCreateInput !== null,

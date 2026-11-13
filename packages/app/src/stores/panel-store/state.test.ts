@@ -5,8 +5,11 @@ import {
   type ExplorerTab,
 } from "@/stores/explorer-tab-memory";
 import {
+  buildExplorerTabForCheckoutPatch,
   buildOpenFileExplorerPatch,
   buildToggleFileExplorerPatch,
+  DEFAULT_NATIVE_SIDEBAR_WIDTH,
+  DEFAULT_SIDEBAR_WIDTH,
   migratePanelState,
   selectIsAgentListOpen,
   selectIsFileExplorerOpen,
@@ -129,6 +132,39 @@ describe("panel-store migration", () => {
     expect(state.mobileView).toBeUndefined();
     expect(state.mobilePanel).toBeUndefined();
   });
+
+  // Daseo delta 105: the native app's left sidebar defaults to 260.
+  it("moves a native width still at the old 320 default to 260", () => {
+    const state = migratePanelState({ sidebarWidth: 320 }, 12, { isWeb: false });
+
+    expect(state.sidebarWidth).toBe(DEFAULT_NATIVE_SIDEBAR_WIDTH);
+    expect(DEFAULT_NATIVE_SIDEBAR_WIDTH).toBe(260);
+  });
+
+  it("keeps a native width chosen by hand", () => {
+    const state = migratePanelState({ sidebarWidth: 410 }, 12, { isWeb: false });
+
+    expect(state.sidebarWidth).toBe(410);
+  });
+
+  it("keeps 320 on web and the desktop app", () => {
+    const state = migratePanelState({ sidebarWidth: 320 }, 12, { isWeb: true });
+
+    expect(state.sidebarWidth).toBe(DEFAULT_SIDEBAR_WIDTH);
+    expect(DEFAULT_SIDEBAR_WIDTH).toBe(320);
+  });
+
+  it("gives a native state without a width the 260 default", () => {
+    expect(migratePanelState({}, 12, { isWeb: false }).sidebarWidth).toBe(260);
+    expect(migratePanelState({}, 13, { isWeb: false }).sidebarWidth).toBe(260);
+    expect(migratePanelState({}, 12, { isWeb: true }).sidebarWidth).toBe(320);
+  });
+
+  it("leaves a native 320 alone once it is at the current version", () => {
+    const state = migratePanelState({ sidebarWidth: 320 }, 13, { isWeb: false });
+
+    expect(state.sidebarWidth).toBe(320);
+  });
 });
 
 describe("panel-store visibility selectors", () => {
@@ -171,51 +207,84 @@ describe("panel-store visibility selectors", () => {
   });
 });
 
-describe("panel-store checkout-intent file explorer actions", () => {
-  it("opens the compact explorer and resolves the tab from the explicit checkout", () => {
-    const checkout = { serverId: "server-1", cwd: "/tmp/repo", isGit: true };
-    const key = buildExplorerCheckoutKey(checkout.serverId, checkout.cwd)!;
-    const state = makePanelState({
-      explorerTab: "changes",
-      explorerTabByCheckout: { [key]: "files" },
+// Daseo delta 101: the right panel holds the task list on every layout; opening it needs no
+// checkout, and an explorer request only remembers the explorer tab.
+describe("panel-store right panel actions", () => {
+  it("opens the compact overlay without a checkout", () => {
+    const state = makePanelState({ mobilePanel: { target: "agent", revision: 3 } });
+
+    expect(buildOpenFileExplorerPatch(state, { isCompact: true })).toEqual({
+      mobilePanel: { target: "file-explorer", revision: 4 },
     });
-
-    const patch = buildOpenFileExplorerPatch(state, { isCompact: true, checkout });
-
-    expect(patch.mobilePanel).toEqual({ target: "file-explorer", revision: 1 });
-    expect(patch.desktop).toBeUndefined();
-    expect(patch.explorerTab).toBe("files");
   });
 
-  it("opens the expanded explorer and resolves the tab from the explicit checkout", () => {
-    const checkout = { serverId: "server-1", cwd: "/tmp/repo", isGit: true };
-    const key = buildExplorerCheckoutKey(checkout.serverId, checkout.cwd)!;
-    const state = makePanelState({
-      explorerTab: "changes",
-      explorerTabByCheckout: { [key]: "files" },
+  it("opens the wide sidebar without a checkout", () => {
+    const state = makePanelState();
+
+    expect(buildOpenFileExplorerPatch(state, { isCompact: false })).toEqual({
+      desktop: { agentListOpen: false, fileExplorerOpen: true, focusModeEnabled: false },
     });
-
-    const patch = buildOpenFileExplorerPatch(state, { isCompact: false, checkout });
-
-    expect(patch.mobilePanel).toBeUndefined();
-    expect(patch.desktop?.fileExplorerOpen).toBe(true);
-    expect(patch.explorerTab).toBe("files");
   });
 
-  it("toggles the explorer closed without changing the active tab", () => {
+  it("does nothing when the panel is already open", () => {
+    const compactOpen = makePanelState({ mobilePanel: { target: "file-explorer", revision: 1 } });
+    const wideOpen = makePanelState({
+      desktop: { agentListOpen: false, fileExplorerOpen: true, focusModeEnabled: false },
+    });
+
+    expect(buildOpenFileExplorerPatch(compactOpen, { isCompact: true })).toBeNull();
+    expect(buildOpenFileExplorerPatch(wideOpen, { isCompact: false })).toBeNull();
+  });
+
+  it("opens the compact overlay from the agent list too", () => {
+    const state = makePanelState({ mobilePanel: { target: "agent-list", revision: 2 } });
+
+    expect(buildToggleFileExplorerPatch(state, { isCompact: true })).toEqual({
+      mobilePanel: { target: "file-explorer", revision: 3 },
+    });
+  });
+
+  it("toggles the compact overlay back to the chat", () => {
+    const state = makePanelState({ mobilePanel: { target: "file-explorer", revision: 5 } });
+
+    expect(buildToggleFileExplorerPatch(state, { isCompact: true })).toEqual({
+      mobilePanel: { target: "agent", revision: 6 },
+    });
+  });
+
+  it("toggles each layout without touching the other one", () => {
+    const state = makePanelState({
+      mobilePanel: { target: "file-explorer", revision: 1 },
+      desktop: { agentListOpen: true, fileExplorerOpen: false, focusModeEnabled: false },
+    });
+
+    expect(buildToggleFileExplorerPatch(state, { isCompact: false })).toEqual({
+      desktop: { agentListOpen: true, fileExplorerOpen: true, focusModeEnabled: false },
+    });
+  });
+
+  it("toggles the wide sidebar closed without changing the explorer tab", () => {
     const state = makePanelState({
       desktop: { agentListOpen: false, fileExplorerOpen: true, focusModeEnabled: false },
       explorerTab: "files",
     });
 
-    const patch = buildToggleFileExplorerPatch(state, {
-      isCompact: false,
-      checkout: { serverId: "server-1", cwd: "/tmp/repo", isGit: true },
-    });
-
-    expect(patch).toEqual({
+    expect(buildToggleFileExplorerPatch(state, { isCompact: false })).toEqual({
       desktop: { agentListOpen: false, fileExplorerOpen: false, focusModeEnabled: false },
     });
+  });
+});
+
+describe("panel-store explorer requests", () => {
+  it("resolves the remembered tab of the checkout and changes no panel", () => {
+    const checkout = { serverId: "server-1", cwd: "/tmp/repo", isGit: true };
+    const key = buildExplorerCheckoutKey(checkout.serverId, checkout.cwd)!;
+    const state = makePanelState({
+      explorerTab: "changes",
+      explorerTabByCheckout: { [key]: "files" },
+    });
+
+    expect(buildExplorerTabForCheckoutPatch(state, checkout)).toEqual({ explorerTab: "files" });
   });
 
   it("coerces changes to files for a non-git checkout", () => {
@@ -226,20 +295,6 @@ describe("panel-store checkout-intent file explorer actions", () => {
       explorerTabByCheckout: { [key]: "changes" },
     });
 
-    const patch = buildOpenFileExplorerPatch(state, { isCompact: false, checkout });
-
-    expect(patch.explorerTab).toBe("files");
-  });
-
-  it("opens with the default files tab for an explicit non-git checkout with no stored tab", () => {
-    const state = makePanelState({ explorerTab: "changes", explorerTabByCheckout: {} });
-
-    const patch = buildOpenFileExplorerPatch(state, {
-      isCompact: false,
-      checkout: { serverId: "server-1", cwd: "/tmp/non-git", isGit: false },
-    });
-
-    expect(patch.desktop?.fileExplorerOpen).toBe(true);
-    expect(patch.explorerTab).toBe("files");
+    expect(buildExplorerTabForCheckoutPatch(state, checkout)).toEqual({ explorerTab: "files" });
   });
 });

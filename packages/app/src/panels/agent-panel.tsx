@@ -1604,7 +1604,8 @@ function ActiveAgentComposer({
 }) {
   const insets = useSafeAreaInsets();
   const isCompactFormFactor = useIsCompactFormFactor();
-  // Daseo delta 101: on wide layouts the task list is in the right sidebar, not above the composer.
+  // Daseo delta 101: the task list is in the right panel; the board above the composer is drawn
+  // only in desktop focus mode.
   const isFocusModeEnabled = usePanelStore((state) => state.desktop.focusModeEnabled);
   const taskListInSidebar = isTaskListInSidebar({
     isCompact: isCompactFormFactor,

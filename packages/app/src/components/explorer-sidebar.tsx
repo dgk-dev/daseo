@@ -14,108 +14,53 @@ import { Gesture } from "react-native-gesture-handler";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { X } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
-import {
-  formatPrTabLabel,
-  PullRequestPane,
-  PullRequestPaneError,
-  PullRequestPaneSkeleton,
-  PullRequestTabIcon,
-  usePrPaneData,
-} from "@/git/pull-request-panel";
-import { useCheckoutGitActionsStore } from "@/git/actions-store";
-import type { UsePrPaneDataResult } from "@/git/pull-request-panel/use-data";
-import { usePanelStore, selectIsFileExplorerOpen, type ExplorerTab } from "@/stores/panel-store";
-import { useToast } from "@/contexts/toast-context";
+import { usePanelStore, selectIsFileExplorerOpen } from "@/stores/panel-store";
 import { useCloseFileExplorerGesture } from "@/mobile-panels/gestures";
 import { MobilePanelOverlay } from "@/mobile-panels/presentation";
 import { HEADER_INNER_HEIGHT } from "@/constants/layout";
-import { GitDiffPane } from "@/git/diff-pane";
-import { FileExplorerPane } from "./file-explorer-pane";
 import { useKeyboardShiftStyle } from "@/hooks/use-keyboard-shift-style";
 import { useHasOwnedWindowChromeObstruction, WindowChromeSafeArea } from "@/utils/desktop-window";
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
 import { RetainedPanelActivity } from "@/components/retained-panel";
 import { SidebarResizeHandle } from "@/components/sidebar-resize-handle";
-import { buildWorkspaceAttachmentScopeKey } from "@/attachments/workspace-attachments-store";
 import { resolveDesktopExplorerWidth } from "@/components/desktop-sidebar-layout";
 import {
   SIDEBAR_RESIZE_ACTIVATION_OFFSET,
   SIDEBAR_RESIZE_FAIL_OFFSET,
 } from "@/components/sidebar-resize-handle-layout";
-import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
-import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
-import { resolveFocusedChatTarget } from "@/composer/focused-chat-target";
-import { createWorkspaceFileAttachment } from "@/attachments/workspace-file";
-import { useDraftStore } from "@/stores/draft-store";
 import { TaskSectionsBody, useAgentTasks, useTaskBoard } from "@/composer/task-list/body";
 import type { TodoEntry } from "@/types/stream";
 
 function logExplorerSidebar(_event: string, _details: Record<string, unknown>): void {}
 
-interface ExplorerSidebarProps {
+interface TaskPanelProps {
   serverId: string;
-  workspaceId?: string | null;
-  workspaceRoot: string;
-  isGit: boolean;
-  onOpenFile?: (filePath: string) => void;
+  /** The agent session in the viewed tab, or null when the viewed tab is not one. */
+  agentId: string | null;
 }
 
-interface ExplorerSidebarSharedState {
-  explorerTab: ExplorerTab;
-  handleTabPress: (tab: ExplorerTab) => void;
-}
-
-function useExplorerSidebarSharedState({
-  serverId,
-  workspaceRoot,
-  isGit,
-}: Pick<ExplorerSidebarProps, "serverId" | "workspaceRoot" | "isGit">): ExplorerSidebarSharedState {
-  const explorerTab = usePanelStore((state) => state.explorerTab);
-  const setExplorerTabForCheckout = usePanelStore((state) => state.setExplorerTabForCheckout);
-  const handleTabPress = useCallback(
-    (tab: ExplorerTab) => {
-      setExplorerTabForCheckout({ serverId, cwd: workspaceRoot, isGit, tab });
-    },
-    [isGit, serverId, setExplorerTabForCheckout, workspaceRoot],
-  );
-
-  return { explorerTab, handleTabPress };
-}
-
-export function CompactExplorerSidebar({
-  serverId,
-  workspaceId,
-  workspaceRoot,
-  isGit,
-  onOpenFile,
-}: ExplorerSidebarProps) {
+/**
+ * The right overlay on compact layouts. Daseo delta 101: like the wide sidebar it holds the viewed
+ * session's task list (it held the Changes, Files, and PR tabs), and needs no workspace directory.
+ */
+export function CompactExplorerSidebar({ serverId, agentId }: TaskPanelProps) {
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
   const isOpen = usePanelStore((state) => selectIsFileExplorerOpen(state, { isCompact: true }));
   const showMobileAgent = usePanelStore((state) => state.showMobileAgent);
-  const { explorerTab, handleTabPress } = useExplorerSidebarSharedState({
-    serverId,
-    workspaceRoot,
-    isGit,
-  });
   const { style: mobileKeyboardInsetStyle } = useKeyboardShiftStyle({
     mode: "padding",
     enabled: true,
   });
   const { gesture: closeGesture } = useCloseFileExplorerGesture();
 
-  const handleClose = useCallback(
-    (reason: string) => {
-      logExplorerSidebar("handleClose", {
-        reason,
-        isOpen,
-      });
-      showMobileAgent();
-    },
-    [isOpen, showMobileAgent],
-  );
-
-  const handleHeaderClose = useCallback(() => handleClose("header-close-button"), [handleClose]);
+  const handleHeaderClose = useCallback(() => {
+    logExplorerSidebar("handleClose", {
+      reason: "header-close-button",
+      isOpen,
+    });
+    showMobileAgent();
+  }, [isOpen, showMobileAgent]);
 
   const mobileSidebarStyle = useMemo(
     () => [
@@ -135,34 +80,19 @@ export function CompactExplorerSidebar({
         closeGesture={closeGesture}
         panelStyle={mobileSidebarStyle}
       >
-        <ExplorerSidebarContent
-          activeTab={explorerTab}
-          onTabPress={handleTabPress}
-          onClose={handleHeaderClose}
-          serverId={serverId}
-          workspaceId={workspaceId}
-          workspaceRoot={workspaceRoot}
-          isGit={isGit}
-          isOpen={isOpen}
-          onOpenFile={onOpenFile}
-        />
+        <TaskSidebarContent serverId={serverId} agentId={agentId} onClose={handleHeaderClose} />
       </MobilePanelOverlay>
     </RetainedPanelActivity>
   );
 }
 
-interface ExplorerSidebarDesktopProps {
-  serverId: string;
-  /** The agent session in the viewed tab, or null when the viewed tab is not one. */
-  agentId: string | null;
-}
-
 /**
  * The right sidebar on wide layouts. Daseo delta 101: it keeps its toggle, width, resize, and
  * persisted open state, and holds the viewed session's task list instead of the Changes, Files, and
- * PR tabs (the explorer is retired from the UI there; its code stays for compact layouts).
+ * PR tabs (the explorer is retired from the UI; its panes stay in the tree for upstream
+ * cherry-picks).
  */
-export function ExplorerSidebar({ serverId, agentId }: ExplorerSidebarDesktopProps) {
+export function ExplorerSidebar({ serverId, agentId }: TaskPanelProps) {
   const insets = useSafeAreaInsets();
   const explorerWidth = usePanelStore((state) => state.explorerWidth);
   const setExplorerWidth = usePanelStore((state) => state.setExplorerWidth);
@@ -361,267 +291,6 @@ function TaskSidebarBoard({
   );
 }
 
-interface ExplorerTabButtonProps {
-  tab: ExplorerTab;
-  active: boolean;
-  label?: string;
-  onTabPress: (tab: ExplorerTab) => void;
-  testID: string;
-  children?: React.ReactNode;
-}
-
-function ExplorerTabButton({
-  tab,
-  active,
-  label,
-  onTabPress,
-  testID,
-  children,
-}: ExplorerTabButtonProps) {
-  const handlePress = useCallback(() => onTabPress(tab), [onTabPress, tab]);
-  const tabStyle = useMemo(() => [styles.tab, active && styles.tabActive], [active]);
-  const tabTextStyle = useMemo(() => [styles.tabText, active && styles.tabTextActive], [active]);
-  return (
-    <Pressable testID={testID} style={tabStyle} onPress={handlePress}>
-      {children}
-      {label !== undefined ? <Text style={tabTextStyle}>{label}</Text> : null}
-    </Pressable>
-  );
-}
-
-interface SidebarContentProps {
-  activeTab: ExplorerTab;
-  onTabPress: (tab: ExplorerTab) => void;
-  onClose: () => void;
-  serverId: string;
-  workspaceId?: string | null;
-  workspaceRoot: string;
-  isGit: boolean;
-  isOpen: boolean;
-  onOpenFile?: (filePath: string) => void;
-}
-
-function ExplorerSidebarContent({
-  activeTab,
-  onTabPress,
-  onClose,
-  serverId,
-  workspaceId,
-  workspaceRoot,
-  isGit,
-  isOpen,
-  onOpenFile,
-}: SidebarContentProps) {
-  const { theme } = useUnistyles();
-  const { t } = useTranslation();
-  const toast = useToast();
-  const canQueryPullRequest = isGit && Boolean(workspaceRoot);
-  const prPane = usePrPaneData({
-    serverId,
-    cwd: workspaceRoot,
-    enabled: canQueryPullRequest && isOpen,
-    timelineEnabled: activeTab === "pr" && canQueryPullRequest && isOpen,
-  });
-  const hasPullRequest = prPane.prNumber !== null;
-  const showPrTab = hasPullRequest || (activeTab === "pr" && prPane.isLoading);
-  const requestedTab: ExplorerTab =
-    !isGit && (activeTab === "changes" || activeTab === "pr") ? "files" : activeTab;
-  const resolvedTab: ExplorerTab = requestedTab === "pr" && !showPrTab ? "changes" : requestedTab;
-  const prTabLabel = formatPrTabLabel(prPane.prNumber);
-  const refreshGitActions = useCheckoutGitActionsStore((s) => s.refresh);
-  const handlePrRetry = useCallback(() => {
-    refreshGitActions({ serverId, cwd: workspaceRoot }).catch((error) => {
-      toast.error(error instanceof Error ? error.message : t("workspace.git.diff.failedRefresh"));
-    });
-  }, [refreshGitActions, serverId, t, toast, workspaceRoot]);
-  const workspaceAttachmentScopeKey = useMemo(
-    () => buildWorkspaceAttachmentScopeKey({ serverId, workspaceId, cwd: workspaceRoot }),
-    [serverId, workspaceId, workspaceRoot],
-  );
-
-  return (
-    <View style={styles.sidebarContent} pointerEvents="auto">
-      {/* Header with tabs and close button */}
-      <SidebarHeader closeLabel={t("workspace.tabs.explorer.close")} onClose={onClose}>
-        <View style={styles.tabsContainer}>
-          {isGit && (
-            <ExplorerTabButton
-              tab="changes"
-              active={resolvedTab === "changes"}
-              label={t("workspace.tabs.explorer.changes")}
-              onTabPress={onTabPress}
-              testID="explorer-tab-changes"
-            />
-          )}
-          <ExplorerTabButton
-            tab="files"
-            active={resolvedTab === "files"}
-            label={t("workspace.tabs.explorer.files")}
-            onTabPress={onTabPress}
-            testID="explorer-tab-files"
-          />
-          {isGit && showPrTab && (
-            <ExplorerTabButton
-              tab="pr"
-              active={resolvedTab === "pr"}
-              label={prTabLabel}
-              onTabPress={onTabPress}
-              testID="explorer-tab-pr"
-            >
-              <PullRequestTabIcon
-                forge={prPane.forge}
-                size={13}
-                color={
-                  resolvedTab === "pr" ? theme.colors.foreground : theme.colors.foregroundMuted
-                }
-              />
-            </ExplorerTabButton>
-          )}
-        </View>
-      </SidebarHeader>
-
-      {/* Content based on active tab */}
-      <View style={styles.contentArea} testID="explorer-content-area">
-        {resolvedTab === "changes" && (
-          <ChangedFilesPane
-            serverId={serverId}
-            workspaceId={workspaceId}
-            workspaceRoot={workspaceRoot}
-            isOpen={isOpen}
-            onOpenFile={onOpenFile}
-          />
-        )}
-        {resolvedTab === "files" && (
-          <FilesPane
-            serverId={serverId}
-            workspaceId={workspaceId}
-            workspaceRoot={workspaceRoot}
-            onOpenFile={onOpenFile}
-          />
-        )}
-        {resolvedTab === "pr" && (
-          <PrTabContent
-            serverId={serverId}
-            cwd={workspaceRoot}
-            prPane={prPane}
-            workspaceAttachmentScopeKey={workspaceAttachmentScopeKey}
-            onRetry={handlePrRetry}
-          />
-        )}
-      </View>
-    </View>
-  );
-}
-
-/**
- * Shared add-to-chat state for the changes/files panes: both expose an "add file
- * to chat" action that attaches the file to the focused chat's composer.
- * Available only when a workspace with a focused chat is available.
- */
-function useAddFileToChat({
-  serverId,
-  workspaceId,
-}: Pick<SidebarContentProps, "serverId" | "workspaceId">) {
-  const workspaceKey = workspaceId
-    ? buildWorkspaceTabPersistenceKey({ serverId, workspaceId })
-    : null;
-  const layout = useWorkspaceLayoutStore((state) =>
-    workspaceKey ? state.layoutByWorkspace[workspaceKey] : undefined,
-  );
-  const focusTab = useWorkspaceLayoutStore((state) => state.focusTab);
-  const focusedChat = useMemo(
-    () => resolveFocusedChatTarget({ serverId, layout }),
-    [serverId, layout],
-  );
-  const addFile = useCallback(
-    (filePath: string) => {
-      if (!focusedChat || !workspaceKey) {
-        return;
-      }
-      void useDraftStore.getState().attachWorkspaceFile({
-        draftKey: focusedChat.draftKey,
-        attachment: createWorkspaceFileAttachment({ path: filePath }),
-      });
-      focusTab(workspaceKey, focusedChat.tabId);
-    },
-    [focusTab, focusedChat, workspaceKey],
-  );
-  return { addFile, canAddToChat: focusedChat !== null };
-}
-
-function ChangedFilesPane({
-  serverId,
-  workspaceId,
-  workspaceRoot,
-  isOpen,
-  onOpenFile,
-}: Pick<
-  SidebarContentProps,
-  "serverId" | "workspaceId" | "workspaceRoot" | "isOpen" | "onOpenFile"
->) {
-  const { addFile, canAddToChat } = useAddFileToChat({ serverId, workspaceId });
-  return (
-    <GitDiffPane
-      serverId={serverId}
-      workspaceId={workspaceId}
-      cwd={workspaceRoot}
-      enabled={isOpen}
-      onOpenFile={onOpenFile}
-      onAddToChat={canAddToChat ? addFile : undefined}
-    />
-  );
-}
-
-function FilesPane({
-  serverId,
-  workspaceId,
-  workspaceRoot,
-  onOpenFile,
-}: Pick<SidebarContentProps, "serverId" | "workspaceId" | "workspaceRoot" | "onOpenFile">) {
-  const { addFile, canAddToChat } = useAddFileToChat({ serverId, workspaceId });
-  return (
-    <FileExplorerPane
-      serverId={serverId}
-      workspaceId={workspaceId}
-      workspaceRoot={workspaceRoot}
-      onOpenFile={onOpenFile}
-      onAddToChat={canAddToChat ? addFile : undefined}
-    />
-  );
-}
-
-interface PrTabContentProps {
-  serverId: string;
-  cwd: string;
-  prPane: UsePrPaneDataResult;
-  workspaceAttachmentScopeKey: string;
-  onRetry: () => void;
-}
-
-function PrTabContent({
-  serverId,
-  cwd,
-  prPane,
-  workspaceAttachmentScopeKey,
-  onRetry,
-}: PrTabContentProps) {
-  if (prPane.data) {
-    return (
-      <PullRequestPane
-        serverId={serverId}
-        cwd={cwd}
-        data={prPane.data}
-        activityLoading={prPane.activityLoading}
-        workspaceAttachmentScopeKey={workspaceAttachmentScopeKey}
-      />
-    );
-  }
-  if (prPane.error) {
-    return <PullRequestPaneError onRetry={onRetry} />;
-  }
-  return <PullRequestPaneSkeleton />;
-}
-
 // Static styles for Animated.Views — must NOT use Unistyles dynamic theme to
 // avoid the "Unable to find node on an unmounted component" crash when Unistyles
 // tries to patch the native node that Reanimated also manages.
@@ -650,32 +319,6 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "space-between",
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
-  },
-  tabsContainer: {
-    flexDirection: "row",
-    gap: theme.spacing[1],
-  },
-  tab: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[2],
-    paddingVertical: theme.spacing[2],
-    paddingHorizontal: theme.spacing[3],
-    borderRadius: theme.borderRadius.md,
-  },
-  tabActive: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
-  },
-  tabText: {
-    fontSize: theme.fontSize.sm,
-    fontWeight: theme.fontWeight.normal,
-    color: theme.colors.foregroundMuted,
-  },
-  tabTextActive: {
-    color: theme.colors.foreground,
-  },
-  tabTextMuted: {
-    opacity: 0.8,
   },
   headerRightSection: {
     flexDirection: "row",

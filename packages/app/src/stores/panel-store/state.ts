@@ -23,6 +23,13 @@ export interface DesktopSidebarState {
 export type SortOption = "name" | "modified" | "size";
 
 export const DEFAULT_SIDEBAR_WIDTH = 320;
+// Daseo delta 105: on the native app the pinned left sidebar is the unfolded Fold's (875dp wide),
+// where 320 took over a third of the screen.
+export const DEFAULT_NATIVE_SIDEBAR_WIDTH = 260;
+
+export function defaultSidebarWidth(isWeb: boolean): number {
+  return isWeb ? DEFAULT_SIDEBAR_WIDTH : DEFAULT_NATIVE_SIDEBAR_WIDTH;
+}
 export const MIN_SIDEBAR_WIDTH = 200;
 export const MAX_SIDEBAR_WIDTH = 600;
 
@@ -120,41 +127,42 @@ function resolveExplorerTabFromCheckout(
   });
 }
 
-export interface OpenFileExplorerPatch {
-  mobilePanel?: MobilePanelSelection;
-  desktop?: DesktopSidebarState;
-  explorerTab: ExplorerTab;
-}
-
-export function buildOpenFileExplorerPatch(
+/** Makes the checkout's remembered explorer tab the active one. */
+export function buildExplorerTabForCheckoutPatch(
   state: PanelCoreState,
-  input: ExplorerPanelIntent,
-): OpenFileExplorerPatch {
-  const resolvedTab = resolveExplorerTabFromCheckout(state, input.checkout);
-  if (input.isCompact) {
-    return {
-      mobilePanel: setMobilePanelTarget(state.mobilePanel, "file-explorer"),
-      explorerTab: resolvedTab,
-    };
-  }
-  return {
-    desktop: { ...state.desktop, fileExplorerOpen: true },
-    explorerTab: resolvedTab,
-  };
+  checkout: ExplorerCheckoutContext,
+): { explorerTab: ExplorerTab } {
+  return { explorerTab: resolveExplorerTabFromCheckout(state, checkout) };
 }
 
-export type ToggleFileExplorerPatch =
-  | OpenFileExplorerPatch
+export type FileExplorerVisibilityPatch =
   | { mobilePanel: MobilePanelSelection }
   | { desktop: DesktopSidebarState };
 
+/**
+ * Opens the right panel (the task list since Daseo delta 101) for the layout: the compact overlay or
+ * the wide sidebar. It needs no workspace directory or checkout. Null when it is already open.
+ */
+export function buildOpenFileExplorerPatch(
+  state: PanelCoreState,
+  input: PanelLayoutInput,
+): FileExplorerVisibilityPatch | null {
+  if (selectIsFileExplorerOpen(state, input)) {
+    return null;
+  }
+  if (input.isCompact) {
+    return { mobilePanel: setMobilePanelTarget(state.mobilePanel, "file-explorer") };
+  }
+  return { desktop: { ...state.desktop, fileExplorerOpen: true } };
+}
+
 export function buildToggleFileExplorerPatch(
   state: PanelCoreState,
-  input: ExplorerPanelIntent,
-): ToggleFileExplorerPatch {
-  const isOpen = selectIsFileExplorerOpen(state, input);
-  if (!isOpen) {
-    return buildOpenFileExplorerPatch(state, input);
+  input: PanelLayoutInput,
+): FileExplorerVisibilityPatch {
+  const openPatch = buildOpenFileExplorerPatch(state, input);
+  if (openPatch) {
+    return openPatch;
   }
   if (input.isCompact) {
     return { mobilePanel: setMobilePanelTarget(state.mobilePanel, "agent") };
@@ -253,6 +261,20 @@ function migratePanelDesktopFocusMode(state: MigratablePanelState): void {
   }
 }
 
+function migratePanelSidebarWidth(
+  state: MigratablePanelState,
+  version: number,
+  isWeb: boolean,
+): void {
+  if (version < 6 || typeof state.sidebarWidth !== "number") {
+    state.sidebarWidth = defaultSidebarWidth(isWeb);
+  }
+  // A native width still at the old default was never chosen by hand: it takes the new default.
+  if (version < 13 && !isWeb && state.sidebarWidth === DEFAULT_SIDEBAR_WIDTH) {
+    state.sidebarWidth = DEFAULT_NATIVE_SIDEBAR_WIDTH;
+  }
+}
+
 export function migratePanelState(
   persistedState: unknown,
   version: number,
@@ -275,9 +297,7 @@ export function migratePanelState(
   if (version < 8) {
     migratePanelDesktopFocusMode(state);
   }
-  if (version < 6 || typeof state.sidebarWidth !== "number") {
-    state.sidebarWidth = DEFAULT_SIDEBAR_WIDTH;
-  }
+  migratePanelSidebarWidth(state, version, isWeb);
   if (
     version < 9 ||
     typeof state.expandedPathsByWorkspace !== "object" ||
