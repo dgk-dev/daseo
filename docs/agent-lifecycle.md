@@ -84,6 +84,8 @@ children.
 
 `create_agent_request` can opt an agent into `autoArchive`. In that mode the daemon archives the agent after the first terminal turn event (`turn_completed`, `turn_failed`, or `turn_canceled`). When the agent owns an isolated workspace, auto-archive archives that workspace too; the managed worktree is removed when its final workspace reference is gone.
 
+The agent-scoped `create_agent` has its own opt-in, `archiveOnFinish`, for one-shot subagents such as research workers. It does not reuse `autoArchive`, which archives on the turn event: the finish notification reads the child's last message, and that message is gone once the child is archived. So the child is archived only after its finish or error notification has been handed to the caller (or the caller is archived), on the same moment the notification itself waits for, including pending background waits. The flag lives on the child as the `paseo.archive-on-finish` label, so a follow-up prompt's finish and a watcher re-armed after a daemon restart archive it too; the prompt itself unarchives it as usual. With `notifyOnFinish: false` the child is archived when its first turn ends with no background wait held.
+
 Archiving runs through `AgentManager.archiveAgent` (`packages/server/src/server/agent/agent-manager.ts`):
 
 1. Snapshot the current session into the registry

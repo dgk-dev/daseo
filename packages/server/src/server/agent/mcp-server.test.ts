@@ -10,6 +10,7 @@ import { z } from "zod";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import { createAgentMcpServer } from "./mcp-server.js";
+import { ARCHIVE_ON_FINISH_LABEL } from "./agent-prompt.js";
 import { AgentManager, type ManagedAgent } from "./agent-manager.js";
 import { AgentStorage, type StoredAgentRecord } from "./agent-storage.js";
 import { createTestAgentClients } from "../test-utils/fake-agent-client.js";
@@ -3227,6 +3228,28 @@ describe("create_agent MCP tool", () => {
         undefined,
         expect.objectContaining({ workspaceId: "wks_parent" }),
       );
+    });
+
+    it("marks a worker launched with archiveOnFinish so its finish archives it", async () => {
+      const { tool, spies } = await createCallerServer();
+
+      await invokeToolWithParsedInput(tool, {
+        title: "research worker: angle",
+        provider: "codex/gpt-5.4",
+        initialPrompt: "Research one angle.",
+        archiveOnFinish: true,
+      });
+      await invokeToolWithParsedInput(tool, {
+        title: "implementer",
+        provider: "codex/gpt-5.4",
+        initialPrompt: "Implement the plan.",
+      });
+
+      const calls = spies.agentManager.createAgent.mock.calls as unknown[][];
+      const workerOptions = calls[0]?.[2] as { labels?: Record<string, string> } | undefined;
+      const implementerOptions = calls[1]?.[2] as { labels?: Record<string, string> } | undefined;
+      expect(workerOptions?.labels?.[ARCHIVE_ON_FINISH_LABEL]).toBe("true");
+      expect(implementerOptions?.labels?.[ARCHIVE_ON_FINISH_LABEL]).toBeUndefined();
     });
 
     it("runs a subagent with a cwd in the caller's workspace", async () => {

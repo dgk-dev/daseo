@@ -2552,6 +2552,37 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        `packages/app/src/desktop/browser/{passkey-choices.ts,panel.tsx}`,
        `packages/app/src/desktop/browser/pane/{index,passkey-choice-card}.electron.tsx`,
        `packages/app/src/desktop/host.ts`; capture harness group `passkeys`.
+103. **A research worker archives itself once its report has reached the lead** — the owner's
+     ask on 2026-11-13 ("리서치 워커 자동 보관되게 해줘 어차피 이어서 안하잖아"). The
+     research-fanout lead archived each worker when its notice arrived, which was late whenever
+     the lead was busy in another turn, and 27 of 1,232 workers were never archived.
+     - **Option.** The agent-scoped MCP `create_agent` takes `archiveOnFinish` (default false; the
+       canonical and the legacy placement shapes). Top-level creation rejects it, and the WebSocket
+       `autoArchive`, schedules, the app, and `packages/protocol` are unchanged. The child carries
+       the server label `paseo.archive-on-finish=true`, so every finish watcher for it archives it:
+       the one `create_agent` starts, a `send_agent_prompt` follow-up's, and one re-armed or
+       delivered by restart recovery (delta 44). A later prompt unarchives and runs it as before,
+       and that turn's finish archives it again.
+     - **Order.** The archive runs after the finish notice has been handed to the caller, or when
+       the caller is archived and can never receive it; never before, because the notice reads the
+       child's last message, which is gone once the child leaves the manager. It rides on the
+       existing finish moment: background waits still hold it (delta 29), a `[lead review]` notice
+       does not archive and the quiet end after it does (delta 80), and permission, stall, and
+       "was closed" notices never archive. An errored child is reported and archived, so that
+       notice ends the watch and says so instead of "Daseo keeps watching"; the finished notice is
+       unchanged. A detached child ("not-owned") and a failed delivery are not archived.
+     - **Without `notifyOnFinish`.** The child is archived when its first turn ends or errors and
+       it holds no background wait. This path is one-shot and not journaled across a restart.
+     - **Archive path.** `archiveAgentCommand`, the command behind `archive_agent`, so the
+       snapshot, cascade, and client updates match a manual archive.
+     - **Key files:** `packages/server/src/server/agent/agent-prompt.ts`
+       (`ARCHIVE_ON_FINISH_LABEL`, `archiveFinishedChild`, `archiveAfterFirstTurn`,
+       `deliverFinishNotification`), `create-agent/create.ts`, `tools/paseo-tools.ts`,
+       `restart-recovery-runner.ts`; tests in `agent-prompt.test.ts` ("archiveOnFinish (delta
+       103)"), `create-agent/create.test.ts` (real agent manager: the parent's notice arrives while
+       the child is still idle, then the child is archived), and `mcp-server.test.ts`. pi-local's
+       research-fanout skill passes the argument; its lead-side archive stays as the fallback for
+       older daemons. Takes effect with the next release and daemon restart.
 
 ## Local reliability contracts
 

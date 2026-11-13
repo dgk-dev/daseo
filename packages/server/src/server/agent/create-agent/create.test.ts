@@ -8,6 +8,7 @@ import { createTestAgentClients } from "../../test-utils/fake-agent-client.js";
 import { createProviderSnapshotManagerStub } from "../../test-utils/session-stubs.js";
 import { AgentManager } from "../agent-manager.js";
 import { AgentStorage } from "../agent-storage.js";
+import { ARCHIVE_ON_FINISH_LABEL } from "../agent-prompt.js";
 import type { CreatePaseoWorktreeWorkflowResult } from "../../worktree-session.js";
 import { createAgentCommand } from "./create.js";
 import type { ManagedAgent } from "../agent-manager.js";
@@ -467,6 +468,108 @@ test("session create keeps an explicit title after the initial prompt settles", 
 
     const settled = await storage.get(snapshot.id);
     expect(settled?.title).toBe(title);
+  } finally {
+    await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
+  }
+});
+
+interface ParentNotice {
+  prompt: string;
+  childLifecycle: ManagedAgent["lifecycle"] | null;
+}
+
+async function createParentAndArchiveOnFinishChild(input: {
+  workdir: string;
+  notifyOnFinish: boolean;
+}) {
+  const storage = new AgentStorage(join(input.workdir, "agents"), logger);
+  const parentNotices: ParentNotice[] = [];
+  let childId: string | null = null;
+  const agentManager: AgentManager = new AgentManager({
+    clients: createTestAgentClients({
+      // Records every system notice a parent receives, with the child's state at that moment.
+      onStartTurn: (prompt) => {
+        if (typeof prompt === "string" && prompt.startsWith("<paseo-system>")) {
+          parentNotices.push({
+            prompt,
+            childLifecycle: childId ? (agentManager.getAgent(childId)?.lifecycle ?? null) : null,
+          });
+        }
+      },
+    }),
+    registry: storage,
+    logger,
+  });
+  const providerSnapshotManager = createProviderSnapshotManagerStub().manager;
+  const { snapshot: parent } = await createAgentCommand(
+    { agentManager, agentStorage: storage, logger, providerSnapshotManager },
+    {
+      kind: "session",
+      config: { provider: "codex", cwd: input.workdir },
+      workspaceId: "ws-parent",
+      labels: {},
+      provisionalTitle: null,
+      firstAgentContext: { attachments: [] },
+      buildSessionConfig: async (config) => ({ sessionConfig: config }),
+    },
+  );
+  const { snapshot: child } = await createAgentCommand(
+    { agentManager, agentStorage: storage, logger, providerSnapshotManager },
+    {
+      kind: "mcp",
+      provider: "codex/gpt-5.4",
+      title: "research worker",
+      initialPrompt: "Respond with exactly: WORKER-REPORT-7",
+      background: true,
+      notifyOnFinish: input.notifyOnFinish,
+      archiveOnFinish: true,
+      callerAgentId: parent.id,
+      onCreated: ({ agentId }) => {
+        childId = agentId;
+      },
+    },
+  );
+  return { agentManager, storage, child, parentNotices };
+}
+
+test("mcp create with archiveOnFinish archives the child only after the parent got its finish", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "create-agent-archive-on-finish-test-"));
+  const { agentManager, storage, child, parentNotices } = await createParentAndArchiveOnFinishChild(
+    { workdir, notifyOnFinish: true },
+  );
+
+  try {
+    expect((await storage.get(child.id))?.labels[ARCHIVE_ON_FINISH_LABEL]).toBe("true");
+    await vi.waitFor(
+      async () => expect((await storage.get(child.id))?.archivedAt).toEqual(expect.any(String)),
+      { timeout: 5000 },
+    );
+
+    expect(parentNotices).toEqual([
+      {
+        prompt: expect.stringContaining(
+          `Agent ${child.id} (research worker) finished.\n\n<agent-response>\nWORKER-REPORT-7\n</agent-response>`,
+        ),
+        childLifecycle: "idle",
+      },
+    ]);
+  } finally {
+    await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
+  }
+});
+
+test("mcp create with archiveOnFinish and no notifyOnFinish archives after the first turn", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "create-agent-archive-no-notify-test-"));
+  const { agentManager, storage, child, parentNotices } = await createParentAndArchiveOnFinishChild(
+    { workdir, notifyOnFinish: false },
+  );
+
+  try {
+    await vi.waitFor(
+      async () => expect((await storage.get(child.id))?.archivedAt).toEqual(expect.any(String)),
+      { timeout: 5000 },
+    );
+    expect(parentNotices).toEqual([]);
   } finally {
     await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
   }

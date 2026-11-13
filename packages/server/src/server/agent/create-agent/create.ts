@@ -16,7 +16,12 @@ import type { AgentPromptInput, AgentRunOptions, AgentSessionConfig } from "../a
 import type { AgentStorage } from "../agent-storage.js";
 import type { AgentOwner } from "../agent-owner.js";
 import type { ProviderSnapshotManager } from "../provider-snapshot-manager.js";
-import { setupFinishNotification, startCreatedAgentInitialPrompt } from "../agent-prompt.js";
+import {
+  ARCHIVE_ON_FINISH_LABEL,
+  archiveAfterFirstTurn,
+  setupFinishNotification,
+  startCreatedAgentInitialPrompt,
+} from "../agent-prompt.js";
 import { resolveCreateAgentTitles } from "../create-agent-title.js";
 import { buildAgentPrompt } from "../prompt-attachments.js";
 import { normalizeClientMessageId, resolveClientMessageId } from "../../client-message-id.js";
@@ -92,6 +97,8 @@ export interface CreateAgentFromMcpInput {
   promptFailure?: CreateAgentPromptFailureMode;
   background: boolean;
   notifyOnFinish: boolean;
+  /** Agent-scoped only: archive the child once its finish has been reported (delta 103). */
+  archiveOnFinish?: boolean;
   internal?: boolean;
   detached?: boolean;
   owner?: AgentOwner;
@@ -209,6 +216,13 @@ export async function createAgentCommand(
       childAgentId: snapshot.id,
       callerAgentId: input.callerAgentId,
       requireParentOwnership: true,
+      logger: dependencies.logger,
+    });
+  } else if (input.kind === "mcp" && input.archiveOnFinish && initialPromptStarted) {
+    archiveAfterFirstTurn({
+      agentManager: dependencies.agentManager,
+      agentStorage: dependencies.agentStorage,
+      childAgentId: snapshot.id,
       logger: dependencies.logger,
     });
   }
@@ -343,6 +357,9 @@ async function resolveMcpCreateAgent(
   });
 
   const trimmedPrompt = input.initialPrompt?.trim() ?? "";
+  const labels = input.archiveOnFinish
+    ? { ...intent.labels, [ARCHIVE_ON_FINISH_LABEL]: "true" }
+    : intent.labels;
   return {
     config: buildMcpSessionConfig({
       input,
@@ -354,7 +371,7 @@ async function resolveMcpCreateAgent(
       resolvedFeatures: resolvedCreateConfig.featureValues,
     }),
     createOptions: {
-      ...(Object.keys(intent.labels).length > 0 ? { labels: intent.labels } : {}),
+      ...(Object.keys(labels).length > 0 ? { labels } : {}),
       workspaceId: intent.workspaceId,
       owner: input.owner,
       env: input.env,

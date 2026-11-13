@@ -9,6 +9,7 @@ import type {
 import type { AgentManager, ManagedAgent } from "./agent-manager.js";
 import type { AgentStorage } from "./agent-storage.js";
 import { ensureAgentLoaded } from "./agent-loading.js";
+import { archiveAgentCommand } from "./lifecycle-command.js";
 import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
 
 export type AgentUnarchiveController = Pick<AgentManager, "notifyAgentState" | "unarchiveSnapshot">;
@@ -282,6 +283,96 @@ export async function startCreatedAgentInitialPrompt(
   return refreshedSnapshot;
 }
 
+/**
+ * Local fork (DASEO.md delta 103): a sub-agent created with `archiveOnFinish` carries this label,
+ * so every finish watcher for it (the one create_agent starts, a send_agent_prompt follow-up, one
+ * re-armed after a daemon restart) archives it once its finish has been handed to the caller.
+ * Research workers are never prompted again, and a lead busy in another turn archived them late or
+ * not at all (27 of 1,232 workers by 2026-11-13). The archive comes after delivery because the
+ * notice reads the child's last message, which is gone once the child leaves the manager.
+ */
+export const ARCHIVE_ON_FINISH_LABEL = "paseo.archive-on-finish";
+
+export function archivesOnFinish(labels: Record<string, string> | null | undefined): boolean {
+  return labels?.[ARCHIVE_ON_FINISH_LABEL] === "true";
+}
+
+interface ArchiveFinishedChildParams {
+  agentManager: AgentManager;
+  agentStorage: AgentStorage;
+  childAgentId: string;
+  logger: Logger;
+}
+
+/** Archive through the same command as `archive_agent`, so cascade and client updates match. */
+export async function archiveFinishedChild(params: ArchiveFinishedChildParams): Promise<void> {
+  const { agentManager, agentStorage, childAgentId, logger } = params;
+  const record = await agentStorage.get(childAgentId);
+  if (!record || record.archivedAt) return;
+  try {
+    await archiveAgentCommand({ agentManager, agentStorage, logger }, childAgentId);
+  } catch (error) {
+    logger.error(
+      { err: error, childAgentId },
+      "Failed to archive a finished archiveOnFinish agent",
+    );
+  }
+}
+
+/**
+ * Local fork (delta 103): `archiveOnFinish` without `notifyOnFinish` has no notice to wait for, so
+ * the child is archived when its first turn ends (or errors) and it holds no background wait.
+ */
+export function archiveAfterFirstTurn(params: ArchiveFinishedChildParams): void {
+  const { agentManager, childAgentId } = params;
+  let hasSeenRunning = false;
+  let done = false;
+  let unsubscribe: (() => void) | null = null;
+
+  function finish(archive: boolean): void {
+    if (done) return;
+    done = true;
+    unsubscribe?.();
+    if (archive) void archiveFinishedChild(params);
+  }
+
+  unsubscribe = agentManager.subscribe(
+    (event) => {
+      if (done || event.type !== "agent_state") return;
+      const { lifecycle } = event.agent;
+      if (lifecycle === "running") {
+        if (event.agent.pendingPermissions.size === 0) hasSeenRunning = true;
+        return;
+      }
+      if (lifecycle === "closed") {
+        finish(false);
+        return;
+      }
+      if (lifecycle === "error") {
+        finish(true);
+        return;
+      }
+      if (
+        lifecycle === "idle" &&
+        hasSeenRunning &&
+        (event.agent.pendingBackgroundWaits ?? 0) === 0
+      ) {
+        finish(true);
+      }
+    },
+    { agentId: childAgentId, replayState: false },
+  );
+
+  const childSnapshot = agentManager.getAgent(childAgentId);
+  if (!childSnapshot || childSnapshot.lifecycle === "closed") {
+    finish(false);
+  } else if (childSnapshot.lifecycle === "running") {
+    hasSeenRunning = true;
+  } else if (childSnapshot.lifecycle === "error") {
+    finish(true);
+  }
+}
+
 export interface SetupFinishNotificationParams {
   agentManager: AgentManager;
   agentStorage: AgentStorage;
@@ -342,6 +433,7 @@ interface FinishNotificationBodyInput {
   reason: FinishNotificationReason;
   lastAssistantMessage: string | null;
   permissionRequest?: AgentPermissionRequest;
+  archiveAfter?: boolean;
 }
 
 function formatFinishNotificationBody(params: FinishNotificationBodyInput): string {
@@ -349,7 +441,9 @@ function formatFinishNotificationBody(params: FinishNotificationBodyInput): stri
   const sections = [statusLine];
   if (params.reason === "errored") {
     sections.push(
-      "Daseo keeps watching this agent: if it recovers and finishes, you will be notified again.",
+      params.archiveAfter
+        ? "Daseo archives this agent after this notice because it was created with archiveOnFinish; send_agent_prompt unarchives it and runs it again."
+        : "Daseo keeps watching this agent: if it recovers and finishes, you will be notified again.",
     );
   }
   if (params.reason === LEAD_REVIEW_NOTIFICATION_REASON) {
@@ -390,6 +484,7 @@ function formatFinishNotificationBody(params: FinishNotificationBodyInput): stri
 interface NotifySafelyOptions {
   terminal?: boolean;
   permissionRequest?: AgentPermissionRequest;
+  archiveAfter?: boolean;
 }
 
 /**
@@ -415,7 +510,11 @@ export type FinishNotificationDelivery =
   | "not-owned"
   | "shutting-down";
 
-/** Send one finish notification for `childAgentId` to `callerAgentId`. */
+/**
+ * Send one finish notification for `childAgentId` to `callerAgentId`. With `archiveAfter` the child
+ * is archived once the notice has been handed to the caller, or when the caller is archived and
+ * can never receive it; never before, because the notice reads the child's last message.
+ */
 export async function deliverFinishNotification(params: {
   agentManager: AgentManager;
   agentStorage: AgentStorage;
@@ -424,8 +523,24 @@ export async function deliverFinishNotification(params: {
   requireParentOwnership: boolean;
   reason: FinishNotificationReason;
   permissionRequest?: AgentPermissionRequest;
+  archiveAfter?: boolean;
   logger: Logger;
 }): Promise<FinishNotificationDelivery> {
+  const delivery = await composeAndSendFinishNotification(params);
+  if (params.archiveAfter && (delivery === "delivered" || delivery === "caller-gone")) {
+    await archiveFinishedChild({
+      agentManager: params.agentManager,
+      agentStorage: params.agentStorage,
+      childAgentId: params.childAgentId,
+      logger: params.logger,
+    });
+  }
+  return delivery;
+}
+
+async function composeAndSendFinishNotification(
+  params: Parameters<typeof deliverFinishNotification>[0],
+): Promise<FinishNotificationDelivery> {
   const { agentManager, agentStorage, childAgentId, callerAgentId } = params;
   if (finishWatcherJournal?.isFrozen()) {
     return "shutting-down";
@@ -450,6 +565,7 @@ export async function deliverFinishNotification(params: {
     reason: params.reason,
     lastAssistantMessage,
     permissionRequest: params.permissionRequest,
+    archiveAfter: params.archiveAfter,
   });
 
   await sendPromptToAgent({
@@ -475,6 +591,8 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
   let hasSeenRunning = false;
   let stopped = false;
   let reportedReview: string | null = null;
+  let reviewHandedOver = false;
+  const archiveOnFinish = archivesOnFinish(agentManager.getAgent(childAgentId)?.labels);
   const watcherKey = `${childAgentId}\u0000${callerAgentId}`;
   liveFinishWatchers.get(watcherKey)?.();
   liveFinishWatchers.set(watcherKey, stop);
@@ -513,7 +631,7 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
   async function notify(
     reason: FinishNotificationReason,
     terminal: boolean,
-    permissionRequest?: AgentPermissionRequest,
+    options: Pick<NotifySafelyOptions, "permissionRequest" | "archiveAfter"> = {},
   ): Promise<void> {
     const delivery = await deliverFinishNotification({
       agentManager,
@@ -522,9 +640,16 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
       callerAgentId,
       requireParentOwnership,
       reason,
-      permissionRequest,
+      permissionRequest: options.permissionRequest,
+      archiveAfter: options.archiveAfter,
       logger,
     });
+    if (
+      reason === LEAD_REVIEW_NOTIFICATION_REASON &&
+      (delivery === "delivered" || delivery === "caller-gone")
+    ) {
+      reviewHandedOver = true;
+    }
     if (terminal && delivery !== "shutting-down") {
       finishWatcherJournal?.removeWatcher(childAgentId, callerAgentId);
     }
@@ -533,11 +658,16 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
   let notifiedErrorSinceRun = false;
   // Local fork (delta 44): an errored child can still recover (restart recovery, quota resume, a
   // human prompt), so the error is reported once per run and the watch continues; the caller
-  // hears about the later finish too.
+  // hears about the later finish too. An archiveOnFinish child is archived after the error notice
+  // instead (delta 103), so that notice ends the watch.
   function notifyErrored(): void {
     if (notifiedErrorSinceRun) return;
     notifiedErrorSinceRun = true;
     hasSeenRunning = false;
+    if (archiveOnFinish) {
+      notifySafely("errored", { archiveAfter: true });
+      return;
+    }
     notifySafely("errored", { terminal: false });
   }
 
@@ -546,7 +676,7 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
     const terminal = options.terminal ?? true;
     if (terminal) stop();
     notificationQueue = notificationQueue
-      .then(() => notify(reason, terminal, options.permissionRequest))
+      .then(() => notify(reason, terminal, options))
       .catch((error) => {
         logger.error(
           { err: error, childAgentId, callerAgentId, reason },
@@ -563,6 +693,11 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
     notifySafely(LEAD_REVIEW_NOTIFICATION_REASON, { terminal: false });
   }
 
+  async function archiveIfReviewHandedOver(): Promise<void> {
+    if (!reviewHandedOver) return;
+    await archiveFinishedChild({ agentManager, agentStorage, childAgentId, logger });
+  }
+
   /** The final idle after a review notice: deliver it only when the child said something new. */
   async function finishAfterReview(): Promise<void> {
     if (stopped) return;
@@ -573,10 +708,19 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
       if (!finishWatcherJournal?.isFrozen()) {
         finishWatcherJournal?.removeWatcher(childAgentId, callerAgentId);
       }
+      // The review notice already carried this report; archive once it has been handed over.
+      if (archiveOnFinish) {
+        notificationQueue = notificationQueue.then(archiveIfReviewHandedOver).catch((error) => {
+          logger.error(
+            { err: error, childAgentId, callerAgentId },
+            "Failed to archive after review",
+          );
+        });
+      }
       return;
     }
     notificationQueue = notificationQueue
-      .then(() => notify("finished", true))
+      .then(() => notify("finished", true, { archiveAfter: archiveOnFinish }))
       .catch((error) => {
         logger.error(
           { err: error, childAgentId, callerAgentId, reason: "finished" },
@@ -630,7 +774,7 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
             });
             return;
           }
-          notifySafely("finished");
+          notifySafely("finished", { archiveAfter: archiveOnFinish });
           return;
         }
         if (event.agent.lifecycle === "closed") {

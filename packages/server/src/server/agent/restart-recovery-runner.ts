@@ -6,6 +6,7 @@ import type { Logger } from "pino";
 import { ensureAgentLoaded } from "./agent-loading.js";
 import type { AgentManager, ManagedAgent } from "./agent-manager.js";
 import {
+  archivesOnFinish,
   deliverFinishNotification,
   formatSystemNotificationPrompt,
   sendPromptToAgent,
@@ -136,6 +137,7 @@ async function recoverWatcher(
       callerAgentId: watcher.callerAgentId,
       requireParentOwnership: watcher.requireParentOwnership,
       reason: child.lastStatus === "error" ? "errored" : "finished",
+      archiveAfter: archivesOnFinish(child.labels),
       logger: deps.logger,
     });
     return delivery === "delivered" ? "delivered" : "skipped";

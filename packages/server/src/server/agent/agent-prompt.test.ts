@@ -5,6 +5,8 @@ import { createTestLogger } from "../../test-utils/test-logger.js";
 import { AgentManager } from "./agent-manager.js";
 import { AgentStorage } from "./agent-storage.js";
 import {
+  ARCHIVE_ON_FINISH_LABEL,
+  archiveAfterFirstTurn,
   FINISH_WATCH_STALL_CHECK_MS,
   FINISH_WATCH_STALL_MS,
   formatSystemNotificationPrompt,
@@ -45,10 +47,16 @@ interface FinishNotificationScenarioOptions {
   requireParentOwnership?: boolean;
   parentPromptError?: Error;
   logger?: Logger;
+  childArchivesOnFinish?: boolean;
+  callerArchived?: boolean;
 }
 
 interface FinishNotificationScenario {
   startWatchingChild(): void;
+  archiveChildAfterFirstTurn(): void;
+  unarchiveChild(): void;
+  /** Parent prompts and child archives, in the order they happened. */
+  events(): string[];
   setChildLastAssistantMessage(message: string | null): void;
   requestChildPermission(requestId?: string): void;
   resolveChildPermission(requestId?: string): void;
@@ -77,12 +85,18 @@ function createFinishNotificationScenario(
   let resolveParentPrompt: ((prompt: string) => void) | null = null;
   let parentPrompted = false;
   const parentPrompts: string[] = [];
+  const events: string[] = [];
+  let childArchivedAt: string | null = null;
+  const childLabels: Record<string, string> = options?.childArchivesOnFinish
+    ? { [ARCHIVE_ON_FINISH_LABEL]: "true" }
+    : {};
 
   const childAgent: ManagedAgent = Object.create(null);
   Reflect.set(childAgent, "id", "child-agent");
   Reflect.set(childAgent, "lifecycle", "idle");
   Reflect.set(childAgent, "config", { title: "Child Agent" });
   Reflect.set(childAgent, "pendingPermissions", new Map());
+  Reflect.set(childAgent, "labels", childLabels);
 
   const callerAgent: ManagedAgent = Object.create(null);
   Reflect.set(callerAgent, "id", "caller-agent");
@@ -105,8 +119,15 @@ function createFinishNotificationScenario(
       subscribers.delete(callback);
     };
   });
+  // Like the real manager, an archived child's last message is no longer readable here.
   Reflect.set(agentManager, "getLastAssistantMessage", async () => {
-    return lastAssistantMessage;
+    return childArchivedAt ? null : lastAssistantMessage;
+  });
+  Reflect.set(agentManager, "clearAgentAttention", async () => undefined);
+  Reflect.set(agentManager, "archiveAgent", async (agentId: string) => {
+    childArchivedAt = "2026-11-13T00:00:00.000Z";
+    events.push(`archive ${agentId}`);
+    return { archivedAt: childArchivedAt };
   });
   Reflect.set(agentManager, "tryRunOutOfBand", () => false);
   Reflect.set(agentManager, "trySteerAgentRun", async () => false);
@@ -114,6 +135,7 @@ function createFinishNotificationScenario(
   Reflect.set(agentManager, "streamAgent", (_agentId: string, prompt: string) => {
     parentPrompted = true;
     parentPrompts.push(prompt);
+    events.push(`prompt ${prompt}`);
     resolveParentPrompt?.(prompt);
     return (async function* noop() {})();
   });
@@ -129,13 +151,34 @@ function createFinishNotificationScenario(
         options?.childParentAgentId === undefined ? "caller-agent" : options.childParentAgentId;
       return {
         title: "Child Agent",
-        labels: parentAgentId ? { "paseo.parent-agent-id": parentAgentId } : {},
+        labels: {
+          ...childLabels,
+          ...(parentAgentId ? { "paseo.parent-agent-id": parentAgentId } : {}),
+        },
+        archivedAt: childArchivedAt,
       };
+    }
+    if (agentId === "caller-agent" && options?.callerArchived) {
+      return { title: "Caller Agent", labels: {}, archivedAt: "2026-11-12T00:00:00.000Z" };
     }
     return null;
   });
 
   return {
+    archiveChildAfterFirstTurn() {
+      archiveAfterFirstTurn({
+        agentManager,
+        agentStorage,
+        childAgentId: "child-agent",
+        logger: options?.logger ?? createTestLogger(),
+      });
+    },
+    unarchiveChild() {
+      childArchivedAt = null;
+    },
+    events() {
+      return events;
+    },
     setChildLastAssistantMessage(message: string | null) {
       lastAssistantMessage = message;
     },
@@ -817,5 +860,141 @@ describe("lead review and one watcher per pair (delta 80)", () => {
     await flush();
     await flush();
     expect(scenario.parentPrompts()).toHaveLength(1);
+  });
+});
+
+describe("archiveOnFinish (delta 103)", () => {
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  test("the parent gets the finish with the last message first, then the child is archived", async () => {
+    const scenario = createFinishNotificationScenario({
+      childLastAssistantMessage: "Three sources agree on the price.",
+      childArchivesOnFinish: true,
+    });
+    scenario.startWatchingChild();
+    scenario.finishChild();
+    await vi.waitFor(() => expect(scenario.events()).toHaveLength(2));
+
+    expect(scenario.events()).toEqual([
+      `prompt ${formatSystemNotificationPrompt(
+        "Agent child-agent (Child Agent) finished.\n\n<agent-response>\nThree sources agree on the price.\n</agent-response>",
+      )}`,
+      "archive child-agent",
+    ]);
+  });
+
+  test("an errored child is reported, then archived, and the watch ends", async () => {
+    const scenario = createFinishNotificationScenario({
+      childLastAssistantMessage: "Search provider returned 500.",
+      childArchivesOnFinish: true,
+    });
+    scenario.startWatchingChild();
+    scenario.failChild();
+    await vi.waitFor(() => expect(scenario.events()).toHaveLength(2));
+
+    expect(scenario.events()[0]).toContain("Agent child-agent (Child Agent) errored.");
+    expect(scenario.events()[0]).toContain(
+      "Daseo archives this agent after this notice because it was created with archiveOnFinish",
+    );
+    expect(scenario.events()[0]).toContain("Search provider returned 500.");
+    expect(scenario.events()[0]).not.toContain("Daseo keeps watching this agent");
+    expect(scenario.events()[1]).toBe("archive child-agent");
+
+    scenario.finishChild();
+    await flush();
+    await flush();
+    expect(scenario.events()).toHaveLength(2);
+  });
+
+  test("without the flag the child is reported and stays unarchived", async () => {
+    const scenario = createFinishNotificationScenario({ childLastAssistantMessage: "Done." });
+    scenario.startWatchingChild();
+    scenario.finishChild();
+    await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(1));
+    await flush();
+    await flush();
+
+    expect(scenario.events()).toEqual([`prompt ${scenario.parentPrompts()[0]}`]);
+  });
+
+  test("pending background waits hold both the notice and the archive until the wake turn ends", async () => {
+    const scenario = createFinishNotificationScenario({
+      childLastAssistantMessage: "Build passed.",
+      childArchivesOnFinish: true,
+    });
+    scenario.startWatchingChild();
+    scenario.finishChild(1);
+    await flush();
+    await flush();
+    expect(scenario.events()).toEqual([]);
+
+    scenario.finishChild(0);
+    await vi.waitFor(() => expect(scenario.events()).toHaveLength(2));
+    expect(scenario.events()[0]).toContain("finished.");
+    expect(scenario.events()[0]).toContain("Build passed.");
+    expect(scenario.events()[1]).toBe("archive child-agent");
+  });
+
+  test("a permission request is reported but does not archive", async () => {
+    const scenario = createFinishNotificationScenario({ childArchivesOnFinish: true });
+    scenario.startWatchingChild();
+    scenario.requestChildPermission();
+    await vi.waitFor(() => expect(scenario.events()).toHaveLength(1));
+    await flush();
+    await flush();
+
+    expect(scenario.events()[0]).toContain("needs permission");
+    expect(scenario.events()).toHaveLength(1);
+  });
+
+  test("a child whose caller is archived is archived without a prompt", async () => {
+    const scenario = createFinishNotificationScenario({
+      childArchivesOnFinish: true,
+      callerArchived: true,
+    });
+    scenario.startWatchingChild();
+    scenario.finishChild();
+    await vi.waitFor(() => expect(scenario.events()).toEqual(["archive child-agent"]));
+  });
+
+  test("a later prompt's finish is reported and archived again", async () => {
+    const scenario = createFinishNotificationScenario({
+      childLastAssistantMessage: "First answer.",
+      childArchivesOnFinish: true,
+    });
+    scenario.startWatchingChild();
+    scenario.finishChild();
+    await vi.waitFor(() => expect(scenario.events()).toHaveLength(2));
+
+    // send_agent_prompt unarchives the child, runs it, and starts a new watcher.
+    scenario.unarchiveChild();
+    scenario.setChildLastAssistantMessage("Follow-up answer.");
+    scenario.startWatchingChild();
+    scenario.finishChild();
+    await vi.waitFor(() => expect(scenario.events()).toHaveLength(4));
+    expect(scenario.events()[2]).toContain("Follow-up answer.");
+    expect(scenario.events()[3]).toBe("archive child-agent");
+  });
+
+  test("without notifyOnFinish the child is archived when its first turn ends with no wait held", async () => {
+    const scenario = createFinishNotificationScenario({ childArchivesOnFinish: true });
+    scenario.runChild();
+    scenario.archiveChildAfterFirstTurn();
+    scenario.finishChild(1);
+    await flush();
+    await flush();
+    expect(scenario.events()).toEqual([]);
+
+    scenario.finishChild(0);
+    await vi.waitFor(() => expect(scenario.events()).toEqual(["archive child-agent"]));
+    expect(scenario.wasParentPrompted()).toBe(false);
+  });
+
+  test("without notifyOnFinish an errored first turn is archived too", async () => {
+    const scenario = createFinishNotificationScenario({ childArchivesOnFinish: true });
+    scenario.runChild();
+    scenario.archiveChildAfterFirstTurn();
+    scenario.failChild();
+    await vi.waitFor(() => expect(scenario.events()).toEqual(["archive child-agent"]));
   });
 });

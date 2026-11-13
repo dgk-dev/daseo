@@ -1045,6 +1045,13 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       .describe(
         "Get notified when the created agent finishes, errors, or needs permission. Set false only for truly fire-and-forget agents.",
       ),
+    archiveOnFinish: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe(
+        "Archive the created agent right after its finish has been reported to you; use for one-shot workers you will not prompt again (a later prompt still unarchives it).",
+      ),
   };
   const canonicalTopLevelInputSchema = {
     ...canonicalCreateAgentFields,
@@ -1067,6 +1074,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     ...commonCreateAgentFields,
     ...legacyCreateAgentPlacementFields,
     notifyOnFinish: agentToAgentInputSchema.notifyOnFinish,
+    archiveOnFinish: agentToAgentInputSchema.archiveOnFinish,
   };
   const legacyTopLevelCreateAgentInputSchema = {
     ...commonCreateAgentFields,
@@ -1504,9 +1512,11 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       const { parsedArgs, worktree } = resolvedArgs;
       let requestedBackground: boolean;
       let notifyOnFinish: boolean;
+      let archiveOnFinish = false;
       if (resolvedArgs.kind === "agent-scoped") {
         requestedBackground = true;
         notifyOnFinish = parsedArgs.notifyOnFinish;
+        archiveOnFinish = resolvedArgs.parsedArgs.archiveOnFinish;
       } else {
         requestedBackground = resolvedArgs.parsedArgs.background;
         notifyOnFinish = resolvedArgs.parsedArgs.notifyOnFinish ?? false;
@@ -1545,6 +1555,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           mode: parsedArgs.settings?.modeId,
           background: requestedBackground,
           notifyOnFinish,
+          archiveOnFinish,
           detached: resolvedArgs.detached,
           callerAgentId,
           callerContext,
