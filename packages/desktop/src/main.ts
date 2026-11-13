@@ -32,6 +32,7 @@ import {
   session,
   webContents,
   WebContentsView,
+  type WebFrameMain,
 } from "electron";
 import { registerDaemonManager } from "./daemon/daemon-manager.js";
 import { parsePassthroughCliArgsFromArgv, runPassthroughCli } from "./daemon/cli/passthrough.js";
@@ -1549,8 +1550,9 @@ async function runCliPassthroughIfRequested(): Promise<boolean> {
 // Delta 33: idle browser tabs step down to throttled and frozen unless the desktop settings file
 // sets browser.suspendIdleTabs to false. A tab with a download in progress is never frozen.
 // Delta 78: every browser tab carries an agent-owned software passkey authenticator, so a
-// site's passkey sign-in completes at once and a passkey a site registers is kept for later
-// tabs. Private keys rest in userData sealed with the app key from 1Password (delta 92).
+// site's passkey sign-in completes when someone asks for it (delta 102: a click on the site's
+// passkey button, or browser_passkeys use; never on page load) and a passkey a site registers is
+// kept for later tabs. Private keys rest in userData sealed with the app key from 1Password (delta 92).
 // PASEO_BROWSER_PASSKEYS=0 turns it off; the tool then reports browser_unsupported.
 function configureBrowserPasskeys(): void {
   if (process.env.PASEO_BROWSER_PASSKEYS === "0") {
@@ -1574,7 +1576,12 @@ function configureBrowserPasskeys(): void {
       keyed.cipher,
       passkeyLog,
     );
-    const hub = new PaseoBrowserPasskeys({ store, log: passkeyLog });
+    const hub = new PaseoBrowserPasskeys({
+      store,
+      log: passkeyLog,
+      // Delta 102: which tab a passkey request came from, to read that tab's user activation.
+      contentsIdOfFrame: (frame) => webContents.fromFrame(frame as WebFrameMain)?.id,
+    });
     hub.bindSession(session.fromPartition(PASEO_BROWSER_PROFILE_PARTITION));
     setPaseoBrowserPasskeys(hub);
     log.info("[browser-passkeys] ready", { stored: store.list().length });

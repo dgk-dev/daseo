@@ -13,10 +13,15 @@ import {
   PasskeyKeyMismatchError,
   PasskeyStore,
   fromBase64Url,
+  maskAccountName,
+  matchAccount,
   hostMatchesRpId,
   toBase64Url,
+  type PasskeyChoiceSurface,
   type PasskeyTabContents,
+  type WaitingPasskeyRequest,
   type WebAuthnAccountChoice,
+  setPaseoBrowserPasskeyChoiceSurface,
 } from "./passkeys.js";
 
 function newCipher(): PasskeyCipher {
@@ -35,6 +40,8 @@ class FakeTab implements PasskeyTabContents {
   public destroyed = false;
   public url = "https://app.example.com/login";
   public failInstall = false;
+  /** What `navigator.userActivation.isActive` reads in the page; `"throw"` fails the read. */
+  public activation: boolean | "throw" = false;
   private readonly listeners = new Map<string, Listener[]>();
   private readonly debuggerListeners = new Map<string, Listener[]>();
   private attached = false;
@@ -58,6 +65,13 @@ class FakeTab implements PasskeyTabContents {
         const authenticatorId = `auth-${this.id}-${this.nextAuthenticator++}`;
         this.liveAuthenticators.add(authenticatorId);
         return { authenticatorId };
+      }
+      if (command === "Page.getFrameTree")
+        return { frameTree: { frame: { id: `frame-${this.id}` } } };
+      if (command === "Page.createIsolatedWorld") return { executionContextId: 70 + this.id };
+      if (command === "Runtime.evaluate") {
+        if (this.activation === "throw") throw new Error("Execution context was destroyed");
+        return { result: { type: "boolean", value: this.activation } };
       }
       if (command === "WebAuthn.removeVirtualAuthenticator") {
         const authenticatorId = String(params?.authenticatorId);
@@ -135,9 +149,94 @@ let dir: string;
 let filePath: string;
 let clock: Date;
 
-function hub(store = new PasskeyStore(filePath, cipher)) {
-  return new PaseoBrowserPasskeys({ store, now: () => clock });
+function hub(store = new PasskeyStore(filePath, cipher), choiceHoldMs?: number) {
+  return new PaseoBrowserPasskeys({
+    store,
+    now: () => clock,
+    // The fake frames carry their tab's id, as webContents.fromFrame resolves a real one.
+    contentsIdOfFrame: (frame) => (frame as { contentsId?: number }).contentsId,
+    ...(choiceHoldMs !== undefined ? { choiceHoldMs } : {}),
+  });
 }
+
+type AccountListener = (
+  event: unknown,
+  details: { relyingPartyId: string; accounts: WebAuthnAccountChoice[]; frame?: unknown },
+  callback: (credentialId?: string | null) => void,
+) => void;
+
+/** A browser profile session whose account picker the test drives like Electron does. */
+function fakeSession() {
+  let listener: AccountListener | null = null;
+  return {
+    on: (_event: "select-webauthn-account", next: AccountListener) => {
+      listener = next;
+    },
+    /** One discoverable get() reaching the picker; returns what the page was answered. */
+    request(input: {
+      accounts: WebAuthnAccountChoice[];
+      contentsId: number;
+      frameTreeNodeId?: number;
+      rpId?: string;
+    }) {
+      const answers: Array<string | null | undefined> = [];
+      listener?.(
+        {},
+        {
+          relyingPartyId: input.rpId ?? "example.com",
+          accounts: input.accounts,
+          frame: { contentsId: input.contentsId, frameTreeNodeId: input.frameTreeNodeId ?? 1 },
+        },
+        (id) => answers.push(id),
+      );
+      return answers;
+    },
+  };
+}
+
+function recordingSurface() {
+  const events: string[] = [];
+  const surface: PasskeyChoiceSurface = {
+    show: (request: WaitingPasskeyRequest) => events.push(`show ${request.id}`),
+    hide: (_contentsId: number, requestId: string) => events.push(`hide ${requestId}`),
+  };
+  return { events, surface };
+}
+
+/** Lets the activation read (three CDP round trips) finish. */
+async function flush() {
+  for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function storeWithTwoAccounts() {
+  const store = new PasskeyStore(filePath, cipher);
+  store.add({
+    credentialId: "older",
+    rpId: "example.com",
+    privateKey: "k1",
+    userName: "a@example.com",
+    signCount: 0,
+    createdAt: "2026-10-01T00:00:00.000Z",
+    lastUsedAt: "2026-10-20T00:00:00.000Z",
+  });
+  store.add({
+    credentialId: "newer",
+    rpId: "example.com",
+    privateKey: "k2",
+    userName: "b@example.com",
+    userDisplayName: "Bea",
+    signCount: 0,
+    createdAt: "2026-10-02T00:00:00.000Z",
+    lastUsedAt: "2026-10-30T00:00:00.000Z",
+  });
+  return store;
+}
+
+const TWO_ACCOUNTS: WebAuthnAccountChoice[] = [
+  { credentialId: "older", name: "a@example.com" },
+  { credentialId: "newer", name: "b@example.com" },
+  { credentialId: "foreign", name: "c@example.com" },
+];
 
 async function settle(h: PaseoBrowserPasskeys, ...tabs: FakeTab[]) {
   // Navigation installs are deferred by a macrotask.
@@ -559,8 +658,10 @@ describe("PaseoBrowserPasskeys", () => {
     });
   });
 
-  test("a sign-in bumps the counter and the other tabs' copies so no tab signs with a stale count", async () => {
+  test("a signature bumps the counter and the other tabs' copies, and lastUsedAt waits for the page to get it", async () => {
     const h = hub();
+    const session = fakeSession();
+    h.bindSession(session);
     const first = new FakeTab(1);
     const second = new FakeTab(2);
     h.attach(first, new CdpSessionQueue());
@@ -573,16 +674,15 @@ describe("PaseoBrowserPasskeys", () => {
     await settle(h, first, second);
 
     clock = new Date("2026-11-02T04:00:00.000Z");
+    // The authenticator signs before the account picker runs (Electron 44 order).
     second.emitDebugger("WebAuthn.credentialAsserted", {
       authenticatorId: "auth-2-1",
       credential: { ...SITE_CREDENTIAL, signCount: 7 },
     });
     await settle(h, first, second);
 
-    expect(h.store.get(SITE_CREDENTIAL_ID_URL)).toMatchObject({
-      signCount: 7,
-      lastUsedAt: "2026-11-02T04:00:00.000Z",
-    });
+    expect(h.store.get(SITE_CREDENTIAL_ID_URL)).toMatchObject({ signCount: 7 });
+    expect(h.store.get(SITE_CREDENTIAL_ID_URL)?.lastUsedAt).toBeUndefined();
     const removed = first.commandsNamed("WebAuthn.removeCredential");
     const added = first.commandsNamed("WebAuthn.addCredential");
     expect(removed).toHaveLength(1);
@@ -591,53 +691,259 @@ describe("PaseoBrowserPasskeys", () => {
       credentialId: SITE_CREDENTIAL.credentialId,
     });
     expect(added.at(-1)?.params?.credential).toMatchObject({ signCount: 7 });
+
+    second.activation = true;
+    const answers = session.request({
+      contentsId: 2,
+      accounts: [{ credentialId: SITE_CREDENTIAL_ID_URL, name: "alice@example.com" }],
+    });
+    await flush();
+    expect(answers).toEqual([SITE_CREDENTIAL_ID_URL]);
     expect(h.listInfo()[0]).toMatchObject({ signCount: 7, lastUsedAt: "2026-11-02T04:00:00.000Z" });
   });
 
-  test("the account picker answers with the stored passkey used most recently, never an unknown one", async () => {
+  test("a credential the site named in allowCredentials is used at its signature", async () => {
     const store = new PasskeyStore(filePath, cipher);
     store.add({
-      credentialId: "older",
-      rpId: "example.com",
-      privateKey: "k1",
-      signCount: 0,
+      credentialId: "other-site",
+      rpId: "other.org",
+      privateKey: "k",
+      signCount: 2,
       createdAt: "2026-10-01T00:00:00.000Z",
-      lastUsedAt: "2026-10-20T00:00:00.000Z",
-    });
-    store.add({
-      credentialId: "newer",
-      rpId: "example.com",
-      privateKey: "k2",
-      signCount: 0,
-      createdAt: "2026-10-02T00:00:00.000Z",
-      lastUsedAt: "2026-10-30T00:00:00.000Z",
     });
     const h = hub(store);
-    const accounts: WebAuthnAccountChoice[] = [
-      { credentialId: "older", name: "a@example.com" },
-      { credentialId: "newer", name: "b@example.com" },
-      { credentialId: "foreign", name: "c@example.com" },
-    ];
-    expect(h.chooseAccount(accounts)).toBe("newer");
-    expect(h.chooseAccount([{ credentialId: "foreign" }])).toBeNull();
+    const tab = new FakeTab(1);
+    h.attach(tab, new CdpSessionQueue());
+    await settle(h, tab);
+    clock = new Date("2026-11-02T05:00:00.000Z");
+    // Loaded non-discoverable (another site's), so only an allowCredentials request reaches it,
+    // and such a request never goes through the account picker.
+    tab.emitDebugger("WebAuthn.credentialAsserted", {
+      authenticatorId: "auth-1-1",
+      credential: { credentialId: fromBase64Url("other-site"), signCount: 3 },
+    });
+    expect(h.store.get("other-site")).toMatchObject({
+      signCount: 3,
+      lastUsedAt: "2026-11-02T05:00:00.000Z",
+    });
+  });
 
-    const answers: Array<string | null | undefined> = [];
-    const session = {
-      on: (
-        _event: "select-webauthn-account",
-        listener: (
-          event: unknown,
-          details: { relyingPartyId: string; accounts: WebAuthnAccountChoice[] },
-          callback: (credentialId?: string | null) => void,
-        ) => void,
-      ) => {
-        listener({}, { relyingPartyId: "example.com", accounts }, (id) => answers.push(id));
-        listener({}, { relyingPartyId: "example.com", accounts: [] }, (id) => answers.push(id));
-      },
-    };
+  test("a passkey request started with no click or key waits, and use answers it", async () => {
+    const h = hub(storeWithTwoAccounts());
+    const session = fakeSession();
     h.bindSession(session);
     h.bindSession(session);
-    expect(answers).toEqual(["newer", null]);
+    const tab = new FakeTab(1);
+    h.attach(tab, new CdpSessionQueue());
+    await settle(h, tab);
+
+    // Passkey autofill on page load: one stored account, no activation.
+    const answers = session.request({ contentsId: 1, accounts: [TWO_ACCOUNTS[1]] });
+    await flush();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(answers).toEqual([]);
+    expect(h.waitingRequest(1)).toMatchObject({
+      rpId: "example.com",
+      reason: "no_gesture",
+      accounts: [{ credentialId: "newer", userName: "b@example.com", userDisplayName: "Bea" }],
+    });
+    expect(h.waitingRequest(1)).not.toHaveProperty("expiresAt");
+    // Read in an isolated world, never in the page's own world.
+    const evaluate = tab.commandsNamed("Runtime.evaluate")[0]?.params;
+    expect(evaluate).toMatchObject({
+      expression: "navigator.userActivation.isActive",
+      contextId: 71,
+    });
+    expect(tab.commandsNamed("Page.createIsolatedWorld")[0]?.params).toMatchObject({
+      frameId: "frame-1",
+      worldName: "daseo-passkeys",
+    });
+    expect(h.store.get("newer")?.lastUsedAt).toBe("2026-10-30T00:00:00.000Z");
+
+    expect(h.use(1)).toMatchObject({ kind: "used", account: { credentialId: "newer" } });
+    expect(answers).toEqual(["newer"]);
+    expect(h.waitingRequest(1)).toBeNull();
+    expect(h.store.get("newer")?.lastUsedAt).toBe(clock.toISOString());
+    expect(h.use(1)).toEqual({ kind: "none" });
+  });
+
+  test("a request the tab's user started signs in at once with the only stored account", async () => {
+    const h = hub(storeWithTwoAccounts());
+    const session = fakeSession();
+    h.bindSession(session);
+    const tab = new FakeTab(1);
+    h.attach(tab, new CdpSessionQueue());
+    await settle(h, tab);
+    tab.activation = true;
+    const answers = session.request({ contentsId: 1, accounts: [TWO_ACCOUNTS[0]] });
+    await flush();
+    expect(answers).toEqual(["older"]);
+    expect(h.waitingRequest(1)).toBeNull();
+  });
+
+  test("an unreadable activation leaves the request waiting instead of signing in", async () => {
+    const h = hub(storeWithTwoAccounts());
+    const session = fakeSession();
+    h.bindSession(session);
+    const tab = new FakeTab(1);
+    h.attach(tab, new CdpSessionQueue());
+    await settle(h, tab);
+    tab.activation = "throw";
+    const answers = session.request({ contentsId: 1, accounts: [TWO_ACCOUNTS[0]] });
+    await flush();
+    expect(answers).toEqual([]);
+    expect(h.waitingRequest(1)?.reason).toBe("no_gesture");
+  });
+
+  test("two stored accounts: an explicit request waits for a choice, never the most recent one", async () => {
+    const { events, surface } = recordingSurface();
+    setPaseoBrowserPasskeyChoiceSurface(surface);
+    try {
+      const h = hub(storeWithTwoAccounts());
+      const session = fakeSession();
+      h.bindSession(session);
+      const tab = new FakeTab(1);
+      h.attach(tab, new CdpSessionQueue());
+      await settle(h, tab);
+      tab.activation = true;
+      const answers = session.request({ contentsId: 1, accounts: TWO_ACCOUNTS });
+      await flush();
+      expect(answers).toEqual([]);
+      const waiting = h.waitingRequest(1);
+      expect(waiting).toMatchObject({
+        reason: "choose_account",
+        expiresAt: clock.getTime() + 60_000,
+      });
+      // The foreign credential is not ours and is never offered.
+      expect(waiting?.accounts.map((account) => account.credentialId)).toEqual(["older", "newer"]);
+      expect(events).toEqual([`show ${waiting?.id}`]);
+
+      expect(h.use(1)).toMatchObject({ kind: "choose" });
+      expect(h.use(1, "nobody@example.com")).toMatchObject({
+        kind: "choose",
+        unmatchedAccount: "nobody@example.com",
+      });
+      expect(answers).toEqual([]);
+      expect(h.use(1, "BEA")).toMatchObject({ kind: "used", account: { credentialId: "newer" } });
+      expect(answers).toEqual(["newer"]);
+      expect(events).toEqual([`show ${waiting?.id}`, `hide ${waiting?.id}`]);
+      // The pane's late answer finds nothing to answer.
+      expect(h.answerChoice(1, waiting?.id ?? "", "older")).toBe(false);
+    } finally {
+      setPaseoBrowserPasskeyChoiceSurface(null);
+    }
+  });
+
+  test("the person picks in the pane, Cancel refuses, and an unanswered choice is cancelled", async () => {
+    const h = hub(storeWithTwoAccounts(), 40);
+    const session = fakeSession();
+    h.bindSession(session);
+    const tab = new FakeTab(1);
+    h.attach(tab, new CdpSessionQueue());
+    await settle(h, tab);
+    tab.activation = true;
+
+    const picked = session.request({ contentsId: 1, accounts: TWO_ACCOUNTS });
+    await flush();
+    const first = h.waitingRequest(1);
+    expect(h.answerChoice(1, first?.id ?? "", "foreign")).toBe(false);
+    expect(h.answerChoice(1, first?.id ?? "", "older")).toBe(true);
+    expect(picked).toEqual(["older"]);
+
+    const cancelled = session.request({ contentsId: 1, accounts: TWO_ACCOUNTS });
+    await flush();
+    expect(h.answerChoice(1, h.waitingRequest(1)?.id ?? "", null)).toBe(true);
+    expect(cancelled).toEqual([null]);
+
+    const expired = session.request({ contentsId: 1, accounts: TWO_ACCOUNTS });
+    await flush();
+    expect(h.waitingRequest(1)?.reason).toBe("choose_account");
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(expired).toEqual([null]);
+    expect(h.waitingRequest(1)).toBeNull();
+  });
+
+  test("a newer request from the same frame replaces the held one, and a navigation ends both", async () => {
+    const h = hub(storeWithTwoAccounts());
+    const session = fakeSession();
+    h.bindSession(session);
+    const tab = new FakeTab(1);
+    h.attach(tab, new CdpSessionQueue());
+    await settle(h, tab);
+
+    const autofill = session.request({ contentsId: 1, accounts: [TWO_ACCOUNTS[0]] });
+    await flush();
+    const iframe = session.request({
+      contentsId: 1,
+      frameTreeNodeId: 2,
+      accounts: [TWO_ACCOUNTS[1]],
+    });
+    await flush();
+    // The page aborted its autofill request and started another one in the same frame.
+    const again = session.request({ contentsId: 1, accounts: [TWO_ACCOUNTS[0]] });
+    await flush();
+    expect(autofill).toEqual([null]);
+    expect(iframe).toEqual([]);
+    expect(again).toEqual([]);
+
+    tab.emit("did-navigate");
+    expect(iframe).toEqual([null]);
+    expect(again).toEqual([null]);
+    expect(h.waitingRequest(1)).toBeNull();
+    await settle(h, tab);
+  });
+
+  test("the site's passkey button after autofill signs in and leaves nothing waiting", async () => {
+    const h = hub(storeWithTwoAccounts());
+    const session = fakeSession();
+    h.bindSession(session);
+    const tab = new FakeTab(1);
+    h.attach(tab, new CdpSessionQueue());
+    await settle(h, tab);
+    const autofill = session.request({ contentsId: 1, accounts: [TWO_ACCOUNTS[0]] });
+    await flush();
+    expect(h.waitingRequest(1)?.reason).toBe("no_gesture");
+    // The button's click aborts the autofill request and starts a modal one in the same frame.
+    tab.activation = true;
+    const clicked = session.request({ contentsId: 1, accounts: [TWO_ACCOUNTS[0]] });
+    await flush();
+    expect(autofill).toEqual([null]);
+    expect(clicked).toEqual(["older"]);
+    expect(h.waitingRequest(1)).toBeNull();
+  });
+
+  test("an account the store never held, or a frame outside the browser tabs, is refused", async () => {
+    const h = hub(storeWithTwoAccounts());
+    const session = fakeSession();
+    h.bindSession(session);
+    const tab = new FakeTab(1);
+    h.attach(tab, new CdpSessionQueue());
+    await settle(h, tab);
+    const foreign = session.request({ contentsId: 1, accounts: [TWO_ACCOUNTS[2]] });
+    const elsewhere = session.request({ contentsId: 99, accounts: [TWO_ACCOUNTS[0]] });
+    await flush();
+    expect(foreign).toEqual([null]);
+    expect(elsewhere).toEqual([null]);
+  });
+
+  test("accounts are named by credential id or name, and listed masked", () => {
+    const accounts = [
+      { credentialId: "a1", userName: "alice@example.com", userDisplayName: "Alice" },
+      { credentialId: "b2", userName: "ax-dfcorp" },
+      { credentialId: "c3", userName: "twin-a", userDisplayName: "Twin" },
+      { credentialId: "d4", userName: "twin-b", userDisplayName: "Twin" },
+    ];
+    expect(matchAccount(accounts, "b2")?.userName).toBe("ax-dfcorp");
+    expect(matchAccount(accounts, " Alice@Example.com ")?.credentialId).toBe("a1");
+    expect(matchAccount(accounts, "alice")?.credentialId).toBe("a1");
+    expect(matchAccount(accounts, "TWIN-B")?.credentialId).toBe("d4");
+    // Two accounts share the display name: ambiguous, so neither is picked.
+    expect(matchAccount(accounts, "Twin")).toBeUndefined();
+    expect(matchAccount(accounts, "nobody")).toBeUndefined();
+    expect(maskAccountName("alice@example.com")).toBe("al•••@example.com");
+    expect(maskAccountName("ax-dfcorp")).toBe("ax•••p");
+    expect(maskAccountName("bob")).toBe("b•••");
+    expect(maskAccountName(undefined)).toBe("(no name)");
   });
 
   test("delete removes the passkey from the store and from every open tab", async () => {

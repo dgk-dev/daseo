@@ -453,6 +453,13 @@ export class BrowserToolsBroker {
       }
       return null;
     }
+    if (params.commandName === "passkey_use") {
+      return browserToolsFailure({
+        requestId: params.requestId,
+        code: "browser_unsupported",
+        message: `browser_passkeys use needs a newer Daseo desktop app than the ${describeBrowserHost(params.host)}. Update the Daseo app; until then click the site's passkey button.`,
+      });
+    }
     if (params.commandName === "network_export") {
       return browserToolsFailure({
         requestId: params.requestId,

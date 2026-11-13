@@ -204,6 +204,25 @@ export interface DesktopBrowserPageDialogEvent {
   dialogId?: string;
 }
 
+/**
+ * Delta 102: a passkey sign-in the person started on a site with two or more stored accounts,
+ * waiting in that tab's pane for the person to pick one.
+ */
+export interface DesktopBrowserPasskeyChoice {
+  id: string;
+  rpId: string;
+  accounts: Array<{ credentialId: string; userName?: string; userDisplayName?: string }>;
+  since: number;
+  /** When the waiting request is cancelled unanswered (epoch ms). */
+  expiresAt?: number;
+}
+
+export interface DesktopBrowserPasskeyChoiceEvent {
+  browserId: string;
+  choice: DesktopBrowserPasskeyChoice | null;
+  choiceId?: string;
+}
+
 export interface DesktopBrowserAutoCloseCheck {
   mode: "off" | "rehearse" | "on";
   afterHours: number;
@@ -276,6 +295,17 @@ export interface DesktopBrowserBridge {
     dialogId: string;
     accept: boolean;
     promptText?: string;
+  }) => Promise<boolean>;
+  /**
+   * Delta 102: this window's panes can show passkey account choices. Returns the ones its tabs
+   * hold now; later changes arrive as the `browser-passkey-choice` event.
+   */
+  watchPasskeyChoices?: () => Promise<DesktopBrowserPasskeyChoiceEvent[]>;
+  /** Delta 102: the person picked an account (`null`: Cancel) in a tab's pane. */
+  answerPasskeyChoice?: (input: {
+    browserId: string;
+    choiceId: string;
+    credentialId: string | null;
   }) => Promise<boolean>;
   /** Subscribe to live screencast frames pushed from the Electron main process. */
   onStreamFrame?: (handler: (payload: unknown) => void) => () => void;

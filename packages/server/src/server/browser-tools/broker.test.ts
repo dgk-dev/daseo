@@ -789,6 +789,31 @@ describe("BrowserToolsBroker", () => {
     await expect(plain).resolves.toMatchObject({ ok: true });
   });
 
+  test("a host without passkey_use never receives it (delta 102)", async () => {
+    const broker = createBroker();
+    const oldDesktop = BROWSER_AUTOMATION_COMMAND_NAMES.filter((name) => name !== "passkey_use");
+    const client = new FakeBrowserHostClient("host-1", {
+      supportedCommands: oldDesktop,
+      hostKind: "desktop app",
+    });
+    broker.registerClient(client);
+    await expect(
+      broker.execute({
+        command: { command: "passkey_use", args: { browserId: BROWSER_ID } },
+      }),
+    ).resolves.toEqual({
+      requestId: "req-1",
+      ok: false,
+      error: {
+        code: "browser_unsupported",
+        message:
+          "browser_passkeys use needs a newer Daseo desktop app than the desktop app. Update the Daseo app; until then click the site's passkey button.",
+        retryable: false,
+      },
+    });
+    expect(client.receivedRequests).toEqual([]);
+  });
+
   test("unregistering a host strands its browser ids instead of routing them to another host", async () => {
     const broker = createBroker();
     const owner = new FakeBrowserHostClient("host-1");

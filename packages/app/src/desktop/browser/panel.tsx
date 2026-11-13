@@ -8,6 +8,7 @@ import type { PanelDescriptor, PanelIconProps, PanelRegistration } from "@/panel
 import { DEFAULT_BROWSER_URL, useBrowserStore } from "@/desktop/browser/store";
 import { useWorkspaceDirectory } from "@/stores/session-store-hooks";
 import { usePageDialog } from "@/desktop/browser/page-dialogs";
+import { usePasskeyChoice } from "@/desktop/browser/passkey-choices";
 
 function getBrowserLabel(input: { title: string; url: string }): string {
   const title = input.title.trim();
@@ -46,6 +47,8 @@ function useBrowserPanelDescriptor(target: {
   const label = getBrowserLabel({ title: browser?.title ?? "", url });
   // Delta 93: a page dialog waiting in the tab marks it like any tab that needs the user.
   const pageDialog = usePageDialog(target.browserId);
+  // Delta 102: so does a passkey sign-in waiting for the person to pick an account.
+  const passkeyChoice = usePasskeyChoice(target.browserId);
 
   return {
     label,
@@ -54,7 +57,7 @@ function useBrowserPanelDescriptor(target: {
     titleState: "ready",
     icon,
     statusBucket: browserTabStatus({
-      pageDialog: pageDialog !== null,
+      pageDialog: pageDialog !== null || passkeyChoice !== null,
       loading: browser?.isLoading,
     }),
   };

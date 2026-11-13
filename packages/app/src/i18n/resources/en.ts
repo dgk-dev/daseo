@@ -630,6 +630,11 @@ export const en = {
         answer: "Answer",
         agentNote: "The agent using this tab can answer this too.",
       },
+      passkeyChoice: {
+        title: "Sign in to {{host}} with a passkey",
+        message: "Choose the account to sign in with",
+        cancel: "Cancel",
+      },
       annotate: {
         title: "Annotate element",
         placeholder: "Message to the agent about this element…",

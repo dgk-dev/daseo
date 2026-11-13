@@ -631,6 +631,11 @@ export const ar: TranslationResources = {
         answer: "الإجابة",
         agentNote: "يمكن للوكيل الذي يستخدم علامة التبويب هذه الرد أيضًا.",
       },
+      passkeyChoice: {
+        title: "تسجيل الدخول إلى {{host}} بمفتاح مرور",
+        message: "اختر الحساب الذي تريد تسجيل الدخول به",
+        cancel: "إلغاء",
+      },
       annotate: {
         title: "التعليق على العنصر",
         placeholder: "رسالة إلى الوكيل حول هذا العنصر…",

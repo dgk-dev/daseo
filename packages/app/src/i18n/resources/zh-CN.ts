@@ -630,6 +630,11 @@ export const zhCN: TranslationResources = {
         answer: "回答",
         agentNote: "使用此标签页的智能体也可以回答。",
       },
+      passkeyChoice: {
+        title: "使用通行密钥登录 {{host}}",
+        message: "选择要登录的账号",
+        cancel: "取消",
+      },
       annotate: {
         title: "标注元素",
         placeholder: "给智能体关于此元素的留言…",

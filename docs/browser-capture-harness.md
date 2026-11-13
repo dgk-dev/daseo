@@ -55,7 +55,13 @@ real guests the way `main.ts` does and serves a `localhost` page that calls
 `navigator.credentials.create()` and `get()`: a site with no stored passkey fails in milliseconds,
 a passkey the page registers lands in the store encrypted and signs in from a second guest and
 after a navigation with a rising counter, and `browser_passkeys status` and `delete` run through
-the production service.
+the production service. Delta 102 cases: passkey autofill started on page load stays pending for
+3 s and `passkey_use` answers it; a modal request with no gesture waits too; the production
+background click on the page's passkey button signs in at once and aborts the autofill request;
+with two stored accounts the click waits, the pane surface is shown, `passkey_use` without an
+account lists both masked and with one signs that account in. Pages get a user gesture only from
+real input or `executeJavaScript(code, true)`, so the checks that must not sign in run their page
+code with `false`.
 
 The delta92 group (`PASEO_CAPTURE_HARNESS_GROUP=delta92`) serves a page that holds one image
 open forever, a page that alerts while it loads, a download link, and a page that busy-loops. It

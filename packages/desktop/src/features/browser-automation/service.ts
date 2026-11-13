@@ -13,7 +13,9 @@ import type {
   BrowserAutomationExecuteRequest,
   BrowserAutomationFindCommandArgs,
   BrowserAutomationNetworkLogEntry,
+  BrowserAutomationPasskeyRequest,
   BrowserAutomationPasskeysCommandArgs,
+  BrowserAutomationPasskeyUseCommandArgs,
   BrowserAutomationReadCommandArgs,
   BrowserAutomationResult,
   BrowserAutomationResizeCommandArgs,
@@ -44,6 +46,8 @@ import {
   getPaseoBrowserPasskeys,
   getPaseoBrowserPasskeysUnavailableReason,
   hostOf,
+  maskAccountName,
+  type WaitingPasskeyRequest,
 } from "./passkeys.js";
 import { capReadContent, parseReadScriptResult } from "./read.js";
 import { buildReadScript } from "./read-script.js";
@@ -223,6 +227,7 @@ const COMMANDS_PAST_OPEN_DIALOG: ReadonlySet<BrowserAutomationCommand["command"]
   "stream_start",
   "stream_stop",
   "passkeys",
+  "passkey_use",
 ]);
 const NAVIGATION_COMMANDS: ReadonlySet<BrowserAutomationCommand["command"]> = new Set([
   "navigate",
@@ -947,6 +952,10 @@ const commandHandlers: Record<BrowserAutomationCommand["command"], CommandHandle
     const passkeysCommand = command as Extract<BrowserAutomationCommand, { command: "passkeys" }>;
     return executePasskeys(requestId, workspaceId, passkeysCommand.args, registry);
   },
+  passkey_use: ({ command, requestId, workspaceId, registry }) => {
+    const useCommand = command as Extract<BrowserAutomationCommand, { command: "passkey_use" }>;
+    return executePasskeyUse(requestId, workspaceId, useCommand.args, registry);
+  },
   handle_dialog: ({ command, requestId, workspaceId, registry }) => {
     const dialogCommand = command as Extract<
       BrowserAutomationCommand,
@@ -1034,6 +1043,75 @@ async function markWhenSettled(work: Promise<unknown>, flag: { done: boolean }):
   }
 }
 
+function passkeysUnavailable(requestId: string): FailurePayload {
+  const reason = getPaseoBrowserPasskeysUnavailableReason();
+  return fail(
+    requestId,
+    "browser_unsupported",
+    reason
+      ? `Browser passkeys are off for this run: ${reason}.`
+      : "Browser passkeys are not available in this browser host.",
+  );
+}
+
+/** Delta 102: a waiting passkey request as results show it (account names masked). */
+function toPasskeyRequestInfo(request: WaitingPasskeyRequest): BrowserAutomationPasskeyRequest {
+  return {
+    rpId: request.rpId,
+    reason: request.reason,
+    since: new Date(request.since).toISOString(),
+    accounts: request.accounts.map((account) => ({
+      credentialId: account.credentialId,
+      account: maskAccountName(account.userName ?? account.userDisplayName),
+    })),
+  };
+}
+
+// Daseo delta 102: answers the passkey request the tab's page waits on with a stored passkey.
+async function executePasskeyUse(
+  requestId: string,
+  workspaceId: string | undefined,
+  args: BrowserAutomationPasskeyUseCommandArgs,
+  registry: BrowserRegistry,
+): Promise<AutomationCommandPayload> {
+  const hub = getPaseoBrowserPasskeys();
+  if (!hub) return passkeysUnavailable(requestId);
+  const target = resolveTabTarget({ requestId, workspaceId, browserId: args.browserId, registry });
+  if ("ok" in target) return target;
+  const outcome = hub.use(target.contents.id, args.account);
+  const base = { command: "passkey_use" as const, browserId: target.browserId };
+  if (outcome.kind === "none") {
+    return { requestId, ok: true, result: { ...base, outcome: "none" } };
+  }
+  if (outcome.kind === "choose") {
+    return {
+      requestId,
+      ok: true,
+      result: {
+        ...base,
+        outcome: "choose",
+        request: toPasskeyRequestInfo(outcome.request),
+        ...(outcome.unmatchedAccount !== undefined
+          ? { unmatchedAccount: outcome.unmatchedAccount }
+          : {}),
+      },
+    };
+  }
+  return {
+    requestId,
+    ok: true,
+    result: {
+      ...base,
+      outcome: "used",
+      used: {
+        rpId: outcome.request.rpId,
+        credentialId: outcome.account.credentialId,
+        account: maskAccountName(outcome.account.userName ?? outcome.account.userDisplayName),
+      },
+    },
+  };
+}
+
 // Daseo delta 78: the browser's agent-owned software passkeys.
 async function executePasskeys(
   requestId: string,
@@ -1042,16 +1120,7 @@ async function executePasskeys(
   registry: BrowserRegistry,
 ): Promise<AutomationCommandPayload> {
   const hub = getPaseoBrowserPasskeys();
-  if (!hub) {
-    const reason = getPaseoBrowserPasskeysUnavailableReason();
-    return fail(
-      requestId,
-      "browser_unsupported",
-      reason
-        ? `Browser passkeys are off for this run: ${reason}.`
-        : "Browser passkeys are not available in this browser host.",
-    );
-  }
+  if (!hub) return passkeysUnavailable(requestId);
   if (args.action === "delete") {
     if (!args.credentialId) {
       return fail(requestId, "browser_unsupported", "browser_passkeys delete needs credentialId.");
@@ -1084,6 +1153,7 @@ async function executePasskeys(
     }
     await hub.settle(target.contents.id);
     const host = hostOf(target.contents.getURL());
+    const waiting = hub.waitingRequest(target.contents.id);
     return {
       requestId,
       ok: true,
@@ -1095,6 +1165,7 @@ async function executePasskeys(
           browserId: target.browserId,
           ...(host ? { host } : {}),
           installed: hub.isInstalled(target.contents.id),
+          ...(waiting ? { request: toPasskeyRequestInfo(waiting) } : {}),
         },
         storage: hub.storage(),
       },

@@ -3590,15 +3590,43 @@ function networkArgs(browserId, action) {
 // Delta 78 browser passkeys, through the production hub, CDP adapter, and automation service
 // against real guests: a site with no stored passkey fails at once, a passkey a site registers is
 // stored encrypted and signs in from another guest and after a navigation, and delete revokes it.
+// Delta 102: a request started with no click or key (passkey autofill) waits and signs in nobody,
+// browser_passkeys use answers it, a click on the site's passkey button signs in at once, and two
+// stored accounts wait for a named choice.
 const PASSKEY_PAGE = `<!doctype html><html><head><title>Passkey target</title></head><body>
   <h1>Passkey target</h1>
+  <input aria-label="Username" autocomplete="username webauthn">
+  <button onclick="window.__clickGet()">Sign in with a passkey</button>
   <script>
     const rnd = () => crypto.getRandomValues(new Uint8Array(32));
-    window.__create = async () => {
+    // Passkey autofill, as login pages start it on load; the site's button aborts it first.
+    window.__cond = () => {
+      window.__condAbort = new AbortController();
+      window.__condResult = undefined;
+      navigator.credentials.get({ mediation: 'conditional', signal: window.__condAbort.signal,
+        publicKey: { challenge: rnd(), rpId: 'localhost', userVerification: 'preferred' } })
+        .then((a) => { window.__condResult = { ok: true, id: a.id }; },
+              (e) => { window.__condResult = { ok: false, name: e.name }; });
+      return 'started';
+    };
+    window.__modal = (slot) => {
+      window[slot] = undefined;
+      navigator.credentials.get({ publicKey: { challenge: rnd(), rpId: 'localhost',
+        userVerification: 'preferred', timeout: 30000, allowCredentials: [] } })
+        .then((a) => { window[slot] = { ok: true, id: a.id }; },
+              (e) => { window[slot] = { ok: false, name: e.name }; });
+      return 'started';
+    };
+    window.__clickGet = () => {
+      if (window.__condAbort) window.__condAbort.abort();
+      window.__modal('__clickResult');
+    };
+    if (location.search.includes('cond=1')) window.__cond();
+    window.__create = async (name = 'alice@example.com') => {
       try {
         const cred = await navigator.credentials.create({ publicKey: {
           challenge: rnd(), rp: { id: 'localhost', name: 'harness' },
-          user: { id: new TextEncoder().encode('user-1'), name: 'alice@example.com', displayName: 'Alice' },
+          user: { id: new TextEncoder().encode(name), name, displayName: name.split('@')[0] },
           pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
           authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
           timeout: 10000,
@@ -3684,9 +3712,12 @@ function createPasskeyHarnessHub() {
   const hub = new passkeys.PaseoBrowserPasskeys({
     store,
     log: (message, detail) => console.log(message, JSON.stringify(detail ?? {})),
+    // As main.ts: which tab a request came from, to read that tab's user activation.
+    contentsIdOfFrame: (frame) => require("electron").webContents.fromFrame(frame)?.id,
   });
   passkeys.setPaseoBrowserPasskeys(hub);
   return {
+    passkeys,
     hub,
     store,
     storePath,
@@ -3788,9 +3819,182 @@ async function verifyPasskeyReuse({ checks, first, second, harness, page, url, c
   );
 }
 
-async function verifyPasskeyTool({ checks, second, harness, page, created, stored }) {
-  const browserId = "44444444-4444-4444-8444-444444444444";
-  const run = createPasskeyAutomation(second, browserId);
+// Polls a page global until it is set or the deadline passes; returns its last value.
+async function pagePoll(guest, expression, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let value;
+  do {
+    value = await guest.executeJavaScript(expression, false);
+    if (value !== undefined && value !== null) return value;
+    await delay(50);
+  } while (Date.now() < deadline);
+  return value;
+}
+
+// Clicks a button the way browser_click does for an agent (background click, user gesture).
+async function passkeyClick(run, browserId, name) {
+  const snapshot = await run("passkeys snapshot", {
+    command: "snapshot",
+    args: { browserId },
+  });
+  const ref = snapshot.snapshot?.match(new RegExp(`button "${name}" \\[ref=(@e\\d+)\\]`))?.[1];
+  if (!ref) fail(`passkeys: no ref for button "${name}" in ${snapshot.snapshot}`);
+  return run(`click ${name}`, { command: "click", args: { browserId, ref } });
+}
+
+async function loadPasskeyPage(harness, guest, target) {
+  await withTimeout(guest.loadURL(target), `passkeys loadURL ${target}`, 10000);
+  const loadDeadline = Date.now() + 5000;
+  while (guest.isLoading() && Date.now() < loadDeadline) await delay(20);
+  await withTimeout(harness.hub.settle(guest.id), "passkeys reinstall settle", 10000);
+}
+
+async function verifyPasskeyAutofillWaits({
+  checks,
+  second,
+  harness,
+  url,
+  created,
+  run,
+  browserId,
+}) {
+  // A login page that starts passkey autofill on load (GitHub's /login shape).
+  await loadPasskeyPage(harness, second, `${url}?cond=1&on=load`);
+  await delay(3000);
+  const onLoad = await second.executeJavaScript("window.__condResult ?? null", false);
+  const onLoadWaiting = harness.hub.waitingRequest(second.id);
+  passkeyCheck(
+    checks,
+    "passkey autofill started on page load signs in nobody and waits (3 s)",
+    passkeyProblems([
+      [onLoad, null],
+      [onLoadWaiting?.reason, "no_gesture"],
+      [onLoadWaiting?.accounts?.[0]?.credentialId, created.id],
+    ]),
+    { onLoad, onLoadWaiting },
+  );
+  const status = await run("passkeys status (waiting)", {
+    command: "passkeys",
+    args: { action: "status", browserId },
+  });
+  const used = await run("passkey_use", { command: "passkey_use", args: { browserId } });
+  const answered = await pagePoll(second, "window.__condResult", 3000);
+  passkeyCheck(
+    checks,
+    "browser_passkeys use answers the waiting autofill request",
+    passkeyProblems([
+      [status.tab?.request?.reason, "no_gesture"],
+      [status.tab?.request?.accounts?.[0]?.account, "al•••@example.com"],
+      [used.outcome, "used"],
+      [used.used?.credentialId, created.id],
+      [answered?.ok, true],
+      [answered?.id, created.id],
+      [harness.hub.waitingRequest(second.id), null],
+    ]),
+    { status: status.tab, used, answered },
+  );
+  const none = await run("passkey_use (nothing waits)", {
+    command: "passkey_use",
+    args: { browserId },
+  });
+  // A modal request with no click (an auto-prompt on load) waits as well.
+  await second.executeJavaScript("window.__modal('__noGesture')", false);
+  await delay(1500);
+  const noGesture = await second.executeJavaScript("window.__noGesture ?? null", false);
+  passkeyCheck(
+    checks,
+    "a modal request with no click or key waits too, and nothing waits after use",
+    passkeyProblems([
+      [none.outcome, "none"],
+      [noGesture, null],
+      [harness.hub.waitingRequest(second.id)?.reason, "no_gesture"],
+    ]),
+    { none, noGesture },
+  );
+}
+
+async function verifyPasskeyButton({ checks, second, harness, url, created, run, browserId }) {
+  await loadPasskeyPage(harness, second, `${url}?cond=1&on=button`);
+  await delay(500);
+  const before = await second.executeJavaScript("window.__condResult ?? null", false);
+  const started = Date.now();
+  await passkeyClick(run, browserId, "Sign in with a passkey");
+  const clicked = await pagePoll(second, "window.__clickResult", 3000);
+  const condAfter = await pagePoll(second, "window.__condResult", 1000);
+  passkeyCheck(
+    checks,
+    "a click on the site's passkey button signs in at once",
+    passkeyProblems([
+      [before, null],
+      [clicked?.ok, true],
+      [clicked?.id, created.id],
+      [Date.now() - started < 3000, true],
+      [condAfter?.name, "AbortError"],
+      [harness.hub.waitingRequest(second.id), null],
+    ]),
+    { before, clicked, condAfter },
+  );
+}
+
+async function verifyPasskeyAccountChoice({ checks, second, harness, url, run, browserId }) {
+  // The pane surface main.ts wires through ipc.ts, recorded instead of sent to a host window.
+  const surfaceEvents = [];
+  harness.passkeys.setPaseoBrowserPasskeyChoiceSurface({
+    show: (request) => surfaceEvents.push(`show ${request.reason} ${request.accounts.length}`),
+    hide: () => surfaceEvents.push("hide"),
+  });
+  await loadPasskeyPage(harness, second, url);
+  const bob = await second.executeJavaScript("__create('bob@example.com')", true);
+  const deadline = Date.now() + 3000;
+  while (harness.store.list().length < 2 && Date.now() < deadline) await delay(50);
+  await passkeyClick(run, browserId, "Sign in with a passkey");
+  await delay(1500);
+  const pending = await second.executeJavaScript("window.__clickResult ?? null", false);
+  const waiting = harness.hub.waitingRequest(second.id);
+  const choose = await run("passkey_use (two accounts)", {
+    command: "passkey_use",
+    args: { browserId },
+  });
+  const stillPending = await second.executeJavaScript("window.__clickResult ?? null", false);
+  const used = await run("passkey_use bob", {
+    command: "passkey_use",
+    args: { browserId, account: "bob@example.com" },
+  });
+  const signedIn = await pagePoll(second, "window.__clickResult", 3000);
+  const accounts = (choose.request?.accounts ?? []).map((account) => account.account).sort();
+  passkeyCheck(
+    checks,
+    "two stored accounts: a click waits for a choice, the named account signs in",
+    passkeyProblems([
+      [bob.ok, true],
+      [harness.store.list().length, 2],
+      [pending, null],
+      [waiting?.reason, "choose_account"],
+      [choose.outcome, "choose"],
+      [JSON.stringify(accounts), JSON.stringify(["al•••@example.com", "bo•••@example.com"])],
+      [stillPending, null],
+      [used.outcome, "used"],
+      [signedIn?.ok, true],
+      [signedIn?.id, bob.id],
+      [JSON.stringify(surfaceEvents), JSON.stringify(["show choose_account 2", "hide"])],
+    ]),
+    { waiting, choose, used, signedIn, surfaceEvents },
+  );
+  harness.passkeys.setPaseoBrowserPasskeyChoiceSurface(null);
+  // Back to the one stored account the later checks expect.
+  await harness.hub.delete(bob.id);
+}
+
+async function verifyPasskeyTool({
+  checks,
+  second,
+  harness,
+  page,
+  created,
+  stored,
+  run,
+  browserId,
+}) {
   const status = await run("passkeys status", {
     command: "passkeys",
     args: { action: "status", browserId },
@@ -3866,7 +4070,13 @@ async function runPasskeysGroup() {
     const { created, stored } = await verifyPasskeyRegistration({ checks, first, harness, page });
     const second = await openGuest();
     await verifyPasskeyReuse({ checks, first, second, harness, page, url, created });
-    await verifyPasskeyTool({ checks, second, harness, page, created, stored });
+    const browserId = "44444444-4444-4444-8444-444444444444";
+    const run = createPasskeyAutomation(second, browserId);
+    const context = { checks, second, harness, url, created, run, browserId };
+    await verifyPasskeyAutofillWaits(context);
+    await verifyPasskeyButton(context);
+    await verifyPasskeyAccountChoice(context);
+    await verifyPasskeyTool({ checks, second, harness, page, created, stored, run, browserId });
     return checks;
   } finally {
     harness.dispose();

@@ -162,6 +162,12 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
       accept: boolean;
       promptText?: string;
     }) => ipcRenderer.invoke("paseo:browser:answer-page-dialog", input),
+    watchPasskeyChoices: () => ipcRenderer.invoke("paseo:browser:watch-passkey-choices"),
+    answerPasskeyChoice: (input: {
+      browserId: string;
+      choiceId: string;
+      credentialId: string | null;
+    }) => ipcRenderer.invoke("paseo:browser:answer-passkey-choice", input),
     onStreamFrame: (handler: EventHandler): (() => void) => {
       const listener = (_ipcEvent: Electron.IpcRendererEvent, payload: unknown) => {
         handler(payload);

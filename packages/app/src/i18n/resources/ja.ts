@@ -635,6 +635,11 @@ export const ja: TranslationResources = {
         answer: "回答",
         agentNote: "このタブを使っているエージェントも応答できます。",
       },
+      passkeyChoice: {
+        title: "パスキーで {{host}} にサインイン",
+        message: "サインインするアカウントを選択してください",
+        cancel: "キャンセル",
+      },
       annotate: {
         title: "要素に注釈を付ける",
         placeholder: "この要素についてエージェントへのメッセージ…",

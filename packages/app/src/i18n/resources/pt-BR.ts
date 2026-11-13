@@ -638,6 +638,11 @@ export const ptBR: TranslationResources = {
         answer: "Resposta",
         agentNote: "O agente que usa esta aba também pode responder.",
       },
+      passkeyChoice: {
+        title: "Entrar em {{host}} com uma chave de acesso",
+        message: "Escolha a conta para entrar",
+        cancel: "Cancelar",
+      },
       annotate: {
         title: "Anotar elemento",
         placeholder: "Mensagem ao agente sobre este elemento…",

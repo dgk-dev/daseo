@@ -637,6 +637,11 @@ export const fr: TranslationResources = {
         answer: "Réponse",
         agentNote: "L’agent qui utilise cet onglet peut aussi répondre.",
       },
+      passkeyChoice: {
+        title: "Se connecter à {{host}} avec une clé d’accès",
+        message: "Choisissez le compte à utiliser",
+        cancel: "Annuler",
+      },
       annotate: {
         title: "Annoter l'élément",
         placeholder: "Message à l'agent concernant cet élément…",

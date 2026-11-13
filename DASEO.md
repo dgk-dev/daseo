@@ -1418,8 +1418,9 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
     `WebAuthn.credentialAdded` and are kept in `userData/browser-passkeys.json` (0600, private
     keys `safeStorage`-encrypted) and added to every other open tab; `credentialAsserted`
     updates the counter everywhere so no tab signs with a stale count; the browser profile
-    session's `select-webauthn-account` picks the stored passkey used most recently (Electron
-    cancels a discoverable get() without that answer). A site with no stored passkey fails in a
+    session's `select-webauthn-account` answer is required (Electron cancels a discoverable get()
+    without it). Since delta 102 that answer signs in only on request: page load never signs in,
+    and the "most recently used" pick is gone. A site with no stored passkey fails in a
     few ms with `NotAllowedError` instead of hanging, so the agent takes the password or code
     route. New MCP tool `browser_passkeys` (`list` / `status` / `delete`; never the keys).
     `PASEO_BROWSER_PASSKEYS=0` turns it off. Key files:
@@ -2468,6 +2469,67 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        (`openDesktopFileExplorer`, `openFileExplorerForCheckout`),
        `screens/workspace/workspace-screen.tsx`, `panels/{agent,terminal}-panel.tsx`,
        `components/{compact-explorer-sidebar-host,terminal-pane}.tsx`.
+
+102. **A stored passkey never signs in by itself** — the owner's report on 2026-11-13 ("아무리
+     ax-dfcorp github 로그아웃 해도 걍 로그인 하면 바로 계정 선택 못하고 ax-dfcorp으로 가버리네 …
+     궁극적으로 개선해줘"). GitHub's login page, "Use a different account", and "Add account" signed
+     straight back in as ax-dfcorp (network capture: `GET /login?add_account=1&return_to=/login/device`,
+     then `POST /session` 302 about 0.6 s later).
+     - **Why.** Login pages start a conditional-mediation request on load (passkey autofill). A
+       browser leaves it pending until the person picks a passkey; delta 78's authenticator
+       answered it at once and the account picker took the most recently used passkey, so no other
+       account was reachable and sign-out did not hold. Electron 44's request delegate drops the
+       request's mediation (it overrides neither `SetUIPresentation` nor conditional dispatch), so
+       nothing browser-side says conditional or modal.
+     - **Measured on 44.10.2** (standalone script, then the harness). `select-webauthn-account`
+       fires for every discoverable get(), one account and conditional included; the request stays
+       pending until the callback runs and resolves when it is called seconds later; a late
+       callback for a request the page aborted is a no-op. `navigator.userActivation.isActive` reads
+       true for a request a click or key started (person, CDP input, or the agents' user-gesture
+       background click) and false after a page load and after a link navigation. Presence
+       simulation off: the request never reaches the picker and turning presence on does not revive
+       it, so that route was rejected. No wrapper around `navigator.credentials.get`: page-visible
+       built-ins are what bot checks compare (delta 81).
+     - **Rule.** The account picker is the hold point. A request is answered at once only when the
+       tab has transient user activation and one stored account fits. Activation is read in an
+       isolated world through CDP, beside the tab's CDP queue rather than in it, so a long command
+       cannot outlast Chromium's 5 s activation window; a failed read counts as none. With
+       activation and two or more accounts it waits 60 s for a choice: a card in the tab's pane
+       (delta 93's placement, its own `browser-passkey-choice` event; Cancel refuses) or
+       `browser_passkeys use` with `account`. Without activation it waits with no deadline and no
+       card, as autofill does, until `browser_passkeys use` answers it. A newer request from the
+       same frame, a navigation, or a closed tab ends the held one. A site with no stored passkey
+       still fails at once (the picker never runs), registration is unchanged, and a request that
+       names the credential in `allowCredentials` never reaches the picker and is answered as before.
+     - **Records.** The authenticator signs before the picker runs, so the counter still moves (and
+       syncs to the other tabs) on every assertion, but `lastUsedAt` is set when the assertion
+       reaches the page, or at the signature for a credential loaded non-discoverable, which only an
+       `allowCredentials` request reaches.
+     - **Protocol.** New command `passkey_use` (`browserId`, optional `account`) gated through
+       `browserHost.supportedCommands` like `network_export`, and an optional `request` on the
+       passkeys status tab; the tool exposes it as `browser_passkeys` action `use` and masks account
+       names in results. Wire ledger updated.
+     - **Not covered.** A site whose only passkey route is autofill offers the person nothing in the
+       tab (Electron has no autofill dropdown); its passkey button or an agent's `use` signs in. A
+       single-page app that starts autofill within 5 s of the click that showed the form is
+       answered at once. A held request the page aborted stays in `status` until the next request
+       from that frame or a navigation, and `use` on it signs in nothing.
+     - **Checks.** `passkeys.test.ts` (waits without a gesture, at once with one account, a choice
+       with two, pane answer, Cancel, expiry, same-frame replacement, navigation, foreign account,
+       unreadable activation, `lastUsedAt`), `service.test.ts`, protocol, broker, and tools tests,
+       `passkey-choices.test.ts`; capture harness group `passkeys` (autofill on load waits 3 s and
+       `use` answers it, a modal request without a gesture waits, the background click on the
+       passkey button signs in and aborts autofill, two accounts wait and the named one signs in,
+       the pane surface shows and hides). Real site, webauthn.io with the compiled hub in a
+       throwaway session: after a reload the page posted only `/authentication/options` for 6 s and
+       stayed signed out; Authenticate posted `/authentication/verification` 0.36 s later and showed
+       "You're logged in!".
+     - **Key files:** `packages/desktop/src/features/browser-automation/{passkeys,passkey-choice-surface,service,ipc}.ts`,
+       `packages/desktop/src/{main,preload}.ts`, `packages/protocol/src/browser-automation/rpc-schemas.ts`,
+       `packages/server/src/server/browser-tools/{broker,tools}.ts`,
+       `packages/app/src/desktop/browser/{passkey-choices.ts,panel.tsx}`,
+       `packages/app/src/desktop/browser/pane/{index,passkey-choice-card}.electron.tsx`,
+       `packages/app/src/desktop/host.ts`; capture harness group `passkeys`.
 
 ## Local reliability contracts
 

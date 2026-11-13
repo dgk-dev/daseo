@@ -632,6 +632,11 @@ export const ko: TranslationResources = {
         answer: "응답",
         agentNote: "이 탭을 쓰는 에이전트도 답할 수 있습니다.",
       },
+      passkeyChoice: {
+        title: "패스키로 {{host}}에 로그인",
+        message: "로그인할 계정을 고르세요",
+        cancel: "취소",
+      },
       annotate: {
         title: "요소에 주석 달기",
         placeholder: "이 요소에 관해 에이전트에게 보낼 메시지…",

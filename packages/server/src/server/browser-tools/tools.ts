@@ -21,6 +21,8 @@ import {
   type BrowserAutomationNetworkResult,
   type BrowserAutomationReadResult,
   type BrowserAutomationPasskeysResult,
+  type BrowserAutomationPasskeyRequest,
+  type BrowserAutomationPasskeyUseResult,
   type BrowserAutomationStylesResult,
   type BrowserAutomationTabReportResult,
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
@@ -1181,16 +1183,43 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Browser passkeys",
       description:
-        "Passkeys in the Paseo browser. Every tab carries an agent-owned software authenticator: a site's passkey sign-in (navigator.credentials.get) completes at once with no Touch ID or phone when this store holds a passkey for the site, and a passkey a site registers (create) is saved here, encrypted, and served to every later tab. A site with no stored passkey gets an immediate NotAllowedError instead of a hanging prompt, so take its password, code, or 'other method' option (browser_login fills saved passwords), or register a passkey for it once while signed in and later sign-ins need nothing. action list (default) shows stored passkeys with credentialId, site and account, never keys; status says whether the tab's current site has one and whether the authenticator is installed in that tab; delete removes one by credentialId.",
+        "Passkeys in the Paseo browser. Every tab carries an agent-owned software authenticator with no Touch ID or phone. A stored passkey never signs in on page load: a login page's passkey autofill request waits, so the page stays signed out and any account can still be typed. It signs in when you ask for it: click the site's passkey button ('Sign in with a passkey', security key) with browser_click, or call action use on the tab (needed on a page that offers passkeys only through autofill). When the site has two or more stored passkeys, name one with account (credentialId, user name, or display name); without it use lists the accounts and signs in with none. A passkey a site registers (create) is saved here, encrypted, and served to every later tab. A site with no stored passkey gets an immediate NotAllowedError instead of a hanging prompt, so take its password, code, or 'other method' option (browser_login fills saved passwords), or register a passkey for it once while signed in. action list (default) shows stored passkeys with credentialId, site and account, never keys; status says whether the tab's site has one, whether the authenticator is installed, and which passkey request the page waits on; use answers that request; delete removes one by credentialId.",
       inputSchema: {
-        action: z.enum(["list", "status", "delete"]).default("list"),
+        action: z.enum(["list", "status", "use", "delete"]).default("list"),
         browserId: BrowserAutomationBrowserIdSchema.optional(),
         credentialId: z.string().trim().min(1).optional(),
         rpId: z.string().trim().min(1).optional(),
+        account: z.string().trim().min(1).optional(),
       },
     },
-    async ({ action, browserId, credentialId, rpId }) => {
+    async ({ action, browserId, credentialId, rpId, account }) => {
       const context = resolveBrowserToolContext(options);
+      if (action === "use") {
+        if (!browserId) {
+          return browserToolResult({
+            payload: {
+              requestId: "browser-tools-passkey-use-args",
+              ok: false,
+              error: {
+                code: "browser_unsupported",
+                message: "browser_passkeys use needs browserId.",
+                retryable: false,
+              },
+            },
+            context,
+          });
+        }
+        const payload = await options.broker.execute({
+          agentId: context.agentId,
+          cwd: context.cwd,
+          ...(context.workspaceId ? { workspaceId: context.workspaceId } : {}),
+          command: {
+            command: "passkey_use",
+            args: { browserId, ...(account ? { account } : {}) },
+          },
+        });
+        return browserToolResult({ payload, context: { ...context, browserId } });
+      }
       const payload = await options.broker.execute({
         agentId: context.agentId,
         cwd: context.cwd,
@@ -1590,8 +1619,9 @@ function summarizeBrowserPasskeys(result: BrowserAutomationPasskeysResult): stri
     lines.push(
       result.passkeys.length === 0
         ? `No stored passkey for ${site}: a passkey prompt there fails at once, so use the site's password, code, or other sign-in method.`
-        : `${result.passkeys.length} stored passkey${result.passkeys.length === 1 ? "" : "s"} for ${site}; its passkey sign-in completes without any prompt.`,
+        : `${result.passkeys.length} stored passkey${result.passkeys.length === 1 ? "" : "s"} for ${site}; it signs in when the site's passkey button is clicked or action use is called, never on page load.`,
     );
+    if (result.tab.request) lines.push(describePasskeyRequest(result.tab.request));
   } else if (result.action === "delete") {
     lines.push(result.deleted ? "Passkey deleted." : "No stored passkey had that credentialId.");
   }
@@ -1610,8 +1640,36 @@ function summarizeBrowserPasskeys(result: BrowserAutomationPasskeysResult): stri
     }
   }
   lines.push(
-    `Store: ${result.storage.path} (${result.storage.encrypted ? "private keys encrypted with the OS keychain-backed key" : "not encrypted: OS encryption unavailable"}).`,
+    `Store: ${result.storage.path} (${result.storage.encrypted ? "private keys encrypted with the app key" : "not encrypted"}).`,
   );
+  return lines.join("\n");
+}
+
+function describePasskeyRequest(request: BrowserAutomationPasskeyRequest): string {
+  const why =
+    request.reason === "choose_account"
+      ? "waits for an account choice"
+      : "waits (started with no click: passkey autofill or page load)";
+  const accounts = request.accounts
+    .map((account) => `${account.account} credentialId=${account.credentialId}`)
+    .join("; ");
+  return `The page's passkey request for ${request.rpId} ${why} since ${request.since}; browser_passkeys use answers it. Accounts: ${accounts}.`;
+}
+
+function summarizePasskeyUse(result: BrowserAutomationPasskeyUseResult): string {
+  if (result.outcome === "none") {
+    return "The page waits on no passkey request. Click the site's passkey button (or reload a login page that offers passkey autofill), then call use again.";
+  }
+  if (result.outcome === "used" && result.used) {
+    return `Signed in to ${result.used.rpId} with the stored passkey of ${result.used.account} (credentialId=${result.used.credentialId}); the page continues its sign-in. Check the page.`;
+  }
+  const lines: string[] = [];
+  if (result.unmatchedAccount !== undefined) {
+    lines.push(`No waiting account matches "${result.unmatchedAccount}"; nothing was signed in.`);
+  } else {
+    lines.push("Several stored accounts fit; nothing was signed in. Call use again with account.");
+  }
+  if (result.request) lines.push(describePasskeyRequest(result.request));
   return lines.join("\n");
 }
 
@@ -1916,6 +1974,10 @@ function summarizeBrowserDiagnosticsSuccess(
 
   if (result.command === "passkeys") {
     return summarizeBrowserPasskeys(result);
+  }
+
+  if (result.command === "passkey_use") {
+    return summarizePasskeyUse(result);
   }
 
   if (result.command !== "logs") {

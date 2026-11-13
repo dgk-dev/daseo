@@ -81,6 +81,8 @@ import {
 import { selectAvailablePopupTarget, useDesktopBrowserPopupTargets } from "../popup-targets";
 import { answerPageDialog, usePageDialog } from "../page-dialogs";
 import { BrowserPageDialogCard } from "./page-dialog-card.electron";
+import { answerPasskeyChoice, usePasskeyChoice } from "../passkey-choices";
+import { BrowserPasskeyChoiceCard } from "./passkey-choice-card.electron";
 import { shouldClaimBrowserSurfaceFocus, shouldRepelBrowserSurfaceFocus } from "../focus-policy";
 import { hasActiveWebOverlay, subscribeWebOverlayActivity } from "@/lib/overlay-root";
 import {
@@ -634,8 +636,12 @@ export function BrowserPane({
   // Delta 93: a dialog the tab's page (or its selected popup) holds open, shown in this pane.
   const rootPageDialog = usePageDialog(browserId);
   const popupPageDialog = usePageDialog(selectedPopup?.browserId ?? null);
+  // Delta 102: a passkey account choice the tab's page (or its selected popup) waits on.
+  const rootPasskeyChoice = usePasskeyChoice(browserId);
+  const popupPasskeyChoice = usePasskeyChoice(selectedPopup?.browserId ?? null);
+  const passkeyChoiceFocusRef = useRef<{ choiceId: string; takeFocus: boolean } | null>(null);
   const popupDialogOpenRef = useRef(false);
-  popupDialogOpenRef.current = popupPageDialog !== null;
+  popupDialogOpenRef.current = popupPageDialog !== null || popupPasskeyChoice !== null;
   const pageDialogFocusRef = useRef<{ dialogId: string; takeFocus: boolean } | null>(null);
   const [webOverlayActive, setWebOverlayActive] = useState(() => hasActiveWebOverlay());
   const webOverlayActiveRef = useRef(webOverlayActive);
@@ -814,7 +820,8 @@ export function BrowserPane({
     (webview: ElectronWebview, host: HTMLElement, clip: HTMLElement) => {
       const popup = selectedPopupRef.current;
       const browserHost = getDesktopHost()?.browser;
-      // A popup's dialog shows in the pane itself, so the popup's native view steps aside.
+      // A popup's dialog or passkey choice shows in the pane itself, so the popup's native view
+      // steps aside.
       const shouldShowPopup =
         isPresentedRef.current &&
         popup !== null &&
@@ -1108,6 +1115,7 @@ export function BrowserPane({
     browserViewport,
     isPresented,
     popupPageDialog,
+    popupPasskeyChoice,
     selectedPopup,
     syncBrowserSurface,
     webOverlayActive,
@@ -1766,6 +1774,46 @@ export function BrowserPane({
     },
     [answersRootPage, shownPageDialogBrowserId, shownPageDialogId],
   );
+  // Delta 102: a page dialog holds the page's script thread, so it is shown first; the passkey
+  // choice appears once it is answered.
+  let shownPasskeyChoice: typeof rootPasskeyChoice = null;
+  if (!shownPageDialog) shownPasskeyChoice = selectedPopup ? popupPasskeyChoice : rootPasskeyChoice;
+  if (shownPasskeyChoice && passkeyChoiceFocusRef.current?.choiceId !== shownPasskeyChoice.id) {
+    passkeyChoiceFocusRef.current = {
+      choiceId: shownPasskeyChoice.id,
+      takeFocus: shouldPageDialogTakeFocus({
+        isPresented,
+        isInteractive: Boolean(isInteractive),
+        webview: webviewRef.current,
+        clip: webviewClipRef.current,
+      }),
+    };
+  }
+  const shownPasskeyChoiceId = shownPasskeyChoice?.id ?? null;
+  const handlePasskeyChoiceAnswer = useCallback(
+    (credentialId: string | null) => {
+      if (!shownPasskeyChoiceId) return;
+      const active = typeof document === "undefined" ? null : document.activeElement;
+      const cardHadFocus =
+        active instanceof HTMLElement &&
+        active.closest("[data-testid='browser-passkey-choice']") !== null;
+      answerPasskeyChoice({
+        browserId: shownPageDialogBrowserId,
+        choiceId: shownPasskeyChoiceId,
+        credentialId,
+      });
+      if (cardHadFocus && answersRootPage) webviewRef.current?.focus();
+    },
+    [answersRootPage, shownPageDialogBrowserId, shownPasskeyChoiceId],
+  );
+  const passkeyChoiceCard = shownPasskeyChoice ? (
+    <BrowserPasskeyChoiceCard
+      key={shownPasskeyChoice.id}
+      choice={shownPasskeyChoice}
+      takeFocus={passkeyChoiceFocusRef.current?.takeFocus === true}
+      onAnswer={handlePasskeyChoiceAnswer}
+    />
+  ) : null;
   const pageDialogCard = shownPageDialog ? (
     <BrowserPageDialogCard
       key={shownPageDialog.id}
@@ -1773,7 +1821,9 @@ export function BrowserPane({
       takeFocus={pageDialogFocusRef.current?.takeFocus === true}
       onAnswer={handlePageDialogAnswer}
     />
-  ) : null;
+  ) : (
+    passkeyChoiceCard
+  );
 
   if (!isElectronRuntime()) {
     return (

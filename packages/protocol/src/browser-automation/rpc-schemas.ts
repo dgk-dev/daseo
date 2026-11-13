@@ -55,6 +55,7 @@ export const BROWSER_AUTOMATION_COMMAND_NAMES = [
   "handle_dialog",
   "tab_report",
   "network_export",
+  "passkey_use",
 ] as const;
 
 export const BrowserAutomationCommandNameSchema = z.enum(BROWSER_AUTOMATION_COMMAND_NAMES);
@@ -481,6 +482,20 @@ export const BrowserAutomationPasskeysCommandSchema = z.object({
     .strict(),
 });
 
+/**
+ * Daseo delta 102: signs in with a stored passkey on a tab whose page waits for one (a passkey
+ * request held because nobody clicked, or one waiting for an account choice). A separate command,
+ * not a `passkeys` action, because that action enum is closed and an older host's parser would
+ * reject a new value; the broker gates it on `supportedCommands`.
+ */
+export const BrowserAutomationPasskeyUseCommandSchema = z.object({
+  command: z.literal("passkey_use"),
+  args: BrowserAutomationTabTargetSchema.extend({
+    /** Credential id, user name, or display name of the account; needed when several wait. */
+    account: z.string().min(1).optional(),
+  }),
+});
+
 export const BrowserAutomationCommandSchema = z.discriminatedUnion("command", [
   BrowserAutomationListTabsCommandSchema,
   BrowserAutomationNewTabCommandSchema,
@@ -515,6 +530,7 @@ export const BrowserAutomationCommandSchema = z.discriminatedUnion("command", [
   BrowserAutomationHandleDialogCommandSchema,
   BrowserAutomationTabReportCommandSchema,
   BrowserAutomationNetworkExportCommandSchema,
+  BrowserAutomationPasskeyUseCommandSchema,
 ]);
 
 export const BrowserAutomationTabInfoSchema = z.object({
@@ -979,6 +995,23 @@ export const BrowserAutomationPasskeyInfoSchema = z.object({
   signCount: z.number().int().nonnegative(),
 });
 
+/** Delta 102: an account a waiting passkey request could sign in with; the name is masked. */
+export const BrowserAutomationPasskeyRequestAccountSchema = z.object({
+  credentialId: BrowserAutomationBase64UrlSchema,
+  /** User name with most of it hidden, e.g. `al•••@example.com`. */
+  account: z.string(),
+});
+
+/** Delta 102: a passkey request the tab's page waits on. */
+export const BrowserAutomationPasskeyRequestSchema = z.object({
+  rpId: z.string(),
+  /** `no_gesture`: started with no click or key (page load); `choose_account`: several accounts. */
+  reason: z.string(),
+  /** ISO time the request started waiting. */
+  since: z.string(),
+  accounts: z.array(BrowserAutomationPasskeyRequestAccountSchema),
+});
+
 export const BrowserAutomationPasskeysResultSchema = z.object({
   command: z.literal("passkeys"),
   action: BrowserAutomationPasskeysActionSchema,
@@ -991,15 +1024,31 @@ export const BrowserAutomationPasskeysResultSchema = z.object({
       host: z.string().optional(),
       /** Whether the software authenticator is installed in the tab right now. */
       installed: z.boolean(),
+      /** Delta 102: a passkey request the page waits on; `browser_passkeys use` answers it. */
+      request: BrowserAutomationPasskeyRequestSchema.optional(),
     })
     .optional(),
   /** Present for `delete`: whether a stored passkey was removed. */
   deleted: z.boolean().optional(),
   storage: z.object({
     path: z.string(),
-    /** Private keys are encrypted at rest with the OS keychain-backed key. */
+    /** Private keys are encrypted at rest with the app key (delta 92). */
     encrypted: z.boolean(),
   }),
+});
+
+export const BrowserAutomationPasskeyUseResultSchema = z.object({
+  command: z.literal("passkey_use"),
+  browserId: BrowserAutomationBrowserIdSchema,
+  /**
+   * `used`: the waiting request was answered with `used`; `choose`: several accounts and none (or
+   * an unknown one) named; `none`: the page waits on no passkey request.
+   */
+  outcome: z.enum(["used", "choose", "none"]),
+  used: BrowserAutomationPasskeyRequestAccountSchema.extend({ rpId: z.string() }).optional(),
+  request: BrowserAutomationPasskeyRequestSchema.optional(),
+  /** `choose` after an `account` that matched none of the waiting request's accounts. */
+  unmatchedAccount: z.string().optional(),
 });
 
 export const BrowserAutomationDialogEventSchema = z.object({
@@ -1111,6 +1160,7 @@ export const BrowserAutomationResultSchema = z.discriminatedUnion("command", [
   BrowserAutomationHandleDialogResultSchema,
   BrowserAutomationTabReportResultSchema,
   BrowserAutomationNetworkExportResultSchema,
+  BrowserAutomationPasskeyUseResultSchema,
 ]);
 
 export const BrowserAutomationErrorSchema = z.object({
@@ -1236,6 +1286,13 @@ export type BrowserAutomationPasskeysCommandArgs = z.infer<
 >["args"];
 export type BrowserAutomationPasskeyInfo = z.infer<typeof BrowserAutomationPasskeyInfoSchema>;
 export type BrowserAutomationPasskeysResult = z.infer<typeof BrowserAutomationPasskeysResultSchema>;
+export type BrowserAutomationPasskeyRequest = z.infer<typeof BrowserAutomationPasskeyRequestSchema>;
+export type BrowserAutomationPasskeyUseCommandArgs = z.infer<
+  typeof BrowserAutomationPasskeyUseCommandSchema
+>["args"];
+export type BrowserAutomationPasskeyUseResult = z.infer<
+  typeof BrowserAutomationPasskeyUseResultSchema
+>;
 export type BrowserAutomationResizeCommandArgs = z.infer<
   typeof BrowserAutomationResizeCommandSchema
 >["args"];

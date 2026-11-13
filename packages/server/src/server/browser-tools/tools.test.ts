@@ -868,7 +868,22 @@ describe("registerBrowserTools", () => {
             signCount: 3,
           },
         ],
-        tab: { browserId: BROWSER_ID, host: "auth.chatgpt.com", installed: true },
+        tab: {
+          browserId: BROWSER_ID,
+          host: "auth.chatgpt.com",
+          installed: true,
+          request: {
+            rpId: "chatgpt.com",
+            reason: "no_gesture",
+            since: "2026-11-13T05:00:00.000Z",
+            accounts: [
+              {
+                credentialId: "sPZ3IokjIrg4qoUzz7mCEXfH9NRTc3-DGVL6f9WjGF4",
+                account: "dg•••@dfcorp.co.kr",
+              },
+            ],
+          },
+        },
         storage: {
           path: "/Users/me/Library/Application Support/Paseo/browser-passkeys.json",
           encrypted: true,
@@ -889,10 +904,11 @@ describe("registerBrowserTools", () => {
       type: "text",
       text: [
         "Software passkey authenticator is installed in the tab.",
-        "1 stored passkey for this tab's site auth.chatgpt.com; its passkey sign-in completes without any prompt.",
+        "1 stored passkey for this tab's site auth.chatgpt.com; it signs in when the site's passkey button is clicked or action use is called, never on page load.",
+        "The page's passkey request for chatgpt.com waits (started with no click: passkey autofill or page load) since 2026-11-13T05:00:00.000Z; browser_passkeys use answers it. Accounts: dg•••@dfcorp.co.kr credentialId=sPZ3IokjIrg4qoUzz7mCEXfH9NRTc3-DGVL6f9WjGF4.",
         "1 stored passkey:",
         "  chatgpt.com  dgk@dfcorp.co.kr  credentialId=sPZ3IokjIrg4qoUzz7mCEXfH9NRTc3-DGVL6f9WjGF4  created 2026-11-02T03:00:00.000Z, last used 2026-11-02T04:00:00.000Z",
-        "Store: /Users/me/Library/Application Support/Paseo/browser-passkeys.json (private keys encrypted with the OS keychain-backed key).",
+        "Store: /Users/me/Library/Application Support/Paseo/browser-passkeys.json (private keys encrypted with the app key).",
       ].join("\n"),
     });
   });
@@ -1113,10 +1129,86 @@ describe("registerBrowserTools", () => {
     });
     expect(response.content[0]).toEqual({
       type: "text",
+      text: ["No stored passkeys.", "Store: /tmp/browser-passkeys.json (not encrypted)."].join(
+        "\n",
+      ),
+    });
+  });
+
+  test("passkeys use answers the tab's waiting request, or lists the accounts to choose (delta 102)", async () => {
+    const harness = new BrowserToolHarness();
+    const request = {
+      rpId: "github.com",
+      reason: "choose_account",
+      since: "2026-11-13T05:00:00.000Z",
+      accounts: [
+        { credentialId: "AAAA", account: "ax•••p" },
+        { credentialId: "BBBB", account: "dg•••v" },
+      ],
+    };
+    harness.broker.setResponse({
+      requestId: "req-passkey-use",
+      ok: true,
+      result: { command: "passkey_use", browserId: BROWSER_ID, outcome: "choose", request },
+    });
+    const choose = await harness.execute("browser_passkeys", {
+      action: "use",
+      browserId: BROWSER_ID,
+    });
+    expect(harness.broker.calls.at(-1)?.command).toEqual({
+      command: "passkey_use",
+      args: { browserId: BROWSER_ID },
+    });
+    expect(choose.content[0]).toEqual({
+      type: "text",
       text: [
-        "No stored passkeys.",
-        "Store: /tmp/browser-passkeys.json (not encrypted: OS encryption unavailable).",
+        "Several stored accounts fit; nothing was signed in. Call use again with account.",
+        "The page's passkey request for github.com waits for an account choice since 2026-11-13T05:00:00.000Z; browser_passkeys use answers it. Accounts: ax•••p credentialId=AAAA; dg•••v credentialId=BBBB.",
       ].join("\n"),
+    });
+
+    harness.broker.setResponse({
+      requestId: "req-passkey-use",
+      ok: true,
+      result: {
+        command: "passkey_use",
+        browserId: BROWSER_ID,
+        outcome: "used",
+        used: { rpId: "github.com", credentialId: "BBBB", account: "dg•••v" },
+      },
+    });
+    const used = await harness.execute("browser_passkeys", {
+      action: "use",
+      browserId: BROWSER_ID,
+      account: "dgk-dev",
+    });
+    expect(harness.broker.calls.at(-1)?.command).toEqual({
+      command: "passkey_use",
+      args: { browserId: BROWSER_ID, account: "dgk-dev" },
+    });
+    expect(used.content[0]).toMatchObject({
+      text: "Signed in to github.com with the stored passkey of dg•••v (credentialId=BBBB); the page continues its sign-in. Check the page.",
+    });
+
+    harness.broker.setResponse({
+      requestId: "req-passkey-use",
+      ok: true,
+      result: { command: "passkey_use", browserId: BROWSER_ID, outcome: "none" },
+    });
+    const none = await harness.execute("browser_passkeys", {
+      action: "use",
+      browserId: BROWSER_ID,
+    });
+    expect(none.content[0]).toMatchObject({
+      text: "The page waits on no passkey request. Click the site's passkey button (or reload a login page that offers passkey autofill), then call use again.",
+    });
+
+    const calls = harness.broker.calls.length;
+    const missing = await harness.execute("browser_passkeys", { action: "use" });
+    expect(harness.broker.calls).toHaveLength(calls);
+    expect(missing.structuredContent).toMatchObject({
+      ok: false,
+      error: { code: "browser_unsupported", message: "browser_passkeys use needs browserId." },
     });
   });
 

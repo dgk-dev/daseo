@@ -638,6 +638,11 @@ export const es: TranslationResources = {
         answer: "Respuesta",
         agentNote: "El agente que usa esta pestaña también puede responder.",
       },
+      passkeyChoice: {
+        title: "Iniciar sesión en {{host}} con una llave de acceso",
+        message: "Elige la cuenta con la que iniciar sesión",
+        cancel: "Cancelar",
+      },
       annotate: {
         title: "Anotar elemento",
         placeholder: "Mensaje al agente sobre este elemento…",

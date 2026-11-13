@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import type {
   BrowserAutomationCommand,
   BrowserAutomationConsoleLogEntry,
@@ -12,6 +12,7 @@ import { CdpQueueTimeoutError } from "./cdp-session-queue.js";
 import { FullPageCaptureUnsupportedError } from "./full-page-capture.js";
 import { PageNotRespondingError } from "./renderer-health.js";
 import { PageDialogController } from "./page-dialogs.js";
+import { setPaseoBrowserPasskeys, type PaseoBrowserPasskeys } from "./passkeys.js";
 import { TabNetworkCapture } from "./network-capture.js";
 import { BrowserSnapshotEngine } from "./snapshot-engine.js";
 import type { BrowserRegistry, TabContents, TabImage } from "./service.js";
@@ -3415,5 +3416,93 @@ describe("delta 92: loading pages, stuck sessions, busy pages, downloads", () =>
       ok: false,
       error: { message: expect.stringContaining("ended interrupted") },
     });
+  });
+});
+
+describe("passkey_use (delta 102)", () => {
+  afterEach(() => {
+    setPaseoBrowserPasskeys(null);
+  });
+
+  const request = {
+    id: "passkey-request-1",
+    contentsId: 1,
+    rpId: "github.com",
+    reason: "choose_account" as const,
+    since: Date.parse("2026-11-13T05:00:00.000Z"),
+    accounts: [
+      { credentialId: "AAAA", userName: "ax-dfcorp" },
+      { credentialId: "BBBB", userName: "dgk@dfcorp.co.kr" },
+    ],
+  };
+
+  function installHub(use: PaseoBrowserPasskeys["use"]) {
+    const calls: Array<[number, string | undefined]> = [];
+    setPaseoBrowserPasskeys({
+      use: (contentsId: number, account?: string) => {
+        calls.push([contentsId, account]);
+        return use(contentsId, account);
+      },
+    } as unknown as PaseoBrowserPasskeys);
+    return calls;
+  }
+
+  test("answers the tab's waiting request with the named account, names masked", async () => {
+    const browser = new BrowserAutomationHarness();
+    const calls = installHub(() => ({ kind: "used", request, account: request.accounts[1] }));
+    const response = await browser.execute({
+      command: "passkey_use",
+      args: { browserId: BROWSER_A, account: "dgk@dfcorp.co.kr" },
+    });
+    expect(calls).toEqual([[1, "dgk@dfcorp.co.kr"]]);
+    expect(response).toEqual({
+      requestId: "req-passkey_use",
+      ok: true,
+      result: {
+        command: "passkey_use",
+        browserId: BROWSER_A,
+        outcome: "used",
+        used: { rpId: "github.com", credentialId: "BBBB", account: "dg•••@dfcorp.co.kr" },
+      },
+    });
+  });
+
+  test("several accounts and none named: lists them and signs in nobody", async () => {
+    const browser = new BrowserAutomationHarness();
+    installHub(() => ({ kind: "choose", request, unmatchedAccount: "someone" }));
+    const response = await browser.execute({
+      command: "passkey_use",
+      args: { browserId: BROWSER_A, account: "someone" },
+    });
+    expect(response).toMatchObject({
+      ok: true,
+      result: {
+        outcome: "choose",
+        unmatchedAccount: "someone",
+        request: {
+          rpId: "github.com",
+          reason: "choose_account",
+          since: "2026-11-13T05:00:00.000Z",
+          accounts: [
+            { credentialId: "AAAA", account: "ax•••p" },
+            { credentialId: "BBBB", account: "dg•••@dfcorp.co.kr" },
+          ],
+        },
+      },
+    });
+  });
+
+  test("no waiting request, an unknown tab, and passkeys off are told apart", async () => {
+    const browser = new BrowserAutomationHarness();
+    expect(
+      await browser.execute({ command: "passkey_use", args: { browserId: BROWSER_A } }),
+    ).toMatchObject({ ok: false, error: { code: "browser_unsupported" } });
+    installHub(() => ({ kind: "none" }));
+    expect(
+      await browser.execute({ command: "passkey_use", args: { browserId: BROWSER_A } }),
+    ).toMatchObject({ ok: true, result: { outcome: "none" } });
+    expect(
+      await browser.execute({ command: "passkey_use", args: { browserId: BROWSER_B } }),
+    ).toMatchObject({ ok: false, error: { code: "browser_tab_not_found" } });
   });
 });

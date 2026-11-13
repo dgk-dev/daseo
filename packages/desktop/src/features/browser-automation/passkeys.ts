@@ -30,6 +30,22 @@ import { CdpSessionQueue } from "./cdp-session-queue.js";
 // without a Team ID, so every new build lost the keychain's "Always Allow", and the prompt that
 // followed each swap held the main thread (85+ minutes after the 0.5.105 swap). Without the key
 // passkeys are off for that run; there is no keychain fallback.
+//
+// Delta 102: a stored passkey never signs in by itself. Login pages start a conditional-mediation
+// request on load (passkey autofill), which a real browser leaves pending until the person picks
+// a passkey; the virtual authenticator answered it at once, so opening GitHub's login page signed
+// straight back in and no other account was reachable. Electron's request delegate ignores the
+// request's mediation (it never overrides SetUIPresentation), so nothing browser-side says
+// conditional or modal. The hold point is the session's select-webauthn-account answer, which every
+// discoverable get() reaches (one account included, measured on Electron 44.10.2) and which keeps
+// the request pending until it is called. The request is answered at once only when the tab has
+// transient user activation (a person's click or key, or an agent's tool click, within Chromium's
+// activation window), read in an isolated world so the page's built-ins stay untouched: a click on
+// the site's passkey button starts a request under activation, a page load or a link navigation
+// does not. Everything else waits until an agent calls browser_passkeys use or, when the site has
+// two or more stored accounts, the person picks one in the tab. Presence simulation was measured
+// and rejected: with presence off the request never reaches the picker and turning presence back
+// on does not revive it.
 
 export interface StoredPasskey {
   /** base64url without padding, equal to PublicKeyCredential.id on the page. */
@@ -158,11 +174,21 @@ export class PasskeyStore {
     return true;
   }
 
-  public touch(credentialId: string, signCount: number, usedAt: string): StoredPasskey | undefined {
+  /**
+   * Records a signature: the counter always, `lastUsedAt` only when the assertion reached the site
+   * (`usedAt`). A held request has already been signed by the authenticator but was never used.
+   */
+  public touch(
+    credentialId: string,
+    signCount: number,
+    usedAt?: string,
+  ): StoredPasskey | undefined {
     const passkey = this.file.passkeys.find((existing) => existing.credentialId === credentialId);
     if (!passkey) return undefined;
-    passkey.signCount = Math.max(passkey.signCount, signCount);
-    passkey.lastUsedAt = usedAt;
+    const nextCount = Math.max(passkey.signCount, signCount);
+    if (nextCount === passkey.signCount && usedAt === undefined) return publicCopy(passkey);
+    passkey.signCount = nextCount;
+    if (usedAt !== undefined) passkey.lastUsedAt = usedAt;
     this.write();
     return publicCopy(passkey);
   }
@@ -355,10 +381,67 @@ export interface PasskeySession {
     event: "select-webauthn-account",
     listener: (
       event: unknown,
-      details: { relyingPartyId: string; accounts: WebAuthnAccountChoice[] },
+      details: {
+        relyingPartyId: string;
+        accounts: WebAuthnAccountChoice[];
+        /** Electron's WebFrameMain of the requesting frame; null once it navigated or closed. */
+        frame?: unknown;
+      },
       callback: (credentialId?: string | null) => void,
     ) => void,
   ): unknown;
+}
+
+/** One stored account a waiting request could sign in with. */
+export interface PasskeyRequestAccount {
+  /** base64url, as `browser_passkeys list` shows it. */
+  credentialId: string;
+  userName?: string;
+  userDisplayName?: string;
+}
+
+/**
+ * Delta 102. Why a passkey request waits: `no_gesture` started with no click or key in the tab
+ * (page load, link navigation; a conditional-mediation request is always this), `choose_account`
+ * was asked for explicitly and the site has two or more stored accounts.
+ */
+export type PasskeyRequestWait = "no_gesture" | "choose_account";
+
+export interface WaitingPasskeyRequest {
+  readonly id: string;
+  readonly contentsId: number;
+  readonly rpId: string;
+  readonly accounts: readonly PasskeyRequestAccount[];
+  readonly reason: PasskeyRequestWait;
+  /** Epoch ms. */
+  readonly since: number;
+  /** `choose_account` only: when an unanswered choice is cancelled (epoch ms). */
+  readonly expiresAt?: number;
+}
+
+/** The tab's pane, which shows a `choose_account` request to the person. */
+export interface PasskeyChoiceSurface {
+  show(request: WaitingPasskeyRequest): void;
+  hide(contentsId: number, requestId: string): void;
+}
+
+export type PasskeyUseOutcome =
+  | { kind: "used"; request: WaitingPasskeyRequest; account: PasskeyRequestAccount }
+  | { kind: "choose"; request: WaitingPasskeyRequest; unmatchedAccount?: string }
+  | { kind: "none" };
+
+/** How long a person or agent has to pick an account before the request is cancelled. */
+export const PASSKEY_CHOICE_HOLD_MS = 60_000;
+/** Reading the tab's user activation must finish well inside Chromium's 5 s activation window. */
+const ACTIVATION_READ_TIMEOUT_MS = 2_000;
+const ACTIVATION_WORLD_NAME = "daseo-passkeys";
+
+interface HeldRequest {
+  request: WaitingPasskeyRequest;
+  /** Requests are per frame: a newer request from the same frame means this one ended. */
+  frameKey: string;
+  answer: (credentialId: string | null) => void;
+  timer: ReturnType<typeof setTimeout> | null;
 }
 
 interface TabState {
@@ -371,12 +454,17 @@ interface TabState {
   discoverable: Set<string>;
   /** Increments per install so a stale install cannot overwrite a newer one. */
   generation: number;
+  /** Delta 102: passkey requests waiting for someone to ask, newest last. */
+  held: HeldRequest[];
 }
 
 export interface PasskeyHubOptions {
   store: PasskeyStore;
   now?: () => Date;
   log?: (message: string, detail?: Record<string, unknown>) => void;
+  /** The WebContents id of a requesting frame (Electron: `webContents.fromFrame(frame)?.id`). */
+  contentsIdOfFrame?: (frame: unknown) => number | undefined;
+  choiceHoldMs?: number;
 }
 
 export class PaseoBrowserPasskeys {
@@ -384,6 +472,7 @@ export class PaseoBrowserPasskeys {
   private readonly boundSessions = new WeakSet<object>();
   private readonly now: () => Date;
   private readonly log: (message: string, detail?: Record<string, unknown>) => void;
+  private nextRequestId = 0;
 
   public constructor(private readonly options: PasskeyHubOptions) {
     this.now = options.now ?? (() => new Date());
@@ -395,33 +484,261 @@ export class PaseoBrowserPasskeys {
   }
 
   /**
-   * Answers the session's account picker: the stored passkey used most recently wins; a
-   * credential this app never stored is never chosen.
+   * Delta 102: the session's account picker is where every discoverable passkey request waits.
+   * Answered at once only for a request the tab's user started (one stored account); otherwise held
+   * (see the top of this file). A credential this app never stored is never chosen.
    */
   public bindSession(session: PasskeySession): void {
     if (this.boundSessions.has(session)) return;
     this.boundSessions.add(session);
     session.on("select-webauthn-account", (_event, details, callback) => {
-      let chosen: string | null = null;
-      try {
-        chosen = this.chooseAccount(details.accounts);
-      } finally {
-        callback(chosen);
-      }
+      let called = false;
+      const answer = (credentialId: string | null) => {
+        if (called) return;
+        called = true;
+        callback(credentialId);
+      };
+      this.handleAccountRequest(details, answer).catch((error: unknown) => {
+        this.log("[browser-passkeys] account request failed", { error: String(error) });
+        answer(null);
+      });
     });
   }
 
-  public chooseAccount(accounts: WebAuthnAccountChoice[]): string | null {
-    let best: { credentialId: string; lastUsedAt: string } | null = null;
+  /** Stored accounts among the ones the authenticator offered, in the order offered. */
+  public storedAccounts(accounts: readonly WebAuthnAccountChoice[]): PasskeyRequestAccount[] {
+    const result: PasskeyRequestAccount[] = [];
     for (const account of accounts) {
       const stored = this.store.get(toBase64Url(account.credentialId));
       if (!stored) continue;
-      const lastUsedAt = stored.lastUsedAt ?? stored.createdAt;
-      if (!best || lastUsedAt > best.lastUsedAt) {
-        best = { credentialId: account.credentialId, lastUsedAt };
+      const userName = stored.userName || account.name;
+      const userDisplayName = stored.userDisplayName || account.displayName;
+      result.push({
+        credentialId: stored.credentialId,
+        ...(userName ? { userName } : {}),
+        ...(userDisplayName ? { userDisplayName } : {}),
+      });
+    }
+    return result;
+  }
+
+  /** The request a tab waits on (the newest when several frames wait), or null. */
+  public waitingRequest(contentsId: number): WaitingPasskeyRequest | null {
+    const held = this.tabs.get(contentsId)?.held;
+    return held && held.length > 0 ? held[held.length - 1].request : null;
+  }
+
+  /** Every `choose_account` request, for a pane that starts watching. */
+  public waitingChoices(): WaitingPasskeyRequest[] {
+    const choices: WaitingPasskeyRequest[] = [];
+    for (const state of this.tabs.values()) {
+      for (const entry of state.held) {
+        if (entry.request.reason === "choose_account") choices.push(entry.request);
       }
     }
-    return best?.credentialId ?? null;
+    return choices;
+  }
+
+  /**
+   * Delta 102: an agent asked to sign in with a stored passkey on this tab. `account` names one by
+   * credential id, user name, or display name; without it a request with one account is answered
+   * and one with several is left waiting for a choice.
+   */
+  public use(contentsId: number, account?: string): PasskeyUseOutcome {
+    const state = this.tabs.get(contentsId);
+    const entry = state?.held[state.held.length - 1];
+    if (!state || !entry) return { kind: "none" };
+    const { accounts } = entry.request;
+    const chosen = account === undefined ? undefined : matchAccount(accounts, account);
+    if (account !== undefined && !chosen) {
+      return { kind: "choose", request: entry.request, unmatchedAccount: account };
+    }
+    const picked = chosen ?? (accounts.length === 1 ? accounts[0] : undefined);
+    if (!picked) return { kind: "choose", request: entry.request };
+    this.release(state, entry, picked.credentialId);
+    return { kind: "used", request: entry.request, account: picked };
+  }
+
+  /**
+   * A person answered a `choose_account` request in the tab's pane: an account, or `null` for
+   * Cancel (the page gets NotAllowedError, as a browser's Cancel does). False when the request is
+   * no longer waiting (an agent answered first, the page left, or the choice expired).
+   */
+  public answerChoice(contentsId: number, requestId: string, credentialId: string | null): boolean {
+    const state = this.tabs.get(contentsId);
+    const entry = state?.held.find((held) => held.request.id === requestId);
+    if (!state || !entry) return false;
+    if (
+      credentialId !== null &&
+      !entry.request.accounts.some((a) => a.credentialId === credentialId)
+    ) {
+      return false;
+    }
+    this.release(state, entry, credentialId);
+    return true;
+  }
+
+  private async handleAccountRequest(
+    details: { relyingPartyId: string; accounts: WebAuthnAccountChoice[]; frame?: unknown },
+    answer: (credentialId: string | null) => void,
+  ): Promise<void> {
+    const accounts = this.storedAccounts(details.accounts);
+    const state = this.tabOfFrame(details.frame);
+    if (accounts.length === 0 || !state) {
+      // Nothing of ours to offer, or a frame outside the browser tabs: the page gets
+      // NotAllowedError and takes its other sign-in route.
+      answer(null);
+      return;
+    }
+    // One request per frame at a time (Chromium answers a second one "already pending"), so a
+    // request this frame still holds was aborted by the page. Answering it is a no-op.
+    const frameKey = frameKeyOf(details.frame);
+    for (const stale of state.held.filter((held) => held.frameKey === frameKey)) {
+      this.release(state, stale, null);
+    }
+    const activated = await this.hasUserActivation(state);
+    if (activated && accounts.length === 1) {
+      this.deliver(answer, accounts[0].credentialId);
+      return;
+    }
+    this.hold(state, {
+      frameKey,
+      rpId: details.relyingPartyId,
+      accounts,
+      reason: activated ? "choose_account" : "no_gesture",
+      answer,
+    });
+  }
+
+  private tabOfFrame(frame: unknown): TabState | undefined {
+    let contentsId: number | undefined;
+    try {
+      contentsId = frame ? this.options.contentsIdOfFrame?.(frame) : undefined;
+    } catch {
+      // A frame that went away throws on access.
+      contentsId = undefined;
+    }
+    return contentsId === undefined ? undefined : this.tabs.get(contentsId);
+  }
+
+  /**
+   * Whether the tab's page has transient user activation right now. A click or key in any frame
+   * activates the main frame too, so the main frame answers for the whole tab. Read in an isolated
+   * world: the page's own `navigator` and getters are never called. Sent beside the tab's CDP queue,
+   * not through it: the answer is only true for a few seconds after the gesture, and a long command
+   * holding the queue would turn every explicit request into a held one. Any failure reads false.
+   */
+  private async hasUserActivation(state: TabState): Promise<boolean> {
+    const { contents } = state;
+    if (contents.isDestroyed()) return false;
+    const dbg = contents.debugger;
+    const read = async (): Promise<boolean> => {
+      if (!dbg.isAttached()) dbg.attach("1.3");
+      const tree = (await dbg.sendCommand("Page.getFrameTree")) as {
+        frameTree?: { frame?: { id?: string } };
+      };
+      const frameId = tree.frameTree?.frame?.id;
+      if (!frameId) return false;
+      const world = (await dbg.sendCommand("Page.createIsolatedWorld", {
+        frameId,
+        worldName: ACTIVATION_WORLD_NAME,
+      })) as { executionContextId?: number };
+      if (typeof world.executionContextId !== "number") return false;
+      const evaluated = (await dbg.sendCommand("Runtime.evaluate", {
+        expression: "navigator.userActivation.isActive",
+        contextId: world.executionContextId,
+        returnByValue: true,
+      })) as { result?: { value?: unknown } };
+      return evaluated.result?.value === true;
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        read(),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), ACTIVATION_READ_TIMEOUT_MS);
+        }),
+      ]);
+    } catch (error) {
+      this.log("[browser-passkeys] could not read user activation; the request waits", {
+        contentsId: contents.id,
+        error: String(error),
+      });
+      return false;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  private hold(
+    state: TabState,
+    input: {
+      frameKey: string;
+      rpId: string;
+      accounts: PasskeyRequestAccount[];
+      reason: PasskeyRequestWait;
+      answer: (credentialId: string | null) => void;
+    },
+  ): void {
+    const since = this.now().getTime();
+    const holdMs = this.options.choiceHoldMs ?? PASSKEY_CHOICE_HOLD_MS;
+    const request: WaitingPasskeyRequest = {
+      id: `passkey-request-${(this.nextRequestId += 1)}`,
+      contentsId: state.contents.id,
+      rpId: input.rpId,
+      accounts: input.accounts,
+      reason: input.reason,
+      since,
+      ...(input.reason === "choose_account" ? { expiresAt: since + holdMs } : {}),
+    };
+    const entry: HeldRequest = {
+      request,
+      frameKey: input.frameKey,
+      answer: input.answer,
+      timer: null,
+    };
+    // A request that waits for no gesture stays pending, as a browser leaves passkey autofill
+    // pending until the person picks; an explicit request with an open choice times out.
+    if (input.reason === "choose_account") {
+      entry.timer = setTimeout(() => this.release(state, entry, null), holdMs);
+    }
+    state.held.push(entry);
+    this.log("[browser-passkeys] passkey request waits", {
+      contentsId: state.contents.id,
+      rpId: input.rpId,
+      accounts: input.accounts.length,
+      reason: input.reason,
+    });
+    if (input.reason === "choose_account") choiceSurface?.show(request);
+  }
+
+  /** Answers a held request (`null` cancels it) and forgets it. */
+  private release(state: TabState, entry: HeldRequest, credentialId: string | null): void {
+    const index = state.held.indexOf(entry);
+    if (index === -1) return;
+    state.held.splice(index, 1);
+    if (entry.timer) clearTimeout(entry.timer);
+    if (entry.request.reason === "choose_account") {
+      choiceSurface?.hide(state.contents.id, entry.request.id);
+    }
+    if (credentialId === null) {
+      entry.answer(null);
+      return;
+    }
+    this.deliver(entry.answer, credentialId);
+  }
+
+  /** Hands the assertion to the page and records the passkey as used. */
+  private deliver(answer: (credentialId: string | null) => void, credentialId: string): void {
+    answer(credentialId);
+    const touched = this.store.touch(credentialId, 0, this.now().toISOString());
+    if (touched) this.log("[browser-passkeys] passkey used", { rpId: touched.rpId });
+  }
+
+  /** The page left: every request it held went with it. */
+  private dropHeld(state: TabState): void {
+    // release() removes the entry, so the list shrinks to empty.
+    while (state.held.length > 0) this.release(state, state.held[0], null);
   }
 
   /** Installs the authenticator now and again after every cross-document navigation. */
@@ -437,6 +754,7 @@ export class PaseoBrowserPasskeys {
       loaded: new Set(),
       discoverable: new Set(),
       generation: 0,
+      held: [],
     };
     this.tabs.set(contents.id, state);
     contents.debugger.on?.("message", (_event, method, params) => {
@@ -451,12 +769,14 @@ export class PaseoBrowserPasskeys {
     // for the new document in the same DidFinishNavigation pass, and an enable sent from inside
     // did-navigate landed before that reset and was wiped (capture harness, 2026-11-02).
     contents.on("did-navigate", () => {
+      this.dropHeld(state);
       setTimeout(() => void this.install(state), 0);
     });
     contents.on("dom-ready", () => {
       if (state.authenticatorId === null) void this.install(state);
     });
     contents.once("destroyed", () => {
+      this.dropHeld(state);
       this.tabs.delete(contents.id);
     });
     void this.install(state);
@@ -598,34 +918,51 @@ export class PaseoBrowserPasskeys {
     const credentialId = toBase64Url(credential.credentialId);
     const at = this.now().toISOString();
     if (method === "WebAuthn.credentialAdded") {
-      // Our own addCredential during install echoes here too; only a site's create() is new.
-      if (state.loaded.has(credentialId) || this.store.get(credentialId)) return;
-      const stored: StoredPasskey = {
-        credentialId,
-        rpId: credential.rpId ?? hostOf(state.contents.getURL()) ?? "",
-        privateKey: credential.privateKey,
-        ...(credential.userHandle ? { userHandle: credential.userHandle } : {}),
-        ...(credential.userName ? { userName: credential.userName } : {}),
-        ...(credential.userDisplayName ? { userDisplayName: credential.userDisplayName } : {}),
-        signCount: credential.signCount ?? 0,
-        createdAt: at,
-        createdOnUrl: state.contents.getURL(),
-      };
-      if (!this.store.add(stored)) return;
-      state.loaded.add(credentialId);
-      if (credential.isResidentCredential !== false) state.discoverable.add(credentialId);
-      this.log("[browser-passkeys] passkey registered", {
-        rpId: stored.rpId,
-        userName: stored.userName,
-      });
-      void this.syncOthers(state, credentialId);
-      // The registration took the free slot; loading again demotes the least recently used
-      // discoverable credential so the next registration in this tab has a slot too.
-      if (state.discoverable.size > DISCOVERABLE_SLOTS) void this.install(state);
+      this.handleCredentialAdded(state, credentialId, credential, at);
       return;
     }
-    const updated = this.store.touch(credentialId, credential.signCount ?? 0, at);
-    if (updated) void this.syncOthers(state, credentialId);
+    // Delta 102: the authenticator signs before the account picker runs, so a held request has a
+    // signature nobody used; the counter moves (every tab must sign above it) but `lastUsedAt` is
+    // set when the assertion reaches the page (deliver). A credential loaded non-discoverable was
+    // named by the site in allowCredentials, which never reaches the picker: it is used now.
+    const before = this.store.get(credentialId);
+    const usedNow = !state.discoverable.has(credentialId) ? at : undefined;
+    const updated = this.store.touch(credentialId, credential.signCount ?? 0, usedNow);
+    if (updated && before && updated.signCount !== before.signCount) {
+      void this.syncOthers(state, credentialId);
+    }
+  }
+
+  private handleCredentialAdded(
+    state: TabState,
+    credentialId: string,
+    credential: CdpCredential,
+    at: string,
+  ): void {
+    // Our own addCredential during install echoes here too; only a site's create() is new.
+    if (state.loaded.has(credentialId) || this.store.get(credentialId)) return;
+    const stored: StoredPasskey = {
+      credentialId,
+      rpId: credential.rpId ?? hostOf(state.contents.getURL()) ?? "",
+      privateKey: credential.privateKey,
+      ...(credential.userHandle ? { userHandle: credential.userHandle } : {}),
+      ...(credential.userName ? { userName: credential.userName } : {}),
+      ...(credential.userDisplayName ? { userDisplayName: credential.userDisplayName } : {}),
+      signCount: credential.signCount ?? 0,
+      createdAt: at,
+      createdOnUrl: state.contents.getURL(),
+    };
+    if (!this.store.add(stored)) return;
+    state.loaded.add(credentialId);
+    if (credential.isResidentCredential !== false) state.discoverable.add(credentialId);
+    this.log("[browser-passkeys] passkey registered", {
+      rpId: stored.rpId,
+      userName: stored.userName,
+    });
+    void this.syncOthers(state, credentialId);
+    // The registration took the free slot; loading again demotes the least recently used
+    // discoverable credential so the next registration in this tab has a slot too.
+    if (state.discoverable.size > DISCOVERABLE_SLOTS) void this.install(state);
   }
 
   /** Puts the stored copy of one credential into every other installed tab. */
@@ -712,6 +1049,54 @@ export function hostMatchesRpId(host: string, rpId: string): boolean {
   const h = host.toLowerCase();
   const rp = rpId.toLowerCase();
   return h === rp || h.endsWith(`.${rp}`);
+}
+
+function frameKeyOf(frame: unknown): string {
+  try {
+    const id = (frame as { frameTreeNodeId?: unknown } | null | undefined)?.frameTreeNodeId;
+    return typeof id === "number" ? String(id) : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * An account named by credential id, or by user name, then display name (case-insensitive). A name
+ * two accounts share picks neither.
+ */
+export function matchAccount(
+  accounts: readonly PasskeyRequestAccount[],
+  name: string,
+): PasskeyRequestAccount | undefined {
+  const wanted = name.trim();
+  const byId = accounts.find((account) => account.credentialId === wanted);
+  if (byId) return byId;
+  const lower = wanted.toLowerCase();
+  const byUserName = accounts.filter((account) => account.userName?.toLowerCase() === lower);
+  if (byUserName.length === 1) return byUserName[0];
+  const byDisplayName = accounts.filter(
+    (account) => account.userDisplayName?.toLowerCase() === lower,
+  );
+  return byDisplayName.length === 1 ? byDisplayName[0] : undefined;
+}
+
+/**
+ * An account name with most of it hidden, for results that list who a request could sign in as:
+ * `al•••@example.com`, `ax•••p`. The credential id beside it is what the agent passes back.
+ */
+export function maskAccountName(name: string | undefined): string {
+  if (!name) return "(no name)";
+  const at = name.indexOf("@");
+  if (at > 0) return `${name.slice(0, Math.min(2, at))}•••${name.slice(at)}`;
+  if (name.length <= 3) return `${name.slice(0, 1)}•••`;
+  return `${name.slice(0, 2)}•••${name.slice(-1)}`;
+}
+
+// Delta 102: the panes that show a `choose_account` request (set by ipc.ts).
+let choiceSurface: PasskeyChoiceSurface | null = null;
+
+export function setPaseoBrowserPasskeyChoiceSurface(surface: PasskeyChoiceSurface | null): void {
+  choiceSurface = surface;
 }
 
 // One hub per app; the automation service reaches it through this accessor so the service

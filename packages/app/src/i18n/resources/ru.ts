@@ -637,6 +637,11 @@ export const ru: TranslationResources = {
         answer: "Ответ",
         agentNote: "Агент, который использует эту вкладку, тоже может ответить.",
       },
+      passkeyChoice: {
+        title: "Вход на {{host}} с ключом доступа",
+        message: "Выберите аккаунт для входа",
+        cancel: "Отмена",
+      },
       annotate: {
         title: "Аннотировать элемент",
         placeholder: "Сообщение агенту об этом элементе…",

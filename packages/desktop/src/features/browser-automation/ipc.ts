@@ -35,6 +35,14 @@ import {
   watchPaseoBrowserPageDialogs,
   type PageDialogWebContents,
 } from "./page-dialog-hook.js";
+import {
+  installPaseoBrowserPasskeyChoiceSurface,
+  PASSKEY_CHOICE_SURFACE_EVENT,
+  readPasskeyChoiceAnswer,
+  unwatchPaseoBrowserPasskeyChoices,
+  watchPaseoBrowserPasskeyChoices,
+} from "./passkey-choice-surface.js";
+import { getPaseoBrowserPasskeys } from "./passkeys.js";
 import { executeAutomationCommand } from "./service.js";
 import { startScreencast, stopScreencast } from "./screencast.js";
 import {
@@ -707,6 +715,39 @@ export function registerBrowserAutomationIpc(options?: { ipc?: IpcHandlerRegistr
     );
   });
 
+  // Delta 102: panes show a person's passkey account choice and send the pick back.
+  installPaseoBrowserPasskeyChoiceSurface({
+    locate: getPaseoBrowserRegistrationForWebContents,
+    send: (hostWebContentsId, payload) => {
+      const host = electronWebContents.fromId(hostWebContentsId);
+      if (host && !host.isDestroyed()) host.send(PASSKEY_CHOICE_SURFACE_EVENT, payload);
+    },
+  });
+  ipc.handle("paseo:browser:watch-passkey-choices", (event) => {
+    const host = (event as { sender?: HostWebContents }).sender;
+    if (!host) return [];
+    const hostId = host.id;
+    if (!passkeyChoiceHosts.has(hostId)) {
+      passkeyChoiceHosts.add(hostId);
+      host.once("destroyed", () => {
+        passkeyChoiceHosts.delete(hostId);
+        unwatchPaseoBrowserPasskeyChoices(hostId);
+      });
+    }
+    return watchPaseoBrowserPasskeyChoices(hostId);
+  });
+  ipc.handle("paseo:browser:answer-passkey-choice", (event, rawInput: unknown) => {
+    const host = (event as { sender?: HostWebContents }).sender;
+    const input = readPasskeyChoiceAnswer(rawInput);
+    if (!host || !input) return false;
+    const contents = getPaseoBrowserWebContentsForHostWindow(input.browserId, host.id);
+    if (!contents) return false;
+    return (
+      getPaseoBrowserPasskeys()?.answerChoice(contents.id, input.choiceId, input.credentialId) ??
+      false
+    );
+  });
+
   ipc.handle("paseo:browser:execute-automation-command", async (event, rawRequest: unknown) => {
     const hostContents = (event as { sender?: HostWebContents }).sender;
     const hostWebContentsId = hostContents?.id;
@@ -796,6 +837,7 @@ export function registerBrowserAutomationIpc(options?: { ipc?: IpcHandlerRegistr
 }
 
 const watchingHosts = new Set<number>();
+const passkeyChoiceHosts = new Set<number>();
 
 function readPageDialogAnswer(
   input: unknown,

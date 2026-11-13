@@ -1181,6 +1181,74 @@ describe("browser passkeys command (Daseo delta 78)", () => {
     ).toBe(false);
   });
 
+  test("passkey_use carries the tab and an optional account; its result names no private key (delta 102)", () => {
+    const parsed = BrowserAutomationExecuteRequestSchema.parse({
+      type: "browser.automation.execute.request",
+      requestId: "req-passkey-use",
+      command: { command: "passkey_use", args: { browserId: BROWSER_ID, account: "ax-dfcorp" } },
+    });
+    expect(parsed.command).toEqual({
+      command: "passkey_use",
+      args: { browserId: BROWSER_ID, account: "ax-dfcorp" },
+    });
+    expect(
+      BrowserAutomationExecuteRequestSchema.safeParse({
+        type: "browser.automation.execute.request",
+        requestId: "req-passkey-use",
+        command: { command: "passkey_use", args: { browserId: BROWSER_ID, credentialIds: [] } },
+      }).success,
+    ).toBe(false);
+    const request = {
+      rpId: "github.com",
+      reason: "no_gesture",
+      since: "2026-11-13T05:00:00.000Z",
+      accounts: [
+        { credentialId: "sPZ3IokjIrg4qoUzz7mCEXfH9NRTc3-DGVL6f9WjGF4", account: "ax•••p" },
+      ],
+    };
+    for (const result of [
+      { command: "passkey_use", browserId: BROWSER_ID, outcome: "none" },
+      {
+        command: "passkey_use",
+        browserId: BROWSER_ID,
+        outcome: "choose",
+        request,
+        unmatchedAccount: "x",
+      },
+      {
+        command: "passkey_use",
+        browserId: BROWSER_ID,
+        outcome: "used",
+        used: { rpId: "github.com", credentialId: "AAAA", account: "ax•••p" },
+      },
+    ]) {
+      expect(
+        BrowserAutomationExecuteResponseSchema.safeParse({
+          type: "browser.automation.execute.response",
+          requestId: "req-passkey-use",
+          payload: { requestId: "req-passkey-use", ok: true, result },
+        }).success,
+      ).toBe(true);
+    }
+    // A status result carries the waiting request; an older daemon's schema strips it.
+    const status = BrowserAutomationExecuteResponseSchema.parse({
+      type: "browser.automation.execute.response",
+      requestId: "req-passkeys",
+      payload: {
+        requestId: "req-passkeys",
+        ok: true,
+        result: {
+          command: "passkeys",
+          action: "status",
+          passkeys: [],
+          tab: { browserId: BROWSER_ID, host: "github.com", installed: true, request },
+          storage: { path: "/tmp/browser-passkeys.json", encrypted: true },
+        },
+      },
+    });
+    expect(status.payload.ok && status.payload.result).toMatchObject({ tab: { request } });
+  });
+
   test("tab_report takes no arguments and its result keeps optional fields optional (delta 97)", () => {
     expect(
       BrowserAutomationExecuteRequestSchema.parse({
