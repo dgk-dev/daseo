@@ -4,6 +4,41 @@ export const ARIA_FIND_SCRIPT_MARKER = "__PASEO_ARIA_FIND__";
 // its global names (Object.keys, Object.getOwnPropertyNames) finds no automation property.
 export const BROWSER_AUTOMATION_RUNTIME = "window[Symbol.for('paseo.browser-automation')]";
 
+// Daseo delta 100. When each element subtree was inserted, for the page's lifetime from the first
+// snapshot, find, or observed click on: a modal mounted at opacity 0 is "appearing" only while it is
+// new. One childList observer that records added elements in a WeakMap; nothing is kept alive.
+export const INSERTION_LOG_SOURCE = String.raw`
+  function ensureInsertionLog() {
+    const key = Symbol.for('paseo.browser-automation.insertions');
+    const existing = window[key];
+    if (existing && existing.times instanceof WeakMap) return existing;
+    const log = { times: new WeakMap() };
+    try {
+      const observer = new MutationObserver((records) => {
+        const now = performance.now();
+        for (const record of records) {
+          for (const node of record.addedNodes) {
+            if (node.nodeType === 1) log.times.set(node, now);
+          }
+        }
+      });
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+    } catch {}
+    Object.defineProperty(window, key, { configurable: true, enumerable: false, value: log });
+    return log;
+  }
+
+  function insertedAt(element) {
+    const log = window[Symbol.for('paseo.browser-automation.insertions')];
+    if (!log || !(log.times instanceof WeakMap)) return null;
+    for (let node = element, depth = 0; node && depth < 25; node = node.parentElement, depth += 1) {
+      const at = log.times.get(node);
+      if (at !== undefined) return at;
+    }
+    return null;
+  }
+`;
+
 // Adapted from Playwright's injected ARIA snapshot model.
 // Copyright (c) Microsoft Corporation. Licensed under the Apache License, Version 2.0.
 //
@@ -66,10 +101,49 @@ export const ARIA_SHARED_SOURCE = String.raw`
     return tag === 'iframe' || tag === 'frame';
   }
 
+  ${INSERTION_LOG_SOURCE}
+
+  // Daseo delta 100. A modal that mounts at opacity 0 and fades in (Vercel's waits about 100 ms,
+  // then runs a 300 ms transition) used to drop out of find and snapshot, with its whole subtree,
+  // until the fade passed opacity 0, so a find right after the click that opened it said "no
+  // match". Such an element counts as visible and is marked appearing=true: it is running an
+  // animation that ends visible, or it sits at opacity 0 with a transition or animation declared
+  // and was inserted within the last second. An element held at opacity 0 on purpose stays hidden.
+  const APPEARING_WINDOW_MS = 1000;
+
+  function animationEndsVisible(animation) {
+    if (animation.playState !== 'running' && !animation.pending) return false;
+    try {
+      const frames = animation.effect && typeof animation.effect.getKeyframes === 'function'
+        ? animation.effect.getKeyframes()
+        : [];
+      const last = frames[frames.length - 1];
+      return Boolean(last) && last.opacity !== undefined && Number(last.opacity) > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  function declaresMotion(style) {
+    const durations = String(style.transitionDuration || '').split(',').concat(String(style.animationDuration || '').split(','));
+    return durations.some((value) => parseFloat(value) > 0);
+  }
+
+  function appearingFor(element, style) {
+    const opacity = Number(style.opacity);
+    if (!(opacity < 1)) return false;
+    const animations = typeof element.getAnimations === 'function' ? element.getAnimations() : [];
+    if (animations.some(animationEndsVisible)) return true;
+    if (opacity !== 0 || !declaresMotion(style)) return false;
+    const at = insertedAt(element);
+    return at !== null && performance.now() - at < APPEARING_WINDOW_MS;
+  }
+
   function visibilityFor(element) {
     if (!isElement(element)) return false;
     const style = styleOf(element);
-    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    if (Number(style.opacity) === 0 && !appearingFor(element, style)) return false;
     const rect = element.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0 ? 'box' : 'boxless';
   }
@@ -215,6 +289,7 @@ export const ARIA_SHARED_SOURCE = String.raw`
   // keepRefs (browser_find) adds to the refs of the latest snapshot instead of
   // starting a new set, so the snapshot's refs keep resolving.
   function ensureRuntime(keepRefs) {
+    ensureInsertionLog();
     const previous = ${BROWSER_AUTOMATION_RUNTIME};
     if (keepRefs && previous && previous.refs instanceof Map && previous.numbering &&
       previous.numbering.refByElement instanceof WeakMap) {
@@ -259,6 +334,7 @@ export const ARIA_SHARED_SOURCE = String.raw`
     // Disabled controls get no ref (isActionable); the attribute says why.
     if (ACTIONABLE_ROLES.has(role) && inheritedDisabled(element)) attrs.push('disabled=true');
     if (element === focusedElement) attrs.push('focused=true');
+    if (appearingFor(element, styleOf(element))) attrs.push('appearing=true');
     return attrs;
   }
 

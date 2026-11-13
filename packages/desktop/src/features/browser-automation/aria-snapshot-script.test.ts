@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BrowserSnapshotEngine, type SnapshotPage } from "./snapshot-engine.js";
 import type { AriaFindQuery } from "./aria-snapshot-script.js";
 import { dispatchFocusIsolatedClick } from "./focus-isolated-input.js";
+import { observeInputEffect } from "./input-effect.js";
 
 // Runs the real injected snapshot script against a DOM and renders it, so the
 // capture and the renderer are tested together. jsdom has no layout: every
@@ -374,5 +375,221 @@ describe("browser_find script", () => {
     expect(pattern.matches.map((match) => match.name)).toEqual(["Add", "Remove"]);
     expect(limited.total).toBe(3);
     expect(limited.matches.map((match) => match.name)).toEqual(["Add"]);
+  });
+});
+
+// Daseo delta 100.
+describe("appearing elements, background click order, and the input probe", () => {
+  const originalRect = Element.prototype.getBoundingClientRect;
+  const originalScrollIntoView = Element.prototype.scrollIntoView;
+  const query = (input: Partial<AriaFindQuery>): AriaFindQuery => ({
+    role: null,
+    name: null,
+    exact: false,
+    pattern: null,
+    limit: 10,
+    ...input,
+  });
+  const nextMicrotasks = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  beforeEach(() => {
+    Element.prototype.getBoundingClientRect = () =>
+      ({ x: 0, y: 0, top: 0, left: 0, right: 10, bottom: 10, width: 10, height: 10 }) as DOMRect;
+    Element.prototype.scrollIntoView = () => undefined;
+    document.head.innerHTML = `<title>Fixture</title><style>${INLINE_STYLE}</style>`;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    Element.prototype.getBoundingClientRect = originalRect;
+    Element.prototype.scrollIntoView = originalScrollIntoView;
+    document.body.innerHTML = "";
+    for (const key of [
+      "paseo.browser-automation",
+      "paseo.browser-automation.insertions",
+      "paseo.browser-automation.input-probe",
+    ]) {
+      delete (window as unknown as Record<symbol, unknown>)[Symbol.for(key)];
+    }
+  });
+
+  function mountModal(style: string): void {
+    const modal = document.createElement("div");
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-label", "Create Passkey");
+    modal.setAttribute("style", style);
+    modal.innerHTML = "<button>Continue</button>";
+    document.body.append(modal);
+  }
+
+  it("shows a just-inserted modal at opacity 0 with a transition as appearing", async () => {
+    document.body.innerHTML = "<button>Add</button>";
+    const engine = new BrowserSnapshotEngine();
+    await engine.snapshot({ browserId: "browser-1", page: page() });
+    mountModal("opacity: 0; transition-duration: 0.4s");
+    await nextMicrotasks();
+
+    const found = await engine.find({
+      browserId: "browser-1",
+      page: page(),
+      query: query({ role: "dialog" }),
+    });
+    const { snapshot } = await engine.snapshot({ browserId: "browser-1", page: page() });
+
+    expect(found.matches).toEqual([
+      expect.objectContaining({
+        role: "dialog",
+        name: "Create Passkey",
+        states: ["appearing=true"],
+      }),
+    ]);
+    expect(snapshot).toContain('- dialog "Create Passkey" [appearing=true]');
+    expect(snapshot).toMatch(/- button "Continue" \[ref=@e\d+\]/);
+  });
+
+  it("keeps an element held at opacity 0 hidden", async () => {
+    document.body.innerHTML = "<button>Add</button>";
+    const engine = new BrowserSnapshotEngine();
+    await engine.snapshot({ browserId: "browser-1", page: page() });
+    mountModal("opacity: 0");
+    await nextMicrotasks();
+
+    const found = await engine.find({
+      browserId: "browser-1",
+      page: page(),
+      query: query({ role: "dialog" }),
+    });
+
+    expect(found.total).toBe(0);
+  });
+
+  it("stops calling an opacity-0 element appearing a second after it was inserted", async () => {
+    document.body.innerHTML = "<button>Add</button>";
+    const engine = new BrowserSnapshotEngine();
+    await engine.snapshot({ browserId: "browser-1", page: page() });
+    mountModal("opacity: 0; transition-duration: 0.4s");
+    await nextMicrotasks();
+    const later = performance.now() + 1_500;
+    vi.spyOn(performance, "now").mockReturnValue(later);
+
+    const found = await engine.find({
+      browserId: "browser-1",
+      page: page(),
+      query: query({ role: "dialog" }),
+    });
+
+    expect(found.total).toBe(0);
+  });
+
+  it("presses with buttons 1 and moves focus at mousedown, not before", async () => {
+    document.body.innerHTML = '<input aria-label="Before"><button id="go">Go</button>';
+    const before = document.querySelector("input") as HTMLInputElement;
+    before.focus();
+    const go = document.querySelector("#go") as HTMLButtonElement;
+    const seen: string[] = [];
+    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+      go.addEventListener(type, (event) => {
+        seen.push(`${type}:${(event as MouseEvent).buttons}:${document.activeElement === go}`);
+      });
+    }
+    const engine = new BrowserSnapshotEngine();
+    const { snapshot } = await engine.snapshot({ browserId: "browser-1", page: page() });
+    const ref = /button "Go" \[ref=(@e\d+)\]/.exec(snapshot)?.[1] ?? "";
+    const expression = engine.runtimeElementExpression({ browserId: "browser-1", ref });
+    if (typeof expression !== "string") throw new Error("ref did not resolve");
+
+    expect(await dispatchFocusIsolatedClick(page(), expression, { x: 5, y: 5 })).toBe(true);
+    // jsdom has no PointerEvent, so only the mouse events fire here; the capture harness
+    // click-effect group checks the pointer events in Chromium.
+    expect(seen).toEqual(["mousedown:1:false", "mouseup:0:true", "click:0:true"]);
+  });
+
+  it("leaves focus where it was when the page cancels mousedown", async () => {
+    document.body.innerHTML = '<input aria-label="Before"><button id="go">Go</button>';
+    const before = document.querySelector("input") as HTMLInputElement;
+    before.focus();
+    document.querySelector("#go")?.addEventListener("mousedown", (event) => event.preventDefault());
+    const engine = new BrowserSnapshotEngine();
+    const { snapshot } = await engine.snapshot({ browserId: "browser-1", page: page() });
+    const ref = /button "Go" \[ref=(@e\d+)\]/.exec(snapshot)?.[1] ?? "";
+    const expression = engine.runtimeElementExpression({ browserId: "browser-1", ref });
+    if (typeof expression !== "string") throw new Error("ref did not resolve");
+
+    await dispatchFocusIsolatedClick(page(), expression, { x: 5, y: 5 });
+
+    expect(document.activeElement).toBe(before);
+  });
+
+  function expand(button: HTMLButtonElement): void {
+    button.setAttribute("aria-expanded", "true");
+  }
+  function openFadingModal(): void {
+    mountModal("opacity: 0; transition-duration: 0.4s");
+  }
+  function writeSaved(): void {
+    (document.querySelector("#out") as HTMLElement).textContent = "Saved";
+  }
+  function cancelSubmit(event: Event): void {
+    event.preventDefault();
+  }
+  function wrapInCancellingForm(button: HTMLButtonElement): void {
+    const form = document.createElement("form");
+    button.replaceWith(form);
+    form.append(button);
+    form.addEventListener("submit", cancelSubmit);
+  }
+
+  // onClick runs as the button's click handler; setup prepares the page before the snapshot.
+  async function probedClick(
+    onClick: ((button: HTMLButtonElement) => void) | null,
+    setup?: (button: HTMLButtonElement) => void,
+  ) {
+    document.body.innerHTML =
+      '<div><div><section><button id="go">Go</button><p id="out"></p></section></div></div>';
+    const button = document.querySelector("#go") as HTMLButtonElement;
+    if (onClick) button.addEventListener("click", () => onClick(button));
+    setup?.(button);
+    const engine = new BrowserSnapshotEngine();
+    const { snapshot } = await engine.snapshot({ browserId: "browser-1", page: page() });
+    const ref = /button "Go" \[ref=(@e\d+)\]/.exec(snapshot)?.[1] ?? "";
+    const expression = engine.runtimeElementExpression({ browserId: "browser-1", ref });
+    if (typeof expression !== "string") throw new Error("ref did not resolve");
+    return observeInputEffect({
+      page: page(),
+      elementExpression: expression,
+      signals: {},
+      windowMs: 50,
+      dispatch: () => dispatchFocusIsolatedClick(page(), expression, { x: 5, y: 5 }),
+    });
+  }
+
+  it("names a state change on the element at once", async () => {
+    const observed = await probedClick(expand);
+    expect(observed.effect).toEqual({ kind: "state", attribute: "aria-expanded", value: "true" });
+  });
+
+  it("names a dialog the click appended, still fading in", async () => {
+    const observed = await probedClick(openFadingModal);
+    expect(observed.effect).toEqual({
+      kind: "overlay",
+      role: "dialog",
+      name: "Create Passkey",
+      appearing: true,
+    });
+  });
+
+  it("names text that changed near the element", async () => {
+    const observed = await probedClick(writeSaved);
+    expect(observed.effect).toEqual({ kind: "text" });
+  });
+
+  it("says only focus moved when the click changed nothing else", async () => {
+    const observed = await probedClick(null);
+    expect(observed.effect).toEqual({ kind: "focus" });
+  });
+
+  it("says the page cancelled a form submit", async () => {
+    const observed = await probedClick(null, wrapInCancellingForm);
+    expect(observed.effect).toEqual({ kind: "submit-cancelled" });
   });
 });

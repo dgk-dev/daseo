@@ -574,12 +574,23 @@ export const BrowserAutomationSnapshotResultSchema = z.object({
   loading: z.boolean().optional(),
 });
 
+/**
+ * Daseo delta 100: what a click (or Enter or Space on a ref) caused, as one line: a navigation,
+ * popup, tab, download, or page dialog; a dialog or menu that appeared (or is still fading in);
+ * state, content, or text that changed near the element; or no change within 500 ms. Absent from
+ * older desktops.
+ */
+const BrowserAutomationInputEffectField = {
+  effect: z.string().optional(),
+};
+
 export const BrowserAutomationClickResultSchema = z.object({
   command: z.literal("click"),
   browserId: BrowserAutomationBrowserIdSchema,
   ref: BrowserAutomationRefSchema,
   x: z.number().optional(),
   y: z.number().optional(),
+  ...BrowserAutomationInputEffectField,
 });
 
 export const BrowserAutomationFillResultSchema = z.object({
@@ -620,6 +631,7 @@ export const BrowserAutomationKeypressResultSchema = z.object({
   ref: BrowserAutomationRefSchema.optional(),
   x: z.number().optional(),
   y: z.number().optional(),
+  ...BrowserAutomationInputEffectField,
 });
 
 // The main-frame response that committed the navigation. Absent when no

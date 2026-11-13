@@ -390,7 +390,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Click browser element",
       description:
-        "Click an element in a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes. Page dialogs: an alert is accepted on its own and reported; a confirm or prompt is held open and the result says so (openDialog), answer it with browser_handle_dialog, or pass dialog accept or dismiss (with promptText for a prompt) to answer one this call raises at once. Never override window.confirm or window.prompt.",
+        "Click an element in a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes. The result says what the click caused, seen within half a second: a navigation that started, a popup, tab, download, or page dialog, a dialog or menu that appeared (still fading in: find and snapshot mark it appearing=true for a moment), content or state that changed near the element, a submit the page cancelled, or no change (the click may not have activated the element; retry or press Enter on it). Page dialogs: an alert is accepted on its own and reported; a confirm or prompt is held open and the result says so (openDialog), answer it with browser_handle_dialog, or pass dialog accept or dismiss (with promptText for a prompt) to answer one this call raises at once. Never override window.confirm or window.prompt.",
       inputSchema: {
         ref: BrowserRefInputSchema,
         browserId: BrowserAutomationBrowserIdSchema,
@@ -574,7 +574,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Press browser key",
       description:
-        "Dispatch a keypress to an element, or to the focused element when ref is omitted. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes. Page dialogs: an alert is accepted on its own and reported; a confirm or prompt is held open and the result says so (openDialog), answer it with browser_handle_dialog, or pass dialog accept or dismiss (with promptText for a prompt) to answer one this call raises at once. Never override window.confirm or window.prompt.",
+        "Dispatch a keypress to an element, or to the focused element when ref is omitted. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes. Enter or Space on a ref reports what the key caused the way browser_click does. Page dialogs: an alert is accepted on its own and reported; a confirm or prompt is held open and the result says so (openDialog), answer it with browser_handle_dialog, or pass dialog accept or dismiss (with promptText for a prompt) to answer one this call raises at once. Never override window.confirm or window.prompt.",
       inputSchema: {
         key: z.string().min(1),
         ref: BrowserRefInputSchema.optional(),
@@ -1811,6 +1811,12 @@ function summarizeBrowserMediaSuccess(
   return null;
 }
 
+// Daseo delta 100: a click or an activating key names what it caused, on the same line; an older
+// desktop sends no effect and keeps the bare sentence.
+function withInputEffect(action: string, effect: string | undefined): string {
+  return effect ? `${action}: ${effect}.` : `${action}.`;
+}
+
 function summarizeBrowserKeyboardSuccess(
   result: Extract<BrowserToolsResponsePayload, { ok: true }>["result"],
 ): string | null {
@@ -1821,9 +1827,10 @@ function summarizeBrowserKeyboardSuccess(
   }
 
   if (result.command === "keypress") {
-    return result.ref
-      ? `Pressed ${result.key} on browser element ${result.ref}.`
-      : `Pressed ${result.key} in the browser.`;
+    const pressed = result.ref
+      ? `Pressed ${result.key} on browser element ${result.ref}`
+      : `Pressed ${result.key} in the browser`;
+    return withInputEffect(pressed, result.effect);
   }
 
   if (result.command === "handle_dialog") {
@@ -2061,7 +2068,7 @@ function summarizeBrowserRefActionSuccess(
   result: Extract<BrowserToolsResponsePayload, { ok: true }>["result"],
 ): string | null {
   if (result.command === "click") {
-    return `Clicked browser element ${result.ref}.`;
+    return withInputEffect(`Clicked browser element ${result.ref}`, result.effect);
   }
 
   if (result.command === "fill") {

@@ -60,6 +60,7 @@ import {
   listRegisteredPaseoBrowserIdsForWorkspace,
   markPaseoBrowserEdited,
   reportPaseoBrowserTabs,
+  getPaseoBrowserIdForWebContents,
 } from "../browser-webviews/index.js";
 import { BROWSER_AUTOMATION_EDITING_COMMANDS } from "../browser-webviews/discard.js";
 
@@ -203,6 +204,16 @@ interface BrowserAutomationWebContents extends ConsoleMessageEmitter {
     listener: (details: { url?: string; isMainFrame?: boolean; isSameDocument?: boolean }) => void,
   ): unknown;
   removeListener?(event: "did-navigate", listener: DidNavigateListener): unknown;
+  removeListener?(
+    event: "did-start-navigation",
+    listener: (details: NavigationStartDetails) => void,
+  ): unknown;
+}
+
+interface NavigationStartDetails {
+  url?: string;
+  isMainFrame?: boolean;
+  isSameDocument?: boolean;
 }
 
 // Electron: (event, url, httpResponseCode, httpStatusText); the code is -1 for non-HTTP documents.
@@ -338,8 +349,35 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
       contents.addListener?.("did-navigate", handler);
       return () => contents.removeListener?.("did-navigate", handler);
     },
+    // Daseo delta 100: what an observed click or key started outside the page's DOM.
+    onMainFrameNavigationStarted: (listener) => {
+      const handler = (details: NavigationStartDetails) => {
+        if (details.isMainFrame && details.url)
+          listener(details.url, details.isSameDocument === true);
+      };
+      contents.addListener?.("did-start-navigation", handler);
+      return () => contents.removeListener?.("did-start-navigation", handler);
+    },
+    onTargetOpened: (listener) =>
+      getPaseoBrowserTabEvents().subscribe((event) => {
+        if (
+          event.type === "tab_closed" ||
+          event.type === "download_finished" ||
+          event.type === "download_failed"
+        ) {
+          return;
+        }
+        if (event.browserId !== getPaseoBrowserIdForWebContents(contents)) return;
+        listener({
+          kind: "opened",
+          type: event.type,
+          ...(event.url ? { url: event.url } : {}),
+          ...(event.popupBrowserId ? { browserId: event.popupBrowserId } : {}),
+        });
+      }),
     pageDialogs: {
       current: () => pageDialogs.current(),
+      onOpening: (listener) => pageDialogs.onOpening(listener),
       refuseCommand: () => {
         markPaseoBrowserAutomationActivity(contentsId);
         return pageDialogs.refuseCommand();

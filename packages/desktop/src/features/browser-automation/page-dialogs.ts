@@ -107,6 +107,7 @@ export class PageDialogController {
   private open: OpenEntry | null = null;
   private readonly pending: BrowserAutomationDialogEvent[] = [];
   private readonly scopes = new Set<CommandScope>();
+  private readonly openingListeners = new Set<(type: PageDialogType) => void>();
   private destroyed = false;
   private nextId = 0;
   private readonly now: () => number;
@@ -127,10 +128,20 @@ export class PageDialogController {
     return this.open?.dialog ?? null;
   }
 
+  /**
+   * Daseo delta 100: calls `listener` whenever the page opens a dialog, before it is answered, so an
+   * observed click can say it opened one. Returns an unsubscribe.
+   */
+  public onOpening(listener: (type: PageDialogType) => void): () => void {
+    this.openingListeners.add(listener);
+    return () => this.openingListeners.delete(listener);
+  }
+
   /** A page dialog opened (alert, confirm, prompt). Every call is answered exactly once. */
   public handleOpening(opening: PageDialogOpening, respond: PageDialogResponder): void {
     const type = normalizeDialogType(opening.type);
     const fields = openingFields(type, opening);
+    for (const listener of this.openingListeners) listener(type);
     if (this.destroyed) {
       respond(false, "");
       return;

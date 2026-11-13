@@ -17,13 +17,10 @@ const {
 
 const ROOT = __dirname;
 const OUT_DIR = process.env.PASEO_CAPTURE_HARNESS_OUT_DIR || path.join(ROOT, "out");
-const PRODUCTION_BROWSER_AUTOMATION_DIR = path.join(
-  ROOT,
-  "..",
-  "dist",
-  "features",
-  "browser-automation",
-);
+// The compiled desktop main process the harness exercises; another build (for example the committed
+// revision, to show a check failing before a change) can be pointed at with this variable.
+const DIST_DIR = process.env.PASEO_CAPTURE_HARNESS_DIST_DIR || path.join(ROOT, "..", "dist");
+const PRODUCTION_BROWSER_AUTOMATION_DIR = path.join(DIST_DIR, "features", "browser-automation");
 const { captureFullPage } = require(
   path.join(PRODUCTION_BROWSER_AUTOMATION_DIR, "full-page-capture.js"),
 );
@@ -39,22 +36,14 @@ const PRODUCTION_BROWSER_SNAPSHOT_ENGINE_PATH = path.join(
   PRODUCTION_BROWSER_AUTOMATION_DIR,
   "snapshot-engine.js",
 );
-const PRODUCTION_BROWSER_KEYBOARD_DIR = path.join(
-  ROOT,
-  "..",
-  "dist",
-  "features",
-  "browser-keyboard",
-);
+const PRODUCTION_BROWSER_KEYBOARD_DIR = path.join(DIST_DIR, "features", "browser-keyboard");
 const PRODUCTION_BROWSER_GUEST_PRELOAD_PATH = path.join(
   PRODUCTION_BROWSER_KEYBOARD_DIR,
   "guest-preload.js",
 );
 const PRODUCTION_BROWSER_KEYBOARD_PATH = path.join(PRODUCTION_BROWSER_KEYBOARD_DIR, "index.js");
 const PRODUCTION_BROWSER_WEBVIEW_REGISTRY_PATH = path.join(
-  ROOT,
-  "..",
-  "dist",
+  DIST_DIR,
   "features",
   "browser-webviews",
   "registry.js",
@@ -3920,9 +3909,7 @@ async function startLifecycleServer() {
 
 async function runTabLifecycleGroup() {
   process.env.PASEO_BROWSER_TAB_LIFECYCLE_MS = `${LIFECYCLE_THROTTLE_MS},${LIFECYCLE_FREEZE_MS}`;
-  const webviews = require(
-    path.join(ROOT, "..", "dist", "features", "browser-webviews", "index.js"),
-  );
+  const webviews = require(path.join(DIST_DIR, "features", "browser-webviews", "index.js"));
   const { registerBrowserAutomationIpc } = require(PRODUCTION_BROWSER_AUTOMATION_IPC_PATH);
   const handlers = new Map();
   registerBrowserAutomationIpc({
@@ -4213,7 +4200,7 @@ async function runDialogsGroup() {
   );
   const { preparePaseoBrowserPageDialogs } = require(PRODUCTION_BROWSER_AUTOMATION_IPC_PATH);
   const { installPaseoBrowserPermissionPolicy } = require(
-    path.join(ROOT, "..", "dist", "features", "browser-profile.js"),
+    path.join(DIST_DIR, "features", "browser-profile.js"),
   );
   const nativeBoxes = [];
   const realShowMessageBox = electronDialog.showMessageBox;
@@ -5275,9 +5262,7 @@ async function runDiscardChecksUntilDiscarded({ webviews, lifecycle, guest, repo
 
 async function runTabDiscardGroup() {
   process.env.PASEO_BROWSER_TAB_LIFECYCLE_MS = `${DISCARD_THROTTLE_MS},${DISCARD_FREEZE_MS},${DISCARD_IDLE_MS}`;
-  const webviews = require(
-    path.join(ROOT, "..", "dist", "features", "browser-webviews", "index.js"),
-  );
+  const webviews = require(path.join(DIST_DIR, "features", "browser-webviews", "index.js"));
   const { registerBrowserAutomationIpc } = require(PRODUCTION_BROWSER_AUTOMATION_IPC_PATH);
   const handlers = new Map();
   registerBrowserAutomationIpc({
@@ -5394,142 +5379,321 @@ async function runTabDiscardGroup() {
   }
 }
 
+// Delta 100: browser_click and Enter/Space browser_keypress say what the input caused, and
+// find/snapshot show a modal that is still fading in. The fixture page mounts its dialog at
+// opacity 0 and starts a 400 ms opacity transition 120 ms later (the pattern Vercel's modal
+// uses), posts a form to a route that answers after 1.5 s, toggles aria-expanded, cancels one
+// submit in a page handler, and has a button that does nothing.
+async function startClickEffectServer() {
+  const server = http.createServer((request, response) => {
+    const url = request.url ?? "/";
+    if (url.startsWith("/slow")) {
+      request.resume();
+      setTimeout(() => {
+        response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        response.end("<!doctype html><title>Posted</title><p>posted</p>");
+      }, 1_500);
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    if (url.startsWith("/next")) {
+      response.end("<!doctype html><title>Next</title><p>next page</p>");
+      return;
+    }
+    response.end(`<!doctype html><title>Click effect fixture</title>
+      <style>
+        body { margin: 0; font-family: sans-serif; }
+        main button, main a { display: block; margin: 8px; }
+        .modal { position: fixed; left: 300px; top: 40px; width: 300px; height: 200px;
+          background: white; border: 1px solid #888; transition: opacity 400ms ease, transform 400ms ease; }
+      </style>
+      <main>
+        <button id="fade">Open fade dialog</button>
+        <button id="noop">Do nothing</button>
+        <button id="toggle" aria-expanded="false">Toggle panel</button>
+        <form method="post" action="/slow"><button id="post">Slow post</button></form>
+        <a id="link" href="/next">Next page</a>
+        <form id="guarded" method="post" action="/slow"><button id="guard">Guarded submit</button></form>
+      </main>
+      <script>
+        window.events = [];
+        for (const type of ["pointerdown", "mousedown", "focus", "pointerup", "mouseup", "click"]) {
+          document.addEventListener(type, (event) => {
+            if (event.target && event.target.id === "noop") {
+              window.events.push(type + ":" + (event.buttons ?? "") + ":" + (document.activeElement === event.target));
+            }
+          }, true);
+        }
+        document.getElementById("fade").addEventListener("click", () => {
+          const dialog = document.createElement("div");
+          dialog.className = "modal";
+          dialog.setAttribute("role", "dialog");
+          dialog.setAttribute("aria-label", "Fade dialog");
+          dialog.style.opacity = "0";
+          dialog.innerHTML = "<h3>Fade dialog</h3><button>Close fade</button>";
+          document.body.append(dialog);
+          setTimeout(() => { dialog.style.opacity = "1"; }, 120);
+        });
+        const toggle = document.getElementById("toggle");
+        toggle.addEventListener("click", () => {
+          toggle.setAttribute("aria-expanded", toggle.getAttribute("aria-expanded") === "true" ? "false" : "true");
+        });
+        document.getElementById("guarded").addEventListener("submit", (event) => event.preventDefault());
+      </script>`);
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  return { server, origin: `http://127.0.0.1:${server.address().port}` };
+}
+
+// The navigate command returns at commit; a did-finish-load listener attached after that can miss
+// the event, so this polls the loading state with a deadline instead.
+async function settleClickEffectGuest(guest) {
+  const deadline = Date.now() + 10_000;
+  while (guest.isLoading() && Date.now() < deadline) await delay(50);
+  if (guest.isLoading()) fail("click-effect guest still loading after 10 s");
+  await delay(100);
+}
+
+async function runClickEffectGroup() {
+  const target = await startClickEffectServer();
+  const handle = createInactiveHarnessWindow({
+    width: 1000,
+    height: 700,
+    backgroundColor: "#202020",
+    webPreferences: { webviewTag: true, contextIsolation: true, nodeIntegration: false },
+  });
+  const { win } = handle;
+  installHarnessWebviewGuards(win);
+  const tracker = trackAttachedGuests(win, { disableGuestBackgroundThrottlingAtAttach: true });
+  const results = [];
+  try {
+    await withTimeout(
+      win.loadFile(path.join(ROOT, "index.html"), {
+        query: { webviewCount: "0", permanentParkingState: "p1-overflow-1x1" },
+      }),
+      "click-effect harness window loadFile",
+    );
+    await waitForInactiveReveal(handle, "click-effect harness window");
+    const { guest } = await appendPermanentWebview({
+      win,
+      tracker,
+      state: { id: "p1-overflow-1x1" },
+      sourceUrl: `${target.origin}/`,
+    });
+    await settleClickEffectGuest(guest);
+    const fixture = createClickEffectFixture(createFramesAutomation(guest), target.origin, results);
+    await verifyClickEffectFadeIn(fixture);
+    await verifyClickEffectNoOp(fixture);
+    await verifyClickEffectToggle(fixture);
+    await verifyClickEffectNavigations(fixture);
+    const failed = results.filter((result) => !result.pass).map((result) => result.check);
+    if (failed.length > 0) fail(`click-effect checks failed: ${failed.join(", ")}`);
+    return results;
+  } finally {
+    await fsp.writeFile(
+      path.join(OUT_DIR, "click-effect-results.json"),
+      `${JSON.stringify({ generatedAt: new Date().toISOString(), results }, null, 2)}\n`,
+    );
+    if (!win.isDestroyed()) win.close();
+    await closeServer(target.server);
+  }
+}
+
+function createClickEffectFixture(harness, origin, results) {
+  const { browserId, guest } = harness;
+  const timed = async (command) => {
+    const started = Date.now();
+    const response = await withTimeout(
+      harness.execute(command),
+      `click-effect ${command.command} ${command.args.ref ?? ""}`,
+      15_000,
+    );
+    return { response, ms: Date.now() - started, effect: response.result?.effect ?? "" };
+  };
+  return {
+    harness,
+    browserId,
+    guest,
+    timed,
+    click: (ref) => timed({ command: "click", args: { browserId, ref } }),
+    record(check, ok, detail) {
+      results.push({ group: "click-effect", check, pass: ok, ...detail });
+      console.log(`${ok ? "PASS" : "FAIL"} click-effect ${check} ${JSON.stringify(detail)}`);
+    },
+    // Loads the fixture page and returns the ref of the named control from a fresh snapshot.
+    async open() {
+      await withTimeout(
+        harness.run("navigate fixture", {
+          command: "navigate",
+          args: { browserId, url: `${origin}/` },
+        }),
+        "click-effect navigate",
+        15_000,
+      );
+      await settleClickEffectGuest(guest);
+      const { snapshot } = await withTimeout(
+        harness.run("snapshot", { command: "snapshot", args: { browserId } }),
+        "click-effect snapshot",
+        15_000,
+      );
+      return (line) => {
+        const escaped = line.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const ref = new RegExp(`${escaped} \\[(?:[a-z]+=[^\\]\\s]+ )*ref=(@e\\d+)\\]`).exec(
+          snapshot,
+        )?.[1];
+        if (!ref) fail(`click-effect snapshot has no ref for ${line}:\n${snapshot}`);
+        return ref;
+      };
+    },
+  };
+}
+
+// A modal mounted at opacity 0: the click names it, and an immediate find and snapshot show it.
+async function verifyClickEffectFadeIn(fixture) {
+  const { browserId, harness } = fixture;
+  const refOf = await fixture.open();
+  const fade = await fixture.click(refOf('button "Open fade dialog"'));
+  // The service is called directly here, so limit is passed (the tool schema defaults it to 10).
+  const found = await harness.execute({
+    command: "find",
+    args: { browserId, role: "dialog", limit: 10 },
+  });
+  const snapped = await harness.execute({ command: "snapshot", args: { browserId } });
+  fixture.record(
+    "fade-in click effect",
+    /dialog/.test(fade.effect) && /appearing|fading/.test(fade.effect),
+    { ms: fade.ms, effect: fade.effect },
+  );
+  const matches = found.ok ? found.result.matches : [];
+  fixture.record(
+    "fade-in find",
+    matches.length === 1 && matches[0].states.includes("appearing=true"),
+    { matches },
+  );
+  const dialogLine = snapped.ok
+    ? (/.*dialog "Fade dialog".*/.exec(snapped.result.snapshot)?.[0] ?? null)
+    : null;
+  fixture.record("fade-in snapshot", dialogLine !== null, { dialogLine });
+}
+
+// A button that does nothing: said so after the window, never a bare "Clicked"; and the
+// background click's events in a real click's order and fields.
+async function verifyClickEffectNoOp(fixture) {
+  const refOf = await fixture.open();
+  const noop = await fixture.click(refOf('button "Do nothing"'));
+  fixture.record("no-op click effect", /no change/.test(noop.effect) && noop.ms < 900, {
+    ms: noop.ms,
+    effect: noop.effect,
+  });
+  const events = await fixture.guest.executeJavaScript("window.events", true);
+  // Focus moves between mousedown and pointerup. Chromium fires no focus event in a guest page
+  // that does not have focus itself, so activeElement shows it.
+  fixture.record(
+    "no-op click event sequence",
+    isDeepStrictEqual(events, [
+      "pointerdown:1:false",
+      "mousedown:1:false",
+      "pointerup:0:true",
+      "mouseup:0:true",
+      "click:0:true",
+    ]),
+    { events },
+  );
+}
+
+// An immediate effect returns at once, on the background and the trusted path.
+async function verifyClickEffectToggle(fixture) {
+  const { browserId, guest, harness } = fixture;
+  const refOf = await fixture.open();
+  const toggleRef = refOf('button "Toggle panel"');
+  const toggle = await fixture.click(toggleRef);
+  fixture.record("toggle click effect", /expanded/.test(toggle.effect), {
+    ms: toggle.ms,
+    effect: toggle.effect,
+  });
+  harness.state.inputFocused = true;
+  const trusted = await fixture.click(toggleRef);
+  harness.state.inputFocused = false;
+  fixture.record("toggle trusted click effect", /expanded/.test(trusted.effect), {
+    ms: trusted.ms,
+    effect: trusted.effect,
+  });
+  // In this inactive harness window a trusted key does not reach a background guest (the committed
+  // build behaves the same), so the check is that the result tells the truth either way.
+  const expandedState = "document.getElementById('toggle').getAttribute('aria-expanded')";
+  const before = await guest.executeJavaScript(expandedState, true);
+  const keyed = await fixture.timed({
+    command: "keypress",
+    args: { browserId, ref: toggleRef, key: "Enter" },
+  });
+  const toggledByKey = (await guest.executeJavaScript(expandedState, true)) !== before;
+  fixture.record(
+    "toggle Enter keypress effect",
+    toggledByKey ? /expanded/.test(keyed.effect) : /no change/.test(keyed.effect),
+    { ms: keyed.ms, effect: keyed.effect, toggledByKey },
+  );
+}
+
+// A form post whose response takes 1.5 s and a link: the navigation is named as soon as it
+// starts. A submit the page cancels is named after the window.
+async function verifyClickEffectNavigations(fixture) {
+  let refOf = await fixture.open();
+  const post = await fixture.click(refOf('button "Slow post"'));
+  fixture.record("slow post click effect", /navigation/.test(post.effect) && post.ms < 1_000, {
+    ms: post.ms,
+    effect: post.effect,
+  });
+  await settleClickEffectGuest(fixture.guest);
+
+  refOf = await fixture.open();
+  const link = await fixture.click(refOf('link "Next page"'));
+  fixture.record("link click effect", /navigation/.test(link.effect), {
+    ms: link.ms,
+    effect: link.effect,
+  });
+  await settleClickEffectGuest(fixture.guest);
+
+  refOf = await fixture.open();
+  const guard = await fixture.click(refOf('button "Guarded submit"'));
+  fixture.record(
+    "cancelled submit click effect",
+    /submit/.test(guard.effect) && /cancel/.test(guard.effect),
+    { ms: guard.ms, effect: guard.effect },
+  );
+}
+
+// Groups that run on their own: each writes results.json under its own key.
+const SINGLE_GROUPS = {
+  "click-effect": ["clickEffectResults", runClickEffectGroup],
+  "tab-lifecycle": ["tabLifecycleResults", runTabLifecycleGroup],
+  "tab-discard": ["tabDiscardResults", runTabDiscardGroup],
+  dialogs: ["dialogsResults", runDialogsGroup],
+  delta92: ["delta92Results", runDelta92Group],
+  passkeys: ["passkeysResults", runPasskeysGroup],
+  debugging: ["debuggingResults", runDebuggingGroup],
+  "frames-network": ["framesNetworkResults", runFramesNetworkGroup],
+  "browser-profile": ["browserProfileResults", runBrowserProfileGroup],
+  automation: ["automationResults", runAutomationGroup],
+  "permanent-parking": ["permanentParkingResults", runPermanentParkingGroup],
+};
+
 async function main() {
   ensureDirSync(OUT_DIR);
-  if (
-    ![
-      "all",
-      "existing",
-      "permanent-parking",
-      "automation",
-      "browser-profile",
-      "frames-network",
-      "debugging",
-      "tab-lifecycle",
-      "tab-discard",
-      "passkeys",
-      "delta92",
-      "dialogs",
-    ].includes(HARNESS_GROUP)
-  ) {
+  const single = SINGLE_GROUPS[HARNESS_GROUP];
+  if (!single && !["all", "existing"].includes(HARNESS_GROUP)) {
     fail(`unknown harness group ${HARNESS_GROUP}`);
   }
-
-  if (HARNESS_GROUP === "tab-lifecycle") {
-    const tabLifecycleResults = await runTabLifecycleGroup();
+  if (single) {
+    const [resultsKey, runGroup] = single;
+    const results = await runGroup();
     await fsp.writeFile(
       path.join(OUT_DIR, "results.json"),
-      `${JSON.stringify({ generatedAt: new Date().toISOString(), tabLifecycleResults }, null, 2)}\n`,
+      `${JSON.stringify({ generatedAt: new Date().toISOString(), [resultsKey]: results }, null, 2)}\n`,
     );
-    pass(`capture harness tab-lifecycle complete output=${OUT_DIR}`);
-    return;
-  }
-
-  if (HARNESS_GROUP === "tab-discard") {
-    const tabDiscardResults = await runTabDiscardGroup();
-    await fsp.writeFile(
-      path.join(OUT_DIR, "results.json"),
-      `${JSON.stringify({ generatedAt: new Date().toISOString(), tabDiscardResults }, null, 2)}\n`,
-    );
-    pass(`capture harness tab-discard complete output=${OUT_DIR}`);
-    return;
-  }
-
-  if (HARNESS_GROUP === "dialogs") {
-    const dialogsResults = await runDialogsGroup();
-    await fsp.writeFile(
-      path.join(OUT_DIR, "results.json"),
-      `${JSON.stringify({ generatedAt: new Date().toISOString(), dialogsResults }, null, 2)}\n`,
-    );
-    pass(`capture harness dialogs complete output=${OUT_DIR}`);
-    return;
-  }
-
-  if (HARNESS_GROUP === "delta92") {
-    const delta92Results = await runDelta92Group();
-    await fsp.writeFile(
-      path.join(OUT_DIR, "results.json"),
-      `${JSON.stringify({ generatedAt: new Date().toISOString(), delta92Results }, null, 2)}\n`,
-    );
-    pass(`capture harness delta92 complete output=${OUT_DIR}`);
-    return;
-  }
-
-  if (HARNESS_GROUP === "passkeys") {
-    const passkeysResults = await runPasskeysGroup();
-    await fsp.writeFile(
-      path.join(OUT_DIR, "results.json"),
-      `${JSON.stringify({ generatedAt: new Date().toISOString(), passkeysResults }, null, 2)}\n`,
-    );
-    pass(`capture harness passkeys complete output=${OUT_DIR}`);
-    return;
-  }
-
-  if (HARNESS_GROUP === "debugging") {
-    const debuggingResults = await runDebuggingGroup();
-    await fsp.writeFile(
-      path.join(OUT_DIR, "results.json"),
-      `${JSON.stringify({ generatedAt: new Date().toISOString(), debuggingResults }, null, 2)}\n`,
-    );
-    pass(`capture harness debugging complete output=${OUT_DIR}`);
-    return;
-  }
-
-  if (HARNESS_GROUP === "frames-network") {
-    const framesNetworkResults = await runFramesNetworkGroup();
-    await fsp.writeFile(
-      path.join(OUT_DIR, "results.json"),
-      `${JSON.stringify({ generatedAt: new Date().toISOString(), framesNetworkResults }, null, 2)}\n`,
-    );
-    pass(`capture harness frames-network complete output=${OUT_DIR}`);
-    return;
-  }
-
-  if (HARNESS_GROUP === "browser-profile") {
-    const browserProfileResults = await runBrowserProfileGroup();
-    await fsp.writeFile(
-      path.join(OUT_DIR, "results.json"),
-      `${JSON.stringify(
-        { generatedAt: new Date().toISOString(), browserProfileResults },
-        null,
-        2,
-      )}\n`,
-    );
-    pass(`capture harness browser-profile complete output=${OUT_DIR}`);
-    return;
-  }
-
-  if (HARNESS_GROUP === "automation") {
-    const automationResults = await runAutomationGroup();
-    await fsp.writeFile(
-      path.join(OUT_DIR, "results.json"),
-      `${JSON.stringify(
-        {
-          generatedAt: new Date().toISOString(),
-          automationResults,
-        },
-        null,
-        2,
-      )}\n`,
-    );
-    pass(`capture harness automation complete output=${OUT_DIR}`);
-    return;
-  }
-
-  if (HARNESS_GROUP === "permanent-parking") {
-    const permanentParkingResults = await runPermanentParkingGroup();
-    await fsp.writeFile(
-      path.join(OUT_DIR, "results.json"),
-      `${JSON.stringify(
-        {
-          generatedAt: new Date().toISOString(),
-          permanentParkingResults,
-        },
-        null,
-        2,
-      )}\n`,
-    );
-    pass(`capture harness permanent-parking complete output=${OUT_DIR}`);
+    pass(`capture harness ${HARNESS_GROUP} complete output=${OUT_DIR}`);
     return;
   }
 

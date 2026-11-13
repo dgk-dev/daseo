@@ -113,6 +113,15 @@ the request's User-Agent header, `(pointer: coarse)`, `(hover: none)`, touch, DP
 `navigator.userAgentData`, then clearing. CDP lists each declaration of a styled rule twice
 (as written, with a range, and as parsed, without), which only shows against real Chromium.
 
+The click-effect group (`PASEO_CAPTURE_HARNESS_GROUP=click-effect`) serves a page whose dialog
+mounts at opacity 0 and fades in, a button that does nothing, an `aria-expanded` toggle, a form
+posting to a route that answers after 1.5 s, a link, and a form whose submit the page cancels. It
+checks the effect line `browser_click` and Enter return (delta 100), that an immediate find and
+snapshot show the fading dialog as `appearing=true`, and the background click's event order, and
+records each command's duration in `click-effect-results.json`. To show the checks failing before
+a change, compile the committed sources elsewhere and point
+`PASEO_CAPTURE_HARNESS_DIST_DIR` at that `dist`; without it the harness runs this checkout's.
+
 The automation group uses a real guest webview to verify the page-side ref contract:
 ARIA-like snapshot text includes headings, static text, and controls; refs survive
 `pushState` when the element still matches; same-URL rerenders stale old refs; and a

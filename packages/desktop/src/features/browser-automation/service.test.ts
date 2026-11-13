@@ -73,6 +73,7 @@ class FakeTab implements TabContents {
     children?: unknown[];
   }> = [];
   public actionScriptResult: unknown = true;
+  public inputProbeEffect: unknown = null;
   public evaluateScriptResult: unknown = { ok: true, resultJson: "null" };
   public evaluateScriptThrows = false;
   public evaluateScriptErrorMessage = "page failed";
@@ -168,6 +169,7 @@ class FakeTab implements TabContents {
   public async executeJavaScript(code: string): Promise<unknown> {
     this.scripts.push(code);
     await this.raiseScriptDialog(code);
+    if (code.includes("paseo.browser-automation.input-probe")) return this.answerInputProbe(code);
     return code.includes("__DASEO_STREAM_FOCUS__")
       ? (this.streamFocus ?? undefined)
       : this.executeScriptedJavaScript(code);
@@ -181,6 +183,13 @@ class FakeTab implements TabContents {
     await new Promise<void>((resolve) => {
       this.pageDialogs.handleOpening(dialog, () => resolve());
     });
+  }
+
+  // Delta 100: the input probe arms when a test gives it an effect to report.
+  private answerInputProbe(code: string): unknown {
+    if (code.includes("ensureInsertionLog();")) return this.inputProbeEffect !== null;
+    if (code.includes("probe.wait(")) return this.inputProbeEffect ?? { kind: "lost" };
+    return true;
   }
 
   private async executeScriptedJavaScript(code: string): Promise<unknown> {
@@ -848,6 +857,47 @@ describe("executeAutomationCommand", () => {
         code: "browser_tab_closed",
         message: `Browser tab ${BROWSER_A} has been closed`,
         retryable: false,
+      },
+    });
+  });
+
+  test("a click and an Enter on a ref report what they caused (delta 100)", async () => {
+    const browser = new BrowserAutomationHarness();
+    browser.tab.snapshotNodes = [{ role: "button", tagName: "button", name: "Add", ref: "@e1" }];
+    browser.tab.inputProbeEffect = {
+      kind: "overlay",
+      role: "dialog",
+      name: "Create Passkey",
+      appearing: true,
+    };
+    await browser.snapshot();
+
+    const click = await browser.execute({
+      command: "click",
+      args: { browserId: BROWSER_A, ref: "@e1" },
+    });
+    browser.tab.inputProbeEffect = { kind: "none" };
+    const key = await browser.execute({
+      command: "keypress",
+      args: { browserId: BROWSER_A, ref: "@e1", key: "Enter" },
+    });
+
+    expect(click).toMatchObject({
+      ok: true,
+      result: {
+        command: "click",
+        ref: "@e1",
+        effect:
+          'a dialog "Create Passkey" appeared and is still fading in (find and snapshot mark it appearing=true)',
+      },
+    });
+    expect(key).toMatchObject({
+      ok: true,
+      result: {
+        command: "keypress",
+        key: "Enter",
+        ref: "@e1",
+        effect: "no change seen within 500 ms",
       },
     });
   });

@@ -2367,6 +2367,59 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       `packages/protocol/src/paseo-tool-call-detail.ts`,
       `packages/server/src/server/browser-tools/{tools,broker}.ts`.
 
+100. **A click says what it caused** — the lead's report on 2026-11-13: `browser_click` on a
+     background tab "only moved focus" on the Google account chooser and on Vercel's passkey "Add",
+     and agents pressed Enter on top of it. Measured the same day on the live pages: the click
+     activated every time (Vercel "Add" 3 of 3, the chooser's form submitted 4 of 4). The Vercel
+     dialog's DOM appeared 15 ms after the click, but `browser_find role=dialog` run at once said
+     "no match": the modal mounts at opacity 0, waits about 100 ms, and fades in over 300 ms, and
+     find and snapshot dropped an opacity-0 element with its whole subtree. The tool answered a bare
+     "Clicked" the moment the events were dispatched, so an early look read "nothing happened".
+     - **Effect line.** `browser_click`, and `browser_keypress` with Enter or Space on a ref, arm a
+       probe in the page before the input (`input-effect.ts`) and return one line in the new
+       optional `effect` field, which the tool text appends: a navigation that started (main-frame
+       `did-start-navigation`, same-document moves included), a popup, tab, or download (the tab
+       event queue now has subscribers), a page dialog (the dialog owner calls opening listeners), a
+       dialog or menu that appeared (marked still fading in), an ARIA or form state attribute that
+       changed on or within three levels around the element, content or text that changed there or
+       was added at the top of the body, a value or checked change, the element removed, a submit
+       the page cancelled, or no change. The first effect ends the wait; only an input with no
+       effect waits the 500 ms window and then says "no change seen within 500 ms", adding "only
+       focus moved to the element" when that is all that happened. A key is armed after the element
+       is focused, so the focus move is not counted as its effect. Measured in the harness, clicks
+       with an immediate effect took 36-50 ms against 35-38 ms before; a no-op takes about 537 ms.
+       An older desktop sends no `effect` and the line stays "Clicked browser element @eN.".
+     - **Appearing elements.** The shared ARIA script counts an element at opacity 0 as visible,
+       and marks it `appearing=true`, when it runs an animation that ends visible, or when it has a
+       transition or animation declared and was inserted within the last second. Insertion times
+       come from one childList observer per page, installed by the first snapshot, find, or
+       observed input (`INSERTION_LOG_SOURCE`). An element held at opacity 0 with no motion, or
+       inserted earlier, stays hidden. Not covered: an overlay shown by a class change rather than
+       an insertion is marked only once its transition is running.
+     - **Click conformance.** The background click now sends what a real mouse click sends in
+       Chromium: `buttons` 1 (2 right, 4 middle) and pressure 0.5 on pointerdown and mousedown, 0 on
+       the release and click; focus moves as mousedown's default action to the nearest focusable
+       element, and not at all when the page cancels mousedown. It used to focus first and send
+       `buttons` 0. Background clicks still reach only the page (delta 14).
+     - **Open observation.** In the lead's run on 2026-11-13 10:17-10:25 the first input on a
+       freshly opened Google account chooser was lost once for each input kind: on the chooser
+       opened from bunny.net a click left the page unchanged for seconds and Enter then navigated;
+       on the chooser opened from vercel.com a trusted Enter changed nothing and a click then
+       navigated. Not reproduced (the chooser opened from bunny's own OAuth URL submitted on the
+       first click 4 of 4); the page has a `data-is-submitted` double-submit guard and a BotGuard
+       submit hook. An agent now sees "no change seen" and can retry knowingly.
+     - **Checks.** Capture harness group `click-effect` (fade-in dialog, no-op, aria-expanded on
+       the background and the trusted path, Enter, slow form post, link, cancelled submit, event
+       order): 11 of 11 fail against the committed 0.5.113 build (`PASEO_CAPTURE_HARNESS_DIST_DIR`)
+       and pass with this change. In that inactive harness window a trusted key does not reach a
+       background guest with either build, so the Enter check requires only an honest result. Unit
+       tests in `input-effect.test.ts`, `aria-snapshot-script.test.ts` (appearing, click order, the
+       probe in jsdom), `service.test.ts`, `tab-events.test.ts`, `page-dialogs.test.ts`, and the
+       server `tools.test.ts`.
+     - **Key files:** `packages/desktop/src/features/browser-automation/{input-effect,aria-snapshot-script,focus-isolated-input,service,ipc,page-dialogs,tab-events}.ts`,
+       `packages/protocol/src/browser-automation/rpc-schemas.ts`,
+       `packages/server/src/server/browser-tools/tools.ts`, `packages/desktop/capture-harness/main.js`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

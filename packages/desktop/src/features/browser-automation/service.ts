@@ -47,6 +47,12 @@ import {
 } from "./passkeys.js";
 import { capReadContent, parseReadScriptResult } from "./read.js";
 import { buildReadScript } from "./read-script.js";
+import {
+  describeInputEffect,
+  observeInputEffect,
+  type HostInputEffect,
+  type InputEffectHostSignals,
+} from "./input-effect.js";
 import { BrowserSnapshotEngine } from "./snapshot-engine.js";
 import {
   dispatchTrustedClick,
@@ -96,6 +102,12 @@ export interface TabContents {
   onMainFrameNavigated?(
     listener: (url: string, response?: MainFrameNavigationResponse) => void,
   ): () => void;
+  /**
+   * Daseo delta 100: calls `listener` when a main-frame navigation starts (same-document moves
+   * included), and when the tab opens a popup, a tab, or a download; each returns an unsubscribe.
+   */
+  onMainFrameNavigationStarted?(listener: (url: string, sameDocument: boolean) => void): () => void;
+  onTargetOpened?(listener: (event: TabOpenedTarget) => void): () => void;
   /** The tab's opt-in request capture; one per tab, idle until started. */
   getNetworkCapture?(): NetworkCaptureControl;
   /**
@@ -118,7 +130,10 @@ export interface TabContents {
 export type TabPageDialogs = Pick<
   PageDialogController,
   "current" | "runCommand" | "answer" | "refuseCommand" | "dismissForNavigation"
->;
+> &
+  Partial<Pick<PageDialogController, "onOpening">>;
+
+export type TabOpenedTarget = Extract<HostInputEffect, { kind: "opened" }>;
 
 export interface MainFrameNavigationResponse {
   httpStatus: number;
@@ -1814,21 +1829,30 @@ async function executeClick(
   if (!actionable.ok) {
     return actionabilityFailure(requestId, ref, actionable);
   }
-  if (trustedInput) {
-    if (!target.contents.sendDebugCommand) {
-      return fail(requestId, "browser_unsupported", "browser_click requires trusted browser input");
-    }
-    await dispatchTrustedClick(cdpSender(target.contents), actionable.target.point, options);
-  } else {
-    const clicked = await dispatchFocusIsolatedClick(
-      target.contents,
-      elementExpression,
-      actionable.target.framePoint,
-      options,
-    );
-    if (!clicked) {
-      return staleRefFailure(requestId, ref);
-    }
+  const sendDebugCommand = target.contents.sendDebugCommand;
+  if (trustedInput && !sendDebugCommand) {
+    return fail(requestId, "browser_unsupported", "browser_click requires trusted browser input");
+  }
+  // Daseo delta 100: the result names what the click caused.
+  const observed = await observeInputEffect({
+    page: target.contents,
+    elementExpression,
+    signals: inputEffectSignals(target.contents),
+    dispatch: async () => {
+      if (trustedInput) {
+        await dispatchTrustedClick(cdpSender(target.contents), actionable.target.point, options);
+        return true;
+      }
+      return dispatchFocusIsolatedClick(
+        target.contents,
+        elementExpression,
+        actionable.target.framePoint,
+        options,
+      );
+    },
+  });
+  if (!observed.dispatched) {
+    return staleRefFailure(requestId, ref);
   }
   return {
     requestId,
@@ -1839,9 +1863,27 @@ async function executeClick(
       ref,
       x: actionable.target.point.x,
       y: actionable.target.point.y,
+      ...(observed.effect ? { effect: describeInputEffect(observed.effect, "click") } : {}),
     },
   };
 }
+
+function inputEffectSignals(contents: TabContents): InputEffectHostSignals {
+  return {
+    ...(contents.onMainFrameNavigationStarted
+      ? { onNavigationStarted: (listener) => contents.onMainFrameNavigationStarted!(listener) }
+      : {}),
+    ...(contents.onTargetOpened
+      ? { onTargetOpened: (listener) => contents.onTargetOpened!(listener) }
+      : {}),
+    ...(contents.pageDialogs?.onOpening
+      ? { onPageDialog: (listener) => contents.pageDialogs!.onOpening!(listener) }
+      : {}),
+  };
+}
+
+// Daseo delta 100: keys that activate the focused element report their effect like a click.
+const ACTIVATION_KEYS: ReadonlySet<string> = new Set(["Enter", "Space", " "]);
 
 async function executeFill(
   requestId: string,
@@ -2839,6 +2881,30 @@ async function executeKeypress(
         );
       }
       await dispatchTrustedClick(cdpSender(target.contents), actionable.target.point);
+    }
+    if (ACTIVATION_KEYS.has(key)) {
+      // Armed after focusing, so moving focus to the element is not counted as the key's effect.
+      const observed = await observeInputEffect({
+        page: target.contents,
+        elementExpression,
+        signals: inputEffectSignals(target.contents),
+        dispatch: async () => {
+          dispatchTrustedKey((event) => target.contents.sendInputEvent(event), key);
+          return true;
+        },
+      });
+      return {
+        requestId,
+        ok: true,
+        result: {
+          command: "keypress",
+          browserId: target.browserId,
+          key,
+          ref,
+          ...(actionable?.ok ? { x: actionable.target.point.x, y: actionable.target.point.y } : {}),
+          ...(observed.effect ? { effect: describeInputEffect(observed.effect, "key") } : {}),
+        },
+      };
     }
   }
   dispatchTrustedKey((event) => target.contents.sendInputEvent(event), key);

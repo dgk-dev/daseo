@@ -184,6 +184,60 @@ const routedToolCases = [
     content: [{ type: "text", text: "Clicked browser element @e2." }],
   },
   {
+    name: "click with its effect (delta 100)",
+    toolName: "browser_click",
+    input: { browserId: BROWSER_ID, ref: "@e2" },
+    command: {
+      command: "click",
+      args: {
+        browserId: BROWSER_ID,
+        ref: "@e2",
+        button: "left",
+        doubleClick: false,
+        modifiers: [],
+      },
+    },
+    payload: {
+      requestId: "req-click",
+      ok: true,
+      result: {
+        command: "click",
+        browserId: BROWSER_ID,
+        ref: "@e2",
+        effect: "navigation started to https://example.com/next",
+      },
+    },
+    content: [
+      {
+        type: "text",
+        text: "Clicked browser element @e2: navigation started to https://example.com/next.",
+      },
+    ],
+  },
+  {
+    name: "Enter on a ref with its effect (delta 100)",
+    toolName: "browser_keypress",
+    input: { browserId: BROWSER_ID, ref: "@e2", key: "Enter" },
+    command: { command: "keypress", args: { browserId: BROWSER_ID, ref: "@e2", key: "Enter" } },
+    payload: {
+      requestId: "req-keypress",
+      ok: true,
+      result: {
+        command: "keypress",
+        browserId: BROWSER_ID,
+        key: "Enter",
+        ref: "@e2",
+        effect: "no change seen within 500 ms",
+      },
+    },
+    content: [
+      {
+        type: "text",
+        text: "Pressed Enter on browser element @e2: no change seen within 500 ms.",
+      },
+    ],
+  },
+  {
     name: "click options",
     toolName: "browser_click",
     input: {

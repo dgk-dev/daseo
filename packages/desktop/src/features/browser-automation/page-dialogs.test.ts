@@ -368,4 +368,17 @@ describe("page dialog owner (delta 93)", () => {
     expect(pending).toHaveLength(20);
     expect(pending[0]?.message).toBe("a5");
   });
+
+  test("an opening listener hears every dialog before it is answered (delta 100)", async () => {
+    const { controller, open } = setup();
+    const heard: string[] = [];
+    const stop = controller.onOpening((type) => heard.push(type));
+    await controller.runCommand({ returnWhenHeld: true }, async () => {
+      open("alert", "Saved");
+      return "clicked";
+    });
+    stop();
+    open("alert", "Again");
+    expect(heard).toEqual(["alert"]);
+  });
 });

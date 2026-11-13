@@ -15,12 +15,15 @@ export class BrowserTabEventQueue {
   private readonly eventsByBrowserId = new Map<string, BrowserAutomationTabEvent[]>();
   private readonly agentByBrowserId = new Map<string, string>();
   private readonly parentByBrowserId = new Map<string, string>();
+  private readonly listeners = new Set<(event: BrowserAutomationTabEvent) => void>();
 
   public constructor(private readonly now: () => number = Date.now) {}
 
   public record(browserId: string, event: BrowserTabEventInput): void {
     const list = this.eventsByBrowserId.get(browserId) ?? [];
-    list.push({ ...event, browserId, timestamp: this.now() });
+    const recorded = { ...event, browserId, timestamp: this.now() };
+    list.push(recorded);
+    for (const listener of this.listeners) listener(recorded);
     if (list.length > MAX_EVENTS_PER_TAB) list.splice(0, list.length - MAX_EVENTS_PER_TAB);
     // Re-insert so the map's order is least recently touched first.
     this.eventsByBrowserId.delete(browserId);
@@ -30,6 +33,12 @@ export class BrowserTabEventQueue {
       if (oldest === undefined) break;
       this.eventsByBrowserId.delete(oldest);
     }
+  }
+
+  /** Daseo delta 100: every event as it is recorded (an observed click waits on them). */
+  public subscribe(listener: (event: BrowserAutomationTabEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
 
   /** The agent whose command named this tab last; its next result carries the tab's events. */

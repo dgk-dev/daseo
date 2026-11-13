@@ -48,4 +48,15 @@ describe("BrowserTabEventQueue", () => {
     expect(delivered).toHaveLength(20);
     expect(delivered[0]?.url).toBe("https://x/5");
   });
+
+  test("a subscriber hears each event as it is recorded until it unsubscribes (delta 100)", () => {
+    const queue = new BrowserTabEventQueue(() => 7);
+    const heard: string[] = [];
+    const stop = queue.subscribe((event) => heard.push(`${event.browserId}:${event.type}`));
+    queue.record("tab-a", { type: "popup_opened", popupBrowserId: "pop-1" });
+    stop();
+    queue.record("tab-a", { type: "tab_closed" });
+    expect(heard).toEqual(["tab-a:popup_opened"]);
+    expect(queue.drain({ browserId: "tab-a" })).toHaveLength(2);
+  });
 });
