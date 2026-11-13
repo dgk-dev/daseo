@@ -11,7 +11,7 @@ const FALLBACK_BROWSER_ID = "1777777777777-abcdef";
 const BROWSER_ID_MESSAGE =
   "browserId must be a real id returned by browser_new_tab or browser_list_tabs";
 const WAIT_CONDITION_MESSAGE =
-  "browser_wait requires exactly one of text, url, selector, script, or load";
+  "browser_wait requires exactly one of text, url, selector, script, load, or download";
 const FIND_QUERY_MESSAGE = "browser_find requires role, name, or both";
 
 const commandParseCases = [
@@ -1179,5 +1179,55 @@ describe("browser passkeys command (Daseo delta 78)", () => {
         command: { command: "passkeys", args: { action: "delete", privateKey: "x" } },
       }).success,
     ).toBe(false);
+  });
+
+  test("tab_report takes no arguments and its result keeps optional fields optional (delta 97)", () => {
+    expect(
+      BrowserAutomationExecuteRequestSchema.parse({
+        type: "browser.automation.execute.request",
+        requestId: "req-tab-report",
+        command: { command: "tab_report" },
+      }).command,
+    ).toEqual({ command: "tab_report", args: {} });
+    expect(
+      BrowserAutomationExecuteRequestSchema.safeParse({
+        type: "browser.automation.execute.request",
+        requestId: "req-tab-report",
+        command: { command: "tab_report", args: { browserId: "x" } },
+      }).success,
+    ).toBe(false);
+    const parsed = BrowserAutomationExecuteResponseSchema.parse({
+      type: "browser.automation.execute.response",
+      payload: {
+        requestId: "req-tab-report",
+        ok: true,
+        result: {
+          command: "tab_report",
+          tabs: [
+            {
+              browserId: "11111111-1111-4111-8111-111111111111",
+              url: "https://example.com/",
+              title: "Example",
+              state: "discarded",
+              held: false,
+              idleMinutes: 200,
+            },
+            {
+              browserId: "22222222-2222-4222-8222-222222222222",
+              kind: "tab",
+              url: "https://example.org/",
+              title: "",
+              state: "frozen",
+              held: false,
+              idleMinutes: 31,
+              rendererPid: 4242,
+              footprintBytes: 123_456_789,
+              discardBlockedBy: "a-reason-from-a-newer-host",
+            },
+          ],
+        },
+      },
+    });
+    expect(parsed.payload.ok && parsed.payload.result.command).toBe("tab_report");
   });
 });

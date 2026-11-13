@@ -86,7 +86,7 @@ describe("desktop-settings", () => {
         manageBuiltInDaemon: true,
         keepRunningAfterQuit: false,
       },
-      browser: { suspendIdleTabs: true },
+      browser: { suspendIdleTabs: true, discardIdleTabsAfterMinutes: 180 },
     });
   });
 
@@ -109,7 +109,7 @@ describe("desktop-settings", () => {
         manageBuiltInDaemon: true,
         keepRunningAfterQuit: false,
       },
-      browser: { suspendIdleTabs: true },
+      browser: { suspendIdleTabs: true, discardIdleTabsAfterMinutes: 180 },
     });
     expect(files).toEqual(["desktop-settings.json"]);
   });
@@ -277,7 +277,7 @@ describe("desktop-settings", () => {
         manageBuiltInDaemon: false,
         keepRunningAfterQuit: false,
       },
-      browser: { suspendIdleTabs: true },
+      browser: { suspendIdleTabs: true, discardIdleTabsAfterMinutes: 180 },
     });
     expect(ignoredSecondMigration).toEqual(migrated);
   });
@@ -320,7 +320,7 @@ describe("desktop-settings", () => {
       releaseChannel: "beta",
       notifications: { playSound: false },
       daemon: { manageBuiltInDaemon: true, keepRunningAfterQuit: false },
-      browser: { suspendIdleTabs: true },
+      browser: { suspendIdleTabs: true, discardIdleTabsAfterMinutes: 180 },
     });
   });
 
@@ -337,8 +337,41 @@ describe("desktop-settings", () => {
       JSON.stringify({ version: 1, settings: { browser: { suspendIdleTabs: "no" } } }),
     );
     await expect(createDesktopSettingsStore({ userDataPath }).get()).resolves.toMatchObject({
-      browser: { suspendIdleTabs: true },
+      browser: { suspendIdleTabs: true, discardIdleTabsAfterMinutes: 180 },
     });
+  });
+
+  it("sets the idle discard time, accepts 0 as off, and falls back to 180 on invalid input", async () => {
+    const userDataPath = await createTempUserDataDir();
+    directories.add(userDataPath);
+    const store = createDesktopSettingsStore({ userDataPath });
+
+    await expect(store.get()).resolves.toMatchObject({
+      browser: { suspendIdleTabs: true, discardIdleTabsAfterMinutes: 180 },
+    });
+    await expect(
+      store.patch({ browser: { discardIdleTabsAfterMinutes: 0 } }),
+    ).resolves.toMatchObject({
+      browser: { suspendIdleTabs: true, discardIdleTabsAfterMinutes: 0 },
+    });
+    // An invalid patch value is ignored, not stored.
+    await expect(
+      store.patch({ browser: { discardIdleTabsAfterMinutes: -5, suspendIdleTabs: false } }),
+    ).resolves.toMatchObject({
+      browser: { suspendIdleTabs: false, discardIdleTabsAfterMinutes: 0 },
+    });
+    for (const invalid of [1.5, -1, "60", null]) {
+      await writeFile(
+        settingsFilePath(userDataPath),
+        JSON.stringify({
+          version: 1,
+          settings: { browser: { suspendIdleTabs: true, discardIdleTabsAfterMinutes: invalid } },
+        }),
+      );
+      await expect(createDesktopSettingsStore({ userDataPath }).get()).resolves.toMatchObject({
+        browser: { suspendIdleTabs: true, discardIdleTabsAfterMinutes: 180 },
+      });
+    }
   });
 
   it("keeps keys written by another build across the legacy renderer migration", async () => {

@@ -4802,6 +4802,233 @@ async function verifyDebugEmulation(harness, origin) {
   );
 }
 
+// Delta 97: a frozen tab unused past the idle time is discarded without memory pressure, through
+// the production discard check, blockers, read-only tab report, and IPC handler against three real
+// guests: one an agent typed into, one shown in a pane, one left alone. Only the last is discarded,
+// and its first command after the discard waits for the reloaded document.
+const DISCARD_THROTTLE_MS = 1_000;
+const DISCARD_FREEZE_MS = 2_000;
+const DISCARD_IDLE_MS = 5_000;
+const DISCARD_BROWSER_IDS = {
+  typed: "55555555-5555-4555-8555-555555555551",
+  visible: "55555555-5555-4555-8555-555555555552",
+  idle: "55555555-5555-4555-8555-555555555553",
+};
+
+async function startDiscardServer() {
+  const server = http.createServer((request, response) => {
+    const name = (request.url || "/").replace(/^\/+/, "") || "idle";
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    // The idle page holds its body back briefly, so a wake that did not wait for the reloaded
+    // document would snapshot an empty page.
+    const body = `<!doctype html><html><head><title>Discard ${name}</title></head>
+      <body><h1>Discard ${name} page</h1>
+        <label>Note <input aria-label="Note" id="note"></label>
+        <button>Discard ${name} button</button>
+      </body></html>`;
+    if (name === "idle") {
+      response.write(body.slice(0, body.indexOf("<body>")));
+      setTimeout(() => response.end(body.slice(body.indexOf("<body>"))), 400);
+    } else {
+      response.end(body);
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return { server, url: (name) => `http://127.0.0.1:${server.address().port}/${name}` };
+}
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function discardKeepProblems({ afterDiscard, lifecycle, guests }) {
+  const problems = [];
+  const { idle, typed, visible } = afterDiscard;
+  if (!idle || idle.state !== "discarded" || idle.rendererPid !== undefined)
+    problems.push(`idle tab: ${JSON.stringify(idle)}`);
+  if (!typed || typed.state !== "frozen" || typed.discardBlockedBy !== "edited")
+    problems.push(`typed tab: ${JSON.stringify(typed)}`);
+  if (typed && !(typed.footprintBytes > 0)) problems.push("typed tab has no footprint");
+  if (!visible || visible.state !== "active" || visible.held !== true)
+    problems.push(`visible tab: ${JSON.stringify(visible)}`);
+  for (const name of ["typed", "visible"]) {
+    if (lifecycle.getState(guests[name].id) === "discarded" || guests[name].isCrashed())
+      problems.push(`${name} tab lost its renderer`);
+  }
+  return problems;
+}
+
+async function openDiscardHarnessTabs({ win, tracker, webviews, fixture, workspaceId }) {
+  const guests = {};
+  for (const [name, browserId] of Object.entries(DISCARD_BROWSER_IDS)) {
+    const { guest } = await appendPermanentWebview({
+      win,
+      tracker,
+      state: { id: "p1-overflow-1x1" },
+      sourceUrl: fixture.url(name),
+    });
+    webviews.preparePaseoBrowserWebContents(guest, { discardable: true });
+    webviews.registerManagedPaseoBrowserTarget({
+      browserId,
+      workspaceId,
+      webContentsId: guest.id,
+      hostWebContentsId: win.webContents.id,
+      metadata: { kind: "tab" },
+    });
+    await waitForGuestLoad(guest, { settleMs: 0 });
+    // Reload once now that main watches the guest, so the edit watcher runs in this document,
+    // as it does for every tab the app opens.
+    guest.reload();
+    await new Promise((resolve) => guest.once("did-finish-load", resolve));
+    guests[name] = guest;
+  }
+  return guests;
+}
+
+async function runDiscardChecksUntilDiscarded({ webviews, lifecycle, guest, report }) {
+  const deadline = Date.now() + DISCARD_IDLE_MS + 15_000;
+  let checks = 0;
+  while (lifecycle.getState(guest.id) !== "discarded") {
+    if (Date.now() > deadline) fail(`idle tab never discarded: ${JSON.stringify(await report())}`);
+    await webviews.runPaseoBrowserTabDiscardCheck();
+    checks += 1;
+    await delay(250);
+  }
+  // Keep checking a while longer: the typed and visible tabs must still be kept.
+  const discardedAt = Date.now();
+  while (Date.now() - discardedAt < 3_000) {
+    await webviews.runPaseoBrowserTabDiscardCheck();
+    await delay(250);
+  }
+  return checks;
+}
+
+async function runTabDiscardGroup() {
+  process.env.PASEO_BROWSER_TAB_LIFECYCLE_MS = `${DISCARD_THROTTLE_MS},${DISCARD_FREEZE_MS},${DISCARD_IDLE_MS}`;
+  const webviews = require(
+    path.join(ROOT, "..", "dist", "features", "browser-webviews", "index.js"),
+  );
+  const { registerBrowserAutomationIpc } = require(PRODUCTION_BROWSER_AUTOMATION_IPC_PATH);
+  const handlers = new Map();
+  registerBrowserAutomationIpc({
+    ipc: { handle: (channel, handler) => handlers.set(channel, handler) },
+  });
+  const lifecycle = webviews.getPaseoBrowserTabLifecycle();
+  const fixture = await startDiscardServer();
+  const handle = createInactiveHarnessWindow({
+    width: 1000,
+    height: 700,
+    backgroundColor: "#202020",
+    webPreferences: { webviewTag: true, contextIsolation: true, nodeIntegration: false },
+  });
+  const { win } = handle;
+  installHarnessWebviewGuards(win);
+  const tracker = trackAttachedGuests(win);
+  const workspaceId = "discard-harness-workspace";
+  const host = { id: win.webContents.id, isDestroyed: () => false, once: () => {}, send: () => {} };
+  let requestCounter = 0;
+  const execute = async (command) => {
+    const payload = await handlers.get("paseo:browser:execute-automation-command")(
+      { sender: host },
+      {
+        type: "browser.automation.execute.request",
+        requestId: `discard-${(requestCounter += 1)}`,
+        workspaceId,
+        command,
+      },
+    );
+    if (!payload.ok) fail(`${command.command} failed: ${JSON.stringify(payload.error)}`);
+    return payload.result;
+  };
+  const report = async () => {
+    const result = await webviews.reportPaseoBrowserTabs();
+    return Object.fromEntries(
+      Object.entries(DISCARD_BROWSER_IDS).map(([name, browserId]) => [
+        name,
+        result.tabs.find((tab) => tab.browserId === browserId),
+      ]),
+    );
+  };
+  try {
+    await withTimeout(
+      win.loadFile(path.join(ROOT, "index.html"), {
+        query: { webviewCount: "0", permanentParkingState: "p1-overflow-1x1" },
+      }),
+      "discard harness window loadFile",
+    );
+    await waitForInactiveReveal(handle, "discard harness window");
+    const guests = await openDiscardHarnessTabs({ win, tracker, webviews, fixture, workspaceId });
+    // A person has the visible tab on screen.
+    webviews.setPaseoBrowserPresented({
+      hostWebContentsId: win.webContents.id,
+      browserId: DISCARD_BROWSER_IDS.visible,
+      presented: true,
+    });
+    // An agent typed into the typed tab.
+    const typedSnapshot = await execute({
+      command: "snapshot",
+      args: { browserId: DISCARD_BROWSER_IDS.typed },
+    });
+    const noteRef = typedSnapshot.snapshot.match(/textbox "Note" \[(?:[^\]]* )?ref=(@e\d+)\]/)?.[1];
+    if (!noteRef) fail(`discard fixture textbox missing: ${typedSnapshot.snapshot}`);
+    await execute({
+      command: "type",
+      args: { browserId: DISCARD_BROWSER_IDS.typed, ref: noteRef, text: "unsaved draft" },
+    });
+
+    const idlePid = guests.idle.getOSProcessId();
+    const checks = await runDiscardChecksUntilDiscarded({
+      webviews,
+      lifecycle,
+      guest: guests.idle,
+      report,
+    });
+    const afterDiscard = await report();
+    const problems = discardKeepProblems({ afterDiscard, lifecycle, guests });
+    const pidDeadline = Date.now() + 3_000;
+    while (isProcessAlive(idlePid) && Date.now() < pidDeadline) await delay(100);
+    if (isProcessAlive(idlePid)) problems.push(`idle renderer ${idlePid} still running`);
+    if (problems.length > 0) fail(`tab-discard keep/discard: ${problems.join("; ")}`);
+    pass(
+      `tab-discard only the idle tab was discarded after ${checks} checks (renderer ${idlePid} ended); typed kept=${afterDiscard.typed.discardBlockedBy} ${Math.round(afterDiscard.typed.footprintBytes / 1048576)} MB, visible ${afterDiscard.visible.state} held`,
+    );
+
+    const restoreStarted = Date.now();
+    const snapshot = await execute({
+      command: "snapshot",
+      args: { browserId: DISCARD_BROWSER_IDS.idle },
+    });
+    const restoreMs = Date.now() - restoreStarted;
+    if (!snapshot.snapshot.includes("Discard idle button"))
+      fail(`snapshot after discard missed the reloaded page: ${snapshot.snapshot}`);
+    if (lifecycle.getState(guests.idle.id) !== "active")
+      fail(`woken tab is ${lifecycle.getState(guests.idle.id)}`);
+    const { idle: woken } = await report();
+    if (!woken || !(woken.rendererPid > 0) || woken.rendererPid === idlePid)
+      fail(`woken tab has no new renderer: ${JSON.stringify(woken)}`);
+    pass(
+      `tab-discard browser_snapshot on the discarded tab reloaded it in ${restoreMs}ms (new renderer ${woken.rendererPid}, title=${JSON.stringify(snapshot.title)})`,
+    );
+    return [
+      { group: "tab-discard", check: "keep-and-discard", checks, report: afterDiscard, pass: true },
+      { group: "tab-discard", check: "snapshot-after-discard", restoreMs, pass: true },
+    ];
+  } finally {
+    webviews.setPaseoBrowserPresented({
+      hostWebContentsId: win.webContents.id,
+      browserId: DISCARD_BROWSER_IDS.visible,
+      presented: false,
+    });
+    if (!win.isDestroyed()) win.close();
+    await closeServer(fixture.server);
+  }
+}
+
 async function main() {
   ensureDirSync(OUT_DIR);
   if (
@@ -4814,6 +5041,7 @@ async function main() {
       "frames-network",
       "debugging",
       "tab-lifecycle",
+      "tab-discard",
       "passkeys",
       "delta92",
       "dialogs",
@@ -4829,6 +5057,16 @@ async function main() {
       `${JSON.stringify({ generatedAt: new Date().toISOString(), tabLifecycleResults }, null, 2)}\n`,
     );
     pass(`capture harness tab-lifecycle complete output=${OUT_DIR}`);
+    return;
+  }
+
+  if (HARNESS_GROUP === "tab-discard") {
+    const tabDiscardResults = await runTabDiscardGroup();
+    await fsp.writeFile(
+      path.join(OUT_DIR, "results.json"),
+      `${JSON.stringify({ generatedAt: new Date().toISOString(), tabDiscardResults }, null, 2)}\n`,
+    );
+    pass(`capture harness tab-discard complete output=${OUT_DIR}`);
     return;
   }
 

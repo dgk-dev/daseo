@@ -21,6 +21,7 @@ import {
   type BrowserAutomationReadResult,
   type BrowserAutomationPasskeysResult,
   type BrowserAutomationStylesResult,
+  type BrowserAutomationTabReportResult,
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import type { BrowserToolsBroker } from "./broker.js";
 import type { BrowserToolsResponsePayload } from "./errors.js";
@@ -256,6 +257,26 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
           command: "list_tabs",
           args: {},
         },
+      });
+      return browserToolResult({ payload, context });
+    },
+  );
+
+  registerTool(
+    "browser_tab_report",
+    {
+      title: "Browser tab report",
+      description:
+        "Report every resident Paseo browser tab on this Mac, across workspaces, with its memory state: lifecycle state (active, throttled after 2 minutes unused, frozen after 15, discarded: renderer ended, reloads when next used), whether a pane, command, or phone stream holds it, minutes since last use, renderer process id and memory footprint, and what keeps its page when it is due for a discard (edited, downloading, freeze-exempt, shared-renderer, popup). Read-only: it wakes no tab and counts as no use. Tabs never shown since launch have no renderer and are not listed; browser_list_tabs lists the workspace's tabs.",
+      inputSchema: {},
+    },
+    async () => {
+      const context = resolveBrowserToolContext(options);
+      const payload = await options.broker.execute({
+        agentId: context.agentId,
+        cwd: context.cwd,
+        ...(context.workspaceId ? { workspaceId: context.workspaceId } : {}),
+        command: { command: "tab_report", args: {} },
       });
       return browserToolResult({ payload, context });
     },
@@ -1968,9 +1989,59 @@ function summarizeBrowserRefActionSuccess(
   return null;
 }
 
+const MEMORY_PRESSURE_NAMES: Record<number, string> = { 1: "normal", 2: "warning", 4: "critical" };
+
+function summarizeBrowserTabReport(result: BrowserAutomationTabReportResult): string {
+  const settings = [
+    describeIdleDiscardSetting(result.discardIdleAfterMinutes),
+    result.pressureLevel === undefined
+      ? null
+      : `memory pressure ${MEMORY_PRESSURE_NAMES[result.pressureLevel] ?? result.pressureLevel}`,
+  ].filter((part): part is string => part !== null);
+  if (result.tabs.length === 0) {
+    return ["No resident browser tabs.", ...settings].join(" ");
+  }
+  const totalBytes = result.tabs.reduce((sum, tab) => sum + (tab.footprintBytes ?? 0), 0);
+  const header = `${result.tabs.length} resident browser tab${result.tabs.length === 1 ? "" : "s"}, ${formatMegabytes(totalBytes)} in renderers${settings.length > 0 ? ` (${settings.join("; ")})` : ""}. Largest first:`;
+  const lines = [...result.tabs]
+    .sort((left, right) => (right.footprintBytes ?? -1) - (left.footprintBytes ?? -1))
+    .map((tab) => {
+      const parts = [
+        `- browserId=${tab.browserId}`,
+        tab.kind === "popup" ? "popup" : null,
+        tab.state,
+        tab.held ? "held" : null,
+        `idle=${tab.idleMinutes}m`,
+        tab.footprintBytes !== undefined ? formatMegabytes(tab.footprintBytes) : null,
+        tab.rendererPid !== undefined ? `pid=${tab.rendererPid}` : null,
+        tab.discardBlockedBy ? `kept=${tab.discardBlockedBy}` : null,
+        tab.workspaceId ? `workspace=${tab.workspaceId}` : null,
+        `title=${JSON.stringify(tab.title || "Untitled")}`,
+        `url=${tab.url}`,
+      ];
+      return parts.filter((part): part is string => part !== null).join(" ");
+    });
+  return [header, ...lines].join("\n");
+}
+
+function describeIdleDiscardSetting(minutes: number | undefined): string | null {
+  if (minutes === undefined) return null;
+  return minutes > 0
+    ? `frozen tabs unused ${minutes} min are discarded`
+    : "discard without memory pressure is off";
+}
+
+function formatMegabytes(bytes: number): string {
+  return `${Math.round(bytes / (1024 * 1024))} MB`;
+}
+
 function summarizeBrowserControlSuccess(
   result: Extract<BrowserToolsResponsePayload, { ok: true }>["result"],
 ): string | null {
+  if (result.command === "tab_report") {
+    return summarizeBrowserTabReport(result);
+  }
+
   if (result.command === "select") {
     return `Selected ${result.value} in browser element ${result.ref}.`;
   }

@@ -661,6 +661,7 @@ describe("registerBrowserTools", () => {
 
     expect(harness.toolNames()).toEqual([
       "browser_list_tabs",
+      "browser_tab_report",
       "browser_new_tab",
       "browser_snapshot",
       "browser_read",
@@ -954,6 +955,66 @@ describe("registerBrowserTools", () => {
     expect(response.content[0]).toEqual({
       type: "text",
       text: 'Answered the prompt "name?": OK with "Ada".\nHandled browser dialog: accepted alert "Saved".',
+    });
+  });
+
+  test("tab report lists resident tabs largest first with state, memory, and what keeps them (delta 97)", async () => {
+    const harness = new BrowserToolHarness();
+    const otherBrowserId = "22222222-2222-4222-8222-222222222222";
+    harness.broker.setResponse({
+      requestId: "req-tab-report",
+      ok: true,
+      result: {
+        command: "tab_report",
+        discardIdleAfterMinutes: 180,
+        pressureLevel: 1,
+        tabs: [
+          {
+            browserId: BROWSER_ID,
+            workspaceId: "ws-1",
+            kind: "tab",
+            url: "https://example.com/",
+            title: "Example",
+            state: "frozen",
+            held: false,
+            idleMinutes: 241,
+            rendererPid: 4242,
+            footprintBytes: 300 * 1024 * 1024,
+            discardBlockedBy: "edited",
+          },
+          {
+            browserId: otherBrowserId,
+            kind: "tab",
+            url: "https://news.test/",
+            title: "",
+            state: "discarded",
+            held: false,
+            idleMinutes: 400,
+          },
+          {
+            browserId: "33333333-3333-4333-8333-333333333333",
+            kind: "tab",
+            url: "https://big.test/",
+            title: "Big",
+            state: "active",
+            held: true,
+            idleMinutes: 0,
+            rendererPid: 777,
+            footprintBytes: 900 * 1024 * 1024,
+          },
+        ],
+      },
+    });
+    const response = await harness.execute("browser_tab_report", {});
+    expect(harness.broker.calls.at(-1)?.command).toEqual({ command: "tab_report", args: {} });
+    expect(response.content[0]).toEqual({
+      type: "text",
+      text: [
+        "3 resident browser tabs, 1200 MB in renderers (frozen tabs unused 180 min are discarded; memory pressure normal). Largest first:",
+        '- browserId=33333333-3333-4333-8333-333333333333 active held idle=0m 900 MB pid=777 title="Big" url=https://big.test/',
+        `- browserId=${BROWSER_ID} frozen idle=241m 300 MB pid=4242 kept=edited workspace=ws-1 title="Example" url=https://example.com/`,
+        `- browserId=${otherBrowserId} discarded idle=400m title="Untitled" url=https://news.test/`,
+      ].join("\n"),
     });
   });
 

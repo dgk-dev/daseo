@@ -740,7 +740,8 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     so the next wake retries; a page still loading has a live renderer and counts as restored.
     Real Electron check (0.5.53): a mouse-only checkbox tab, a right-clicked text field, and a
     tab loaded before the watcher were all kept; an untouched tab was discarded and restored in
-    0.05 s with its title and watcher back. Off together with `browser.suspendIdleTabs`. Key files:
+    0.05 s with its title and watcher back. Delta 97 adds a discard without memory pressure after
+    a long idle time. Off together with `browser.suspendIdleTabs`. Key files:
     `packages/desktop/src/features/browser-webviews/{discard,lifecycle,index}.ts`,
     `packages/desktop/src/features/browser-automation/ipc.ts`, `packages/desktop/src/main.ts`.
 
@@ -2200,6 +2201,43 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
     Enter all left an empty 46 px input; the bug did not reproduce there. Key files:
     `packages/app/src/components/ui/text-input/native-replacement.ts`,
     `packages/app/src/composer/input/input.tsx` (`replaceNativeText`).
+
+97. **Tabs unused for three hours give their memory back without memory pressure** — the
+    2026-11-13 RAM plan: delta 43 discards only while macOS reports memory pressure, and this Mac
+    held 10 renderers 16 hours old (about 2.8 GB) that no warning ever reached, with nothing in
+    the log saying why each one stayed.
+    - **Idle discard.** Every 30 s check without memory pressure discards at most one tab frozen
+      and unused for `browser.discardIdleTabsAfterMinutes` (desktop settings file, default 180,
+      0 turns it off; no UI). Chrome's Memory Saver and Edge's sleeping tabs go at two hours. It
+      uses delta 43's candidate list and blockers unchanged, oldest first; under pressure the
+      pressure rules apply, and a shorter idle setting is never lengthened by them.
+    - **Why a tab stays.** The blocker check returns a reason (`edited`, `downloading`,
+      `freeze-exempt`, `destroyed`, `no-pid`, `shared-renderer`); a candidate kept for one is
+      logged as `[browser-lifecycle] discard skipped {browserId, reason, idleMinutes}` at most
+      once an hour per tab. Each discard logs its idle minutes with `discarded after idle` or
+      `discarded under memory pressure`.
+    - **Tab report.** `browser_tab_report` (new `tab_report` command, gated on
+      `browserHost.supportedCommands`) lists every resident tab on the Mac with its lifecycle
+      state, held or not, minutes idle, renderer pid, `footprint` memory, and what would keep its
+      page (`popup` for popups). Read-only: it wakes, holds, and marks nothing. Tabs never shown
+      since launch have no guest and are not listed.
+    - **Waking a discarded tab.** The wake reloaded and waited up to 30 s for the load to stop,
+      but the lifecycle step gave up after 5 s, so the first command could meet a page mid-load.
+      The reload now resolves at `dom-ready` (or a stopped load), with one 15 s budget for both
+      reload attempts, and a step that starts on a discarded tab gets 16 s instead of 5. `hold`
+      and `runAwake` both wake; concurrent wakes with nothing queued between them now share one
+      step, so a reload that runs out of time is not started again at once by the same command's
+      second wake (that command would have waited 32 s).
+    - **Checks.** Unit tests in `discard.test.ts`, `lifecycle.test.ts`, and `restore.test.ts`;
+      capture harness group `tab-discard` (an agent-typed tab and a tab shown in a pane are kept,
+      the untouched one is discarded and its renderer ends, and `browser_snapshot` reloads it in
+      about 0.4 s with the page parsed). `PASEO_BROWSER_TAB_LIFECYCLE_MS` takes an optional third
+      value, the idle discard time.
+    - **Key files:** `packages/desktop/src/features/browser-webviews/{discard,lifecycle,restore,renderer-footprint,index}.ts`,
+      `packages/desktop/src/settings/desktop-settings.ts`, `packages/desktop/src/main.ts`,
+      `packages/desktop/src/features/browser-automation/{service,ipc}.ts`,
+      `packages/protocol/src/browser-automation/rpc-schemas.ts`,
+      `packages/server/src/server/browser-tools/tools.ts`.
 
 ## Local reliability contracts
 

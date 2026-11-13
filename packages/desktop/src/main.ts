@@ -72,6 +72,7 @@ import {
   PendingBrowserWindowOpenRequests,
   preparePaseoBrowserWebContents,
   startPaseoBrowserTabDiscarder,
+  setPaseoBrowserTabIdleDiscardAfterMinutes,
   registerBrowserWebviewNavigationGuards,
   registerManagedPaseoBrowserTarget,
   unregisterPaseoBrowser,
@@ -1550,11 +1551,17 @@ async function configureBrowserTabLifecycle(): Promise<void> {
   try {
     const settings = await getDesktopSettingsStore().get();
     getPaseoBrowserTabLifecycle().setEnabled(settings.browser.suspendIdleTabs);
+    setPaseoBrowserTabIdleDiscardAfterMinutes(settings.browser.discardIdleTabsAfterMinutes);
   } catch (error) {
-    log.warn("[browser-lifecycle] settings unavailable; idle tab suspension stays on", error);
+    log.warn(
+      "[browser-lifecycle] settings unavailable; idle tab suspension and the 180-minute idle discard stay on",
+      error,
+    );
   }
   // Delta 43: under macOS memory pressure, tabs frozen and unused for an hour (30 minutes when
-  // critical) give their renderer memory back and reload when next used. Off with the lifecycle.
+  // critical) give their renderer memory back and reload when next used. Delta 97: without
+  // pressure, one tab frozen and unused for browser.discardIdleTabsAfterMinutes (180) per check.
+  // Off with the lifecycle.
   startPaseoBrowserTabDiscarder();
   setPaseoBrowserAgentDownloads(
     new AgentDownloads({

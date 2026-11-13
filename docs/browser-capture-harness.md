@@ -66,6 +66,16 @@ busy page is reported as not responding within seconds, and that a crashed rende
 A `loadURL` issued while another load is still running is rejected with that load's abort, so
 the group stops the hanging load before the dialog check.
 
+The tab-discard group (`PASEO_CAPTURE_HARNESS_GROUP=tab-discard`) shortens the tab lifecycle to
+1 s throttle, 2 s freeze, and 5 s idle discard through `PASEO_BROWSER_TAB_LIFECYCLE_MS`, opens
+three real guests, types into one with the production `type` command, presents another, and runs
+the production discard check until the third is discarded. It checks through the tab report that
+only that tab lost its renderer (the typed one reports `edited`), that its renderer process ended,
+and that `browser_snapshot` on it reloads the page and answers with the parsed document. The
+fixture holds the idle page's body back 400 ms, so a wake that did not wait for the document fails.
+Each guest is reloaded once after main starts watching it: the edit watcher installs at
+`dom-ready`, and a page that loaded before it counts as edited.
+
 The dialogs group (`PASEO_CAPTURE_HARNESS_GROUP=dialogs`) replaces `dialog.showMessageBox` with a
 recorder for its run, wires guests and popups the way `main.ts` does, and checks that an idle
 tab's and a popup's alert, confirm, and prompt are answered by Daseo with no native box or window

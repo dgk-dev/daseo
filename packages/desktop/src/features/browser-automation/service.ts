@@ -17,6 +17,7 @@ import type {
   BrowserAutomationResult,
   BrowserAutomationResizeCommandArgs,
   BrowserAutomationStylesCommandArgs,
+  BrowserAutomationTabReportResult,
   BrowserAutomationWaitLoadState,
   BrowserAutomationDownload,
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
@@ -143,6 +144,8 @@ export interface BrowserRegistry {
     rootBrowserId?: string;
     openerBrowserId?: string;
   };
+  /** Daseo delta 97: every resident tab's lifecycle state and renderer memory, read-only. */
+  reportTabs?(): Promise<Omit<BrowserAutomationTabReportResult, "command">>;
 }
 
 export type AutomationCommandPayload = BrowserAutomationExecuteResponse["payload"];
@@ -926,6 +929,16 @@ const commandHandlers: Record<BrowserAutomationCommand["command"], CommandHandle
       { command: "handle_dialog" }
     >;
     return executeHandleDialog(requestId, workspaceId, dialogCommand.args, registry);
+  },
+  tab_report: async ({ requestId, registry }) => {
+    if (!registry.reportTabs) {
+      return fail(requestId, "browser_unsupported", "This browser host has no tab report.");
+    }
+    return {
+      requestId,
+      ok: true,
+      result: { command: "tab_report", ...(await registry.reportTabs()) },
+    };
   },
 };
 

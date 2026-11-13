@@ -53,6 +53,7 @@ export const BROWSER_AUTOMATION_COMMAND_NAMES = [
   "styles",
   "passkeys",
   "handle_dialog",
+  "tab_report",
 ] as const;
 
 export const BrowserAutomationCommandNameSchema = z.enum(BROWSER_AUTOMATION_COMMAND_NAMES);
@@ -263,6 +264,15 @@ export const BrowserAutomationHandleDialogCommandSchema = z.object({
     accept: z.boolean(),
     promptText: z.string().max(10_000).optional(),
   }),
+});
+
+/**
+ * Daseo delta 97: every resident browser tab on the host with its memory state. Read-only: it
+ * wakes no tab and marks none used.
+ */
+export const BrowserAutomationTabReportCommandSchema = z.object({
+  command: z.literal("tab_report"),
+  args: z.object({}).strict().default({}),
 });
 
 export const BrowserAutomationScrollCommandSchema = z.object({
@@ -476,6 +486,7 @@ export const BrowserAutomationCommandSchema = z.discriminatedUnion("command", [
   BrowserAutomationStylesCommandSchema,
   BrowserAutomationPasskeysCommandSchema,
   BrowserAutomationHandleDialogCommandSchema,
+  BrowserAutomationTabReportCommandSchema,
 ]);
 
 export const BrowserAutomationTabInfoSchema = z.object({
@@ -941,6 +952,44 @@ export const BrowserAutomationHandleDialogResultSchema = z.object({
   answered: BrowserAutomationDialogEventSchema,
 });
 
+export const BrowserAutomationTabLifecycleStateSchema = z.enum([
+  "active",
+  "throttled",
+  "frozen",
+  "discarded",
+]);
+
+export const BrowserAutomationTabReportEntrySchema = z.object({
+  browserId: BrowserAutomationBrowserIdSchema,
+  workspaceId: z.string().min(1).optional(),
+  kind: z.enum(["tab", "popup"]).optional(),
+  url: z.string(),
+  title: z.string(),
+  state: BrowserAutomationTabLifecycleStateSchema,
+  /** A pane, command, capture, or phone stream holds it awake. */
+  held: z.boolean(),
+  /** Whole minutes since a person or agent last used it. */
+  idleMinutes: z.number().int().nonnegative(),
+  rendererPid: z.number().int().positive().optional(),
+  /** macOS memory footprint of the renderer process (Activity Monitor "Memory"). */
+  footprintBytes: z.number().int().nonnegative().optional(),
+  /**
+   * What keeps the page when the tab is due for a discard (edited, downloading, freeze-exempt,
+   * shared-renderer, no-pid, destroyed, popup); absent when nothing does. Open string so a newer
+   * host can name a new reason.
+   */
+  discardBlockedBy: z.string().min(1).optional(),
+});
+
+export const BrowserAutomationTabReportResultSchema = z.object({
+  command: z.literal("tab_report"),
+  tabs: z.array(BrowserAutomationTabReportEntrySchema),
+  /** Minutes unused after which a frozen tab is discarded without memory pressure; 0 is off. */
+  discardIdleAfterMinutes: z.number().nonnegative().optional(),
+  /** macOS memory pressure level: 1 normal, 2 warning, 4 critical. */
+  pressureLevel: z.number().int().optional(),
+});
+
 export const BrowserAutomationResultSchema = z.discriminatedUnion("command", [
   BrowserAutomationListTabsResultSchema,
   BrowserAutomationNewTabResultSchema,
@@ -973,6 +1022,7 @@ export const BrowserAutomationResultSchema = z.discriminatedUnion("command", [
   BrowserAutomationStylesResultSchema,
   BrowserAutomationPasskeysResultSchema,
   BrowserAutomationHandleDialogResultSchema,
+  BrowserAutomationTabReportResultSchema,
 ]);
 
 export const BrowserAutomationErrorSchema = z.object({
@@ -1098,3 +1148,7 @@ export type BrowserAutomationResizeCommandArgs = z.infer<
 export type BrowserAutomationResizeResult = z.infer<typeof BrowserAutomationResizeResultSchema>;
 export type BrowserAutomationDownload = z.infer<typeof BrowserAutomationDownloadSchema>;
 export type BrowserAutomationTabEvent = z.infer<typeof BrowserAutomationTabEventSchema>;
+export type BrowserAutomationTabReportEntry = z.infer<typeof BrowserAutomationTabReportEntrySchema>;
+export type BrowserAutomationTabReportResult = z.infer<
+  typeof BrowserAutomationTabReportResultSchema
+>;

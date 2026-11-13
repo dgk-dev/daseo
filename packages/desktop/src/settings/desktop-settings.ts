@@ -22,6 +22,12 @@ export interface DesktopSettings {
      * old behavior: every tab runs unthrottled from attach. File-only; no UI.
      */
     suspendIdleTabs: boolean;
+    /**
+     * Daseo delta 97: minutes a frozen tab may stay unused before its renderer is ended to give
+     * the memory back, without memory pressure. It keeps URL, title, and history and reloads when
+     * next used. 0 turns it off; memory-pressure discards (delta 43) still run. File-only; no UI.
+     */
+    discardIdleTabsAfterMinutes: number;
   };
 }
 
@@ -49,6 +55,7 @@ export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   },
   browser: {
     suspendIdleTabs: true,
+    discardIdleTabsAfterMinutes: 180,
   },
 };
 
@@ -72,6 +79,11 @@ const DaemonSchema = z
 const BrowserSchema = z
   .looseObject({
     suspendIdleTabs: z.boolean().catch(DEFAULT_DESKTOP_SETTINGS.browser.suspendIdleTabs),
+    discardIdleTabsAfterMinutes: z
+      .number()
+      .int()
+      .nonnegative()
+      .catch(DEFAULT_DESKTOP_SETTINGS.browser.discardIdleTabsAfterMinutes),
   })
   .catch(() => ({ ...DEFAULT_DESKTOP_SETTINGS.browser }));
 
@@ -118,6 +130,10 @@ function coerceBoolean(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
 }
 
+function coerceNonNegativeInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error;
 }
@@ -150,7 +166,10 @@ function toDesktopSettings(stored: StoredDesktopSettings): DesktopSettings {
       manageBuiltInDaemon: stored.daemon.manageBuiltInDaemon,
       keepRunningAfterQuit: stored.daemon.keepRunningAfterQuit,
     },
-    browser: { suspendIdleTabs: stored.browser.suspendIdleTabs },
+    browser: {
+      suspendIdleTabs: stored.browser.suspendIdleTabs,
+      discardIdleTabsAfterMinutes: stored.browser.discardIdleTabsAfterMinutes,
+    },
   };
 }
 
@@ -188,9 +207,19 @@ function coerceDesktopSettingsPatch(input: unknown): DesktopSettingsPatch {
   }
 
   if (isRecord(input.browser)) {
+    const browserPatch: Partial<DesktopSettings["browser"]> = {};
     const suspendIdleTabs = coerceBoolean(input.browser.suspendIdleTabs);
     if (suspendIdleTabs !== null) {
-      patch.browser = { suspendIdleTabs };
+      browserPatch.suspendIdleTabs = suspendIdleTabs;
+    }
+    const discardIdleTabsAfterMinutes = coerceNonNegativeInteger(
+      input.browser.discardIdleTabsAfterMinutes,
+    );
+    if (discardIdleTabsAfterMinutes !== null) {
+      browserPatch.discardIdleTabsAfterMinutes = discardIdleTabsAfterMinutes;
+    }
+    if (Object.keys(browserPatch).length > 0) {
+      patch.browser = browserPatch;
     }
   }
 

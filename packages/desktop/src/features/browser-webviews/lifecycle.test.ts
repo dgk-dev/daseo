@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   BROWSER_TAB_FREEZE_AFTER_MS,
+  BROWSER_TAB_RESTORE_STEP_TIMEOUT_MS,
   BROWSER_TAB_STEP_TIMEOUT_MS,
   BROWSER_TAB_THROTTLE_AFTER_MS,
   BrowserTabLifecycle,
@@ -14,7 +15,8 @@ class FakeTab implements BrowserTabLifecycleTarget {
   public destroyed = false;
   public pendingFreeze: (() => void) | null = null;
   public holdFreezes = false;
-  public discardable = false;
+  public holdRestores = false;
+  public pendingRestore: (() => void) | null = null;
 
   public constructor(public readonly id: number) {}
 
@@ -42,6 +44,11 @@ class FakeTab implements BrowserTabLifecycleTarget {
       this.calls.push("discard");
     };
     this.restore = async () => {
+      if (this.holdRestores) {
+        await new Promise<void>((resolve) => {
+          this.pendingRestore = resolve;
+        });
+      }
       this.calls.push("restore");
     };
     return this;
@@ -342,5 +349,71 @@ describe("BrowserTabLifecycle", () => {
     expect(tab.calls).toContain("lifecycle:active");
     expect(lifecycle.getState(41)).toBe("active");
     expect(String(errors[0])).toContain("freeze did not settle");
+  });
+
+  test("waking a discarded tab waits for its reload past the 5-second step limit (delta 97)", async () => {
+    const { clock, lifecycle, errors } = createLifecycle();
+    const tab = new FakeTab(51).enableDiscard();
+    lifecycle.track(tab);
+    await clock.advance(BROWSER_TAB_FREEZE_AFTER_MS);
+    await lifecycle.discard(51, 0);
+    tab.holdRestores = true;
+
+    let ranAfterRestore: boolean | null = null;
+    const command = lifecycle.runAwake(51, async () => {
+      ranAfterRestore = tab.calls.includes("restore");
+    });
+    await settle();
+    await clock.advance(BROWSER_TAB_STEP_TIMEOUT_MS * 2);
+    expect(ranAfterRestore).toBeNull();
+    expect(lifecycle.getState(51)).toBe("discarded");
+
+    tab.pendingRestore?.();
+    await command;
+    expect(ranAfterRestore).toBe(true);
+    expect(lifecycle.getState(51)).toBe("active");
+    // runAwake's hold and its own wake share one reload.
+    expect(tab.calls.filter((call) => call === "restore")).toEqual(["restore"]);
+    expect(errors).toEqual([]);
+  });
+
+  test("a reload that never answers releases the tab's commands at the restore limit", async () => {
+    const { clock, lifecycle, errors } = createLifecycle();
+    const tab = new FakeTab(52).enableDiscard();
+    lifecycle.track(tab);
+    await clock.advance(BROWSER_TAB_FREEZE_AFTER_MS);
+    await lifecycle.discard(52, 0);
+    tab.holdRestores = true;
+
+    let ran = false;
+    const command = lifecycle.runAwake(52, async () => {
+      ran = true;
+    });
+    await settle();
+    await clock.advance(BROWSER_TAB_RESTORE_STEP_TIMEOUT_MS - 1);
+    expect(ran).toBe(false);
+    await clock.advance(1);
+    await command;
+    expect(ran).toBe(true);
+    expect(String(errors[0])).toContain(`within ${BROWSER_TAB_RESTORE_STEP_TIMEOUT_MS}ms`);
+    // The reload may still land, so the tab stays discarded and the next wake retries.
+    expect(lifecycle.getState(52)).toBe("discarded");
+  });
+
+  test("describe reports every tab without marking it used", async () => {
+    const { clock, lifecycle } = createLifecycle();
+    lifecycle.track(new FakeTab(61).enableDiscard());
+    lifecycle.track(new FakeTab(62));
+    const trackedAt = clock.nowMs;
+    lifecycle.hold(62);
+    await clock.advance(BROWSER_TAB_FREEZE_AFTER_MS);
+
+    expect(lifecycle.describe()).toEqual([
+      { webContentsId: 61, state: "frozen", held: false, lastUsedAt: trackedAt, discardable: true },
+      { webContentsId: 62, state: "active", held: true, lastUsedAt: trackedAt, discardable: false },
+    ]);
+    expect(lifecycle.listDiscardCandidates(BROWSER_TAB_FREEZE_AFTER_MS)).toEqual([
+      { webContentsId: 61, lastUsedAt: trackedAt },
+    ]);
   });
 });

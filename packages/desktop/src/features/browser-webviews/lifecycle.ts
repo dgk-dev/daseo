@@ -14,14 +14,28 @@ export interface BrowserTabLifecycleTarget {
    * back/forward history stay in the main process.
    */
   discard?(): void;
-  /** Reloads a discarded tab in a new renderer and resolves once the page has loaded. */
+  /**
+   * Reloads a discarded tab in a new renderer and resolves once its document is ready
+   * (`dom-ready`), within BROWSER_TAB_RESTORE_WAIT_MS.
+   */
   restore?(): Promise<void>;
 }
 
-/** A tab the memory-pressure discarder may consider, least recently used first. */
+/** A tab the discarder may consider, least recently used first. */
 export interface BrowserTabDiscardCandidate {
   readonly webContentsId: number;
   readonly lastUsedAt: number;
+}
+
+/** One tracked tab as the read-only tab report shows it (delta 97). */
+export interface BrowserTabLifecycleEntry {
+  readonly webContentsId: number;
+  readonly state: BrowserTabLifecycleState;
+  /** A pane, command, capture, or phone stream holds it awake. */
+  readonly held: boolean;
+  readonly lastUsedAt: number;
+  /** Plain tabs can be discarded; popups cannot. */
+  readonly discardable: boolean;
 }
 
 type TimerHandle = ReturnType<typeof setTimeout>;
@@ -44,6 +58,11 @@ export interface BrowserTabLifecycleOptions {
    * later wake, and every automation command behind it, waited until the step settled.
    */
   stepTimeoutMs?: number;
+  /**
+   * The same limit for a step that starts on a discarded tab: its wake reloads the page and waits
+   * for it (delta 97), which takes longer than one CDP round trip.
+   */
+  restoreStepTimeoutMs?: number;
   onTransition?: (webContentsId: number, state: BrowserTabLifecycleState) => void;
 }
 
@@ -54,6 +73,8 @@ interface TrackedTab {
   lastUsedAt: number;
   timer: TimerHandle | null;
   steps: Promise<void>;
+  /** The queued or running wake, until it settles; later wakes behind nothing else share it. */
+  pendingWake: Promise<void> | null;
 }
 
 export const BROWSER_TAB_THROTTLE_AFTER_MS = 2 * 60_000;
@@ -61,6 +82,12 @@ export const BROWSER_TAB_FREEZE_AFTER_MS = 15 * 60_000;
 // Daseo delta 91: a wake or freeze is one CDP round trip; five seconds is far past a healthy one
 // and well inside the daemon's 15-second browser-tool deadline.
 export const BROWSER_TAB_STEP_TIMEOUT_MS = 5_000;
+// Daseo delta 97: waking a discarded tab waits until its reloaded document is ready, so the first
+// command after a discard meets a parsed page instead of a blank one mid-load. The cap matches the
+// daemon's 15-second browser-tool deadline: a page slower than that times the one command out and
+// is ready for its retry. The step limit adds a second for the reload to be issued and recorded.
+export const BROWSER_TAB_RESTORE_WAIT_MS = 15_000;
+export const BROWSER_TAB_RESTORE_STEP_TIMEOUT_MS = BROWSER_TAB_RESTORE_WAIT_MS + 1_000;
 const BROWSER_TAB_FREEZE_RETRY_MS = 60_000;
 
 /**
@@ -75,8 +102,9 @@ const BROWSER_TAB_FREEZE_RETRY_MS = 60_000;
  * - frozen: fifteen minutes unused. CDP `Page.setWebLifecycleState frozen` stops script and
  *   rendering entirely; memory stays, so page state survives and macOS compresses it.
  *
- * - discarded: only under macOS memory pressure, a frozen tab unused for a long time has its
- *   renderer process ended (see discard.ts); waking it reloads the page with its history kept.
+ * - discarded: a frozen tab unused for a long time (three hours by default, sooner under macOS
+ *   memory pressure) has its renderer process ended (see discard.ts); waking it reloads the page
+ *   with its history kept and waits for the reloaded document.
  *
  * `wake` returns a tab to active in one CDP round trip: `active` first, then throttling off —
  * an active page left throttled stays at 1 Hz timers. A loading, audible, or downloading tab is
@@ -90,6 +118,7 @@ export class BrowserTabLifecycle {
   private readonly freezeAfterMs: number;
   private readonly freezeRetryMs: number;
   private readonly stepTimeoutMs: number;
+  private readonly restoreStepTimeoutMs: number;
   private readonly now: () => number;
   private readonly setTimer: (callback: () => void, delayMs: number) => TimerHandle;
   private readonly clearTimer: (handle: TimerHandle) => void;
@@ -100,6 +129,7 @@ export class BrowserTabLifecycle {
     this.freezeAfterMs = options.freezeAfterMs ?? BROWSER_TAB_FREEZE_AFTER_MS;
     this.freezeRetryMs = options.freezeRetryMs ?? BROWSER_TAB_FREEZE_RETRY_MS;
     this.stepTimeoutMs = options.stepTimeoutMs ?? BROWSER_TAB_STEP_TIMEOUT_MS;
+    this.restoreStepTimeoutMs = options.restoreStepTimeoutMs ?? BROWSER_TAB_RESTORE_STEP_TIMEOUT_MS;
     this.now = options.now ?? Date.now;
     this.setTimer = options.setTimer ?? ((callback, delayMs) => setTimeout(callback, delayMs));
     this.clearTimer = options.clearTimer ?? ((handle) => clearTimeout(handle));
@@ -139,6 +169,7 @@ export class BrowserTabLifecycle {
       lastUsedAt: this.now(),
       timer: null,
       steps: Promise.resolve(),
+      pendingWake: null,
     };
     this.tabs.set(target.id, tab);
     this.call(tab, "attach", () => target.setBackgroundThrottling(false));
@@ -156,6 +187,18 @@ export class BrowserTabLifecycle {
 
   public getState(webContentsId: number): BrowserTabLifecycleState | null {
     return this.tabs.get(webContentsId)?.state ?? null;
+  }
+
+  /** Every tracked tab, for the read-only tab report. Reading it marks nothing used. */
+  public describe(): BrowserTabLifecycleEntry[] {
+    return [...this.tabs.values()].map((tab) => ({
+      webContentsId: tab.target.id,
+      state: tab.state,
+      held: tab.holds > 0,
+      lastUsedAt: tab.lastUsedAt,
+      discardable:
+        typeof tab.target.discard === "function" && typeof tab.target.restore === "function",
+    }));
   }
 
   /** Frozen, unheld tabs unused for at least `minIdleMs`, least recently used first. */
@@ -211,8 +254,28 @@ export class BrowserTabLifecycle {
     }
     tab.lastUsedAt = this.now();
     this.cancelTimer(tab);
-    const woken = this.enqueue(tab, "wake", () => this.activate(tab));
+    const woken = this.enqueueWake(tab);
     this.scheduleIdle(tab);
+    return woken;
+  }
+
+  /**
+   * A wake asked for while another is still queued or running, with no other step behind it,
+   * shares that one: `hold` and `runAwake` both wake, and a reload that ran out of time must not
+   * be started again at once by the same command's second wake (delta 97). A wake behind a later
+   * freeze or discard is queued after it.
+   */
+  private enqueueWake(tab: TrackedTab): Promise<void> {
+    if (tab.pendingWake !== null && tab.steps === tab.pendingWake) {
+      return tab.pendingWake;
+    }
+    const woken = this.enqueue(tab, "wake", () => this.activate(tab));
+    tab.pendingWake = woken;
+    // Registered before any caller awaits it, so it runs first once the wake settles; a failed
+    // wake is then retried by the next one. `woken` never rejects: runStep reports errors.
+    void woken.finally(() => {
+      if (tab.pendingWake === woken) tab.pendingWake = null;
+    });
     return woken;
   }
 
@@ -337,9 +400,11 @@ export class BrowserTabLifecycle {
     if (tab.target.isDestroyed()) {
       return;
     }
+    // Decided when the step starts: only a step that finds the tab discarded reloads a page.
+    const timeoutMs = tab.state === "discarded" ? this.restoreStepTimeoutMs : this.stepTimeoutMs;
     let timer: TimerHandle | null = null;
     const timedOut = new Promise<"timeout">((resolve) => {
-      timer = this.setTimer(() => resolve("timeout"), this.stepTimeoutMs);
+      timer = this.setTimer(() => resolve("timeout"), timeoutMs);
     });
     try {
       const outcome = await Promise.race([Promise.resolve().then(run), timedOut]);
@@ -351,7 +416,7 @@ export class BrowserTabLifecycle {
           this.setState(tab, "frozen");
         }
         this.options.onError?.(
-          new Error(`browser tab ${step} did not settle within ${this.stepTimeoutMs}ms`),
+          new Error(`browser tab ${step} did not settle within ${timeoutMs}ms`),
           { webContentsId: tab.target.id, step },
         );
       }

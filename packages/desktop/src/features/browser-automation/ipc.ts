@@ -58,6 +58,7 @@ import {
   listRegisteredPaseoBrowserIds,
   listRegisteredPaseoBrowserIdsForWorkspace,
   markPaseoBrowserEdited,
+  reportPaseoBrowserTabs,
 } from "../browser-webviews/index.js";
 import { BROWSER_AUTOMATION_EDITING_COMMANDS } from "../browser-webviews/discard.js";
 
@@ -591,6 +592,7 @@ function createRegistry(hostWebContentsId: number): BrowserRegistry {
     },
     getBrowserWorkspaceId: getPaseoBrowserWorkspaceId,
     getBrowserTargetMetadata: getPaseoBrowserTargetMetadata,
+    reportTabs: reportPaseoBrowserTabs,
     getWorkspaceActiveBrowserId(workspaceId: string): string | null {
       return getWorkspaceActivePaseoBrowserIdForHostWindow(workspaceId, hostWebContentsId);
     },
