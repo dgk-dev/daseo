@@ -14,6 +14,7 @@ const { theme } = vi.hoisted(() => ({
       foregroundMuted: "#muted",
       foregroundExtraMuted: "#extra-muted",
       statusDotRunning: "#running",
+      statusDotWarning: "#warning",
     },
   },
 }));
@@ -53,6 +54,9 @@ vi.mock("lucide-react-native", () => {
     Circle: createIcon("Circle"),
     CircleCheck: createIcon("CircleCheck"),
     CircleDot: createIcon("CircleDot"),
+    CirclePause: createIcon("CirclePause"),
+    CircleQuestionMark: createIcon("CircleQuestionMark"),
+    CircleX: createIcon("CircleX"),
   };
 });
 

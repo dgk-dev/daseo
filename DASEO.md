@@ -2431,7 +2431,8 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
      - **Sidebar.** Wherever the right sidebar is a pinned panel (desktop app, browser, unfolded
        Fold) and focus mode is off, it keeps its toggle button, icon, `Cmd+E` shortcut, width,
        resize handle, close button, and persisted open state (`desktop.fileExplorerOpen`), and
-       holds the viewed tab's task list instead of the Changes, Files, and PR tabs. The header
+       holds the viewed tab's task list instead of the Changes, Files, and PR tabs. The toggle no
+       longer carries the `+N -M` changes count (it opens the task list, not the changes). The header
        carries delta 95's line without `Now: …` (the list shows that row); the rows, the order,
        and the collapsed dropped group are the board's own (`composer/task-list/body.tsx`, one
        source for both). A tab that is not an agent session, or a session without a list, shows
@@ -2457,10 +2458,31 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        that drive the explorer skip where they would open it
        (`e2e/support/helpers/explorer-retired.ts`); `sidebar-workspace.spec.ts` checks the task
        sidebar instead.
+     - **No longer reachable on wide layouts** (each can come back on request):
+       - the Changes diff view of uncommitted changes, and its compare-against-base mode;
+       - its view options: unified or side-by-side, tree or flat list, hide whitespace, wrap long
+         lines, expand or collapse all;
+       - discarding one file's changes ("Discard changes" in the Changes list);
+       - opening the changes as a workspace tab ("Open Changes tab", the working-diff tab);
+       - the branch switcher in the Changes header;
+       - the commit history ("Commits" section) and opening one commit's diff as a tab;
+       - inline review comments on a diff, and the review attachments they put in the composer
+         (an existing attachment no longer opens the Changes view);
+       - "Add to chat" for a changed file or a file in the tree;
+       - the Files tree: browsing, sort, hidden files, refresh, and opening a file from it;
+       - file operations from the tree: new file or folder, rename, duplicate, delete, copy path,
+         copy relative path, reveal in Finder, download;
+       - revealing a folder from a folder link in a chat answer;
+       - the PR pane: title and state, checks, pipeline jobs, reviews and approvals, activity
+         timeline, refresh. The header's git actions button still shows and acts on the PR
+         (view, create, merge), and the left sidebar's PR badge stays.
      - **Checks.** `task-sidebar/auto-open.test.ts` (first live list in the viewed session opens
        once; closing then updating, or clearing and refilling, does not reopen; another session;
        reopen and reload; history replay; compact then wide), `summary.test.ts` (line without
-       `Now:`).
+       `Now:`). Measured on the dev daemon's request metrics (2026-11-13, wide, a dirty checkout,
+       sidebar closed then open, six 30 s windows): no checkout-diff subscription, file-tree,
+       branch-list, or PR-timeline request; checkout status and PR status are still requested
+       once per load for the header's branch label and git actions button.
      - **Key files:** `packages/app/src/components/explorer-sidebar.tsx`,
        `packages/app/src/composer/task-list/{body,index,summary}.ts{,x}`,
        `packages/app/src/task-sidebar/{auto-open,store,use-auto-open,layout}.ts`,

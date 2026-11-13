@@ -20,7 +20,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useRouter, type Href } from "expo-router";
 import * as Clipboard from "expo-clipboard";
 import { useTranslation } from "react-i18next";
-import { DiffStat } from "@/components/diff-stat";
 import {
   ChevronDown,
   Copy,
@@ -2033,14 +2032,13 @@ function WorkspaceScreenContent({
     });
   }, [activeExplorerCheckout, isMobile, toggleFileExplorerForCheckout]);
 
-  const hasDiffStat = useMemo(() => Boolean(workspaceDescriptor?.diffStat), [workspaceDescriptor]);
+  // Daseo delta 101: the toggle opens the task list, so it carries no changes count.
   const explorerToggleStyle = useCallback(
     ({ hovered, pressed }: { hovered?: boolean; pressed?: boolean }) => [
       styles.sourceControlButton,
-      hasDiffStat && styles.sourceControlButtonWithStats,
       (Boolean(hovered) || Boolean(pressed) || isExplorerOpen) && styles.sourceControlButtonHovered,
     ],
-    [hasDiffStat, isExplorerOpen],
+    [isExplorerOpen],
   );
   const explorerToggleAccessibilityState = useMemo(
     () => ({ expanded: isExplorerOpen }),
@@ -3728,17 +3726,7 @@ function WorkspaceScreenContent({
                     {({ hovered, pressed }) => {
                       const active = hovered || pressed;
                       const colorMapping = active ? foregroundColorMapping : extraMutedColorMapping;
-                      return (
-                        <>
-                          <ThemedSourceControlPanelIcon size={16} uniProps={colorMapping} />
-                          {workspaceDescriptor?.diffStat ? (
-                            <DiffStat
-                              additions={workspaceDescriptor.diffStat.additions}
-                              deletions={workspaceDescriptor.diffStat.deletions}
-                            />
-                          ) : null}
-                        </>
-                      );
+                      return <ThemedSourceControlPanelIcon size={16} uniProps={colorMapping} />;
                     }}
                   </Pressable>
                 </TooltipTrigger>
@@ -4219,9 +4207,6 @@ const styles = StyleSheet.create((theme) => ({
     // Match the painted right edge of the trailing split-pane glyph below. The
     // two header rows intentionally use different control sizes and padding.
     marginRight: -7,
-  },
-  sourceControlButtonWithStats: {
-    paddingHorizontal: theme.spacing[3],
   },
   sourceControlButtonHovered: {
     backgroundColor: theme.colors.surface2,
