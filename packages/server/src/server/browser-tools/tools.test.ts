@@ -1881,6 +1881,191 @@ describe("registerBrowserTools", () => {
     }
   });
 
+  test("network export resolves path against the cwd and ~/ and summarizes the file", async () => {
+    const home = await mkdtemp(join(tmpdir(), "paseo-home-"));
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const harness = new BrowserToolHarness();
+      harness.broker.setResponse({
+        requestId: "req-export",
+        ok: true,
+        result: {
+          command: "network_export",
+          browserId: BROWSER_ID,
+          path: "/repo/captures/flow.har",
+          bytes: 20_480,
+          entries: 12,
+          pages: 2,
+          pendingCount: 1,
+          droppedCount: 0,
+          bodies: {
+            embedded: 9,
+            truncated: 1,
+            unavailable: {
+              binary: 1,
+              evicted: 0,
+              budget: 0,
+              redirect: 1,
+              failed: 0,
+              notCaptured: 0,
+            },
+          },
+          webSockets: { sockets: 1, frames: 6, framesDropped: 0 },
+          redactions: {
+            headers: 2,
+            cookies: 3,
+            parameters: 0,
+            bodyFields: 1,
+            propagated: 4,
+            jwts: 0,
+          },
+          hosts: [
+            { host: "api.shop.test", requests: 10 },
+            { host: "shop.test", requests: 2 },
+          ],
+        },
+      });
+
+      const response = await harness.execute("browser_network", {
+        browserId: BROWSER_ID,
+        action: "export",
+        path: "captures/flow.har",
+        urlIncludes: "/api/",
+        maxEntries: 5,
+      });
+      await harness.execute("browser_network", {
+        browserId: BROWSER_ID,
+        action: "export",
+        path: "~/flow.har",
+        bodies: "none",
+        overwrite: true,
+      });
+      await harness.execute("browser_network", { browserId: BROWSER_ID, action: "export" });
+
+      expect(harness.broker.calls.map((call) => call.command)).toEqual([
+        {
+          command: "network_export",
+          args: {
+            browserId: BROWSER_ID,
+            path: "/repo/captures/flow.har",
+            urlIncludes: "/api/",
+            bodies: "api",
+            includeWebSocket: true,
+            overwrite: false,
+          },
+        },
+        {
+          command: "network_export",
+          args: {
+            browserId: BROWSER_ID,
+            path: join(home, "flow.har"),
+            bodies: "none",
+            includeWebSocket: true,
+            overwrite: true,
+          },
+        },
+        {
+          command: "network_export",
+          args: { browserId: BROWSER_ID, bodies: "api", includeWebSocket: true, overwrite: false },
+        },
+      ]);
+      expect(response.content[0]?.text).toBe(
+        [
+          "Exported 12 entries on 2 pages to /repo/captures/flow.har (20.0 KB), a sanitized HAR 1.2 file on the machine that runs the Daseo desktop app. The capture keeps running.",
+          "Response bodies: 9 embedded (1 cut at 2 MB); not in the file: 1 binary, 1 redirect.",
+          "WebSockets: 1 with 6 frames.",
+          "Redacted: 2 headers, 3 cookies, 1 bodyFields, 4 propagated. 1 still in flight were not included.",
+          "Hosts: api.shop.test 10, shop.test 2.",
+        ].join("\n"),
+      );
+
+      const noCwd = new BrowserToolHarness(null, "agent-1");
+      const refused = await noCwd.execute("browser_network", {
+        browserId: BROWSER_ID,
+        action: "export",
+        path: "flow.har",
+      });
+      expect(noCwd.broker.calls).toEqual([]);
+      expect(refused.content[0]?.text).toContain("is relative and this agent has no cwd");
+    } finally {
+      process.env.HOME = previousHome;
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("network export of an empty capture says nothing was written", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-export",
+      ok: true,
+      result: {
+        command: "network_export",
+        browserId: BROWSER_ID,
+        bytes: 0,
+        entries: 0,
+        pages: 0,
+        pendingCount: 2,
+        droppedCount: 0,
+        bodies: { embedded: 0, truncated: 0, unavailable: {} },
+        webSockets: { sockets: 0, frames: 0, framesDropped: 0 },
+        redactions: {},
+        hosts: [],
+      },
+    });
+
+    const response = await harness.execute("browser_network", {
+      browserId: BROWSER_ID,
+      action: "export",
+    });
+
+    expect(response.content[0]?.text).toBe(
+      `Nothing to export: the capture on tab ${BROWSER_ID} has no completed requests matching the filters, so no file was written. 2 still in flight were not included.`,
+    );
+  });
+
+  test("network list asks for response headers only when the agent does, and shows them", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-network-list",
+      ok: true,
+      result: {
+        command: "network",
+        browserId: BROWSER_ID,
+        action: "list",
+        capturing: true,
+        entries: [
+          {
+            seq: 1,
+            method: "GET",
+            url: "https://shop.test/api/items",
+            resourceType: "xhr",
+            status: 200,
+            startedAt: 1,
+            requestHeaders: {},
+            responseHeaders: { "x-total-count": "42", "set-cookie": "a=<redacted>\nb=<redacted>" },
+          },
+        ],
+        cursor: 1,
+      },
+    });
+
+    const response = await harness.execute("browser_network", {
+      browserId: BROWSER_ID,
+      action: "list",
+      includeResponseHeaders: true,
+    });
+    await harness.execute("browser_network", { browserId: BROWSER_ID, action: "list" });
+
+    expect(harness.broker.calls.map((call) => call.command.args)).toEqual([
+      expect.objectContaining({ includeResponseHeaders: true }),
+      expect.not.objectContaining({ includeResponseHeaders: expect.anything() }),
+    ]);
+    expect(response.content[0]?.text).toContain(
+      "  response headers: x-total-count: 42; set-cookie: a=<redacted>, b=<redacted>",
+    );
+  });
+
   test("screenshot savePath expands ~/ and refuses a relative path without a cwd", async () => {
     const home = await mkdtemp(join(tmpdir(), "paseo-home-"));
     const previousHome = process.env.HOME;

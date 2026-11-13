@@ -94,7 +94,14 @@ service against the guest and checks that the snapshot nests the same-origin fra
 with refs while the cross-origin frame stays one node; that background and trusted clicks,
 fill, type, upload, wait, and evaluate reach the inner elements (the trusted click must land at
 the frame's border and padding offset); and that `browser_network` captures a same-origin
-`fetch` with its bodies, credentials redacted.
+`fetch` with its bodies, credentials redacted. It then exports a capture (delta 99): a page that
+sets an HttpOnly cookie calls a bearer-authenticated JSON API (a list, an item twice, a login POST
+the server echoes, a 302, a 404) and a WebSocket echo, navigates away, and the exported
+`out/network-export.har` must hold the API bodies and response headers, two pages, the frames,
+`Bearer <redacted-N>`, and none of the cookie, token, or password, with mode 0600. Last it captures
+150 API requests and prints the CDP body copies per request and the main-process heap the capture
+holds. The fixture reads every response body: a fetch whose body nobody reads never gets
+`loadingFinished`, and a navigation leaves it in flight.
 
 The debugging group (`PASEO_CAPTURE_HARNESS_GROUP=debugging`) serves a page under a
 `script-src` nonce CSP with `require-trusted-types-for 'script'` and checks the delta 35

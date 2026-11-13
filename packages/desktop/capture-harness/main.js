@@ -2906,6 +2906,10 @@ async function startFramesNetworkServers() {
     html(response, "<!doctype html><title>Payment</title><button>Pay now</button>"),
   );
   const page = await listen((request, response) => {
+    if (request.url?.startsWith("/x/")) {
+      handleNetworkExportFixture(request, response);
+      return;
+    }
     if (request.url === "/api/cart" && request.method === "POST") {
       let body = "";
       request.on("data", (chunk) => {
@@ -2953,7 +2957,101 @@ async function startFramesNetworkServers() {
       <iframe id="payment" title="Payment" src="${cross.origin}/pay"></iframe>`,
     );
   });
+  page.server.on("upgrade", (request, socket) => {
+    if (request.url === "/x/ws") acceptEchoWebSocket(request, socket);
+    else socket.destroy();
+  });
   return { page, cross };
+}
+
+// Delta 99 export fixture: credentials the exported file must never contain.
+const EXPORT_FIXTURE = {
+  cookie: "sid-cookie-0123456789abcdef",
+  bearer: "bearer-token-9f8e7d6c5b4a3210",
+  password: "hunter2-correct-horse",
+};
+
+function handleNetworkExportFixture(request, response) {
+  const json = (status, body, headers = {}) => {
+    response.writeHead(status, { "content-type": "application/json", ...headers });
+    response.end(JSON.stringify(body));
+  };
+  if (request.url === "/x/app" || request.url === "/x/second") {
+    response.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      ...(request.url === "/x/app"
+        ? { "set-cookie": `sid=${EXPORT_FIXTURE.cookie}; HttpOnly; Path=/` }
+        : {}),
+    });
+    response.end(`<!doctype html><title>${request.url}</title><h1>${request.url}</h1>`);
+    return;
+  }
+  if (request.headers.authorization !== `Bearer ${EXPORT_FIXTURE.bearer}`) {
+    json(401, { error: "unauthorized" });
+    return;
+  }
+  const items = [
+    { id: 1, name: "Alpha" },
+    { id: 2, name: "Beta" },
+  ];
+  const item = /^\/x\/api\/items\/(\d+)$/.exec(request.url ?? "");
+  const bulk = /^\/x\/api\/bulk\/(\d+)$/.exec(request.url ?? "");
+  if (request.url === "/x/api/items") {
+    json(200, { items }, { "x-total-count": String(items.length) });
+  } else if (item) {
+    json(200, items.find((candidate) => candidate.id === Number(item[1])) ?? {});
+  } else if (bulk) {
+    json(200, { id: Number(bulk[1]), filler: "z".repeat(2000) });
+  } else if (request.url === "/x/api/old") {
+    response.writeHead(302, { location: "/x/api/items/1" });
+    response.end();
+  } else if (request.url === "/x/api/login" && request.method === "POST") {
+    let body = "";
+    request.on("data", (chunk) => {
+      body += chunk;
+    });
+    request.on("end", () => {
+      const parsed = JSON.parse(body);
+      // A careless server echoing the password: the export must still not contain it.
+      json(200, { ok: true, user: parsed.username, echo: parsed.password });
+    });
+  } else {
+    json(404, { error: "missing" });
+  }
+}
+
+// RFC 6455 just far enough for the fixture: unfragmented frames under 126 bytes, echoed back.
+function acceptEchoWebSocket(request, socket) {
+  const accept = require("node:crypto")
+    .createHash("sha1")
+    .update(`${request.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+    .digest("base64");
+  socket.write(
+    `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
+  );
+  const frame = (opcode, payload) =>
+    Buffer.concat([Buffer.from([0x80 | opcode, payload.length]), payload]);
+  let pending = Buffer.alloc(0);
+  socket.on("data", (chunk) => {
+    pending = Buffer.concat([pending, chunk]);
+    while (pending.length >= 6) {
+      const opcode = pending[0] & 0x0f;
+      const length = pending[1] & 0x7f;
+      if (pending.length < 6 + length) return;
+      const mask = pending.subarray(2, 6);
+      const payload = Buffer.from(
+        pending.subarray(6, 6 + length).map((byte, i) => byte ^ mask[i % 4]),
+      );
+      pending = pending.subarray(6 + length);
+      if (opcode === 8) {
+        socket.end(frame(8, Buffer.alloc(0)));
+        return;
+      }
+      if (opcode === 1) socket.write(frame(1, Buffer.from(`echo:${payload.toString("utf8")}`)));
+      if (opcode === 2) socket.write(frame(2, payload));
+    }
+  });
+  socket.on("error", () => {});
 }
 
 async function runFramesNetworkGroup() {
@@ -2987,9 +3085,17 @@ async function runFramesNetworkGroup() {
     await verifyFrameClicks(harness, refs);
     await verifyFrameInputs(harness, refs);
     await verifyNetworkCapture(harness);
-    return ["iframe-snapshot", "iframe-click", "iframe-actions", "network-capture"].map(
-      (check) => ({ group: "frames-network", check, pass: true }),
-    );
+    const exportDetail = await verifyNetworkExport(harness, servers);
+    const cost = await measureNetworkCaptureCost(harness, servers);
+    return [
+      ...["iframe-snapshot", "iframe-click", "iframe-actions", "network-capture"].map((check) => ({
+        group: "frames-network",
+        check,
+        pass: true,
+      })),
+      { group: "frames-network", check: "network-export", pass: true, ...exportDetail },
+      { group: "frames-network", check: "network-capture-cost", pass: true, ...cost },
+    ];
   } finally {
     if (!win.isDestroyed()) win.close();
     await closeServer(servers.page.server);
@@ -3015,6 +3121,7 @@ function createFramesAutomation(guest) {
     getWorkspaceActiveBrowserId: () => (state.inputFocused ? browserId : null),
     isBrowserInputFocused: () => state.inputFocused,
     getBrowserTargetMetadata: () => ({ kind: "tab" }),
+    networkExportEnvironment: () => ({ appVersion: "capture-harness", defaultDirectory: OUT_DIR }),
   };
   const snapshotEngine = new BrowserSnapshotEngine();
   let requestCounter = 0;
@@ -3227,6 +3334,246 @@ async function verifyNetworkCapture(harness) {
     fail("network list still answered after stop");
   }
   pass("network capture records a same-origin fetch with redacted credentials and its bodies");
+}
+
+// Counts the CDP commands the capture sends while `run` runs.
+async function countCaptureCommands(guest, run) {
+  const counts = {};
+  const original = guest.debugger.sendCommand;
+  guest.debugger.sendCommand = function countedSendCommand(method, ...rest) {
+    counts[method] = (counts[method] ?? 0) + 1;
+    return original.call(this, method, ...rest);
+  };
+  try {
+    const value = await run();
+    return { value, counts };
+  } finally {
+    guest.debugger.sendCommand = original;
+  }
+}
+
+async function loadGuest(guest, url) {
+  await withTimeout(guest.loadURL(url), `load ${url}`);
+}
+
+// Delta 99: a real capture across a navigation, exported, sanitized, and read back.
+async function verifyNetworkExport(harness, servers) {
+  const { browserId, guest } = harness;
+  const origin = servers.page.origin;
+  await harness.run("network start", { command: "network", args: networkArgs(browserId, "start") });
+  const { value: flow, counts } = await countCaptureCommands(guest, async () => {
+    await loadGuest(guest, `${origin}/x/app`);
+    const result = await guest.executeJavaScript(
+      `(async () => {
+        const auth = { authorization: 'Bearer ${EXPORT_FIXTURE.bearer}' };
+        // A body nobody reads never finishes loading, so each one is read.
+        const statusOf = async (response) => {
+          await response.text();
+          return response.status;
+        };
+        const get = (path) => fetch(path, { headers: auth }).then(statusOf);
+        const statuses = [];
+        statuses.push(await get('/x/api/items'));
+        statuses.push(await get('/x/api/items/1'));
+        statuses.push(await get('/x/api/items/1'));
+        statuses.push(await get('/x/api/items/2'));
+        statuses.push(await fetch('/x/api/login', {
+          method: 'POST',
+          headers: { ...auth, 'content-type': 'application/json' },
+          body: JSON.stringify({ username: 'ada', password: '${EXPORT_FIXTURE.password}' }),
+        }).then(statusOf));
+        statuses.push(await get('/x/api/old'));
+        statuses.push(await get('/x/api/missing'));
+        const echoes = await new Promise((resolve, reject) => {
+          const socket = new WebSocket(location.origin.replace('http', 'ws') + '/x/ws');
+          const received = [];
+          socket.onerror = () => reject(new Error('websocket failed'));
+          socket.onopen = () => {
+            for (const text of ['one', 'two', 'three']) socket.send(text);
+            socket.send(new Uint8Array([1, 2, 3, 4]));
+          };
+          socket.onmessage = (event) => {
+            received.push(typeof event.data === 'string' ? event.data : 'binary');
+            if (received.length === 4) {
+              socket.close();
+              resolve(received);
+            }
+          };
+        });
+        return { statuses, echoes };
+      })()`,
+      true,
+    );
+    // The page goes away before the export: the API bodies must already be kept.
+    await loadGuest(guest, `${origin}/x/second`);
+    await delay(300);
+    return result;
+  });
+  const exportPath = path.join(OUT_DIR, "network-export.har");
+  await fsp.rm(exportPath, { force: true });
+  const exported = await harness.run("network export", {
+    command: "network_export",
+    args: { browserId, path: exportPath, bodies: "api", includeWebSocket: true, overwrite: false },
+  });
+  const text = await fsp.readFile(exportPath, "utf8");
+  const har = JSON.parse(text);
+  const mode = (await fsp.stat(exportPath)).mode & 0o777;
+  const problems = [
+    ...exportFileProblems({ har, text, mode, exported, flow, exportPath }),
+    ...exportEntryProblems(har.log.entries),
+  ];
+  if (problems.length > 0) {
+    fail(`network export wrong (${problems.join("; ")}): ${JSON.stringify(exported)}`);
+  }
+  await verifyListAfterNavigation(harness);
+  await harness.run("network stop", { command: "network", args: networkArgs(browserId, "stop") });
+  const requestsSeen = har.log.entries.filter(
+    (entry) => entry._resourceType !== "websocket",
+  ).length;
+  const extraCommands =
+    (counts["Network.getResponseBody"] ?? 0) + (counts["Network.getRequestPostData"] ?? 0);
+  pass(
+    `network export writes a sanitized HAR across a navigation: ${har.log.entries.length} entries, ${har.log.pages.length} pages, ${exported.bytes} bytes, redactions ${JSON.stringify(exported.redactions)}, ${extraCommands} body copies for ${requestsSeen} requests`,
+  );
+  return {
+    path: exportPath,
+    entries: har.log.entries.length,
+    bytes: exported.bytes,
+    redactions: exported.redactions,
+    cdpCommandsDuringFlow: counts,
+    bodyCopiesPerRequest: Number((extraCommands / Math.max(1, requestsSeen)).toFixed(2)),
+  };
+}
+
+function mismatches(pairs) {
+  return pairs
+    .map(([actual, wanted], index) =>
+      actual === wanted ? null : `#${index} ${JSON.stringify(actual)} != ${JSON.stringify(wanted)}`,
+    )
+    .filter(Boolean);
+}
+
+function exportFileProblems({ har, text, mode, exported, flow, exportPath }) {
+  const leaked = Object.entries(EXPORT_FIXTURE)
+    .filter(([, secret]) => text.includes(secret) || text.includes(encodeURIComponent(secret)))
+    .map(([name]) => name);
+  return mismatches([
+    [JSON.stringify(flow.statuses), JSON.stringify([200, 200, 200, 200, 200, 200, 404])],
+    [JSON.stringify(flow.echoes), JSON.stringify(["echo:one", "echo:two", "echo:three", "binary"])],
+    [har.log.version, "1.2"],
+    [har.log.creator.name, "Daseo"],
+    [har.log._daseo.sanitized, true],
+    [har.log.pages.length, 2],
+    [JSON.stringify(leaked), "[]"],
+    [mode, 0o600],
+    [exported.path, exportPath],
+    [exported.entries, har.log.entries.length],
+  ]);
+}
+
+function headerValues(entry, side, name) {
+  if (!entry) return [];
+  return entry[side].headers
+    .filter((item) => item.name.toLowerCase() === name)
+    .map((item) => item.value);
+}
+
+function exportEntryProblems(entries) {
+  const byUrl = (suffix) => entries.find((entry) => entry.request.url.endsWith(suffix));
+  const items = byUrl("/x/api/items");
+  const login = byUrl("/x/api/login");
+  const redirect = byUrl("/x/api/old");
+  const missing = byUrl("/x/api/missing");
+  const appDocument = byUrl("/x/app");
+  const socket = entries.find((entry) => entry._resourceType === "websocket");
+  const messages = socket ? socket._webSocketMessages : [];
+  const json = (entry) => JSON.parse(entry ? (entry.response.content.text ?? "null") : "null");
+  return mismatches([
+    [json(items)?.items?.[0]?.name, "Alpha"],
+    [headerValues(items, "response", "x-total-count")[0], "2"],
+    [/^Bearer <redacted-\d+>$/.test(headerValues(items, "request", "authorization")[0]), true],
+    [/^sid=<redacted-\d+>$/.test(headerValues(items, "request", "cookie")[0]), true],
+    [
+      /^sid=<redacted-\d+>; HttpOnly; Path=\/$/.test(
+        headerValues(appDocument, "response", "set-cookie")[0],
+      ),
+      true,
+    ],
+    [/^<redacted-\d+>$/.test(json(login)?.echo), true],
+    [redirect?.response.status, 302],
+    [redirect?.response.redirectURL, "/x/api/items/1"],
+    [missing?.response.status, 404],
+    [messages.filter((message) => message.type === "send").length, 4],
+    [messages.filter((message) => message.type === "receive").length, 4],
+    [messages.some((message) => message.opcode === 2 && message._binaryBytes === 4), true],
+    [items?.pageref, "page_1"],
+  ]);
+}
+
+// `list` reads the kept copy too: the body is there after the navigation.
+async function verifyListAfterNavigation(harness) {
+  const listed = await harness.run("network list after navigation", {
+    command: "network",
+    args: {
+      ...networkArgs(harness.browserId, "list"),
+      urlIncludes: "/x/api/items",
+      includeBodies: true,
+      includeResponseHeaders: true,
+    },
+  });
+  const entry = listed.entries[0];
+  const body = entry ? (entry.responseBody ?? "") : "";
+  const total = entry && entry.responseHeaders ? entry.responseHeaders["x-total-count"] : undefined;
+  if (!body.includes("Alpha") || total !== "2") {
+    fail(`network list after navigation lost the body or headers: ${JSON.stringify(entry)}`);
+  }
+}
+
+// V4: main-process memory a capture of about 150 API requests holds, and CDP commands per request.
+async function measureNetworkCaptureCost(harness, servers) {
+  const { browserId, guest } = harness;
+  const v8 = require("node:v8");
+  v8.setFlagsFromString("--expose-gc");
+  const gc = require("node:vm").runInNewContext("gc");
+  const heap = () => {
+    gc();
+    gc();
+    return process.memoryUsage().heapUsed;
+  };
+  await loadGuest(guest, `${servers.page.origin}/x/second`);
+  await harness.run("network start", { command: "network", args: networkArgs(browserId, "start") });
+  const requests = 150;
+  const before = heap();
+  const { counts } = await countCaptureCommands(guest, async () => {
+    await guest.executeJavaScript(
+      `Promise.all(Array.from({ length: ${requests} }, (_, i) =>
+        fetch('/x/api/bulk/' + i, { headers: { authorization: 'Bearer ${EXPORT_FIXTURE.bearer}' } }).then((r) => r.text())))`,
+      true,
+    );
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      const listed = await harness.run("network list bulk", {
+        command: "network",
+        args: { ...networkArgs(browserId, "list"), urlIncludes: "/x/api/bulk/", maxEntries: 200 },
+      });
+      if (listed.entries.length >= requests) return;
+      await delay(100);
+    }
+    fail("bulk requests never all completed");
+  });
+  const held = heap();
+  await harness.run("network stop", { command: "network", args: networkArgs(browserId, "stop") });
+  const released = heap();
+  const bodyCopies = counts["Network.getResponseBody"] ?? 0;
+  const result = {
+    requests,
+    heapHeldBytes: held - released,
+    heapGrowthBytes: held - before,
+    getResponseBodyPerRequest: Number((bodyCopies / requests).toFixed(2)),
+    cdpCommands: counts,
+  };
+  pass(`network capture cost ${JSON.stringify(result)}`);
+  return result;
 }
 
 function networkArgs(browserId, action) {

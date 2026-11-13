@@ -1,5 +1,6 @@
 import type { Rectangle } from "electron";
-import { ipcMain, nativeImage, webContents as electronWebContents } from "electron";
+import path from "node:path";
+import { app, ipcMain, nativeImage, webContents as electronWebContents } from "electron";
 import { BrowserAutomationExecuteRequestSchema } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import type { BrowserAutomationConsoleLogEntry } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import type { TabContents, BrowserRegistry } from "./service.js";
@@ -593,6 +594,11 @@ function createRegistry(hostWebContentsId: number): BrowserRegistry {
     getBrowserWorkspaceId: getPaseoBrowserWorkspaceId,
     getBrowserTargetMetadata: getPaseoBrowserTargetMetadata,
     reportTabs: reportPaseoBrowserTabs,
+    // The folder agent downloads go to (main.ts), so exports land beside them.
+    networkExportEnvironment: () => ({
+      appVersion: app.getVersion(),
+      defaultDirectory: path.join(app.getPath("downloads"), "Daseo"),
+    }),
     getWorkspaceActiveBrowserId(workspaceId: string): string | null {
       return getWorkspaceActivePaseoBrowserIdForHostWindow(workspaceId, hostWebContentsId);
     },

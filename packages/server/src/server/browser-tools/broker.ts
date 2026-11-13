@@ -438,7 +438,27 @@ export class BrowserToolsBroker {
           message: `The dialog argument needs a newer Daseo desktop app than the ${describeBrowserHost(params.host)}. Call without it; the dialog is then handled by the app's own policy.`,
         });
       }
+      // Delta 99: response headers in a list came with network_export; an older host's strict
+      // network arguments would reject the whole list.
+      if (
+        params.command?.command === "network" &&
+        params.command.args.includeResponseHeaders === true &&
+        !params.host.supportedCommands.has("network_export")
+      ) {
+        return browserToolsFailure({
+          requestId: params.requestId,
+          code: "browser_unsupported",
+          message: `includeResponseHeaders needs a newer Daseo desktop app than the ${describeBrowserHost(params.host)}. Update the Daseo app, or list without it.`,
+        });
+      }
       return null;
+    }
+    if (params.commandName === "network_export") {
+      return browserToolsFailure({
+        requestId: params.requestId,
+        code: "browser_unsupported",
+        message: `browser_network export needs a newer Daseo desktop app than the ${describeBrowserHost(params.host)}. Update the Daseo app; until then use action list.`,
+      });
     }
     return browserToolsFailure({
       requestId: params.requestId,

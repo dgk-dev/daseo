@@ -17,6 +17,7 @@ import {
   type BrowserAutomationConsoleLogEntry,
   type BrowserAutomationFindResult,
   type BrowserAutomationNetworkLogEntry,
+  type BrowserAutomationNetworkExportResult,
   type BrowserAutomationNetworkResult,
   type BrowserAutomationReadResult,
   type BrowserAutomationPasskeysResult,
@@ -909,10 +910,10 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Capture browser network",
       description:
-        "Capture a Paseo browser tab's requests and responses. Use this to learn the site's own API calls (method, URL, payload) so you can call them directly instead of scraping. Call with action start, trigger the page action, then action list; stop when done. Capture is per tab and off until started; start clears earlier entries. list returns completed requests oldest first with a cursor: pass it as since to read only newer ones. Filter with urlIncludes, method, and resourceType (xhr, fetch, document, other); includeBodies adds response bodies and includeRequestBodies adds request payloads, each capped at 64 KB. Cookie and Authorization values and password or one-time-code form fields read <redacted>. Use browserId from browser_new_tab or browser_list_tabs.",
+        "Capture a Paseo browser tab's requests and responses to learn the site's own API calls (method, URL, payload) and call them directly instead of scraping. Call with action start, trigger the page action, then list to look or export to keep or convert; stop when done (it discards the capture). Capture is per tab and off until started; start clears earlier entries. list returns completed requests oldest first with a cursor: pass it as since to read only newer ones. Filter with urlIncludes, method, and resourceType (xhr, fetch, document, other); includeBodies adds response bodies, includeRequestBodies request payloads (each capped at 64 KB), and includeResponseHeaders response headers. Cookie and Authorization values and password or one-time-code form fields read <redacted>. export writes the capture as one sanitized HAR 1.2 file (credentials, tokens, and JWTs replaced with <redacted-N> placeholders; API response bodies whole up to 2 MB each, kept across navigations; WebSocket frames) on the machine that runs the Daseo desktop app, to path (relative paths resolve against the agent's cwd; ~/ is the home directory; default ~/Downloads/Daseo/network-<host>-<time>.har) and returns the path and a summary; the capture keeps running. export takes the same filters, bodies (api, the default, or none), and overwrite to replace an existing file. Use browserId from browser_new_tab or browser_list_tabs.",
       inputSchema: {
         browserId: BrowserAutomationBrowserIdSchema,
-        action: BrowserAutomationNetworkActionSchema,
+        action: z.enum([...BrowserAutomationNetworkActionSchema.options, "export"]),
         urlIncludes: z.string().min(1).optional(),
         method: z.string().min(1).optional(),
         resourceType: BrowserAutomationNetworkResourceTypeSchema.optional(),
@@ -920,6 +921,11 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
         maxEntries: BrowserLogsMaxEntriesInputSchema.optional(),
         includeBodies: z.boolean().optional(),
         includeRequestBodies: z.boolean().optional(),
+        includeResponseHeaders: z.boolean().optional(),
+        path: z.string().trim().min(1).optional(),
+        bodies: z.enum(["api", "none"]).optional(),
+        includeWebSocket: z.boolean().optional(),
+        overwrite: z.boolean().optional(),
       },
     },
     async ({
@@ -932,8 +938,49 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
       maxEntries,
       includeBodies,
       includeRequestBodies,
+      includeResponseHeaders,
+      path,
+      bodies,
+      includeWebSocket,
+      overwrite,
     }) => {
       const context = resolveBrowserToolContext(options);
+      const filters = {
+        ...(urlIncludes ? { urlIncludes } : {}),
+        ...(method ? { method } : {}),
+        ...(resourceType ? { resourceType } : {}),
+        ...(since !== undefined ? { since } : {}),
+      };
+      if (action === "export") {
+        const target = path ? resolveAgentPath(path, context.cwd) : null;
+        if (target && !target.ok) {
+          return browserToolResult({
+            payload: {
+              requestId: "browser-tools-network-export-args",
+              ok: false,
+              error: { code: "browser_denied", message: target.message, retryable: false },
+            },
+            context: { ...context, browserId },
+          });
+        }
+        const payload = await options.broker.execute({
+          agentId: context.agentId,
+          cwd: context.cwd,
+          ...(context.workspaceId ? { workspaceId: context.workspaceId } : {}),
+          command: {
+            command: "network_export",
+            args: {
+              browserId,
+              ...(target ? { path: target.path } : {}),
+              ...filters,
+              bodies: bodies ?? "api",
+              includeWebSocket: includeWebSocket ?? true,
+              overwrite: overwrite ?? false,
+            },
+          },
+        });
+        return browserToolResult({ payload, context: { ...context, browserId } });
+      }
       const payload = await options.broker.execute({
         agentId: context.agentId,
         cwd: context.cwd,
@@ -944,13 +991,11 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
           args: {
             browserId,
             action,
-            ...(urlIncludes ? { urlIncludes } : {}),
-            ...(method ? { method } : {}),
-            ...(resourceType ? { resourceType } : {}),
-            ...(since !== undefined ? { since } : {}),
+            ...filters,
             maxEntries: maxEntries ?? 50,
             includeBodies: includeBodies ?? false,
             includeRequestBodies: includeRequestBodies ?? false,
+            ...(includeResponseHeaders ? { includeResponseHeaders: true } : {}),
           },
         },
       });
@@ -1232,19 +1277,28 @@ function resolveBrowserToolContext(options: RegisterBrowserToolsOptions): {
   };
 }
 
+/** A path an agent gave: `~/` is the home directory, a relative path resolves against its cwd. */
+function resolveAgentPath(
+  input: string,
+  cwd: string | undefined,
+): { ok: true; path: string } | { ok: false; message: string } {
+  const expanded = input === "~" || input.startsWith("~/") ? homedir() + input.slice(1) : input;
+  if (!isAbsolute(expanded) && !cwd) {
+    return { ok: false, message: `${input} is relative and this agent has no cwd.` };
+  }
+  return { ok: true, path: resolveFsPath(cwd ?? "/", expanded) };
+}
+
 async function saveScreenshot(
   savePath: string,
   cwd: string | undefined,
   dataBase64: string,
 ): Promise<{ text: string; path?: string }> {
-  const expanded =
-    savePath === "~" || savePath.startsWith("~/") ? homedir() + savePath.slice(1) : savePath;
-  if (!isAbsolute(expanded) && !cwd) {
-    return {
-      text: `Could not save the screenshot: ${savePath} is relative and this agent has no cwd.`,
-    };
+  const resolved = resolveAgentPath(savePath, cwd);
+  if (!resolved.ok) {
+    return { text: `Could not save the screenshot: ${resolved.message}` };
   }
-  const target = resolveFsPath(cwd ?? "/", expanded);
+  const target = resolved.path;
   try {
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, Buffer.from(dataBase64, "base64"));
@@ -1849,6 +1903,10 @@ function summarizeBrowserDiagnosticsSuccess(
     return summarizeBrowserNetwork(result);
   }
 
+  if (result.command === "network_export") {
+    return summarizeNetworkExport(result);
+  }
+
   if (result.command === "passkeys") {
     return summarizeBrowserPasskeys(result);
   }
@@ -1928,6 +1986,39 @@ function summarizeBrowserNetwork(result: BrowserAutomationNetworkResult): string
   return lines.join("\n");
 }
 
+function summarizeNetworkExport(result: BrowserAutomationNetworkExportResult): string {
+  const inFlight =
+    result.pendingCount > 0 ? ` ${result.pendingCount} still in flight were not included.` : "";
+  if (!result.path) {
+    return `Nothing to export: the capture on tab ${result.browserId} has no completed requests matching the filters, so no file was written.${inFlight}`;
+  }
+  const counts = (record: Record<string, number>) =>
+    Object.entries(record)
+      .filter(([, count]) => count > 0)
+      .map(([kind, count]) => `${count} ${kind}`)
+      .join(", ");
+  const unavailable = counts(result.bodies.unavailable);
+  const redacted = counts(result.redactions);
+  const lines = [
+    `Exported ${result.entries} entr${result.entries === 1 ? "y" : "ies"}${result.pages > 0 ? ` on ${result.pages} page${result.pages === 1 ? "" : "s"}` : ""} to ${result.path} (${formatByteSize(result.bytes)}), a sanitized HAR 1.2 file on the machine that runs the Daseo desktop app. The capture keeps running.`,
+    `Response bodies: ${result.bodies.embedded} embedded${result.bodies.truncated > 0 ? ` (${result.bodies.truncated} cut at 2 MB)` : ""}${unavailable ? `; not in the file: ${unavailable}` : ""}.`,
+    ...(result.webSockets.sockets > 0
+      ? [
+          `WebSockets: ${result.webSockets.sockets} with ${result.webSockets.frames} frames${result.webSockets.framesDropped > 0 ? ` (${result.webSockets.framesDropped} more not kept)` : ""}.`,
+        ]
+      : []),
+    `Redacted: ${redacted || "nothing"}.${inFlight}${result.droppedCount > 0 ? ` ${result.droppedCount} older requests had been dropped from the tab buffer.` : ""}`,
+    `Hosts: ${result.hosts.map((host) => `${host.host} ${host.requests}`).join(", ")}.`,
+  ];
+  return lines.join("\n");
+}
+
+function formatByteSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function formatCapturedRequest(entry: BrowserAutomationCapturedRequest): string[] {
   const outcome = entry.failed ? `failed(${entry.failed})` : String(entry.status ?? "-");
   const details = [
@@ -1945,6 +2036,12 @@ function formatCapturedRequest(entry: BrowserAutomationCapturedRequest): string[
   if (entry.requestBody !== undefined) {
     lines.push(
       `  request body${entry.requestBodyTruncated ? " (truncated)" : ""}: ${entry.requestBody}`,
+    );
+  }
+  if (entry.responseHeaders) {
+    const responseHeaders = Object.entries(entry.responseHeaders);
+    lines.push(
+      `  response headers: ${responseHeaders.map(([name, value]) => `${name}: ${value.replace(/\n/g, ", ")}`).join("; ")}`,
     );
   }
   if (entry.responseBody !== undefined) {

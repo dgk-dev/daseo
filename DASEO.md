@@ -370,7 +370,7 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     only when asked (`includeBodies`, `includeRequestBodies`): 64 KB per body, 256 KB of response
     bodies per list, binary and evicted bodies named instead of sent. Entries get their `seq` when
     they complete, so a cursor never skips a request that was pending during the previous list;
-    the tab keeps the latest 500. Request headers drop the ones the browser sets itself;
+    the tab keeps the latest 500 (2,000 since delta 99). Request headers drop the ones the browser sets itself;
     `Cookie`, `Set-Cookie`, `Authorization`, and `Proxy-Authorization` values and password or
     one-time-code fields in JSON, form, and multipart bodies read `<redacted>`, so a login filled
     by the credential broker is not exposed through its POST. URL tokens and response bodies stay
@@ -2294,6 +2294,75 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       `packages/desktop/src/{main,preload}.ts`, `packages/desktop/src/settings/desktop-settings.ts`,
       `packages/protocol/src/browser-automation/rpc-schemas.ts`,
       `packages/server/src/server/browser-tools/tools.ts`.
+
+99. **`browser_network` exports a sanitized HAR** — the 2026-11-13 benchmarking plan: agents used
+    `browser_network` in 62 sessions in seven weeks (25 starts in the busiest week) to learn other
+    products' and vendors' internal APIs, and read every request in chat: 64 KB per body, nothing
+    on disk, no response headers, and bodies gone once the page navigated. On a real shop page the
+    largest API response was 467 KB.
+    - **Export.** `browser_network` `action: "export"` writes the tab's capture as one HAR 1.2
+      file and returns its path and a summary (entries, pages, bodies kept or not and why,
+      WebSocket frames, what was redacted, top hosts); the capture keeps running. It takes the
+      list filters plus `path`, `bodies` (`api` or `none`), `includeWebSocket`, and `overwrite`.
+      The desktop main process holds the capture, so it builds and writes the file itself
+      (temporary file then rename, mode 0600, an existing file only with `overwrite`, never a
+      directory); the HAR never crosses IPC or the daemon socket. The daemon resolves `path` like
+      `browser_screenshot`'s `savePath`; without one the file goes to
+      `~/Downloads/Daseo/network-<host>-<YYYYMMDD-HHmmss>.har`, on the machine running the desktop
+      app. Requests still in flight are counted, not exported; open WebSockets and EventSource
+      streams are exported with `_daseo.open`. An empty capture writes nothing.
+    - **What the file holds.** Each redirect hop is its own entry; wire request headers (cookies
+      included) and response headers come from the ExtraInfo events, joined by request id and hop
+      index whichever order they arrive in, and the basic event's headers stand when none comes.
+      Timings follow DevTools (TLS inside connect, counted once; skipped phases -1), sizes are -1
+      when not known, and `httpVersion` is empty rather than a guessed HTTP/1.1. Pages come from
+      main-frame documents (frame id from `Page.getFrameTree` at export; no pages without it).
+      DevTools' `_resourceType`, `_initiator`, `_fromCache`, `_transferSize`, `_error`,
+      `_webSocketMessages`, and `_eventSourceMessages` are used, and `_daseo` marks a body that is
+      cut (`bodyTruncated`) or missing (`bodyUnavailable`: binary, evicted, budget, redirect,
+      failed, not-captured). `har-to-openapi` 3.0.1 turns it into an OpenAPI spec, but with
+      `--validate` it rejects the whole file for one `ws:`, `data:`, or `blob:` entry (its URL
+      filter runs after that check), so a conversion uses an `http(s)`-only copy or no
+      `--validate`. WebSocket entries keep their `ws(s)://` URL, as DevTools writes them.
+    - **Bodies that survive navigation.** While a capture runs, an XHR, fetch, document, or
+      EventSource response, or any other textual one except scripts, stylesheets, images, fonts,
+      and media, is copied out with `Network.getResponseBody` the moment it finishes, through the
+      tab's CDP queue: 2 MiB per body (the head is kept and the full length recorded), 48 MiB per
+      tab (oldest kept bodies dropped first and marked `budget`). Request bodies Chromium leaves
+      out of the event are fetched at send time. `list` reads the kept copy too, so a body is no
+      longer `evicted` after a navigation; its 64 KB and 256 KB caps are unchanged. WebSocket
+      frames: the first and last 100 per socket, 16 K characters each, binary frames by length
+      only; EventSource the first and last 250 messages; 4 MiB of both per tab. With no capture
+      running none of this runs (the networkidle watcher path is unchanged).
+    - **Always sanitized.** There is no raw export. Credential headers (Cookie, Set-Cookie,
+      Authorization with its scheme word kept, `x-api-key`, CSRF and session headers, any name with
+      token, secret, signature, api-key, or session) keep their names; secret query, form,
+      multipart, and JSON fields at any depth in request and response bodies (password and
+      one-time-code names, tokens, `client_secret`, `sig`, `session`, `key` of 16+ characters,
+      OAuth `code` beside `state` or `redirect_uri`) keep their keys. Each replaced value of 8+
+      characters becomes a stable `<redacted-N>` everywhere it occurs in the file, URL-encoded
+      too, so "received here, sent there" stays readable; JWTs anywhere become
+      `<redacted-jwt-N>`. A test server that echoed a posted password put it in the generated
+      OpenAPI before; Chrome's own sanitized export only clears cookies and Authorization.
+      Personal data in bodies (names, e-mails) is not removed, and the comment in the file says so.
+    - **List.** `includeResponseHeaders` adds each entry's response headers with credentials
+      redacted (pagination, rate-limit, content-disposition).
+    - **Compatibility.** Export is a new `network_export` command, not a `network` action: the
+      action enum is closed and an older host would reject a new value. The broker sends it, and a
+      list with `includeResponseHeaders`, only to a host that advertises `network_export`; an
+      older app gets `browser_unsupported` naming the update. Ledger entries in
+      `packages/protocol/wire-compat-ledger.json`.
+    - **Checks.** Unit tests in `network-capture.test.ts`, `network-har.test.ts`,
+      `network-har-sanitize.test.ts`, `network-export.test.ts`, `service.test.ts`, `rpc-schemas`
+      and tool tests; capture harness `frames-network` exports a real capture across a navigation
+      from a fixture with an HttpOnly cookie, a bearer API, a 302, a 404, a password echo, and a
+      WebSocket, and checks that none of the secrets is in the file. Measured there: one
+      `Network.getResponseBody` per API request and no other extra CDP command, and about 0.75 MB
+      of main-process heap held for 150 captured requests with 2 KB bodies.
+    - **Key files:** `packages/desktop/src/features/browser-automation/{network-capture,network-har,network-har-sanitize,network-export,service,ipc}.ts`,
+      `packages/protocol/src/browser-automation/rpc-schemas.ts`,
+      `packages/protocol/src/paseo-tool-call-detail.ts`,
+      `packages/server/src/server/browser-tools/{tools,broker}.ts`.
 
 ## Local reliability contracts
 

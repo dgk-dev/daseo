@@ -1,4 +1,5 @@
-import { isAbsolute, relative, resolve as resolvePath } from "node:path";
+import { homedir } from "node:os";
+import { isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import { compileFunction } from "node:vm";
 
 import type {
@@ -30,6 +31,11 @@ import { planStreamInputCdpSteps } from "./stream-input.js";
 import { FullPageCaptureUnsupportedError } from "./full-page-capture.js";
 import type { TabLoadingInfo } from "./load-tracker.js";
 import type { NetworkCaptureControl } from "./network-capture.js";
+import {
+  exportNetworkCapture,
+  NetworkExportRefusal,
+  type NetworkExportEnvironment,
+} from "./network-export.js";
 import { CdpQueueTimeoutError } from "./cdp-session-queue.js";
 import { serializeEvaluateValue } from "./evaluate-serialize.js";
 import { PageNotRespondingError } from "./renderer-health.js";
@@ -146,6 +152,8 @@ export interface BrowserRegistry {
   };
   /** Daseo delta 97: every resident tab's lifecycle state and renderer memory, read-only. */
   reportTabs?(): Promise<Omit<BrowserAutomationTabReportResult, "command">>;
+  /** Daseo delta 99: the app version and default folder a network export uses. */
+  networkExportEnvironment?(): Pick<NetworkExportEnvironment, "appVersion" | "defaultDirectory">;
 }
 
 export type AutomationCommandPayload = BrowserAutomationExecuteResponse["payload"];
@@ -195,6 +203,7 @@ const COMMANDS_PAST_OPEN_DIALOG: ReadonlySet<BrowserAutomationCommand["command"]
   "new_tab",
   "logs",
   "network",
+  "network_export",
   "resize",
   "stream_start",
   "stream_stop",
@@ -930,6 +939,13 @@ const commandHandlers: Record<BrowserAutomationCommand["command"], CommandHandle
     >;
     return executeHandleDialog(requestId, workspaceId, dialogCommand.args, registry);
   },
+  network_export: ({ command, requestId, workspaceId, registry }) => {
+    const exportCommand = command as Extract<
+      BrowserAutomationCommand,
+      { command: "network_export" }
+    >;
+    return executeNetworkExport(requestId, workspaceId, exportCommand.args, registry);
+  },
   tab_report: async ({ requestId, registry }) => {
     if (!registry.reportTabs) {
       return fail(requestId, "browser_unsupported", "This browser host has no tab report.");
@@ -1370,6 +1386,7 @@ async function executeNetwork(
       maxEntries: args.maxEntries,
       includeBodies: args.includeBodies,
       includeRequestBodies: args.includeRequestBodies,
+      ...(args.includeResponseHeaders ? { includeResponseHeaders: true } : {}),
     });
     return { requestId, ok: true, result: { ...result, capturing: true, ...listing } };
   } catch (error) {
@@ -1377,6 +1394,65 @@ async function executeNetwork(
       requestId,
       "browser_unknown_error",
       `Network capture ${args.action} failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function executeNetworkExport(
+  requestId: string,
+  workspaceId: string | undefined,
+  args: Extract<BrowserAutomationCommand, { command: "network_export" }>["args"],
+  registry: BrowserRegistry,
+): Promise<AutomationCommandPayload> {
+  const target = resolveTabTarget({ requestId, workspaceId, browserId: args.browserId, registry });
+  if ("ok" in target) {
+    return target;
+  }
+  const capture = target.contents.getNetworkCapture?.();
+  if (!capture) {
+    return fail(requestId, "browser_unsupported", "Network capture is not available for this tab.");
+  }
+  if (!capture.capturing) {
+    return fail(
+      requestId,
+      "browser_unsupported",
+      `Network capture is not running on tab ${target.browserId}. Call browser_network with action "start", trigger the requests, then export them.`,
+    );
+  }
+  if (args.path !== undefined && !isAbsolute(args.path)) {
+    return fail(
+      requestId,
+      "browser_denied",
+      `The export path must be absolute on the desktop host: ${args.path}`,
+    );
+  }
+  const environment = registry.networkExportEnvironment?.();
+  try {
+    const summary = await exportNetworkCapture({
+      capture,
+      args,
+      pageUrl: target.contents.getURL(),
+      environment: {
+        appVersion: environment?.appVersion ?? "unknown",
+        browserVersion: process.versions.chrome ?? "",
+        defaultDirectory: environment?.defaultDirectory ?? join(homedir(), "Downloads", "Daseo"),
+        now: () => new Date(),
+      },
+    });
+    return {
+      requestId,
+      ok: true,
+      result: { command: "network_export", browserId: target.browserId, ...summary },
+    };
+  } catch (error) {
+    if (error instanceof NetworkExportRefusal) {
+      return fail(requestId, "browser_denied", error.message);
+    }
+    if (error instanceof CdpQueueTimeoutError) throw error;
+    return fail(
+      requestId,
+      "browser_unknown_error",
+      `Network export failed: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 }

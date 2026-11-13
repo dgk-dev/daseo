@@ -1,4 +1,6 @@
-import { resolve as resolvePath } from "node:path";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve as resolvePath } from "node:path";
 
 import { describe, expect, test, vi } from "vitest";
 import type {
@@ -10,6 +12,7 @@ import { CdpQueueTimeoutError } from "./cdp-session-queue.js";
 import { FullPageCaptureUnsupportedError } from "./full-page-capture.js";
 import { PageNotRespondingError } from "./renderer-health.js";
 import { PageDialogController } from "./page-dialogs.js";
+import { TabNetworkCapture } from "./network-capture.js";
 import { BrowserSnapshotEngine } from "./snapshot-engine.js";
 import type { BrowserRegistry, TabContents, TabImage } from "./service.js";
 import { clipElementRectToViewport, executeAutomationCommand } from "./service.js";
@@ -3149,6 +3152,101 @@ describe("network capture", () => {
       ok: false,
       error: { code: "browser_unsupported" },
     });
+  });
+
+  test("list passes includeResponseHeaders through only when asked", async () => {
+    const { browser, capture } = harnessWithCapture();
+    await browser.execute(network({ action: "start" }));
+    await browser.execute(network({ action: "list" }));
+    await browser.execute(network({ action: "list", includeResponseHeaders: true }));
+
+    expect(capture.calls[1]).not.toHaveProperty("includeResponseHeaders");
+    expect(capture.calls[2]).toMatchObject({ includeResponseHeaders: true });
+  });
+});
+
+describe("network export (delta 99)", () => {
+  const exportCommand = (args: Record<string, unknown>) =>
+    ({
+      command: "network_export",
+      args: {
+        browserId: BROWSER_A,
+        bodies: "api",
+        includeWebSocket: true,
+        overwrite: false,
+        ...args,
+      },
+    }) as BrowserAutomationCommand;
+
+  async function harnessWithRealCapture(directory: string) {
+    const browser = new BrowserAutomationHarness();
+    const capture = new TabNetworkCapture({
+      sendCommand: async (method) =>
+        method === "Network.getResponseBody" ? { body: "{}", base64Encoded: false } : {},
+    });
+    Object.assign(browser.tab, { getNetworkCapture: () => capture });
+    Object.assign(browser.registry, {
+      networkExportEnvironment: () => ({ appVersion: "9.9.9", defaultDirectory: directory }),
+    });
+    return { browser, capture };
+  }
+
+  test("export before start says to start first", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "daseo-svc-har-"));
+    try {
+      const { browser } = await harnessWithRealCapture(directory);
+      expect(await browser.execute(exportCommand({}))).toMatchObject({
+        ok: false,
+        error: { code: "browser_unsupported", message: expect.stringContaining('action "start"') },
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("export writes the file on the desktop host and returns the summary", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "daseo-svc-har-"));
+    try {
+      const { browser, capture } = await harnessWithRealCapture(directory);
+      await capture.start();
+      capture.handleDebuggerMessage("Network.requestWillBeSent", {
+        requestId: "r",
+        request: { url: "https://api.shop.test/x", method: "GET", headers: {} },
+        type: "XHR",
+        timestamp: 1,
+        wallTime: 1_700_000_000,
+      });
+      capture.handleDebuggerMessage("Network.loadingFinished", { requestId: "r", timestamp: 1.1 });
+      const target = join(directory, "out", "flow.har");
+
+      const result = await browser.execute(exportCommand({ path: target }));
+      expect(result).toMatchObject({
+        ok: true,
+        result: {
+          command: "network_export",
+          browserId: BROWSER_A,
+          path: target,
+          entries: 1,
+          bodies: { embedded: 1 },
+        },
+      });
+      const har = JSON.parse(await readFile(target, "utf8")) as {
+        log: { creator: { version: string } };
+      };
+      expect(har.log.creator.version).toBe("9.9.9");
+      expect((await stat(target)).mode & 0o777).toBe(0o600);
+
+      expect(await browser.execute(exportCommand({ path: target }))).toMatchObject({
+        ok: false,
+        error: { code: "browser_denied", message: expect.stringContaining("already exists") },
+      });
+      expect(await browser.execute(exportCommand({ path: "relative.har" }))).toMatchObject({
+        ok: false,
+        error: { code: "browser_denied", message: expect.stringContaining("absolute") },
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });
 

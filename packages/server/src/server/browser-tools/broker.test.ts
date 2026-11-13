@@ -730,6 +730,65 @@ describe("BrowserToolsBroker", () => {
     expect(client.receivedRequests).toEqual([]);
   });
 
+  test("a host without network_export gets neither the export nor a header list (delta 99)", async () => {
+    const broker = createBroker();
+    const oldDesktop = BROWSER_AUTOMATION_COMMAND_NAMES.filter((name) => name !== "network_export");
+    const client = new FakeBrowserHostClient("host-1", {
+      supportedCommands: oldDesktop,
+      hostKind: "desktop app",
+    });
+    broker.registerClient(client);
+    const list = (args: Record<string, unknown>) =>
+      broker.execute({
+        command: {
+          command: "network",
+          args: {
+            browserId: BROWSER_ID,
+            action: "list",
+            maxEntries: 50,
+            includeBodies: false,
+            includeRequestBodies: false,
+            ...args,
+          },
+        },
+      });
+
+    await expect(
+      broker.execute({
+        command: {
+          command: "network_export",
+          args: { browserId: BROWSER_ID, bodies: "api", includeWebSocket: true, overwrite: false },
+        },
+      }),
+    ).resolves.toEqual({
+      requestId: "req-1",
+      ok: false,
+      error: {
+        code: "browser_unsupported",
+        message:
+          "browser_network export needs a newer Daseo desktop app than the desktop app. Update the Daseo app; until then use action list.",
+        retryable: false,
+      },
+    });
+    await expect(list({ includeResponseHeaders: true })).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "browser_unsupported",
+        message: expect.stringContaining("includeResponseHeaders"),
+      },
+    });
+    expect(client.receivedRequests).toEqual([]);
+    // A list without the new flag still reaches the older host.
+    const plain = list({});
+    await vi.waitFor(() => expect(client.receivedRequests).toHaveLength(1));
+    client.resolveLatestWith(broker, {
+      requestId: "ignored",
+      ok: true,
+      result: { command: "network", browserId: BROWSER_ID, action: "list", capturing: true },
+    });
+    await expect(plain).resolves.toMatchObject({ ok: true });
+  });
+
   test("unregistering a host strands its browser ids instead of routing them to another host", async () => {
     const broker = createBroker();
     const owner = new FakeBrowserHostClient("host-1");

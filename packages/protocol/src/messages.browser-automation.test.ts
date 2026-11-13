@@ -78,6 +78,23 @@ describe("browser automation protocol integration", () => {
     ).toThrow();
   });
 
+  test("an older app's command list lacks network_export, so the daemon never sends it (delta 99)", () => {
+    const olderAppCommands = BROWSER_AUTOMATION_COMMAND_NAMES.filter(
+      (name) => name !== "network_export",
+    );
+    const parsed = WSHelloMessageSchema.parse({
+      type: "hello",
+      clientId: "client-old",
+      clientType: "mobile",
+      protocolVersion: 1,
+      capabilities: {
+        [CLIENT_CAPS.browserHost]: { supportedCommands: olderAppCommands, hostKind: "desktop app" },
+      },
+    }).capabilities as Record<string, { supportedCommands: string[] }>;
+    expect(parsed[CLIENT_CAPS.browserHost]?.supportedCommands).not.toContain("network_export");
+    expect(parsed[CLIENT_CAPS.browserHost]?.supportedCommands).toContain("network");
+  });
+
   test("browser host capability ignores unknown future commands when known commands remain", () => {
     expect(
       WSHelloMessageSchema.parse({

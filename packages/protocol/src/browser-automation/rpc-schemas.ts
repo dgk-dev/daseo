@@ -54,6 +54,7 @@ export const BROWSER_AUTOMATION_COMMAND_NAMES = [
   "passkeys",
   "handle_dialog",
   "tab_report",
+  "network_export",
 ] as const;
 
 export const BrowserAutomationCommandNameSchema = z.enum(BROWSER_AUTOMATION_COMMAND_NAMES);
@@ -390,6 +391,32 @@ export const BrowserAutomationNetworkCommandSchema = z.object({
     maxEntries: z.number().int().positive().max(200).default(50),
     includeBodies: z.boolean().default(false),
     includeRequestBodies: z.boolean().default(false),
+    /**
+     * Daseo delta 99: add each entry's response headers, credentials redacted. Sent only to a host
+     * that advertises `network_export`; an older host's strict args reject it.
+     */
+    includeResponseHeaders: z.boolean().optional(),
+  }),
+});
+
+/**
+ * Daseo delta 99: writes the tab's network capture to a sanitized HAR 1.2 file on the desktop
+ * host. A separate command (not a `network` action) because the action enum is closed and an
+ * older host's parser would reject a new value; the broker gates it on `supportedCommands`.
+ */
+export const BrowserAutomationNetworkExportCommandSchema = z.object({
+  command: z.literal("network_export"),
+  args: BrowserAutomationTabTargetSchema.extend({
+    /** Absolute path on the desktop host; absent writes ~/Downloads/Daseo/network-<host>-<time>.har. */
+    path: z.string().min(1).optional(),
+    /** `api` embeds the kept bodies (xhr, fetch, document, eventsource, textual); `none` none. */
+    bodies: z.enum(["api", "none"]).default("api"),
+    urlIncludes: z.string().min(1).optional(),
+    method: z.string().min(1).optional(),
+    resourceType: BrowserAutomationNetworkResourceTypeSchema.optional(),
+    since: z.number().int().nonnegative().optional(),
+    includeWebSocket: z.boolean().default(true),
+    overwrite: z.boolean().default(false),
   }),
 });
 
@@ -487,6 +514,7 @@ export const BrowserAutomationCommandSchema = z.discriminatedUnion("command", [
   BrowserAutomationPasskeysCommandSchema,
   BrowserAutomationHandleDialogCommandSchema,
   BrowserAutomationTabReportCommandSchema,
+  BrowserAutomationNetworkExportCommandSchema,
 ]);
 
 export const BrowserAutomationTabInfoSchema = z.object({
@@ -785,6 +813,8 @@ export const BrowserAutomationCapturedRequestSchema = z.object({
   responseBodyTruncated: z.boolean().optional(),
   /** Why a requested response body is missing: binary, evicted, redirect, failed, budget. */
   responseBodyUnavailable: z.string().optional(),
+  /** Daseo delta 99: response headers when asked for; credential values read `<redacted>`. */
+  responseHeaders: z.record(z.string(), z.string()).optional(),
 });
 
 export const BrowserAutomationNetworkResultSchema = z.object({
@@ -799,6 +829,44 @@ export const BrowserAutomationNetworkResultSchema = z.object({
   pendingCount: z.number().int().nonnegative().optional(),
   /** Completed requests dropped because the tab buffer was full. */
   droppedCount: z.number().int().nonnegative().optional(),
+});
+
+const NetworkExportCountSchema = z.number().int().nonnegative();
+
+/** Daseo delta 99: what a network export wrote; the HAR itself stays on the desktop host. */
+export const BrowserAutomationNetworkExportResultSchema = z.object({
+  command: z.literal("network_export"),
+  browserId: BrowserAutomationBrowserIdSchema,
+  /** Absolute path on the machine that runs the Daseo desktop app; absent when nothing was written. */
+  path: z.string().optional(),
+  bytes: NetworkExportCountSchema,
+  entries: NetworkExportCountSchema,
+  pages: NetworkExportCountSchema,
+  /** Requests still in flight at export; they are not in the file. */
+  pendingCount: NetworkExportCountSchema,
+  /** Completed requests the tab buffer had already dropped. */
+  droppedCount: NetworkExportCountSchema,
+  bodies: z.object({
+    embedded: NetworkExportCountSchema,
+    truncated: NetworkExportCountSchema,
+    unavailable: z.record(z.string(), NetworkExportCountSchema),
+  }),
+  webSockets: z.object({
+    sockets: NetworkExportCountSchema,
+    frames: NetworkExportCountSchema,
+    framesDropped: NetworkExportCountSchema,
+  }),
+  /** What the sanitizer replaced, by kind (headers, cookies, parameters, bodyFields, ...). */
+  redactions: z.record(z.string(), NetworkExportCountSchema),
+  /** Hosts by request count, at most 15. */
+  hosts: z.array(z.object({ host: z.string(), requests: NetworkExportCountSchema })),
+  window: z
+    .object({
+      /** Epoch milliseconds of the first and last exported request. */
+      firstStartedAt: z.number(),
+      lastStartedAt: z.number(),
+    })
+    .optional(),
 });
 
 export const BrowserAutomationReadResultSchema = z.object({
@@ -1028,6 +1096,7 @@ export const BrowserAutomationResultSchema = z.discriminatedUnion("command", [
   BrowserAutomationPasskeysResultSchema,
   BrowserAutomationHandleDialogResultSchema,
   BrowserAutomationTabReportResultSchema,
+  BrowserAutomationNetworkExportResultSchema,
 ]);
 
 export const BrowserAutomationErrorSchema = z.object({
@@ -1126,6 +1195,12 @@ export type BrowserAutomationCapturedRequest = z.infer<
   typeof BrowserAutomationCapturedRequestSchema
 >;
 export type BrowserAutomationNetworkResult = z.infer<typeof BrowserAutomationNetworkResultSchema>;
+export type BrowserAutomationNetworkExportCommandArgs = z.infer<
+  typeof BrowserAutomationNetworkExportCommandSchema
+>["args"];
+export type BrowserAutomationNetworkExportResult = z.infer<
+  typeof BrowserAutomationNetworkExportResultSchema
+>;
 export type BrowserAutomationWaitLoadState = z.infer<typeof BrowserAutomationWaitLoadStateSchema>;
 export type BrowserAutomationReadCommandArgs = z.infer<
   typeof BrowserAutomationReadCommandSchema

@@ -189,6 +189,55 @@ describe("Paseo tool-call detail presentation", () => {
     ]);
   });
 
+  it("shows a network export's inputs and its path, entries, and size (delta 99)", () => {
+    const sections = buildPaseoToolDetailSections(
+      "mcp__paseo__browser_network",
+      {
+        browserId: "11111111-1111-4111-8111-111111111111",
+        action: "export",
+        path: "captures/flow.har",
+        bodies: "none",
+        overwrite: true,
+      },
+      {
+        structuredContent: {
+          ok: true,
+          result: {
+            command: "network_export",
+            path: "/repo/captures/flow.har",
+            entries: 12,
+            bytes: 20480,
+          },
+        },
+      },
+    );
+    expect(sections).toEqual([
+      {
+        kind: "fields",
+        title: "Details",
+        fields: [
+          { label: "Browser tab", value: "11111111-1111-4111-8111-111111111111" },
+          { label: "Action", value: "export" },
+          { label: "Path", value: "captures/flow.har" },
+          { label: "Bodies", value: "none" },
+          { label: "Overwrite", value: "Yes" },
+        ],
+      },
+      {
+        kind: "fields",
+        title: "Result",
+        fields: [
+          { label: "Ok", value: "Yes" },
+          {
+            label: "Result",
+            value:
+              "Command: network_export\nPath: /repo/captures/flow.har\nEntries: 12\nBytes: 20480",
+          },
+        ],
+      },
+    ]);
+  });
+
   it("labels browser network capture inputs", () => {
     const sections = buildPaseoToolDetailSections(
       "mcp__paseo__browser_network",

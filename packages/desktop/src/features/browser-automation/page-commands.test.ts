@@ -68,6 +68,14 @@ class JsdomTab implements TabContents {
         pendingCount: 0,
         droppedCount: 0,
       }),
+      exportData: async () => ({
+        completed: [],
+        open: [],
+        webSockets: [],
+        pendingCount: 0,
+        droppedCount: 0,
+        clock: null,
+      }),
       trackInflightRequests: async (): Promise<InflightRequestTracker> => ({
         inflight: () => this.inflight,
         lost: () => false,

@@ -1231,3 +1231,142 @@ describe("browser passkeys command (Daseo delta 78)", () => {
     expect(parsed.payload.ok && parsed.payload.result.command).toBe("tab_report");
   });
 });
+
+describe("browser network export (Daseo delta 99)", () => {
+  test("an old network list request parses unchanged and the new header flag stays optional", () => {
+    const old = BrowserAutomationExecuteRequestSchema.parse({
+      type: "browser.automation.execute.request",
+      requestId: "req-network",
+      command: { command: "network", args: { browserId: BROWSER_ID, action: "list" } },
+    });
+    expect(old.command.args).not.toHaveProperty("includeResponseHeaders");
+    const withHeaders = BrowserAutomationExecuteRequestSchema.parse({
+      type: "browser.automation.execute.request",
+      requestId: "req-network",
+      command: {
+        command: "network",
+        args: { browserId: BROWSER_ID, action: "list", includeResponseHeaders: true },
+      },
+    });
+    expect(withHeaders.command.args).toMatchObject({ includeResponseHeaders: true });
+  });
+
+  test("network_export fills its defaults and stays strict", () => {
+    expect(
+      BrowserAutomationExecuteRequestSchema.parse({
+        type: "browser.automation.execute.request",
+        requestId: "req-export",
+        command: { command: "network_export", args: { browserId: BROWSER_ID } },
+      }).command,
+    ).toEqual({
+      command: "network_export",
+      args: { browserId: BROWSER_ID, bodies: "api", includeWebSocket: true, overwrite: false },
+    });
+    expect(
+      BrowserAutomationExecuteRequestSchema.parse({
+        type: "browser.automation.execute.request",
+        requestId: "req-export",
+        command: {
+          command: "network_export",
+          args: {
+            browserId: BROWSER_ID,
+            path: "/Users/a/flow.har",
+            bodies: "none",
+            urlIncludes: "/api/",
+            method: "POST",
+            resourceType: "xhr",
+            since: 3,
+            includeWebSocket: false,
+            overwrite: true,
+          },
+        },
+      }).command.args,
+    ).toMatchObject({ path: "/Users/a/flow.har", bodies: "none", since: 3 });
+    for (const args of [
+      { browserId: BROWSER_ID, bodies: "all" },
+      { browserId: BROWSER_ID, raw: true },
+    ]) {
+      expect(
+        BrowserAutomationExecuteRequestSchema.safeParse({
+          type: "browser.automation.execute.request",
+          requestId: "req-export",
+          command: { command: "network_export", args },
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  test("network_export results round-trip, with and without a written file", () => {
+    const result = {
+      command: "network_export",
+      browserId: BROWSER_ID,
+      path: "/Users/a/Downloads/Daseo/network-shop.test-20261113-090507.har",
+      bytes: 2048,
+      entries: 12,
+      pages: 2,
+      pendingCount: 1,
+      droppedCount: 0,
+      bodies: {
+        embedded: 9,
+        truncated: 1,
+        unavailable: { binary: 0, evicted: 1, budget: 0, redirect: 1, failed: 0, notCaptured: 1 },
+      },
+      webSockets: { sockets: 1, frames: 6, framesDropped: 0 },
+      redactions: {
+        headers: 2,
+        cookies: 3,
+        parameters: 1,
+        bodyFields: 1,
+        propagated: 4,
+        jwts: 0,
+      },
+      hosts: [{ host: "shop.test", requests: 12 }],
+      window: { firstStartedAt: 1, lastStartedAt: 2 },
+    };
+    const parsed = BrowserAutomationExecuteResponseSchema.parse({
+      type: "browser.automation.execute.response",
+      payload: { requestId: "req-export", ok: true, result },
+    });
+    expect(parsed.payload).toEqual({ requestId: "req-export", ok: true, result });
+    const { path: _path, window: _window, ...empty } = result;
+    expect(
+      BrowserAutomationExecuteResponseSchema.safeParse({
+        type: "browser.automation.execute.response",
+        payload: {
+          requestId: "req-export",
+          ok: true,
+          result: { ...empty, bytes: 0, entries: 0 },
+        },
+      }).success,
+    ).toBe(true);
+  });
+
+  test("an old network list result without response headers still parses, and the new one does", () => {
+    const entry = {
+      seq: 1,
+      method: "GET",
+      url: "https://shop.test/api/items",
+      resourceType: "xhr",
+      startedAt: 1,
+      requestHeaders: {},
+    };
+    for (const entries of [[entry], [{ ...entry, responseHeaders: { "x-total": "3" } }]]) {
+      expect(
+        BrowserAutomationExecuteResponseSchema.safeParse({
+          type: "browser.automation.execute.response",
+          payload: {
+            requestId: "req-network",
+            ok: true,
+            result: {
+              command: "network",
+              browserId: BROWSER_ID,
+              action: "list",
+              capturing: true,
+              entries,
+            },
+          },
+        }).success,
+      ).toBe(true);
+    }
+  });
+});
