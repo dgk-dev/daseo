@@ -12,7 +12,8 @@ export async function runAppearanceFontSizeRegression(page) {
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.getByRole("button", { name: "Appearance", exact: true }).click();
 
-  await page.getByLabel("Theme: System", { exact: true }).click();
+  // The default theme is Daseo (delta 55).
+  await page.getByLabel("Theme: Daseo", { exact: true }).click();
   await page.getByText("Pure black", { exact: true }).click();
 
   const input = page.getByRole("textbox", { name: "Interface font size" });
