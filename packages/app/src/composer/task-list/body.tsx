@@ -174,6 +174,7 @@ const TaskSectionBlock = memo(function TaskSectionBlock({
         tone={key === "decision" ? "warning" : undefined}
         collapsed={collapsed}
         onToggle={isTaskSectionCollapsible(key) ? toggle : undefined}
+        alwaysShowState
         testID={`task-sidebar-section-${key}-header`}
       />
       {collapsed ? null : (

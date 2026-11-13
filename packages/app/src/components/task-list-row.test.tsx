@@ -37,6 +37,7 @@ vi.mock("react-native", () => ({
         "data-color": resolvedStyle.color,
         "data-decoration": resolvedStyle.textDecorationLine,
         "data-size": resolvedStyle.fontSize,
+        "data-line-height": resolvedStyle.lineHeight,
         "data-lines": numberOfLines,
       },
       children,
@@ -143,13 +144,17 @@ describe("TaskListRow", () => {
   });
 });
 
-function renderedLines(
-  container: HTMLElement,
-): { text: string | null; color: string | null; size: string | null }[] {
+function renderedLines(container: HTMLElement): {
+  text: string | null;
+  color: string | null;
+  size: string | null;
+  lineHeight: string | null;
+}[] {
   return [...container.querySelectorAll("[data-color]")].map((line) => ({
     text: line.textContent,
     color: line.getAttribute("data-color"),
     size: line.getAttribute("data-size"),
+    lineHeight: line.getAttribute("data-line-height"),
   }));
 }
 
@@ -172,8 +177,8 @@ describe("TaskListRow in the task sidebar (Daseo delta 101)", () => {
     act(() => root.render(<TaskListRow task={decisionTask} variant="sidebar" />));
 
     expect(renderedLines(container)).toEqual([
-      { text: "Pick a model", color: "#foreground", size: "16" },
-      { text: "Opus or Sonnet", color: "#muted", size: "14" },
+      { text: "Pick a model", color: "#foreground", size: "16", lineHeight: "22" },
+      { text: "Opus or Sonnet", color: "#muted", size: "14", lineHeight: "20" },
     ]);
     expect(container.querySelector('[data-icon="CircleQuestionMark"]')?.getAttribute("color")).toBe(
       "#warning",

@@ -189,8 +189,10 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.base,
     lineHeight: Math.round(theme.fontSize.base * 1.4),
   },
+  // The prose line height of its size (as the subject's), so a wrapped note keeps its leading.
   sidebarDetail: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
+    lineHeight: Math.round(theme.fontSize.sm * 1.4),
   },
 }));

@@ -2442,10 +2442,12 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        tasks as In progress, Needs your decision, To do, On hold, Done, Dropped, each under the
        left sidebar's `── label · count ──` rule (delta 89); a section with no task is not drawn.
        The decision rule is in the warning status color. Done and Dropped fold like the pinned
-       section (▸/▾ on hover) and start folded on every mount. Inside a section tasks keep the
+       section but always show ▸/▾ (the pinned section shows it on hover), and start folded on
+       every mount. Inside a section tasks keep the
        agent's order, so numbered subjects still read in order. A row is the subject at the chat's
        prose size (up to three lines), then what a task in progress is doing now, then the agent's
-       note, each on its own smaller muted line without the state word. Claude Code and Codex
+       note, each on its own smaller muted line (14 on 20, the prose leading of that size) without
+       the state word. Claude Code and Codex
        lists show only In progress, To do, and Done. One pure function places the tasks
        (`composer/task-list/sections.ts`, on `resolveTaskRowState`); the board above the composer
        keeps its full line, the agent's flat order, and its one-line rows (`TaskListBody`, the

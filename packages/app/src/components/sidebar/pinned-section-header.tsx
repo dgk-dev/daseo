@@ -26,20 +26,23 @@ export function PinnedSectionHeader({
 
 /**
  * A sidebar section's `── title ──` header in its row box. With `onToggle` it folds the section
- * and shows the state as ▸/▾ (Daseo delta 89); without it, it only names the section. Shared by
- * the pinned section and the task sidebar's sections (delta 101).
+ * and shows the state as ▸/▾ (Daseo delta 89), on hover on the web unless `alwaysShowState`;
+ * without it, it only names the section. Shared by the pinned section and the task sidebar's
+ * sections (delta 101), whose folded sections always show that they open.
  */
 export function SidebarSectionHeader({
   title,
   tone,
   collapsed = false,
   onToggle,
+  alwaysShowState = false,
   testID,
 }: {
   title: string;
   tone?: "warning";
   collapsed?: boolean;
   onToggle?: () => void;
+  alwaysShowState?: boolean;
   testID?: string;
 }) {
   const isCompact = useIsCompactFormFactor();
@@ -67,7 +70,7 @@ export function SidebarSectionHeader({
         <SidebarSectionRule
           title={title}
           tone={tone}
-          trailing={hovered || isNative || isCompact ? stateMark : undefined}
+          trailing={alwaysShowState || hovered || isNative || isCompact ? stateMark : undefined}
         />
       )}
     </Pressable>
