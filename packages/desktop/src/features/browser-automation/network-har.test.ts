@@ -492,6 +492,47 @@ describe("buildHar", () => {
     );
   });
 
+  it("leaves data:, blob:, and about: requests out of the file and counts them", async () => {
+    const pixel = `data:image/png;base64,${"A".repeat(4096)}`;
+    const data = await exportOf(
+      [
+        request("blank", { url: "about:blank", type: "Document", frameId: MAIN_FRAME }),
+        finished("blank", 99.9),
+        request("page", {
+          url: "https://shop.test/",
+          type: "Document",
+          frameId: MAIN_FRAME,
+          timestamp: 100,
+        }),
+        finished("page", 100.1),
+        request("img", { url: pixel, type: "Image", timestamp: 100.2 }),
+        finished("img", 100.21),
+        request("blob", { url: "blob:https://shop.test/5f1c", type: "Fetch", timestamp: 100.3 }),
+        finished("blob", 100.31),
+        request("api", { url: "https://api.shop.test/v1/a", timestamp: 100.4 }),
+        response("api"),
+        finished("api", 100.5),
+      ],
+      { api: { body: "{}" } },
+    );
+    const { har, stats } = buildHar(data, OPTIONS);
+
+    expect(har.log.entries.map((entry) => entry.request.url)).toEqual([
+      "https://shop.test/",
+      "https://api.shop.test/v1/a",
+    ]);
+    expect(har.log.pages?.map((page) => page.title)).toEqual(["https://shop.test/"]);
+    expect(stats).toMatchObject({ entries: 2, pages: 1, skippedNonNetwork: 3 });
+    expect(JSON.stringify(har)).not.toContain("data:image");
+    expect(describeHarExport(stats, {}, "api")).toContain(
+      "3 requests for data:, blob:, about:, and other non-network URLs are left out.",
+    );
+    // A filter that excludes them does not count them.
+    expect(
+      buildHar(data, { ...OPTIONS, urlIncludes: "shop.test/v1" }).stats.skippedNonNetwork,
+    ).toBe(0);
+  });
+
   it("filters like list and leaves bodies out with bodies none", async () => {
     const data = await exportOf(
       [

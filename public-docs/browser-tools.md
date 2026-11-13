@@ -46,10 +46,10 @@ Arguments marked `?` are optional.
 `browser_network` with `action: "export"` writes the tab's capture to one HAR 1.2 file and returns its path and a summary; the capture keeps running. The file is written by the desktop app, on the machine that runs it: `path` is resolved against the agent's working directory (`~/` is the home directory), and without one it goes to `~/Downloads/Daseo/network-<host>-<time>.har`. An existing file is replaced only with `overwrite: true`.
 
 - API-type response bodies (XHR, fetch, document, EventSource, and other textual responses) are kept from the moment they finish, up to 2 MB each, so a navigation does not lose them. `bodies: "none"` leaves them out. Scripts, stylesheets, images, fonts, and media are never embedded.
-- Redirect hops, response headers, timings, and WebSocket frames are included. Requests still in flight are counted, not written.
+- Redirect hops, response headers, timings, and WebSocket frames are included. Requests still in flight are counted, not written, and so are requests for `data:`, `blob:`, `about:`, and other URLs that never touched the network.
 - The file is always sanitized: credential headers and cookies, secret query, form, and JSON fields, and JWTs are replaced with `<redacted-N>` placeholders, and the same placeholder marks every other place the value appears. Personal data in bodies, such as names and e-mail addresses, is not removed; keep the file private.
 
-The file opens in Chrome DevTools and converts with `har-to-openapi`. With `--validate`, `har-to-openapi` rejects a file that holds any `ws:`, `data:`, or `blob:` entry, so convert a copy with only `http(s)` entries, or run it without `--validate`.
+The file opens in Chrome DevTools and converts with `har-to-openapi`. With `--validate`, `har-to-openapi` rejects a file that holds a WebSocket (`ws:`) entry, so export with `includeWebSocket: false`, convert a copy with only `http(s)` entries, or run it without `--validate`.
 
 ## Interacting
 

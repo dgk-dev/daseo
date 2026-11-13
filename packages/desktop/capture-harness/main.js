@@ -2964,6 +2964,9 @@ async function startFramesNetworkServers() {
   return { page, cross };
 }
 
+const EXPORT_PIXEL_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+
 // Delta 99 export fixture: credentials the exported file must never contain.
 const EXPORT_FIXTURE = {
   cookie: "sid-cookie-0123456789abcdef",
@@ -2983,7 +2986,10 @@ function handleNetworkExportFixture(request, response) {
         ? { "set-cookie": `sid=${EXPORT_FIXTURE.cookie}; HttpOnly; Path=/` }
         : {}),
     });
-    response.end(`<!doctype html><title>${request.url}</title><h1>${request.url}</h1>`);
+    // The data: image never touches the network: the export must leave it out and count it.
+    response.end(
+      `<!doctype html><title>${request.url}</title><h1>${request.url}</h1>${request.url === "/x/app" ? `<img alt="pixel" src="data:image/png;base64,${EXPORT_PIXEL_BASE64}">` : ""}`,
+    );
     return;
   }
   if (request.headers.authorization !== `Bearer ${EXPORT_FIXTURE.bearer}`) {
@@ -3433,13 +3439,14 @@ async function verifyNetworkExport(harness, servers) {
   const extraCommands =
     (counts["Network.getResponseBody"] ?? 0) + (counts["Network.getRequestPostData"] ?? 0);
   pass(
-    `network export writes a sanitized HAR across a navigation: ${har.log.entries.length} entries, ${har.log.pages.length} pages, ${exported.bytes} bytes, redactions ${JSON.stringify(exported.redactions)}, ${extraCommands} body copies for ${requestsSeen} requests`,
+    `network export writes a sanitized HAR across a navigation: ${har.log.entries.length} entries, ${har.log.pages.length} pages, ${exported.bytes} bytes, redactions ${JSON.stringify(exported.redactions)}, ${exported.skippedNonNetwork} non-network requests left out, ${extraCommands} body copies for ${requestsSeen} requests`,
   );
   return {
     path: exportPath,
     entries: har.log.entries.length,
     bytes: exported.bytes,
     redactions: exported.redactions,
+    skippedNonNetwork: exported.skippedNonNetwork,
     cdpCommandsDuringFlow: counts,
     bodyCopiesPerRequest: Number((extraCommands / Math.max(1, requestsSeen)).toFixed(2)),
   };
@@ -3468,6 +3475,17 @@ function exportFileProblems({ har, text, mode, exported, flow, exportPath }) {
     [mode, 0o600],
     [exported.path, exportPath],
     [exported.entries, har.log.entries.length],
+    // The pixel's bytes appear only in the HTML of the page that shows it, never as an entry.
+    [
+      har.log.entries
+        .filter((entry) => JSON.stringify(entry).includes(EXPORT_PIXEL_BASE64))
+        .map((entry) => new URL(entry.request.url).pathname)
+        .join(","),
+      "/x/app",
+    ],
+    [har.log.entries.some((entry) => !/^(https?|wss?):/.test(entry.request.url)), false],
+    [exported.skippedNonNetwork >= 1, true],
+    [har.log.comment.includes("non-network URLs are left out"), true],
   ]);
 }
 

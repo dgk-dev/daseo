@@ -64,6 +64,7 @@ export async function exportNetworkCapture(input: {
     pages: stats.pages,
     pendingCount: stats.pendingCount,
     droppedCount: stats.droppedCount,
+    skippedNonNetwork: stats.skippedNonNetwork,
     bodies: stats.bodies,
     webSockets: stats.webSockets,
     redactions,

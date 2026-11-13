@@ -2310,7 +2310,9 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       `browser_screenshot`'s `savePath`; without one the file goes to
       `~/Downloads/Daseo/network-<host>-<YYYYMMDD-HHmmss>.har`, on the machine running the desktop
       app. Requests still in flight are counted, not exported; open WebSockets and EventSource
-      streams are exported with `_daseo.open`. An empty capture writes nothing.
+      streams are exported with `_daseo.open`. Requests for `data:`, `blob:`, `about:`, and other
+      URLs that never touched the network are left out and counted (`skippedNonNetwork`): a
+      `data:` URL can be megabytes inside `request.url`. An empty capture writes nothing.
     - **What the file holds.** Each redirect hop is its own entry; wire request headers (cookies
       included) and response headers come from the ExtraInfo events, joined by request id and hop
       index whichever order they arrive in, and the basic event's headers stand when none comes.
@@ -2321,9 +2323,10 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       `_webSocketMessages`, and `_eventSourceMessages` are used, and `_daseo` marks a body that is
       cut (`bodyTruncated`) or missing (`bodyUnavailable`: binary, evicted, budget, redirect,
       failed, not-captured). `har-to-openapi` 3.0.1 turns it into an OpenAPI spec, but with
-      `--validate` it rejects the whole file for one `ws:`, `data:`, or `blob:` entry (its URL
-      filter runs after that check), so a conversion uses an `http(s)`-only copy or no
-      `--validate`. WebSocket entries keep their `ws(s)://` URL, as DevTools writes them.
+      `--validate` it rejects the whole file for one non-`http(s)` entry (its URL filter runs
+      after that check). WebSocket entries keep their `ws(s)://` URL, as DevTools writes them, so
+      a conversion uses an `http(s)`-only copy, an export with `includeWebSocket: false`, or no
+      `--validate`.
     - **Bodies that survive navigation.** While a capture runs, an XHR, fetch, document, or
       EventSource response, or any other textual one except scripts, stylesheets, images, fonts,
       and media, is copied out with `Network.getResponseBody` the moment it finishes, through the

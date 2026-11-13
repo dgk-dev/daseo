@@ -2008,6 +2008,9 @@ function summarizeNetworkExport(result: BrowserAutomationNetworkExportResult): s
         ]
       : []),
     `Redacted: ${redacted || "nothing"}.${inFlight}${result.droppedCount > 0 ? ` ${result.droppedCount} older requests had been dropped from the tab buffer.` : ""}`,
+    ...(result.skippedNonNetwork
+      ? [`${result.skippedNonNetwork} data:, blob:, or other non-network requests were left out.`]
+      : []),
     `Hosts: ${result.hosts.map((host) => `${host.host} ${host.requests}`).join(", ")}.`,
   ];
   return lines.join("\n");

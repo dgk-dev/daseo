@@ -846,6 +846,8 @@ export const BrowserAutomationNetworkExportResultSchema = z.object({
   pendingCount: NetworkExportCountSchema,
   /** Completed requests the tab buffer had already dropped. */
   droppedCount: NetworkExportCountSchema,
+  /** Requests for data:, blob:, about:, and other non-network URLs, left out of the file. */
+  skippedNonNetwork: NetworkExportCountSchema.optional(),
   bodies: z.object({
     embedded: NetworkExportCountSchema,
     truncated: NetworkExportCountSchema,

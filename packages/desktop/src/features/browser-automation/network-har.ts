@@ -166,6 +166,8 @@ export interface HarBuildStats {
   pages: number;
   pendingCount: number;
   droppedCount: number;
+  /** Requests for data:, blob:, about:, and other URLs that never touched the network. */
+  skippedNonNetwork: number;
   bodies: { embedded: number; truncated: number; unavailable: BodyUnavailableCounts };
   webSockets: { sockets: number; frames: number; framesDropped: number };
   hosts: Array<{ host: string; requests: number }>;
@@ -183,6 +185,7 @@ export function buildHar(
     pages: 0,
     pendingCount: capture.pendingCount,
     droppedCount: capture.droppedCount,
+    skippedNonNetwork: 0,
     bodies: {
       embedded: 0,
       truncated: 0,
@@ -227,6 +230,12 @@ function collectEntries(
   const items: OrderedEntry[] = [];
   for (const record of [...capture.completed, ...capture.open]) {
     if (!matchesNetworkFilter(record, filter)) continue;
+    // A data: URL can be megabytes inside request.url and never touched the network; HAR
+    // consumers such as har-to-openapi --validate reject the whole file for one such entry.
+    if (!isHttpUrl(record.url)) {
+      stats.skippedNonNetwork += 1;
+      continue;
+    }
     items.push({
       wallSeconds: record.wallTime,
       order: items.length,
@@ -303,6 +312,11 @@ export function describeHarExport(
       : []),
     ...(stats.droppedCount > 0
       ? [`${stats.droppedCount} older requests had already been dropped from the tab buffer.`]
+      : []),
+    ...(stats.skippedNonNetwork > 0
+      ? [
+          `${stats.skippedNonNetwork} requests for data:, blob:, about:, and other non-network URLs are left out.`,
+        ]
       : []),
     ...(stats.webSockets.framesDropped > 0
       ? [`${stats.webSockets.framesDropped} WebSocket frames were not kept (per-socket limit).`]
@@ -532,6 +546,7 @@ function buildPages(
   const navigations = new Map<string, CapturedRequestRecord[]>();
   for (const record of [...capture.completed, ...capture.open]) {
     if (record.cdpType !== "document" || record.frameId !== mainFrameId) continue;
+    if (!isHttpUrl(record.url)) continue;
     const hops = navigations.get(record.requestId) ?? [];
     hops.push(record);
     navigations.set(record.requestId, hops);
@@ -712,6 +727,11 @@ export function parseQueryString(url: string): HarNameValue[] {
   } catch {
     return [];
   }
+}
+
+/** http(s) requests are entries; WebSockets (ws:, wss:) come from their own records. */
+function isHttpUrl(url: string): boolean {
+  return /^https?:/i.test(url);
 }
 
 function stripFragment(url: string): string {

@@ -1994,6 +1994,38 @@ describe("registerBrowserTools", () => {
     }
   });
 
+  test("network export says how many non-network requests it left out (skippedNonNetwork)", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-export",
+      ok: true,
+      result: {
+        command: "network_export",
+        browserId: BROWSER_ID,
+        path: "/repo/flow.har",
+        bytes: 512,
+        entries: 1,
+        pages: 0,
+        pendingCount: 0,
+        droppedCount: 0,
+        skippedNonNetwork: 3,
+        bodies: { embedded: 1, truncated: 0, unavailable: {} },
+        webSockets: { sockets: 0, frames: 0, framesDropped: 0 },
+        redactions: {},
+        hosts: [{ host: "shop.test", requests: 1 }],
+      },
+    });
+
+    const response = await harness.execute("browser_network", {
+      browserId: BROWSER_ID,
+      action: "export",
+    });
+
+    expect(response.content[0]?.text).toContain(
+      "Redacted: nothing.\n3 data:, blob:, or other non-network requests were left out.\nHosts: shop.test 1.",
+    );
+  });
+
   test("network export of an empty capture says nothing was written", async () => {
     const harness = new BrowserToolHarness();
     harness.broker.setResponse({

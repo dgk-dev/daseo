@@ -1341,6 +1341,41 @@ describe("browser network export (Daseo delta 99)", () => {
     ).toBe(true);
   });
 
+  test("network_export results parse with and without skippedNonNetwork", () => {
+    const result = {
+      command: "network_export",
+      browserId: BROWSER_ID,
+      path: "/tmp/a.har",
+      bytes: 10,
+      entries: 1,
+      pages: 0,
+      pendingCount: 0,
+      droppedCount: 0,
+      bodies: { embedded: 1, truncated: 0, unavailable: {} },
+      webSockets: { sockets: 0, frames: 0, framesDropped: 0 },
+      redactions: {},
+      hosts: [{ host: "shop.test", requests: 1 }],
+    };
+    for (const variant of [result, { ...result, skippedNonNetwork: 4 }]) {
+      expect(
+        BrowserAutomationExecuteResponseSchema.parse({
+          type: "browser.automation.execute.response",
+          payload: { requestId: "req-export", ok: true, result: variant },
+        }).payload,
+      ).toEqual({ requestId: "req-export", ok: true, result: variant });
+    }
+    expect(
+      BrowserAutomationExecuteResponseSchema.safeParse({
+        type: "browser.automation.execute.response",
+        payload: {
+          requestId: "req-export",
+          ok: true,
+          result: { ...result, skippedNonNetwork: -1 },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
   test("an old network list result without response headers still parses, and the new one does", () => {
     const entry = {
       seq: 1,
