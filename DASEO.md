@@ -880,7 +880,8 @@ edits · 1 command · 2 file reads`; the counts end in an ellipsis before the ti
     on desktop and Android, so Hangul in code matches the body (since delta 53 the body is D2Coding
     too). (b) Machine facts use the monospace: timestamps, elapsed time, the "Worked for" row,
     diff counts, and keycaps. (c) A one-line status bar
-    under the desktop workspace: host · workspace · branch · active agent's model, and how many
+    under the desktop workspace (web and desktop app only; since 0.5.118 the native app never shows
+    it, the owner did not want that footer under the composer on the unfolded Fold): host · workspace · branch · active agent's model, and how many
     agents run in the workspace. (d) The Daseo theme's corners drop from 8 to 4 px (radius scale
     0/2/2/3/4/6/8); the selected sidebar row also gets a 2 px rail on its left, reserved on every
     row so text never shifts. (e) Shortcuts are keycaps: mono text in a hairline-bordered key, and

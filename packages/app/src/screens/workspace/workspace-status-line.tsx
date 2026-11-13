@@ -3,13 +3,14 @@ import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
 import { useStoreWithEqualityFn } from "zustand/traditional";
+import { isWeb } from "@/constants/platform";
 import { useSessionStore } from "@/stores/session-store";
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
 import type { WorkspaceTabDescriptor } from "@/screens/workspace/workspace-tabs-types";
 import { formatMessageTimestamp } from "@/utils/time";
 
 interface WorkspaceStatusLineProps {
-  /** Desktop only: compact layouts have no room for a status bar. */
+  /** False on compact layouts, which have no room for a status bar. */
   visible: boolean;
   serverId: string;
   workspaceId: string;
@@ -95,7 +96,9 @@ export const WorkspaceStatusLine = memo(function WorkspaceStatusLine({
     statusLineAgentFactsEqual,
   );
 
-  if (!visible) {
+  // Web and desktop app only: on the unfolded Fold the bar sat under the composer as a footer the
+  // owner did not want (2026-11-14).
+  if (!visible || !isWeb) {
     return null;
   }
 
