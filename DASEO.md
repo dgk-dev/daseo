@@ -2257,13 +2257,16 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
     - **Rule.** Every 10 minutes (first sweep 2 minutes after connecting) the desktop app looks at
       this daemon's workspaces and closes a tab only when an agent opened it, no person ever saw
       or used it, it is not the selected tab of any pane, no other agent used it within the idle
-      time, and its creator is archived, or has sent no browser command for
-      `browser.autoCloseAgentTabsAfterHours` (24) and is not running or holding background waits.
-      The creator's state comes from the daemon (`fetch_agent` reads archived records too); a
-      creator the daemon cannot be asked about keeps the tab. Main then vetoes any tab a pane
-      shows, a command, capture, or phone stream holds, that was typed into, is downloading,
-      capturing network, holding a dialog, playing sound, or has a popup open. Each close is
-      re-checked against the stores and main right before it happens.
+      time, and either its creator is archived and last used the tab at least 6 hours ago
+      (`ARCHIVED_CREATOR_GRACE_MS`; the idle setting caps it when shorter), or its creator has
+      sent no browser command for `browser.autoCloseAgentTabsAfterHours` (24) and is not running
+      or holding background waits. The grace exists because an implementer often leaves a page
+      open for the owner and is archived by its lead minutes later, before he has looked. The
+      creator's state comes from the daemon (`fetch_agent` reads archived records too); a creator
+      the daemon cannot be asked about keeps the tab. Main then vetoes any tab a pane shows, a
+      command, capture, or phone stream holds, that was typed into, is downloading, capturing
+      network, holding a dialog, playing sound, or has a popup open. Each close is re-checked
+      against the stores and main right before it happens.
     - **Rehearsal.** `browser.autoCloseAgentTabs` is `rehearse` by default: main logs a
       `[browser-auto-close] would close` line (browser id, workspace id, reason, creator agent id,
       idle hours, host) once a day per tab and nothing closes. `on` closes and logs `closed`;
@@ -2281,8 +2284,9 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       `desktop-settings.test.ts`, `browser-webviews/auto-close.test.ts`; the desktop browser E2E's
       auto-close regression (an agent opens two tabs, a person shows one, the agent is archived:
       only the other closes, appears under recently closed, and reopens at its URL), run with
-      `autoCloseAgentTabs: "on"` and `PASEO_BROWSER_AUTO_CLOSE_SWEEP_MS` (a test seam main passes
-      to the app).
+      `autoCloseAgentTabs: "on"` and `PASEO_BROWSER_AUTO_CLOSE_SWEEP_MS="3000,10000"` (a test
+      seam main passes to the app: a 3 s sweep and a 10 s archived-creator grace; the run checks
+      the tab is still open one sweep after the archive).
     - **Key files:** `packages/app/src/desktop/browser/provenance/{state,index,auto-close,sweeper,reopen}.ts`,
       `packages/app/src/desktop/browser/automation/handler.ts`, `resident-webviews.ts`,
       `packages/app/src/screens/workspace/workspace-desktop-tabs-row.tsx`,

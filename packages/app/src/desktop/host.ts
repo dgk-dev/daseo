@@ -210,6 +210,8 @@ export interface DesktopBrowserAutoCloseCheck {
   blockers: Record<string, string | null>;
   /** E2E seam: how often to sweep, when main was started with a test override. */
   sweepIntervalMs?: number;
+  /** E2E seam: the archived-creator grace, when main was started with a test override. */
+  archivedGraceMs?: number;
 }
 
 export interface DesktopBrowserAutoCloseLogEntry {

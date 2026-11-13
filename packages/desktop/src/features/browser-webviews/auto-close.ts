@@ -10,14 +10,24 @@ export interface BrowserAutoCloseCheck {
   mode: BrowserAutoCloseMode;
   afterHours: number;
   blockers: Record<string, BrowserCloseBlockReason | null>;
-  /** E2E seam: `PASEO_BROWSER_AUTO_CLOSE_SWEEP_MS` shortens the app's ten-minute sweep. */
+  /**
+   * E2E seam: `PASEO_BROWSER_AUTO_CLOSE_SWEEP_MS="<sweepMs>[,<archivedGraceMs>]"` shortens the
+   * app's ten-minute sweep and the six-hour grace for an archived creator's tabs.
+   */
   sweepIntervalMs?: number;
+  archivedGraceMs?: number;
 }
 
-/** The E2E sweep interval override, when it is a positive number of milliseconds. */
-export function readAutoCloseSweepOverride(value: string | undefined): number | undefined {
-  const ms = Number(value);
-  return Number.isFinite(ms) && ms > 0 ? ms : undefined;
+/** The E2E timing overrides, each only when it is a positive number of milliseconds. */
+export function readAutoCloseTimingOverride(value: string | undefined): {
+  sweepIntervalMs?: number;
+  archivedGraceMs?: number;
+} {
+  const [sweep, grace] = (value ?? "").split(",").map((part) => Number(part));
+  return {
+    ...(Number.isFinite(sweep) && sweep > 0 ? { sweepIntervalMs: sweep } : {}),
+    ...(Number.isFinite(grace) && grace > 0 ? { archivedGraceMs: grace } : {}),
+  };
 }
 
 export interface BrowserAutoCloseLogEntry {

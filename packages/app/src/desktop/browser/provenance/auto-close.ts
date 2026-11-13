@@ -26,6 +26,13 @@ export type BrowserAutoCloseDecision =
   | { close: true; reason: BrowserAutoCloseReason; idleHours: number }
   | { close: false; keep: BrowserAutoCloseKeepReason };
 
+/**
+ * An archived creator's tab still waits this long after the creator last used it. An implementer
+ * often leaves a page open for the owner and is archived by its lead minutes later, before he has
+ * looked; closing at the next sweep would take the page away unseen. A shorter idle setting wins.
+ */
+export const ARCHIVED_CREATOR_GRACE_MS = 6 * 3_600_000;
+
 export interface BrowserAutoCloseTab {
   browserId: string;
   /** The tab is the selected tab of a pane, so a person may have it on screen. */
@@ -35,8 +42,8 @@ export interface BrowserAutoCloseTab {
 /**
  * The provenance part of the auto-close rule. A tab closes only when an agent opened it, no person
  * has ever seen or used it, it is not the selected tab of any pane, no other agent used it within
- * the idle time, and its creator is archived or has sent no browser command for `afterMs` and is
- * not running. Anything not known keeps the tab. Main still has to clear it (on screen, phone
+ * the idle time, and its creator is archived and last used it at least six hours ago (or
+ * `afterMs`, when shorter), or has sent no browser command for `afterMs` and is not running. Anything not known keeps the tab. Main still has to clear it (on screen, phone
  * stream, typed into, downloading, audible, dialog, popup) before it is closed.
  */
 export function decideBrowserAutoClose(input: {
@@ -45,6 +52,8 @@ export function decideBrowserAutoClose(input: {
   creator: CreatorAgentStatus;
   now: number;
   afterMs: number;
+  /** E2E seam only; production uses ARCHIVED_CREATOR_GRACE_MS. */
+  archivedGraceMs?: number;
 }): BrowserAutoCloseDecision {
   const { state, tab, creator, now, afterMs } = input;
   const provenance = state.provenanceByBrowserId[tab.browserId];
@@ -63,7 +72,10 @@ export function decideBrowserAutoClose(input: {
     return { close: false, keep: "creator-unknown" };
   }
   if (creator.kind === "archived") {
-    return { close: true, reason: "creator-archived", idleHours };
+    const graceMs = Math.min(input.archivedGraceMs ?? ARCHIVED_CREATOR_GRACE_MS, afterMs);
+    return now - lastCreatorUse >= graceMs
+      ? { close: true, reason: "creator-archived", idleHours }
+      : { close: false, keep: "creator-recent" };
   }
   if (creator.kind === "active" && creator.running) {
     return { close: false, keep: "creator-running" };

@@ -113,7 +113,7 @@ import { parseOpenProjectPathFromArgv } from "./open-project-routing.js";
 import { PendingOpenProjectStore } from "./pending-open-project-store.js";
 import { getDesktopSettingsStore } from "./settings/desktop-settings-electron.js";
 import {
-  readAutoCloseSweepOverride,
+  readAutoCloseTimingOverride,
   readBrowserAutoCloseLogEntries,
   readBrowserIdList,
   type BrowserAutoCloseCheck,
@@ -893,14 +893,11 @@ ipcMain.handle(
     } catch (error) {
       log.warn("[browser-auto-close] settings unavailable; nothing is closed", error);
     }
-    const sweepIntervalMs = readAutoCloseSweepOverride(
-      process.env.PASEO_BROWSER_AUTO_CLOSE_SWEEP_MS,
-    );
     return {
       mode,
       afterHours,
       blockers: getPaseoBrowserCloseBlocks(browserIds),
-      ...(sweepIntervalMs !== undefined ? { sweepIntervalMs } : {}),
+      ...readAutoCloseTimingOverride(process.env.PASEO_BROWSER_AUTO_CLOSE_SWEEP_MS),
     };
   },
 );

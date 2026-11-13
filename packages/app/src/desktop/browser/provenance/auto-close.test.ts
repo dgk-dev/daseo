@@ -1,5 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { decideBrowserAutoClose, type CreatorAgentStatus } from "./auto-close";
+import {
+  ARCHIVED_CREATOR_GRACE_MS,
+  decideBrowserAutoClose,
+  type CreatorAgentStatus,
+} from "./auto-close";
 import {
   addRecentlyClosedBrowser,
   countUnseenTabsOpenedByAgent,
@@ -29,22 +33,49 @@ function decide(
   creator: CreatorAgentStatus,
   now: number,
   focusedInPane = false,
+  afterMs = AFTER,
 ) {
   return decideBrowserAutoClose({
     state,
     tab: { browserId: "tab-1", focusedInPane },
     creator,
     now,
-    afterMs: AFTER,
+    afterMs,
   });
 }
 
 describe("agent tab auto-close rule (delta 98)", () => {
-  test("closes an unseen agent tab once its creator is archived", () => {
-    expect(decide(opened(), { kind: "archived" }, T0 + HOUR)).toEqual({
+  test("an archived creator's unseen tab waits six hours after the creator last used it", () => {
+    expect(ARCHIVED_CREATOR_GRACE_MS).toBe(6 * HOUR);
+    expect(decide(opened(), { kind: "archived" }, T0 + 10 * 60_000)).toEqual({
+      close: false,
+      keep: "creator-recent",
+    });
+    expect(decide(opened(), { kind: "archived" }, T0 + 6 * HOUR - 1)).toEqual({
+      close: false,
+      keep: "creator-recent",
+    });
+    expect(decide(opened(), { kind: "archived" }, T0 + 6 * HOUR)).toEqual({
       close: true,
       reason: "creator-archived",
-      idleHours: 1,
+      idleHours: 6,
+    });
+  });
+
+  test("the grace counts from the creator's last command, and a shorter idle setting caps it", () => {
+    const used = recordAgentCommand(opened(), {
+      browserId: "tab-1",
+      agentId: "agent-a",
+      now: T0 + 5 * HOUR,
+    });
+    expect(decide(used, { kind: "archived" }, T0 + 6 * HOUR)).toEqual({
+      close: false,
+      keep: "creator-recent",
+    });
+    expect(decide(used, { kind: "archived" }, T0 + 11 * HOUR)).toMatchObject({ close: true });
+    expect(decide(opened(), { kind: "archived" }, T0 + 2 * HOUR, false, 2 * HOUR)).toMatchObject({
+      close: true,
+      reason: "creator-archived",
     });
   });
 

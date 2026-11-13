@@ -30,8 +30,10 @@ const timeoutMs = 90_000;
 const LIFECYCLE_THROTTLE_MS = 4_000;
 const LIFECYCLE_FREEZE_MS = 8_000;
 const LIFECYCLE_BACKGROUND_RGB = { r: 42, g: 157, b: 143 };
-// Delta 98: the agent-tab auto-close runs on (not rehearsal) in this run and sweeps every 3 s.
+// Delta 98: the agent-tab auto-close runs on (not rehearsal) in this run, sweeps every 3 s, and
+// waits 10 s (six hours in production) after an archived creator last used a tab.
 const AUTO_CLOSE_SWEEP_MS = 3_000;
+const AUTO_CLOSE_ARCHIVED_GRACE_MS = 10_000;
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -1932,7 +1934,13 @@ async function runAgentTabAutoCloseRegression({
     await root.close();
   }
 
-  const deadline = Date.now() + AUTO_CLOSE_SWEEP_MS * 5 + 15_000;
+  // The grace keeps the tab through the first sweeps after the archive.
+  await delay(AUTO_CLOSE_SWEEP_MS + 500);
+  const closedTooSoon = autoCloseLogLines(artifactDir, "closed").some((chunk) =>
+    chunk.slice(0, 400).includes(unseen),
+  );
+  assert(!closedTooSoon, `The unseen tab ${unseen} closed inside the archived-creator grace`);
+  const deadline = Date.now() + AUTO_CLOSE_ARCHIVED_GRACE_MS + AUTO_CLOSE_SWEEP_MS * 5 + 15_000;
   while (
     !autoCloseLogLines(artifactDir, "closed").some((chunk) => chunk.slice(0, 400).includes(unseen))
   ) {
@@ -2053,7 +2061,7 @@ async function main() {
           PASEO_ELECTRON_USER_DATA_DIR: userData,
           PASEO_ELECTRON_FLAGS: `--remote-debugging-address=127.0.0.1 --remote-debugging-port=${cdpPort}`,
           PASEO_BROWSER_TAB_LIFECYCLE_MS: `${LIFECYCLE_THROTTLE_MS},${LIFECYCLE_FREEZE_MS}`,
-          PASEO_BROWSER_AUTO_CLOSE_SWEEP_MS: String(AUTO_CLOSE_SWEEP_MS),
+          PASEO_BROWSER_AUTO_CLOSE_SWEEP_MS: `${AUTO_CLOSE_SWEEP_MS},${AUTO_CLOSE_ARCHIVED_GRACE_MS}`,
         },
       },
       artifactDir,

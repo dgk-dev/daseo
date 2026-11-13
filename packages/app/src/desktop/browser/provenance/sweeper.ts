@@ -75,6 +75,8 @@ export class BrowserAutoCloseSweeper {
   private readonly now: () => number;
   private readonly rehearsalLoggedAt = new Map<string, number>();
   private running = false;
+  /** E2E seam from main; undefined in production. */
+  private archivedGraceMs: number | undefined;
 
   public constructor(private readonly ports: BrowserAutoCloseSweepPorts) {
     this.now = ports.now ?? Date.now;
@@ -100,6 +102,7 @@ export class BrowserAutoCloseSweeper {
         return { ...skipped, mode: policy ? "off" : "skipped" };
       }
       const afterMs = policy.afterHours * 3_600_000;
+      this.archivedGraceMs = policy.archivedGraceMs;
       const candidates = await this.findCandidates(afterMs);
       if (candidates.length === 0) {
         return { mode: policy.mode, wouldClose: [], closed: [] };
@@ -154,6 +157,7 @@ export class BrowserAutoCloseSweeper {
         creator: creators.get(candidate.creatorAgentId) ?? { kind: "unknown" },
         now,
         afterMs,
+        ...(this.archivedGraceMs !== undefined ? { archivedGraceMs: this.archivedGraceMs } : {}),
       });
       return decision.close ? [{ ...candidate, decision }] : [];
     });
@@ -244,6 +248,7 @@ export class BrowserAutoCloseSweeper {
           : { kind: "active", running: false },
       now: this.now(),
       afterMs,
+      ...(this.archivedGraceMs !== undefined ? { archivedGraceMs: this.archivedGraceMs } : {}),
     });
     return decision.close;
   }

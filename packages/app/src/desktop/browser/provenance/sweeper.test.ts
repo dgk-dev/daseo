@@ -129,7 +129,16 @@ describe("BrowserAutoCloseSweeper (delta 98)", () => {
     const seen = agentOpensTab("agent-a", "https://seen.test/");
     useBrowserProvenanceStore.getState().humanUsed({ browserId: seen.browserId });
 
-    const result = await sweeperFor(main, { "agent-a": ARCHIVED }).sweep();
+    // Minutes after the archive nothing is due yet: the grace keeps the page for the owner.
+    expect(await sweeperFor(main, { "agent-a": ARCHIVED }).sweep()).toEqual({
+      mode: "rehearse",
+      wouldClose: [],
+      closed: [],
+    });
+    expect(main.logs).toEqual([]);
+
+    const afterGrace = Date.now() + 7 * HOUR;
+    const result = await sweeperFor(main, { "agent-a": ARCHIVED }, () => afterGrace).sweep();
 
     expect(result).toEqual({ mode: "rehearse", wouldClose: [unseen.browserId], closed: [] });
     expect(main.logs).toEqual([
@@ -139,15 +148,17 @@ describe("BrowserAutoCloseSweeper (delta 98)", () => {
         workspaceId: WORKSPACE,
         reason: "creator-archived",
         creatorAgentId: "agent-a",
-        idleHours: 0,
+        idleHours: 7,
         host: "unseen.test",
       },
     ]);
     expect(layoutBrowserIds().sort()).toEqual([unseen.browserId, seen.browserId].sort());
     expect(useBrowserProvenanceStore.getState().recentlyClosedByWorkspace).toEqual({});
 
-    // The same tab is not logged again on the next sweep the same day.
-    await sweeperFor(main, { "agent-a": ARCHIVED }).sweep();
+    // The same tab is not logged again by the same sweeper the same day.
+    const sweeper = sweeperFor(main, { "agent-a": ARCHIVED }, () => afterGrace);
+    await sweeper.sweep();
+    await sweeper.sweep();
     expect(main.logs).toHaveLength(2);
   });
 
@@ -159,7 +170,8 @@ describe("BrowserAutoCloseSweeper (delta 98)", () => {
     const seen = agentOpensTab("agent-a", "https://seen.test/");
     useBrowserProvenanceStore.getState().humanUsed({ browserId: seen.browserId });
 
-    const result = await sweeperFor(main, { "agent-a": ARCHIVED }).sweep();
+    const afterGrace = Date.now() + 7 * HOUR;
+    const result = await sweeperFor(main, { "agent-a": ARCHIVED }, () => afterGrace).sweep();
 
     expect(result.closed).toEqual([unseen.browserId]);
     expect(layoutBrowserIds()).toEqual([seen.browserId]);
