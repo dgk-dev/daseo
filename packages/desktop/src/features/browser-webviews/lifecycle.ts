@@ -83,10 +83,12 @@ export const BROWSER_TAB_FREEZE_AFTER_MS = 15 * 60_000;
 // and well inside the daemon's 15-second browser-tool deadline.
 export const BROWSER_TAB_STEP_TIMEOUT_MS = 5_000;
 // Daseo delta 97: waking a discarded tab waits until its reloaded document is ready, so the first
-// command after a discard meets a parsed page instead of a blank one mid-load. The cap matches the
-// daemon's 15-second browser-tool deadline: a page slower than that times the one command out and
-// is ready for its retry. The step limit adds a second for the reload to be issued and recorded.
-export const BROWSER_TAB_RESTORE_WAIT_MS = 15_000;
+// command after a discard meets a parsed page instead of a blank one mid-load. The command itself
+// must answer within the daemon's 15-second browser-tool deadline (DEFAULT_BROWSER_TOOLS_TIMEOUT_MS
+// in packages/server/src/server/browser-tools/broker.ts), so the wait stops at 10 s: a slower page
+// falls through with a live renderer and the command keeps about 4 s to run against it. The step
+// limit adds a second for the reload to be issued and recorded.
+export const BROWSER_TAB_RESTORE_WAIT_MS = 10_000;
 export const BROWSER_TAB_RESTORE_STEP_TIMEOUT_MS = BROWSER_TAB_RESTORE_WAIT_MS + 1_000;
 const BROWSER_TAB_FREEZE_RETRY_MS = 60_000;
 

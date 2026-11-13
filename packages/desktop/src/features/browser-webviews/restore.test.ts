@@ -112,7 +112,7 @@ describe("restoreDiscardedBrowserContents", () => {
     expect(contents.reloads).toBe(1);
   });
 
-  test("a page still loading at the 15 s cap has a live renderer and counts as restored", async () => {
+  test("a page still loading at the 10 s cap has a live renderer and counts as restored", async () => {
     const clock = new FakeClock();
     const contents = new FakeContents();
     contents.onReload = () => {

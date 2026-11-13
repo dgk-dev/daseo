@@ -2223,11 +2223,13 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       since launch have no guest and are not listed.
     - **Waking a discarded tab.** The wake reloaded and waited up to 30 s for the load to stop,
       but the lifecycle step gave up after 5 s, so the first command could meet a page mid-load.
-      The reload now resolves at `dom-ready` (or a stopped load), with one 15 s budget for both
-      reload attempts, and a step that starts on a discarded tab gets 16 s instead of 5. `hold`
+      The reload now resolves at `dom-ready` (or a stopped load), with one 10 s budget for both
+      reload attempts, and a step that starts on a discarded tab gets 11 s instead of 5. The
+      daemon gives each browser tool 15 s, so a page slower than 10 s falls through with a live
+      renderer, as a slow page did before, and the command keeps about 4 s. `hold`
       and `runAwake` both wake; concurrent wakes with nothing queued between them now share one
       step, so a reload that runs out of time is not started again at once by the same command's
-      second wake (that command would have waited 32 s).
+      second wake (that command would have waited 22 s).
     - **Checks.** Unit tests in `discard.test.ts`, `lifecycle.test.ts`, and `restore.test.ts`;
       capture harness group `tab-discard` (an agent-typed tab and a tab shown in a pane are kept,
       the untouched one is discarded and its renderer ends, and `browser_snapshot` reloads it in

@@ -33,8 +33,9 @@ const BROWSER_TAB_RESTORE_ATTEMPTS = 2;
  * Reloads a discarded tab in a new renderer and resolves once its document is ready (delta 97).
  * Before, the wake waited for the whole load to stop (up to 30 s) but the lifecycle step gave up
  * after 5 s, so the first command after a discard could run against a page still mid-load.
- * `dom-ready` is the point a snapshot, read, or click can see the page. One budget covers both
- * attempts: a renderer still crashed after the first reload is reloaded once more if time is
+ * `dom-ready` is the point a snapshot, read, or click can see the page. The 10 s budget leaves the
+ * command part of the daemon's 15 s deadline when the page is slower than that. One budget covers
+ * both attempts: a renderer still crashed after the first reload is reloaded once more if time is
  * left. A page still loading at the deadline has a live renderer and counts as restored; a
  * renderer that never came back throws, leaving the tab discarded for the next wake to retry.
  */

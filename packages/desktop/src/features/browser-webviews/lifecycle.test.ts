@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   BROWSER_TAB_FREEZE_AFTER_MS,
   BROWSER_TAB_RESTORE_STEP_TIMEOUT_MS,
+  BROWSER_TAB_RESTORE_WAIT_MS,
   BROWSER_TAB_STEP_TIMEOUT_MS,
   BROWSER_TAB_THROTTLE_AFTER_MS,
   BrowserTabLifecycle,
@@ -375,6 +376,16 @@ describe("BrowserTabLifecycle", () => {
     // runAwake's hold and its own wake share one reload.
     expect(tab.calls.filter((call) => call === "restore")).toEqual(["restore"]);
     expect(errors).toEqual([]);
+  });
+
+  test("a slow reload leaves the command at least 4 s of the daemon's 15 s tool deadline", () => {
+    // DEFAULT_BROWSER_TOOLS_TIMEOUT_MS in packages/server/src/server/browser-tools/broker.ts.
+    const daemonToolDeadlineMs = 15_000;
+    expect(BROWSER_TAB_RESTORE_WAIT_MS).toBe(10_000);
+    expect(BROWSER_TAB_RESTORE_STEP_TIMEOUT_MS).toBe(11_000);
+    expect(daemonToolDeadlineMs - BROWSER_TAB_RESTORE_STEP_TIMEOUT_MS).toBeGreaterThanOrEqual(
+      4_000,
+    );
   });
 
   test("a reload that never answers releases the tab's commands at the restore limit", async () => {
