@@ -1,0 +1,116 @@
+# Daseo personal-variant APK built on a GitHub-hosted runner (RAM offload PoC, 2026-11-13).
+# Runs the same `npm run build:daseo:android` the Mac mini uses, including its identity and
+# signer checks, and keeps the APK as a 7-day workflow artifact. It never publishes a release.
+# The signer is the Expo template debug key that `expo prebuild` copies from the
+# lockfile-pinned `expo` package, so no signing key is stored here.
+name: Daseo Android APK (PoC)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit SHA or branch of dgk-dev/daseo to build"
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daseo-android-apk-poc
+  cancel-in-progress: false
+
+env:
+  # The APK build needs neither Electron nor ONNX Runtime binaries.
+  ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+  ONNXRUNTIME_NODE_INSTALL: skip
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Start memory sampler
+        run: |
+          (while true; do printf '%s %s\n' "$(date +%s)" "$(free -m | awk '/^Mem:/ {print $3}')"; sleep 5; done) \
+            > "$RUNNER_TEMP/mem-used-mb.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/mem-sampler.pid"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .tool-versions
+          cache: npm
+
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # Same packages as the Mac mini SDK (/opt/homebrew/share/android-commandlinetools), in a
+      # fresh SDK root so the runner image's other versions cannot leak into the build or into
+      # the script's choice of the newest build-tools for aapt and apksigner.
+      - name: Install pinned Android SDK
+        run: |
+          set -euo pipefail
+          manager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          sdk="$RUNNER_TEMP/android-sdk"
+          mkdir -p "$sdk"
+          "$manager" --sdk_root="$sdk" --licenses < <(yes) > /dev/null
+          "$manager" --sdk_root="$sdk" --install \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;35.0.0" \
+            "build-tools;36.0.0" \
+            "ndk;27.1.12297006" \
+            "cmake;3.22.1" > /dev/null
+          ls "$sdk" "$sdk/build-tools" "$sdk/ndk" "$sdk/cmake"
+          echo "ANDROID_HOME=$sdk" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$sdk" >> "$GITHUB_ENV"
+
+      - name: Install JS dependencies
+        run: node scripts/npm-retry.mjs ci
+
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          cache-provider: basic
+
+      - name: Write personal Firebase config
+        env:
+          GOOGLE_SERVICES_PERSONAL_JSON: ${{ secrets.DASEO_GOOGLE_SERVICES_PERSONAL_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$GOOGLE_SERVICES_PERSONAL_JSON"
+          umask 077
+          mkdir -p packages/app/.secrets
+          printf '%s' "$GOOGLE_SERVICES_PERSONAL_JSON" > packages/app/.secrets/google-services.personal.json
+
+      - name: Build and verify APK
+        run: npm run build:daseo:android
+
+      - name: Remove Firebase config
+        if: always()
+        run: rm -f packages/app/.secrets/google-services.personal.json
+
+      - name: Resolve built commit
+        id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daseo-apk-${{ steps.commit.outputs.sha }}
+          path: packages/app/android/app/build/outputs/apk/release/app-release.apk
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Report memory peak
+        if: always()
+        run: |
+          kill "$(cat "$RUNNER_TEMP/mem-sampler.pid")" || true
+          peak=$(awk 'max < $2 { max = $2 } END { print max + 0 }' "$RUNNER_TEMP/mem-used-mb.log")
+          echo "Peak used memory on the runner: ${peak} MB" | tee -a "$GITHUB_STEP_SUMMARY"
