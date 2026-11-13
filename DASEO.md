@@ -2918,3 +2918,18 @@ exists here; carrying them means routing the preview through the opener first.
 - The Mac bundle embeds its exact source commit; the release manifest records source commits and
   hashes for both Mac and Android artifacts. When both platforms change together, build both from
   the same commit. Push with the `dgk-dev` GitHub account, then switch `gh` back to `ax-dfcorp`.
+  Use `gh auth switch -u dgk-dev` and check `gh api user --jq .login` for API calls as dgk-dev:
+  `gh auth token -u dgk-dev` returns ax-dfcorp's token on this Mac (2026-11-13), which is read-only
+  on the fork (403 "Must have admin rights" or "You must have push access"). Pushing a commit that
+  changes `.github/workflows/` needs the `workflow` scope dgk-dev's token lacks; push that one over
+  SSH (`git push git@github.com-dgk-dev:dgk-dev/daseo.git main`).
+- GitHub Actions on `dgk-dev/daseo` (enabled 2026-11-13 for the APK workflow): the upstream
+  workflows that start by themselves on push, tag, pull request, or release are disabled in the
+  repository (`gh workflow disable`, no file change, so cherry-picks of them still apply): Android
+  APK Release, CI, Deploy App, Deploy Website, Desktop Release, Docker, Nix Update Hash, Nix, and
+  Release Notes Sync. Before that, every main push ran CI and Docker (about 2.9 GB of caches and
+  artifacts that day), and the `v0.5.115` tag push ran the release workflows: Release Notes Sync
+  created a public "Paseo v0.5.115" GitHub release on the fork. The fork's process uses none of
+  them; full test suites run locally per file. Enabled: `Daseo Android APK (PoC)` (manual), and
+  the manual-only Deploy Relay and Desktop Rollout. Re-enable one as dgk-dev with
+  `gh workflow enable "<name>" -R dgk-dev/daseo`.
