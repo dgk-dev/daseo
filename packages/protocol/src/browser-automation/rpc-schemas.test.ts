@@ -1473,3 +1473,109 @@ describe("browser network export (Daseo delta 99)", () => {
     }
   });
 });
+
+describe("snapshot after an action and settle (Daseo delta 104)", () => {
+  const request = (command: unknown) =>
+    BrowserAutomationExecuteRequestSchema.safeParse({
+      type: "browser.automation.execute.request",
+      requestId: "req-settle",
+      command,
+    });
+  const response = (payload: unknown) =>
+    BrowserAutomationExecuteResponseSchema.safeParse({
+      type: "browser.automation.execute.response",
+      payload,
+    });
+  const snapshot = {
+    command: "snapshot",
+    browserId: BROWSER_ID,
+    url: "https://a.test/",
+    title: "A",
+    format: "aria-yaml",
+    snapshot: '- link "Sign in" [ref=@e1]',
+    truncated: false,
+    stats: { nodeCount: 2, refCount: 1, textLength: 26 },
+  };
+
+  test("the listed actions take an optional snapshot; others still reject it", () => {
+    for (const command of [
+      { command: "click", args: { browserId: BROWSER_ID, ref: "@e1", snapshot: true } },
+      { command: "fill", args: { browserId: BROWSER_ID, ref: "@e1", value: "x", snapshot: true } },
+      { command: "type", args: { browserId: BROWSER_ID, text: "x", snapshot: true } },
+      { command: "keypress", args: { browserId: BROWSER_ID, key: "Enter", snapshot: true } },
+      {
+        command: "navigate",
+        args: { browserId: BROWSER_ID, url: "https://a.test/", snapshot: true },
+      },
+      { command: "back", args: { browserId: BROWSER_ID, snapshot: true } },
+      { command: "forward", args: { browserId: BROWSER_ID, snapshot: true } },
+      { command: "reload", args: { browserId: BROWSER_ID, snapshot: true } },
+      {
+        command: "select",
+        args: { browserId: BROWSER_ID, ref: "@e1", value: "a", snapshot: true },
+      },
+      { command: "hover", args: { browserId: BROWSER_ID, ref: "@e1", snapshot: true } },
+      { command: "scroll", args: { browserId: BROWSER_ID, deltaX: 0, deltaY: 1, snapshot: true } },
+      { command: "handle_dialog", args: { browserId: BROWSER_ID, accept: true, snapshot: true } },
+    ]) {
+      expect(request(command).success, command.command).toBe(true);
+    }
+    expect(request({ command: "back", args: { browserId: BROWSER_ID } }).success).toBe(true);
+    expect(
+      request({
+        command: "drag",
+        args: { browserId: BROWSER_ID, sourceRef: "@e1", targetRef: "@e2", snapshot: true },
+      }).success,
+    ).toBe(false);
+  });
+
+  test("settle takes a tab, an optional timeout up to 30 s, and an optional snapshot", () => {
+    expect(request({ command: "settle", args: { browserId: BROWSER_ID } }).success).toBe(true);
+    expect(
+      request({
+        command: "settle",
+        args: { browserId: BROWSER_ID, timeoutMs: 30_000, snapshot: true },
+      }).success,
+    ).toBe(true);
+    expect(
+      request({ command: "settle", args: { browserId: BROWSER_ID, timeoutMs: 30_001 } }).success,
+    ).toBe(false);
+  });
+
+  test("settle results and an action's pageAfter parse; a payload without pageAfter is unchanged", () => {
+    expect(
+      response({
+        requestId: "req-settle",
+        ok: true,
+        result: {
+          command: "settle",
+          browserId: BROWSER_ID,
+          settled: false,
+          elapsedMs: 4000,
+          inflightRequests: 1,
+          networkWatched: false,
+          snapshotError: "The page did not answer the snapshot within 5s.",
+        },
+      }).success,
+    ).toBe(true);
+    const click = { command: "click", browserId: BROWSER_ID, ref: "@e1" };
+    const withPage = response({
+      requestId: "req-click",
+      ok: true,
+      result: click,
+      pageAfter: {
+        command: "settle",
+        browserId: BROWSER_ID,
+        settled: true,
+        elapsedMs: 210,
+        snapshot,
+      },
+    });
+    expect(withPage.success).toBe(true);
+    expect(withPage.data?.payload).toMatchObject({
+      pageAfter: { snapshot: { url: "https://a.test/" } },
+    });
+    const plain = response({ requestId: "req-click", ok: true, result: click });
+    expect(plain.data?.payload).toEqual({ requestId: "req-click", ok: true, result: click });
+  });
+});

@@ -167,8 +167,13 @@ class FakeTab implements TabContents {
     this.insertedTexts.push(text);
   }
 
+  /** Delta 104: what the page settle probe reports; the default page has been quiet 1 s. */
+  public settleState: unknown = { quietMs: 1_000, readyState: "complete" };
+
   public async executeJavaScript(code: string): Promise<unknown> {
     this.scripts.push(code);
+    // The settle probe is Daseo's own observer script; the page never opens a dialog from it.
+    if (code.includes("paseo.browser-automation.settle")) return this.settleState;
     await this.raiseScriptDialog(code);
     if (code.includes("paseo.browser-automation.input-probe")) return this.answerInputProbe(code);
     return code.includes("__DASEO_STREAM_FOCUS__")
@@ -1471,6 +1476,148 @@ describe("executeAutomationCommand", () => {
         },
       ],
     });
+  });
+
+  describe("snapshot after an action, and settle (delta 104)", () => {
+    test("a click with snapshot returns its effect and the settled page's snapshot", async () => {
+      const browser = new BrowserAutomationHarness();
+      browser.tab.snapshotNodes = formElements();
+      requireSnapshotRefs(await browser.snapshot());
+
+      const click = await browser.execute({
+        command: "click",
+        args: { browserId: BROWSER_A, ref: "@e1", snapshot: true },
+      });
+
+      expect(click).toMatchObject({
+        ok: true,
+        result: { command: "click", browserId: BROWSER_A, ref: "@e1" },
+        pageAfter: {
+          command: "settle",
+          browserId: BROWSER_A,
+          settled: true,
+          networkWatched: false,
+          snapshot: {
+            command: "snapshot",
+            url: "https://a.test/form",
+            snapshot: expect.stringContaining('textbox "Name" [ref=@e1]'),
+          },
+        },
+      });
+      expect(click).not.toHaveProperty("openDialog");
+    });
+
+    test("a click that opens a confirm returns at once with openDialog and no page", async () => {
+      const browser = new BrowserAutomationHarness();
+      browser.tab.snapshotNodes = formElements();
+      requireSnapshotRefs(await browser.snapshot());
+      browser.tab.dialogOnScript = {
+        needle: "performance.now()",
+        type: "confirm",
+        message: "저장하시겠습니까?",
+      };
+      const startedAt = Date.now();
+
+      const click = await browser.execute({
+        command: "click",
+        args: { browserId: BROWSER_A, ref: "@e1", snapshot: true },
+      });
+
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
+      expect(click).toEqual({
+        requestId: "req-click",
+        ok: true,
+        result: { command: "click", browserId: BROWSER_A, ref: "@e1" },
+        openDialog: {
+          browserId: BROWSER_A,
+          type: "confirm",
+          message: "저장하시겠습니까?",
+          openedAt: expect.any(Number),
+          expiresAt: expect.any(Number),
+        },
+      });
+    });
+
+    test("a failed action returns its failure and no page", async () => {
+      const browser = new BrowserAutomationHarness();
+
+      const click = await browser.execute({
+        command: "click",
+        args: { browserId: BROWSER_A, ref: "@e9", snapshot: true },
+      });
+
+      expect(click).toEqual({
+        requestId: "req-click",
+        ok: false,
+        error: {
+          code: "browser_stale_ref",
+          message: "Browser element reference @e9 is stale. Take a new snapshot and try again.",
+          retryable: false,
+        },
+      });
+    });
+
+    test("navigate with snapshot reads the new document after it settles", async () => {
+      const browser = new BrowserAutomationHarness();
+      browser.tab.snapshotNodes = formElements();
+
+      const result = await browser.execute({
+        command: "navigate",
+        args: { browserId: BROWSER_A, url: "https://example.com/next", snapshot: true },
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        result: { command: "navigate", url: "https://example.com/next" },
+        pageAfter: {
+          settled: true,
+          snapshot: { url: "https://example.com/next", stats: { refCount: 5 } },
+        },
+      });
+    });
+
+    test("settle answers settled, or not settled at its deadline with what kept it busy", async () => {
+      const browser = new BrowserAutomationHarness();
+
+      expect(
+        await browser.execute({ command: "settle", args: { browserId: BROWSER_A } }),
+      ).toMatchObject({
+        ok: true,
+        result: { command: "settle", browserId: BROWSER_A, settled: true },
+      });
+
+      browser.tab.settleState = { quietMs: 0, readyState: "complete" };
+      const busy = await browser.execute({
+        command: "settle",
+        args: { browserId: BROWSER_A, timeoutMs: 300 },
+      });
+      expect(busy).toMatchObject({
+        ok: true,
+        result: { command: "settle", settled: false, domChangedMsAgo: 0 },
+      });
+      expect(busy.ok ? busy.result : null).not.toHaveProperty("snapshot");
+    });
+
+    test("a page that never settles still answers the action with its snapshot at the bound", async () => {
+      const browser = new BrowserAutomationHarness();
+      browser.tab.snapshotNodes = formElements();
+      browser.tab.settleState = { quietMs: 0, readyState: "complete" };
+
+      const result = await browser.execute({
+        command: "reload",
+        args: { browserId: BROWSER_A, snapshot: true },
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        result: { command: "reload" },
+        pageAfter: {
+          settled: false,
+          elapsedMs: expect.any(Number),
+          snapshot: { command: "snapshot" },
+        },
+      });
+    }, 10_000);
   });
 
   describe("page dialogs (delta 93)", () => {

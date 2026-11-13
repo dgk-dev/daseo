@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type {
   BrowserAutomationCommand,
   BrowserAutomationExecuteRequest,
@@ -128,6 +128,9 @@ async function wait(
 afterEach(() => {
   document.head.innerHTML = "";
   document.body.innerHTML = "";
+  delete (window as unknown as Record<symbol, unknown>)[
+    Symbol.for("paseo.browser-automation.settle")
+  ];
   delete (window as unknown as Record<string, unknown>).appReady;
 });
 
@@ -355,6 +358,93 @@ async function read(
   }
   return result.result;
 }
+
+/** The page's own fetch: in flight for 600 ms, then the results render. */
+function fetchThenRender(tab: JsdomTab): void {
+  tab.inflight = 1;
+  setTimeout(() => {
+    tab.inflight = 0;
+    document.querySelector("main")!.insertAdjacentHTML("beforeend", "<h2>3 results</h2>");
+  }, 600);
+}
+
+describe("snapshot after an action (delta 104)", () => {
+  // jsdom has no layout: elements need a box, and an opacity (an empty one reads as hidden), to
+  // count as visible and get refs, as in aria-snapshot-script.test.ts.
+  // No scrollIntoView either, which fill calls.
+  const originalRect = Element.prototype.getBoundingClientRect;
+  const originalScrollIntoView = Element.prototype.scrollIntoView;
+  beforeEach(() => {
+    document.head.innerHTML = "<style>* { opacity: 1; }</style>";
+    Element.prototype.getBoundingClientRect = () =>
+      ({ x: 0, y: 0, top: 0, left: 0, right: 10, bottom: 10, width: 10, height: 10 }) as DOMRect;
+    Element.prototype.scrollIntoView = () => undefined;
+  });
+  afterEach(() => {
+    Element.prototype.getBoundingClientRect = originalRect;
+    Element.prototype.scrollIntoView = originalScrollIntoView;
+  });
+
+  test("an input that fetches for 600 ms and then renders is read after it renders", async () => {
+    const tab = new JsdomTab();
+    const snapshotEngine = new BrowserSnapshotEngine();
+    document.title = "Search";
+    document.body.innerHTML = '<main><input aria-label="Query"></main>';
+    document.querySelector("input")!.addEventListener("input", () => fetchThenRender(tab));
+    const before = await execute(
+      tab,
+      { command: "snapshot", args: { browserId: BROWSER_ID } },
+      snapshotEngine,
+    );
+    expect(before).toMatchObject({ ok: true });
+    const ref = /textbox "Query" \[ref=(@e\d+)\]/.exec(
+      before.ok && before.result.command === "snapshot" ? before.result.snapshot : "",
+    )?.[1];
+    expect(ref).toBeDefined();
+
+    const filled = await execute(
+      tab,
+      { command: "fill", args: { browserId: BROWSER_ID, ref: ref!, value: "tee", snapshot: true } },
+      snapshotEngine,
+    );
+
+    expect(filled).toMatchObject({
+      ok: true,
+      result: { command: "fill", ref },
+      pageAfter: {
+        command: "settle",
+        settled: true,
+        snapshot: { snapshot: expect.stringContaining('heading "3 results"') },
+      },
+    });
+    const elapsedMs = filled.ok ? (filled.pageAfter?.elapsedMs ?? 0) : 0;
+    expect(elapsedMs).toBeGreaterThanOrEqual(600);
+    expect(elapsedMs).toBeLessThan(1_500);
+    expect(tab.trackerReleased).toBe(true);
+  });
+
+  test("settle with snapshot reads a quiet page in well under a second", async () => {
+    const tab = new JsdomTab();
+    document.title = "Quiet";
+    document.body.innerHTML = "<main><h1>Ready</h1></main>";
+    const startedAt = Date.now();
+
+    const settled = await execute(tab, {
+      command: "settle",
+      args: { browserId: BROWSER_ID, snapshot: true },
+    });
+
+    expect(settled).toMatchObject({
+      ok: true,
+      result: {
+        command: "settle",
+        settled: true,
+        snapshot: { title: "Quiet", snapshot: expect.stringContaining('heading "Ready"') },
+      },
+    });
+    expect(Date.now() - startedAt).toBeLessThan(800);
+  });
+});
 
 describe("browser_read", () => {
   test("puts the product's JSON-LD and meta values before the body", async () => {

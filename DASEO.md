@@ -2630,6 +2630,63 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        research-fanout skill passes the argument; its lead-side archive stays as the fallback for
        older daemons. Takes effect with the next release and daemon restart.
 
+104. **An action can answer with the settled page, and `browser_wait` can wait until the page
+     settles** — the 2026-11-13 browser-turns study (Hark Handoff² comparison): over 30 days 63% of
+     browser turns did one action, model time per turn was 4.5 s median against 0.07 s in the
+     tool, and the waste was "act, then a separate turn to look" and fixed pauses. A PoC (128 runs,
+     8 tasks, Opus 5.5 and Fable 5.2) measured turns -15.8% (95% CI -23.9..-8.3), model time
+     -18.6%, output tokens -19.0%. Description-only wording measured 0.0% and a batch tool no
+     significant gain, so neither was built. Opt-in only; without the new arguments every result is
+     unchanged.
+     - **`snapshot: true`** on `browser_click`, `fill`, `type`, `keypress`, `select`, `hover`,
+       `scroll`, `navigate`, `back`, `forward`, `reload`, `handle_dialog`, and `new_tab`. The
+       desktop arms the tab's request tracker before the action (a fetch the action sends counts),
+       runs it, waits for the page to settle (at most 4 s), and adds the whole-page snapshot as the
+       optional `pageAfter` on the response; the tool text appends it under "Page after the action
+       (settled in Nms):" after the effect line, open dialog, and tab events. A failed action
+       returns as before; one that leaves a confirm or prompt open returns at once with
+       `openDialog` and "Snapshot skipped"; a dialog the page opens while it settles is held or
+       answered as during any command. A navigation's snapshot is the new document. `new_tab` is
+       opened by the app runtime, so the tool follows it with a `settle` on the new tab. `drag`,
+       `upload`, and `evaluate` do not take it (not in the measured set).
+     - **`browser_wait settled: true`** sends the new `settle` command (`timeoutMs`, default 5 s,
+       cap 30 s). A page that does not settle is a `browser_timeout` naming what kept it busy
+       (still loading, N requests in flight, or the DOM changed N ms before the end), like the
+       other conditions.
+     - **Settled** (`page-settle.ts`): not loading, no request sent since arming in flight for
+       200 ms, and the DOM unchanged for 200 ms with `readyState` complete, both windows running at
+       once, so a quiet page settles in about 200 ms. The DOM side is one MutationObserver per
+       document (child list, attributes, text) over the document, same-origin frames, and open
+       shadow roots, installed by the first probe and read by one probe at a time from the main
+       frame. Network quiet is 200 ms rather than networkidle's 500 ms because every request after
+       arming is counted while in flight, and content that arrives late re-arms the DOM window. A
+       main-frame navigation restarts both windows; arming waits at most 1 s each for the
+       debugger and the page, and a tab whose requests cannot be watched settles on loading and
+       the DOM and says `networkWatched: false`. No `Runtime.enable`.
+     - **Deadline.** The broker adds 11 s (4 s settle, 5 s snapshot, 2 s arming and transport) to a
+       command sent with `snapshot`, so it never meets the generic 15 s expiry because of the wait;
+       `browser_wait settled` asks for its timeout plus 3 s.
+     - **Older desktop.** It does not advertise `settle`, so the broker refuses `settle` and any
+       action carrying `snapshot` with `browser_unsupported` before sending (the action does not
+       run); an older daemon never sends either. `packages/protocol`: optional `snapshot` args,
+       the `settle` command and result, optional `pageAfter`; wire ledger rationale updated.
+     - **Ref wording.** The descriptions said refs "expire when the page changes". Refs stay on
+       their element for the document's life; a snapshot keeps the refs it lists and find adds its
+       matches. `browser_snapshot` now says that in full; the action tools say "stay valid while
+       the element stays on the page".
+     - **Checks.** Capture harness group `page-settle`, 5 of 5 on 2026-11-13: a quiet page settled
+       in 217 ms; a click whose fetch takes 600 ms answered in 883 ms with the rendered result in
+       its snapshot; a ticker page ended at 1503 ms against a 1500 ms bound; a navigate to a page
+       that renders 300 ms after load held that content; a click without the argument had no
+       `pageAfter`. Unit tests in `page-settle.test.ts` (jsdom: quiet, late request, DOM that
+       stops, never quiet, navigation mid-wait, same-origin iframe, unwatched network, a debugger
+       that does not answer, abort), `page-commands.test.ts`, `service.test.ts`, the server
+       `tools.test.ts` and `broker.test.ts`, and `rpc-schemas.test.ts`.
+     - **Key files:** `packages/desktop/src/features/browser-automation/{page-settle,service}.ts`,
+       `packages/protocol/src/browser-automation/rpc-schemas.ts`,
+       `packages/server/src/server/browser-tools/{tools,broker}.ts`,
+       `packages/desktop/capture-harness/main.js`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

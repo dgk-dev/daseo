@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
+  BROWSER_AUTOMATION_SNAPSHOT_AFTER_TIMEOUT_MS,
+  BROWSER_AUTOMATION_SNAPSHOT_SETTLE_TIMEOUT_MS,
   BrowserAutomationExecuteRequestSchema,
   BrowserAutomationExecuteResponseSchema,
   type BrowserAutomationCommand,
@@ -52,6 +54,12 @@ const DEFAULT_BROWSER_TOOLS_TIMEOUT_MS = 15_000;
 // load to stop, so a tab that never finishes loading times out every
 // tab-scoped tool; the agent should hear that instead of "did not respond".
 const LOADING_PROBE_LEAD_MS = 1_000;
+// Daseo delta 104: a command sent with `snapshot` also waits for the page to settle and reads it,
+// each bounded on the host, plus a second each for arming the watch and for the answer to travel.
+const PAGE_SNAPSHOT_TIMEOUT_BUDGET_MS =
+  BROWSER_AUTOMATION_SNAPSHOT_SETTLE_TIMEOUT_MS +
+  BROWSER_AUTOMATION_SNAPSHOT_AFTER_TIMEOUT_MS +
+  2_000;
 const SECURITY_PROMPT_HINT =
   "A macOS security prompt (SecurityAgent) is open on the Mac and is the likely cause: the Daseo app waits until it is answered there. Tell the user, then retry.";
 
@@ -72,6 +80,11 @@ function hasDialogPreArm(command: BrowserAutomationCommand): boolean {
       command.command === "evaluate") &&
     command.args.dialog !== undefined
   );
+}
+
+/** Delta 104: an action, or a settle, that asks for the page's snapshot when it has settled. */
+function requestsPageSnapshot(command: BrowserAutomationCommand): boolean {
+  return (command.args as { snapshot?: unknown }).snapshot === true;
 }
 
 export class BrowserToolsBroker {
@@ -192,12 +205,15 @@ export class BrowserToolsBroker {
       return unsupported;
     }
 
+    const pageSnapshotBudget = requestsPageSnapshot(request.data.command)
+      ? PAGE_SNAPSHOT_TIMEOUT_BUDGET_MS
+      : 0;
     return this.diagnoseStall(
       request.data.command.command,
       await this.sendRequest({
         host: host.value,
         request: request.data,
-        timeoutMs: input.timeoutMs ?? this.defaultTimeoutMs,
+        timeoutMs: (input.timeoutMs ?? this.defaultTimeoutMs) + pageSnapshotBudget,
       }),
     );
   }
@@ -438,6 +454,20 @@ export class BrowserToolsBroker {
           message: `The dialog argument needs a newer Daseo desktop app than the ${describeBrowserHost(params.host)}. Call without it; the dialog is then handled by the app's own policy.`,
         });
       }
+      // Delta 104: an older host's strict action arguments would reject `snapshot`; the action is
+      // not run, so nothing happens twice when the agent retries without it.
+      if (
+        params.command &&
+        params.command.command !== "settle" &&
+        requestsPageSnapshot(params.command) &&
+        !params.host.supportedCommands.has("settle")
+      ) {
+        return browserToolsFailure({
+          requestId: params.requestId,
+          code: "browser_unsupported",
+          message: `snapshot needs a newer Daseo desktop app than the ${describeBrowserHost(params.host)}. Call without it, then browser_snapshot.`,
+        });
+      }
       // Delta 99: response headers in a list came with network_export; an older host's strict
       // network arguments would reject the whole list.
       if (
@@ -458,6 +488,13 @@ export class BrowserToolsBroker {
         requestId: params.requestId,
         code: "browser_unsupported",
         message: `browser_passkeys use needs a newer Daseo desktop app than the ${describeBrowserHost(params.host)}. Update the Daseo app; until then click the site's passkey button.`,
+      });
+    }
+    if (params.commandName === "settle") {
+      return browserToolsFailure({
+        requestId: params.requestId,
+        code: "browser_unsupported",
+        message: `Waiting for the page to settle needs a newer Daseo desktop app than the ${describeBrowserHost(params.host)}. Update the Daseo app; until then use browser_wait with text, selector, or load networkidle, then browser_snapshot.`,
       });
     }
     if (params.commandName === "network_export") {

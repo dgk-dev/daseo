@@ -98,6 +98,12 @@ nobody answers is dismissed after 60 s (set `PASEO_CAPTURE_HARNESS_SKIP_UNANSWER
 minute). Electron gives the page sticky activation only through real input or a user-gesture
 script; the beforeunload check clicks with the agent's own background click.
 
+The page-settle group (`PASEO_CAPTURE_HARNESS_GROUP=page-settle`) runs the compiled service on a
+guest and checks delta 104: a click sent with `snapshot` waits out the page's own 600 ms fetch and
+its snapshot holds what it rendered; `settle` returns in under a second on a quiet page and at its
+bound on a page whose ticker never stops; a navigation's snapshot is the new document after its late
+content; a click without the argument has no `pageAfter`. Results go to `out/page-settle-results.json`.
+
 The frames-network group (`PASEO_CAPTURE_HARNESS_GROUP=frames-network`) serves a page with a
 same-origin and a cross-origin iframe from two local ports. It runs the compiled automation
 service against the guest and checks that the snapshot nests the same-origin frame's content

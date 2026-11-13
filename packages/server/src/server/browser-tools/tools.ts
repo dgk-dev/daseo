@@ -6,6 +6,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
 import {
   BROWSER_AUTOMATION_READ_DEFAULT_MAX_CHARS,
+  BROWSER_AUTOMATION_SNAPSHOT_SETTLE_TIMEOUT_MS,
   BROWSER_AUTOMATION_READ_MAX_CHARS,
   BrowserAutomationBrowserIdSchema,
   BrowserAutomationConsoleLevelSchema,
@@ -20,6 +21,8 @@ import {
   type BrowserAutomationNetworkExportResult,
   type BrowserAutomationNetworkResult,
   type BrowserAutomationReadResult,
+  type BrowserAutomationSettleResult,
+  type BrowserAutomationSnapshotResult,
   type BrowserAutomationPasskeysResult,
   type BrowserAutomationPasskeyRequest,
   type BrowserAutomationPasskeyUseResult,
@@ -56,6 +59,13 @@ export interface RegisterBrowserToolsOptions {
 }
 
 const HTTP_URL_ONLY_MESSAGE = "URL must use http/https only";
+// How refs behave (aria-snapshot-script.ts refFor/ensureRuntime, snapshot-engine.ts snapshotScoped):
+// a ref stays on its element for the document's life; each snapshot keeps the refs it lists, find
+// adds its matches, and a navigation clears them. browser_snapshot carries the full sentence.
+const REF_LIFETIME =
+  "refs come from browser_snapshot or browser_find of the same tab and stay valid across later actions and snapshots while the element stays on the page; a navigation, a re-render or rename of the element, or a later snapshot that no longer lists it (hidden or removed) makes the ref stale, and the error says so.";
+const REF_SOURCE =
+  "refs come from browser_snapshot or browser_find of the same tab and stay valid while the element stays on the page.";
 const WORKSPACE_CONTEXT_MESSAGE =
   "This browser tool needs a workspace. Start the agent from a Paseo workspace before calling browser_new_tab or browser_list_tabs.";
 const URL_WHITESPACE_PATTERN = /\s/;
@@ -79,6 +89,7 @@ const BrowserRefInputSchema = z.string().regex(/^@e\d+$/);
 const BrowserClickButtonInputSchema = z.enum(["left", "right", "middle"]);
 const BrowserClickModifierInputSchema = z.enum(["Alt", "Control", "Meta", "Shift"]);
 const MAX_BROWSER_WAIT_MS = 30_000;
+const BROWSER_WAIT_DEFAULT_TIMEOUT_MS = 5_000;
 // Agents routinely ask for longer waits or pass only a duration; clamping and
 // treating a lone timeoutMs as a pause costs nothing, while rejecting them
 // cost a model turn each (49 duration-only and 12 over-limit calls in 60 days).
@@ -94,6 +105,12 @@ const BrowserWaitInputSchema = strictBrowserInput("browser_wait", {
   script: z.string().min(1).optional(),
   load: BrowserAutomationWaitLoadStateSchema.optional(),
   download: z.boolean().optional(),
+  settled: z
+    .boolean()
+    .optional()
+    .describe(
+      "Wait until no request is in flight and the DOM has stopped changing (use after an action that loads content, instead of a fixed pause).",
+    ),
   timeoutMs: BrowserWaitTimeoutInputSchema.optional(),
   browserId: BrowserAutomationBrowserIdSchema,
 }).refine(
@@ -103,7 +120,7 @@ const BrowserWaitInputSchema = strictBrowserInput("browser_wait", {
   },
   {
     message:
-      "browser_wait requires one condition (text, url, selector, script, load, or download), or timeoutMs alone to pause",
+      "browser_wait requires one condition (text, url, selector, script, load, download, or settled), or timeoutMs alone to pause",
   },
 );
 const BrowserReadMaxCharsInputSchema = z
@@ -193,10 +210,17 @@ function countWaitConditions(input: {
   script?: string;
   load?: string;
   download?: boolean;
+  settled?: boolean;
 }): number {
-  return [input.text, input.url, input.selector, input.script, input.load, input.download].filter(
-    Boolean,
-  ).length;
+  return [
+    input.text,
+    input.url,
+    input.selector,
+    input.script,
+    input.load,
+    input.download,
+    input.settled,
+  ].filter(Boolean).length;
 }
 
 /** null for a plain name; the compiled pattern or why it does not compile for `/pattern/flags`. */
@@ -293,24 +317,50 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
         "Create a new Paseo browser tab in this agent's workspace on the most recently connected browser automation host, opened in the background without switching the user's view. Pass an http(s) URL or a scheme-less host URL, which is treated as http; the returned browserId is used by tab-scoped tools. When your task is done, close the tabs you opened with browser_close_tab, unless the user should look at them.",
       inputSchema: {
         url: BrowserHttpUrlInputSchema.optional(),
+        ...BrowserSnapshotAfterInputSchema,
       },
     },
-    async ({ url }) => {
+    async ({ url, snapshot }) => {
       const context = resolveBrowserToolContext(options);
       const missingWorkspace = requireWorkspaceContext(context);
       if (missingWorkspace) {
         return missingWorkspace;
       }
-      const payload = await options.broker.execute({
+      const envelope = {
         agentId: context.agentId,
         cwd: context.cwd,
         ...(context.workspaceId ? { workspaceId: context.workspaceId } : {}),
+      };
+      const payload = await options.broker.execute({
+        ...envelope,
         command: {
           command: "new_tab",
           args: url ? { url } : {},
         },
       });
-      return browserToolResult({ payload, context });
+      if (!snapshot || !payload.ok || payload.result.command !== "new_tab") {
+        return browserToolResult({ payload, context });
+      }
+      // The app runtime opens the tab; the desktop host then settles and reads it (delta 104).
+      const browserId = payload.result.browserId;
+      const settled = await options.broker.execute({
+        ...envelope,
+        command: {
+          command: "settle",
+          args: {
+            browserId,
+            timeoutMs: BROWSER_AUTOMATION_SNAPSHOT_SETTLE_TIMEOUT_MS,
+            snapshot: true,
+          },
+        },
+      });
+      const combined = withPageAfter(payload, settled);
+      return browserToolResult({
+        payload: combined.payload,
+        context,
+        snapshotRequested: true,
+        ...(combined.snapshotSkipReason ? { snapshotSkipReason: combined.snapshotSkipReason } : {}),
+      });
     },
   );
 
@@ -319,7 +369,9 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Snapshot browser page",
       description:
-        "Return a model-readable snapshot of a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes. Same-origin iframe content appears under its iframe node, and its refs work with every tool; a cross-origin iframe shows only its src. ref (from an earlier snapshot or browser_find) shows only that element's subtree; interactive true keeps only elements with refs and the named containers around them. Both still refresh every ref on the page.",
+        "Return a model-readable snapshot of a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; " +
+        REF_LIFETIME +
+        " Same-origin iframe content appears under its iframe node, and its refs work with every tool; a cross-origin iframe shows only its src. ref (from an earlier snapshot or browser_find) shows only that element's subtree; interactive true keeps only elements with refs and the named containers around them. Both still refresh every ref on the page.",
       inputSchema: {
         browserId: BrowserAutomationBrowserIdSchema,
         ref: BrowserRefInputSchema.optional(),
@@ -351,7 +403,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Read browser page",
       description:
-        "Read a Paseo browser tab as Markdown: headings, lists, tables, and links with absolute URLs; images appear as alt text only. scope main (default) picks the main content with Readability and falls back to the whole page when it finds none; page reads the whole page minus page-level navigation, header, footer, and sidebars; ref (from the latest browser_snapshot) reads one element. Same-origin iframes are included and hidden elements are left out. Product, offer, article, and organization data from JSON-LD and Open Graph or product meta tags is summarized first. links false keeps link text only. maxChars defaults to 40000 (max 120000). Use this instead of browser_evaluate to read page text; use browser_snapshot to act on elements. Use browserId from browser_new_tab or browser_list_tabs.",
+        "Read a Paseo browser tab as Markdown: headings, lists, tables, and links with absolute URLs; images appear as alt text only. scope main (default) picks the main content with Readability and falls back to the whole page when it finds none; page reads the whole page minus page-level navigation, header, footer, and sidebars; ref (from browser_snapshot or browser_find) reads one element. Same-origin iframes are included and hidden elements are left out. Product, offer, article, and organization data from JSON-LD and Open Graph or product meta tags is summarized first. links false keeps link text only. maxChars defaults to 40000 (max 120000). Use this instead of browser_evaluate to read page text; use browser_snapshot to act on elements. Use browserId from browser_new_tab or browser_list_tabs.",
       inputSchema: {
         browserId: BrowserAutomationBrowserIdSchema,
         scope: BrowserAutomationReadScopeSchema.optional(),
@@ -392,7 +444,9 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Click browser element",
       description:
-        "Click an element in a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes. The result says what the click caused, seen within half a second: a navigation that started, a popup, tab, download, or page dialog, a dialog or menu that appeared (still fading in: find and snapshot mark it appearing=true for a moment), content or state that changed near the element, a submit the page cancelled, or no change (the click may not have activated the element; retry or press Enter on it). Page dialogs: an alert is accepted on its own and reported; a confirm or prompt is held open and the result says so (openDialog), answer it with browser_handle_dialog, or pass dialog accept or dismiss (with promptText for a prompt) to answer one this call raises at once. Never override window.confirm or window.prompt.",
+        "Click an element in a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; " +
+        REF_SOURCE +
+        " The result says what the click caused, seen within half a second: a navigation that started, a popup, tab, download, or page dialog, a dialog or menu that appeared (still fading in: find and snapshot mark it appearing=true for a moment), content or state that changed near the element, a submit the page cancelled, or no change (the click may not have activated the element; retry or press Enter on it). Page dialogs: an alert is accepted on its own and reported; a confirm or prompt is held open and the result says so (openDialog), answer it with browser_handle_dialog, or pass dialog accept or dismiss (with promptText for a prompt) to answer one this call raises at once. Never override window.confirm or window.prompt.",
       inputSchema: {
         ref: BrowserRefInputSchema,
         browserId: BrowserAutomationBrowserIdSchema,
@@ -400,9 +454,10 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
         doubleClick: z.boolean().optional(),
         modifiers: z.array(BrowserClickModifierInputSchema).optional(),
         ...BrowserDialogPreArmInputSchema,
+        ...BrowserSnapshotAfterInputSchema,
       },
     },
-    async ({ ref, browserId, button, doubleClick, modifiers, dialog, promptText }) => {
+    async ({ ref, browserId, button, doubleClick, modifiers, dialog, promptText, snapshot }) => {
       const context = resolveBrowserToolContext(options);
       const payload = await options.broker.execute({
         agentId: context.agentId,
@@ -418,10 +473,15 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
             doubleClick: doubleClick ?? false,
             modifiers: modifiers ?? [],
             ...dialogPreArmArgs(dialog, promptText),
+            ...snapshotAfterArgs(snapshot),
           },
         },
       });
-      return browserToolResult({ payload, context: { ...context, browserId } });
+      return browserToolResult({
+        payload,
+        context: { ...context, browserId },
+        snapshotRequested: snapshot,
+      });
     },
   );
 
@@ -430,14 +490,16 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Fill browser element",
       description:
-        "Fill an input-like element in a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes.",
+        "Fill an input-like element in a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; " +
+        REF_SOURCE,
       inputSchema: {
         ref: BrowserRefInputSchema,
         value: z.string(),
         browserId: BrowserAutomationBrowserIdSchema,
+        ...BrowserSnapshotAfterInputSchema,
       },
     },
-    async ({ ref, value, browserId }) => {
+    async ({ ref, value, browserId, snapshot }) => {
       const context = resolveBrowserToolContext(options);
       const payload = await options.broker.execute({
         agentId: context.agentId,
@@ -450,10 +512,15 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
             browserId,
             ref,
             value,
+            ...snapshotAfterArgs(snapshot),
           },
         },
       });
-      return browserToolResult({ payload, context: { ...context, browserId } });
+      return browserToolResult({
+        payload,
+        context: { ...context, browserId },
+        snapshotRequested: snapshot,
+      });
     },
   );
 
@@ -462,14 +529,29 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Wait for browser condition",
       description:
-        "Wait for one condition in a Paseo browser tab: text the page contains, a URL fragment, a CSS selector that matches an element (attached, visible or not; searches same-origin iframes and open shadow roots), a JavaScript script expression or function polled until it returns a truthy value (a throw fails at once), or load: load for the load event or networkidle for no requests in flight for 500ms (long polling or streaming keeps some pages from ever going idle), or download: true for the tab's pending or next download to finish (files an agent-driven tab downloads go to ~/Downloads/Daseo without a dialog; returns the path). Pass only timeoutMs to pause. Use browserId from browser_new_tab or browser_list_tabs; conditions wait up to 5s by default and timeoutMs is capped at 30000.",
+        "Wait for one condition in a Paseo browser tab: text the page contains, a URL fragment, a CSS selector that matches an element (attached, visible or not; searches same-origin iframes and open shadow roots), a JavaScript script expression or function polled until it returns a truthy value (a throw fails at once), or load: load for the load event or networkidle for no requests in flight for 500ms (long polling or streaming keeps some pages from ever going idle), or download: true for the tab's pending or next download to finish (files an agent-driven tab downloads go to ~/Downloads/Daseo without a dialog; returns the path), or settled: true (see its description). Pass only timeoutMs to pause. Use browserId from browser_new_tab or browser_list_tabs; conditions wait up to 5s by default and timeoutMs is capped at 30000.",
       inputSchema: BrowserWaitInputSchema,
     },
     async (
-      { text, url, selector, script, load, download, timeoutMs, browserId },
+      { text, url, selector, script, load, download, settled, timeoutMs, browserId },
       executionContext,
     ) => {
       const context = resolveBrowserToolContext(options);
+      if (settled) {
+        const settleTimeoutMs = timeoutMs ?? BROWSER_WAIT_DEFAULT_TIMEOUT_MS;
+        const payload = await options.broker.execute({
+          agentId: context.agentId,
+          cwd: context.cwd,
+          ...(context.workspaceId ? { workspaceId: context.workspaceId } : {}),
+          // Arming the watch (up to 1 s for each of the debugger and the page) comes on top.
+          timeoutMs: settleTimeoutMs + 3_000,
+          command: { command: "settle", args: { browserId, timeoutMs: settleTimeoutMs } },
+        });
+        return browserToolResult({
+          payload: settleWaitPayload(payload, settleTimeoutMs),
+          context: { ...context, browserId },
+        });
+      }
       if (countWaitConditions({ text, url, selector, script, load, download }) === 0) {
         const waitedMs = await pause(timeoutMs ?? 0, executionContext?.signal);
         return {
@@ -544,14 +626,16 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Type into browser",
       description:
-        "Type text into an element, or into the focused element when ref is omitted. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes.",
+        "Type text into an element, or into the focused element when ref is omitted. Use browserId from browser_new_tab or browser_list_tabs; " +
+        REF_SOURCE,
       inputSchema: {
         text: z.string(),
         ref: BrowserRefInputSchema.optional(),
         browserId: BrowserAutomationBrowserIdSchema,
+        ...BrowserSnapshotAfterInputSchema,
       },
     },
-    async ({ text, ref, browserId }) => {
+    async ({ text, ref, browserId, snapshot }) => {
       const context = resolveBrowserToolContext(options);
       const payload = await options.broker.execute({
         agentId: context.agentId,
@@ -564,10 +648,15 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
             browserId,
             ...(ref ? { ref } : {}),
             text,
+            ...snapshotAfterArgs(snapshot),
           },
         },
       });
-      return browserToolResult({ payload, context: { ...context, browserId } });
+      return browserToolResult({
+        payload,
+        context: { ...context, browserId },
+        snapshotRequested: snapshot,
+      });
     },
   );
 
@@ -576,15 +665,18 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Press browser key",
       description:
-        "Dispatch a keypress to an element, or to the focused element when ref is omitted. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes. Enter or Space on a ref reports what the key caused the way browser_click does. Page dialogs: an alert is accepted on its own and reported; a confirm or prompt is held open and the result says so (openDialog), answer it with browser_handle_dialog, or pass dialog accept or dismiss (with promptText for a prompt) to answer one this call raises at once. Never override window.confirm or window.prompt.",
+        "Dispatch a keypress to an element, or to the focused element when ref is omitted. Use browserId from browser_new_tab or browser_list_tabs; " +
+        REF_SOURCE +
+        " Enter or Space on a ref reports what the key caused the way browser_click does. Page dialogs: an alert is accepted on its own and reported; a confirm or prompt is held open and the result says so (openDialog), answer it with browser_handle_dialog, or pass dialog accept or dismiss (with promptText for a prompt) to answer one this call raises at once. Never override window.confirm or window.prompt.",
       inputSchema: {
         key: z.string().min(1),
         ref: BrowserRefInputSchema.optional(),
         browserId: BrowserAutomationBrowserIdSchema,
         ...BrowserDialogPreArmInputSchema,
+        ...BrowserSnapshotAfterInputSchema,
       },
     },
-    async ({ key, ref, browserId, dialog, promptText }) => {
+    async ({ key, ref, browserId, dialog, promptText, snapshot }) => {
       const context = resolveBrowserToolContext(options);
       const payload = await options.broker.execute({
         agentId: context.agentId,
@@ -598,10 +690,15 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
             ...(ref ? { ref } : {}),
             key,
             ...dialogPreArmArgs(dialog, promptText),
+            ...snapshotAfterArgs(snapshot),
           },
         },
       });
-      return browserToolResult({ payload, context: { ...context, browserId } });
+      return browserToolResult({
+        payload,
+        context: { ...context, browserId },
+        snapshotRequested: snapshot,
+      });
     },
   );
 
@@ -611,9 +708,13 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
       title: "Navigate browser",
       description:
         "Navigate a Paseo browser tab to a URL. Use browserId from browser_new_tab or browser_list_tabs; pass an http(s) URL or a scheme-less host URL, which is treated as http.",
-      inputSchema: { url: BrowserHttpUrlInputSchema, browserId: BrowserAutomationBrowserIdSchema },
+      inputSchema: {
+        url: BrowserHttpUrlInputSchema,
+        browserId: BrowserAutomationBrowserIdSchema,
+        ...BrowserSnapshotAfterInputSchema,
+      },
     },
-    async ({ url, browserId }) => {
+    async ({ url, browserId, snapshot }) => {
       const context = resolveBrowserToolContext(options);
       const payload = await options.broker.execute({
         agentId: context.agentId,
@@ -625,10 +726,15 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
           args: {
             browserId,
             url,
+            ...snapshotAfterArgs(snapshot),
           },
         },
       });
-      return browserToolResult({ payload, context: { ...context, browserId } });
+      return browserToolResult({
+        payload,
+        context: { ...context, browserId },
+        snapshotRequested: snapshot,
+      });
     },
   );
 
@@ -660,9 +766,12 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
       {
         title: toolConfig.title,
         description: toolConfig.description,
-        inputSchema: { browserId: BrowserAutomationBrowserIdSchema },
+        inputSchema: {
+          browserId: BrowserAutomationBrowserIdSchema,
+          ...BrowserSnapshotAfterInputSchema,
+        },
       },
-      async ({ browserId }) => {
+      async ({ browserId, snapshot }) => {
         const context = resolveBrowserToolContext(options);
         const payload = await options.broker.execute({
           agentId: context.agentId,
@@ -673,10 +782,15 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
             command: toolConfig.command,
             args: {
               browserId,
+              ...snapshotAfterArgs(snapshot),
             },
           },
         });
-        return browserToolResult({ payload, context: { ...context, browserId } });
+        return browserToolResult({
+          payload,
+          context: { ...context, browserId },
+          snapshotRequested: snapshot,
+        });
       },
     );
   }
@@ -748,7 +862,8 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Upload files in browser",
       description:
-        "Set workspace files on a file input in a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes.",
+        "Set workspace files on a file input in a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; " +
+        REF_SOURCE,
       inputSchema: {
         ref: BrowserRefInputSchema,
         filePaths: BrowserUploadFilePathsInputSchema,
@@ -781,7 +896,8 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
       command: "hover",
       title: "Hover browser element",
       description:
-        "Hover an element in a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes.",
+        "Hover an element in a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; " +
+        REF_SOURCE,
     },
   ] as const) {
     registerTool(
@@ -789,9 +905,13 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
       {
         title: toolConfig.title,
         description: toolConfig.description,
-        inputSchema: { ref: BrowserRefInputSchema, browserId: BrowserAutomationBrowserIdSchema },
+        inputSchema: {
+          ref: BrowserRefInputSchema,
+          browserId: BrowserAutomationBrowserIdSchema,
+          ...BrowserSnapshotAfterInputSchema,
+        },
       },
-      async ({ ref, browserId }) => {
+      async ({ ref, browserId, snapshot }) => {
         const context = resolveBrowserToolContext(options);
         const payload = await options.broker.execute({
           agentId: context.agentId,
@@ -803,10 +923,15 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
             args: {
               browserId,
               ref,
+              ...snapshotAfterArgs(snapshot),
             },
           },
         });
-        return browserToolResult({ payload, context: { ...context, browserId } });
+        return browserToolResult({
+          payload,
+          context: { ...context, browserId },
+          snapshotRequested: snapshot,
+        });
       },
     );
   }
@@ -816,14 +941,16 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Select browser option",
       description:
-        "Set a select element in a Paseo browser tab to a value. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes.",
+        "Set a select element in a Paseo browser tab to a value. Use browserId from browser_new_tab or browser_list_tabs; " +
+        REF_SOURCE,
       inputSchema: {
         ref: BrowserRefInputSchema,
         value: z.string(),
         browserId: BrowserAutomationBrowserIdSchema,
+        ...BrowserSnapshotAfterInputSchema,
       },
     },
-    async ({ ref, value, browserId }) => {
+    async ({ ref, value, browserId, snapshot }) => {
       const context = resolveBrowserToolContext(options);
       const payload = await options.broker.execute({
         agentId: context.agentId,
@@ -836,10 +963,15 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
             browserId,
             ref,
             value,
+            ...snapshotAfterArgs(snapshot),
           },
         },
       });
-      return browserToolResult({ payload, context: { ...context, browserId } });
+      return browserToolResult({
+        payload,
+        context: { ...context, browserId },
+        snapshotRequested: snapshot,
+      });
     },
   );
 
@@ -848,7 +980,8 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Drag browser element",
       description:
-        "Drag one element onto another in a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes.",
+        "Drag one element onto another in a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; " +
+        REF_SOURCE,
       inputSchema: {
         sourceRef: BrowserRefInputSchema,
         targetRef: BrowserRefInputSchema,
@@ -1010,7 +1143,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Evaluate browser JavaScript",
       description:
-        "Evaluate a JavaScript function in a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; when ref is provided, refs come from the latest browser_snapshot and the resolved element is passed as the first argument. Page dialogs: an alert is accepted on its own and reported; a confirm or prompt is held open and the result says so (openDialog), answer it with browser_handle_dialog, or pass dialog accept or dismiss (with promptText for a prompt) to answer one this call raises at once. Never override window.confirm or window.prompt. A function stopped by a held dialog returns no value.",
+        "Evaluate a JavaScript function in a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; when ref is provided (from browser_snapshot or browser_find), the resolved element is passed as the first argument. Page dialogs: an alert is accepted on its own and reported; a confirm or prompt is held open and the result says so (openDialog), answer it with browser_handle_dialog, or pass dialog accept or dismiss (with promptText for a prompt) to answer one this call raises at once. Never override window.confirm or window.prompt. A function stopped by a held dialog returns no value.",
       inputSchema: {
         function: z.string().min(1),
         ref: BrowserRefInputSchema.optional(),
@@ -1044,15 +1177,16 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Scroll browser",
       description:
-        "Scroll a Paseo browser tab by deltaX/deltaY CSS pixels. Use browserId from browser_new_tab or browser_list_tabs; optional ref comes from the latest browser_snapshot and centers the wheel input over that element.",
+        "Scroll a Paseo browser tab by deltaX/deltaY CSS pixels. Use browserId from browser_new_tab or browser_list_tabs; optional ref (from browser_snapshot or browser_find) centers the wheel input over that element.",
       inputSchema: {
         browserId: BrowserAutomationBrowserIdSchema,
         ref: BrowserRefInputSchema.optional(),
         deltaX: BrowserScrollDeltaInputSchema,
         deltaY: BrowserScrollDeltaInputSchema,
+        ...BrowserSnapshotAfterInputSchema,
       },
     },
-    async ({ browserId, ref, deltaX, deltaY }) => {
+    async ({ browserId, ref, deltaX, deltaY, snapshot }) => {
       const context = resolveBrowserToolContext(options);
       const payload = await options.broker.execute({
         agentId: context.agentId,
@@ -1066,10 +1200,15 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
             ...(ref ? { ref } : {}),
             deltaX,
             deltaY,
+            ...snapshotAfterArgs(snapshot),
           },
         },
       });
-      return browserToolResult({ payload, context: { ...context, browserId } });
+      return browserToolResult({
+        payload,
+        context: { ...context, browserId },
+        snapshotRequested: snapshot,
+      });
     },
   );
 
@@ -1252,9 +1391,10 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
         browserId: BrowserAutomationBrowserIdSchema,
         accept: z.boolean(),
         promptText: z.string().max(10_000).optional(),
+        ...BrowserSnapshotAfterInputSchema,
       },
     },
-    async ({ browserId, accept, promptText }) => {
+    async ({ browserId, accept, promptText, snapshot }) => {
       const context = resolveBrowserToolContext(options);
       const payload = await options.broker.execute({
         agentId: context.agentId,
@@ -1263,12 +1403,35 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
 
         command: {
           command: "handle_dialog",
-          args: { browserId, accept, ...(promptText !== undefined ? { promptText } : {}) },
+          args: {
+            browserId,
+            accept,
+            ...(promptText !== undefined ? { promptText } : {}),
+            ...snapshotAfterArgs(snapshot),
+          },
         },
       });
-      return browserToolResult({ payload, context: { ...context, browserId } });
+      return browserToolResult({
+        payload,
+        context: { ...context, browserId },
+        snapshotRequested: snapshot,
+      });
     },
   );
+}
+
+// Daseo delta 104.
+const BrowserSnapshotAfterInputSchema = {
+  snapshot: z
+    .boolean()
+    .optional()
+    .describe(
+      "After the action, wait until the page has stopped loading and changing, then append a snapshot of the whole page to this result, so no separate browser_snapshot or browser_wait call is needed.",
+    ),
+};
+
+function snapshotAfterArgs(snapshot: boolean | undefined): { snapshot?: true } {
+  return snapshot ? { snapshot: true } : {};
 }
 
 const BrowserDialogPreArmInputSchema = {
@@ -1405,6 +1568,10 @@ interface BrowserToolSummaryOptions {
   /** What browser_read was asked for, to say when `main` fell back to the page. */
   readScope?: "main" | "page" | "ref";
   findQuery?: BrowserFindQuery;
+  /** Delta 104: the action was sent with `snapshot`, so a missing page says why. */
+  snapshotRequested?: boolean;
+  /** Delta 104: why the page after the action could not be read, when the tool knows. */
+  snapshotSkipReason?: string;
 }
 
 function browserToolResult(
@@ -1423,6 +1590,7 @@ function browserToolResult(
         ...(payload.dialogs ? { dialogs: payload.dialogs } : {}),
         ...(payload.openDialog ? { openDialog: payload.openDialog } : {}),
         ...(payload.events ? { events: payload.events } : {}),
+        ...(payload.pageAfter ? { pageAfter: payload.pageAfter } : {}),
         context,
       },
     };
@@ -1471,9 +1639,13 @@ function browserToolSuccessContent(
 ): PaseoToolResult["content"] {
   const textContent = {
     type: "text" as const,
-    text: appendTabEvents(
-      appendOpenDialog(summarizeBrowserSuccess(payload, options), payload.openDialog),
-      payload.events,
+    text: appendPageAfter(
+      appendTabEvents(
+        appendOpenDialog(summarizeBrowserSuccess(payload, options), payload.openDialog),
+        payload.events,
+      ),
+      payload,
+      options,
     ),
   };
   const imageContent = browserToolImageContent(payload.result);
@@ -1554,15 +1726,11 @@ function summarizeBrowserSuccess(
   }
 
   if (payload.result.command === "snapshot") {
-    return withDialogs(
-      [
-        `Snapshot captured ${payload.result.stats.nodeCount} node${payload.result.stats.nodeCount === 1 ? "" : "s"} with ${payload.result.stats.refCount} ref${payload.result.stats.refCount === 1 ? "" : "s"}.`,
-        `Title: ${payload.result.title || "Untitled"}`,
-        `URL: ${payload.result.url}`,
-        "",
-        payload.result.snapshot,
-      ].join("\n"),
-    );
+    return withDialogs(formatSnapshot(payload.result));
+  }
+
+  if (payload.result.command === "settle") {
+    return withDialogs(`Browser wait matched settled: the page ${describeSettle(payload.result)}.`);
   }
 
   if (payload.result.command === "wait") {
@@ -1570,6 +1738,110 @@ function summarizeBrowserSuccess(
   }
 
   return withDialogs(`Browser ${payload.result.command} complete.`);
+}
+
+function formatSnapshot(result: BrowserAutomationSnapshotResult): string {
+  return [
+    `Snapshot captured ${result.stats.nodeCount} node${result.stats.nodeCount === 1 ? "" : "s"} with ${result.stats.refCount} ref${result.stats.refCount === 1 ? "" : "s"}.`,
+    `Title: ${result.title || "Untitled"}`,
+    `URL: ${result.url}`,
+    "",
+    result.snapshot,
+  ].join("\n");
+}
+
+/** Delta 104: how a settle ended, e.g. "settled in 230ms" or "did not settle within 4000ms: ...". */
+function describeSettle(result: BrowserAutomationSettleResult): string {
+  const outcome = result.settled
+    ? `settled in ${result.elapsedMs}ms`
+    : `did not settle within ${result.elapsedMs}ms: ${settlePendingReason(result)}`;
+  return result.networkWatched === false
+    ? `${outcome} (requests could not be watched, so only the DOM counted)`
+    : outcome;
+}
+
+function settlePendingReason(result: BrowserAutomationSettleResult): string {
+  if (result.loading) return "the page was still loading";
+  if (result.inflightRequests) {
+    return `${result.inflightRequests} request${result.inflightRequests === 1 ? " was" : "s were"} still in flight`;
+  }
+  if (result.domChangedMsAgo !== undefined) {
+    return `the DOM changed ${result.domChangedMsAgo}ms before the end`;
+  }
+  return "the page kept changing";
+}
+
+/** Delta 104: the settled page after an action sent with `snapshot`, last in the text. */
+function appendPageAfter(
+  summary: string,
+  payload: Extract<BrowserToolsResponsePayload, { ok: true }>,
+  options: BrowserToolSummaryOptions,
+): string {
+  const pageAfter = payload.pageAfter;
+  if (!pageAfter) {
+    if (!options.snapshotRequested) return summary;
+    let reason = "this browser host did not return one; call browser_snapshot";
+    if (payload.openDialog) reason = "a dialog is open; answer it, then call browser_snapshot";
+    else if (options.snapshotSkipReason) reason = options.snapshotSkipReason;
+    return `${summary}\nSnapshot skipped: ${reason}`.replace(/\.?$/, ".");
+  }
+  const how = describeSettle(pageAfter);
+  if (!pageAfter.snapshot) {
+    return `${summary}\nPage after the action (${how}): no snapshot, ${pageAfter.snapshotError ?? "none returned"}`;
+  }
+  return [
+    summary,
+    "",
+    `Page after the action (${how}):`,
+    appendLoadingNote(formatSnapshot(pageAfter.snapshot), pageAfter.snapshot),
+  ].join("\n");
+}
+
+/**
+ * Delta 104: the new tab's result with the settle that followed it. A settle that failed (an older
+ * desktop app, a tab that did not answer) leaves the tab created and says why there is no page.
+ */
+function withPageAfter(
+  created: Extract<BrowserToolsResponsePayload, { ok: true }>,
+  settled: BrowserToolsResponsePayload,
+): { payload: BrowserToolsResponsePayload; snapshotSkipReason?: string } {
+  const events = [...(created.events ?? []), ...(settled.events ?? [])];
+  const dialogs = [...(created.dialogs ?? []), ...(settled.dialogs ?? [])];
+  const merged = {
+    ...created,
+    ...(events.length > 0 ? { events } : {}),
+    ...(dialogs.length > 0 ? { dialogs } : {}),
+    ...(settled.openDialog ? { openDialog: settled.openDialog } : {}),
+  };
+  if (settled.ok && settled.result.command === "settle") {
+    return { payload: { ...merged, pageAfter: settled.result } };
+  }
+  return {
+    payload: merged,
+    snapshotSkipReason: settled.ok ? "the host answered something else" : settled.error.message,
+  };
+}
+
+/** Delta 104: browser_wait settled fails at its timeout like the other conditions. */
+function settleWaitPayload(
+  payload: BrowserToolsResponsePayload,
+  timeoutMs: number,
+): BrowserToolsResponsePayload {
+  if (!payload.ok || payload.result.command !== "settle" || payload.result.settled) {
+    return payload;
+  }
+  return {
+    requestId: payload.requestId,
+    ok: false,
+    error: {
+      code: "browser_timeout",
+      message: `Timed out waiting for the page to settle after ${timeoutMs}ms: ${settlePendingReason(payload.result)}. Long polling, streaming, and animations that keep changing the DOM can keep a page from ever settling; wait for text, a selector, or a script instead.`,
+      retryable: true,
+    },
+    ...(payload.dialogs ? { dialogs: payload.dialogs } : {}),
+    ...(payload.events ? { events: payload.events } : {}),
+    ...(payload.openDialog ? { openDialog: payload.openDialog } : {}),
+  };
 }
 
 function summarizeBrowserRead(

@@ -17,7 +17,7 @@ const POPUP_BROWSER_ID = "22222222-2222-4222-8222-222222222222";
 const BROWSER_ID_MESSAGE =
   "browserId must be a real id returned by browser_new_tab or browser_list_tabs";
 const WAIT_CONDITION_MESSAGE =
-  "browser_wait requires one condition (text, url, selector, script, load, or download), or timeoutMs alone to pause";
+  "browser_wait requires one condition (text, url, selector, script, load, download, or settled), or timeoutMs alone to pause";
 const HTTP_URL_MESSAGE = "URL must use http/https only";
 const WORKSPACE_CONTEXT_MESSAGE =
   "This browser tool needs a workspace. Start the agent from a Paseo workspace before calling browser_new_tab or browser_list_tabs.";
@@ -29,6 +29,7 @@ interface RegisteredTool {
 
 class FakeBrowserBroker {
   public readonly calls: BrowserToolsExecuteInput[] = [];
+  private readonly queued: BrowserToolsResponsePayload[] = [];
 
   public constructor(private response: BrowserToolsResponsePayload = listTabsPayload()) {}
 
@@ -36,9 +37,14 @@ class FakeBrowserBroker {
     this.response = response;
   }
 
+  /** Answers the next calls in order, then falls back to the set response. */
+  public queueResponses(...responses: BrowserToolsResponsePayload[]): void {
+    this.queued.push(...responses);
+  }
+
   public async execute(input: BrowserToolsExecuteInput): Promise<BrowserToolsResponsePayload> {
     this.calls.push(input);
-    return this.response;
+    return this.queued.shift() ?? this.response;
   }
 }
 
@@ -77,6 +83,10 @@ class BrowserToolHarness {
     return Array.from(this.tools.keys());
   }
 
+  public description(name: string): string {
+    return this.get(name).config.description ?? "";
+  }
+
   private get(name: string): RegisteredTool {
     const tool = this.tools.get(name);
     if (!tool) {
@@ -84,6 +94,13 @@ class BrowserToolHarness {
     }
     return tool;
   }
+}
+
+/** Whether a validation failed for other reasons than an unknown `parameter`. */
+function takesParameter(validated: z.ZodSafeParseResult<unknown>, parameter: string): boolean {
+  if (validated.success) return true;
+  const unknown = `does not take "${parameter}"`;
+  return !validated.error.issues.some((issue) => issue.message.includes(unknown));
 }
 
 function schemaFor(inputSchema: PaseoToolConfig["inputSchema"]): z.ZodType {
@@ -744,6 +761,321 @@ describe("registerBrowserTools", () => {
       "browser_passkeys",
       "browser_handle_dialog",
     ]);
+  });
+
+  test("tool descriptions state how refs really live (delta 104)", () => {
+    const harness = new BrowserToolHarness();
+    const descriptions = harness.toolNames().map((name) => harness.description(name));
+
+    expect(descriptions.filter((text) => text.includes("expire when the page changes"))).toEqual(
+      [],
+    );
+    expect(descriptions.filter((text) => text.includes("latest browser_snapshot"))).toEqual([]);
+    expect(harness.description("browser_snapshot")).toContain(
+      "refs come from browser_snapshot or browser_find of the same tab and stay valid across later actions and snapshots while the element stays on the page; a navigation, a re-render or rename of the element, or a later snapshot that no longer lists it (hidden or removed) makes the ref stale, and the error says so.",
+    );
+    expect(harness.description("browser_click")).toContain(
+      "refs come from browser_snapshot or browser_find of the same tab and stay valid while the element stays on the page.",
+    );
+  });
+
+  test("the listed actions take snapshot, and only they (delta 104)", () => {
+    const harness = new BrowserToolHarness();
+    const withSnapshot = harness
+      .toolNames()
+      .filter((name) => takesParameter(harness.validate(name, { snapshot: true }), "snapshot"));
+
+    expect(withSnapshot).toEqual([
+      "browser_new_tab",
+      "browser_click",
+      "browser_fill",
+      "browser_type",
+      "browser_keypress",
+      "browser_navigate",
+      "browser_back",
+      "browser_forward",
+      "browser_reload",
+      "browser_hover",
+      "browser_select",
+      "browser_scroll",
+      "browser_handle_dialog",
+    ]);
+  });
+
+  test("click with snapshot sends it and appends the settled page after the effect (delta 104)", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-click",
+      ok: true,
+      result: {
+        command: "click",
+        browserId: BROWSER_ID,
+        ref: "@e3",
+        effect: "content changed in the element's container",
+      },
+      pageAfter: {
+        command: "settle",
+        browserId: BROWSER_ID,
+        settled: true,
+        elapsedMs: 812,
+        snapshot: {
+          command: "snapshot",
+          browserId: BROWSER_ID,
+          url: "https://a.test/search",
+          title: "Search",
+          format: "aria-yaml",
+          snapshot: '- heading "3 results" [level=2]',
+          truncated: false,
+          stats: { nodeCount: 2, refCount: 0, textLength: 31 },
+        },
+      },
+    });
+
+    const response = await harness.execute("browser_click", {
+      browserId: BROWSER_ID,
+      ref: "@e3",
+      snapshot: true,
+    });
+
+    expect(harness.broker.calls.at(-1)?.command).toEqual({
+      command: "click",
+      args: {
+        browserId: BROWSER_ID,
+        ref: "@e3",
+        button: "left",
+        doubleClick: false,
+        modifiers: [],
+        snapshot: true,
+      },
+    });
+    expect(response.content).toEqual([
+      {
+        type: "text",
+        text: [
+          "Clicked browser element @e3: content changed in the element's container.",
+          "",
+          "Page after the action (settled in 812ms):",
+          "Snapshot captured 2 nodes with 0 refs.",
+          "Title: Search",
+          "URL: https://a.test/search",
+          "",
+          '- heading "3 results" [level=2]',
+        ].join("\n"),
+      },
+    ]);
+    expect(response.structuredContent).toMatchObject({
+      ok: true,
+      result: { command: "click" },
+      pageAfter: { settled: true, snapshot: { url: "https://a.test/search" } },
+    });
+  });
+
+  test("a page that did not settle, or could not be read, says so (delta 104)", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-scroll",
+      ok: true,
+      result: { command: "scroll", browserId: BROWSER_ID, deltaX: 0, deltaY: 600 },
+      pageAfter: {
+        command: "settle",
+        browserId: BROWSER_ID,
+        settled: false,
+        elapsedMs: 4000,
+        inflightRequests: 2,
+        snapshotError: "The page did not answer the snapshot within 5s.",
+      },
+    });
+
+    const response = await harness.execute("browser_scroll", {
+      browserId: BROWSER_ID,
+      deltaY: 600,
+      snapshot: true,
+    });
+
+    expect(response.content[0]?.text).toBe(
+      [
+        "Scrolled browser by 0, 600.",
+        "Page after the action (did not settle within 4000ms: 2 requests were still in flight): no snapshot, The page did not answer the snapshot within 5s.",
+      ].join("\n"),
+    );
+  });
+
+  test("a click with snapshot that opened a confirm says the snapshot was skipped (delta 104)", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-click",
+      ok: true,
+      result: { command: "click", browserId: BROWSER_ID, ref: "@e1" },
+      openDialog: {
+        browserId: BROWSER_ID,
+        type: "confirm",
+        message: "Delete?",
+        openedAt: Date.now(),
+      },
+    });
+
+    const response = await harness.execute("browser_click", {
+      browserId: BROWSER_ID,
+      ref: "@e1",
+      snapshot: true,
+    });
+
+    expect(response.content[0]?.text).toBe(
+      [
+        "Clicked browser element @e1.",
+        'Dialog open: the page shows a confirm "Delete?" and waits for an answer. Call browser_handle_dialog with accept true or false.',
+        "Snapshot skipped: a dialog is open; answer it, then call browser_snapshot.",
+      ].join("\n"),
+    );
+    expect(response.structuredContent).not.toHaveProperty("pageAfter");
+  });
+
+  test("new tab with snapshot settles the new tab and appends its page (delta 104)", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.queueResponses(
+      {
+        requestId: "req-new",
+        ok: true,
+        result: {
+          command: "new_tab",
+          browserId: POPUP_BROWSER_ID,
+          workspaceId: "wks_workspace_a",
+          url: "https://a.test/",
+        },
+      },
+      {
+        requestId: "req-settle",
+        ok: true,
+        result: {
+          command: "settle",
+          browserId: POPUP_BROWSER_ID,
+          settled: true,
+          elapsedMs: 240,
+          snapshot: {
+            command: "snapshot",
+            browserId: POPUP_BROWSER_ID,
+            url: "https://a.test/",
+            title: "A",
+            format: "aria-yaml",
+            snapshot: '- link "Sign in" [ref=@e1]',
+            truncated: false,
+            stats: { nodeCount: 2, refCount: 1, textLength: 26 },
+          },
+        },
+      },
+    );
+
+    const response = await harness.execute("browser_new_tab", {
+      url: "https://a.test/",
+      snapshot: true,
+    });
+
+    expect(harness.broker.calls.map((call) => call.command)).toEqual([
+      { command: "new_tab", args: { url: "https://a.test/" } },
+      {
+        command: "settle",
+        args: { browserId: POPUP_BROWSER_ID, timeoutMs: 4000, snapshot: true },
+      },
+    ]);
+    expect(response.content[0]?.text).toBe(
+      [
+        `Created browser tab browserId=${POPUP_BROWSER_ID} url=https://a.test/. Use this browserId for tab-scoped browser tools.`,
+        "",
+        "Page after the action (settled in 240ms):",
+        "Snapshot captured 2 nodes with 1 ref.",
+        "Title: A",
+        "URL: https://a.test/",
+        "",
+        '- link "Sign in" [ref=@e1]',
+      ].join("\n"),
+    );
+  });
+
+  test("new tab with snapshot keeps the tab when the host cannot settle it (delta 104)", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.queueResponses(
+      {
+        requestId: "req-new",
+        ok: true,
+        result: {
+          command: "new_tab",
+          browserId: POPUP_BROWSER_ID,
+          workspaceId: "wks_workspace_a",
+          url: "about:blank",
+        },
+      },
+      {
+        requestId: "req-settle",
+        ok: false,
+        error: {
+          code: "browser_unsupported",
+          message:
+            "Waiting for the page to settle needs a newer Daseo desktop app than the desktop app.",
+          retryable: false,
+        },
+      },
+    );
+
+    const response = await harness.execute("browser_new_tab", { snapshot: true });
+
+    expect(response.structuredContent).toMatchObject({ ok: true, result: { command: "new_tab" } });
+    expect(response.content[0]?.text).toContain(
+      "Snapshot skipped: Waiting for the page to settle needs a newer Daseo desktop app than the desktop app.",
+    );
+  });
+
+  test("wait settled sends a settle with its timeout and reports how long it took (delta 104)", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-settle",
+      ok: true,
+      result: { command: "settle", browserId: BROWSER_ID, settled: true, elapsedMs: 214 },
+    });
+
+    const response = await harness.execute("browser_wait", {
+      browserId: BROWSER_ID,
+      settled: true,
+    });
+
+    expect(harness.broker.calls.at(-1)).toMatchObject({
+      timeoutMs: 8000,
+      command: { command: "settle", args: { browserId: BROWSER_ID, timeoutMs: 5000 } },
+    });
+    expect(response.content[0]?.text).toBe(
+      "Browser wait matched settled: the page settled in 214ms.",
+    );
+  });
+
+  test("wait settled that times out is a browser_timeout naming what kept the page busy (delta 104)", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-settle",
+      ok: true,
+      result: {
+        command: "settle",
+        browserId: BROWSER_ID,
+        settled: false,
+        elapsedMs: 2000,
+        domChangedMsAgo: 30,
+      },
+    });
+
+    const response = await harness.execute("browser_wait", {
+      browserId: BROWSER_ID,
+      settled: true,
+      timeoutMs: 2000,
+    });
+
+    expect(response.structuredContent).toMatchObject({
+      ok: false,
+      error: { code: "browser_timeout", retryable: true },
+    });
+    expect(response.content[0]?.text).toBe(
+      "Timed out waiting for the page to settle after 2000ms: the DOM changed 30ms before the end. Long polling, streaming, and animations that keep changing the DOM can keep a page from ever settling; wait for text, a selector, or a script instead.",
+    );
+    expect(
+      harness.validate("browser_wait", { browserId: BROWSER_ID, settled: true, text: "x" }),
+    ).toMatchObject({ success: false });
   });
 
   test("rejects unknown parameters and names the right one", () => {

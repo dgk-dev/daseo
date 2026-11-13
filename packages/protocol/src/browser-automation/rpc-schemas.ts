@@ -56,6 +56,7 @@ export const BROWSER_AUTOMATION_COMMAND_NAMES = [
   "tab_report",
   "network_export",
   "passkey_use",
+  "settle",
 ] as const;
 
 export const BrowserAutomationCommandNameSchema = z.enum(BROWSER_AUTOMATION_COMMAND_NAMES);
@@ -81,6 +82,18 @@ const BrowserAutomationDialogPreArmFields = {
   /** Text a prompt answered with `dialog: "accept"` returns; the prompt's default when absent. */
   promptText: z.string().max(10_000).optional(),
 };
+/**
+ * Daseo delta 104: after the action, wait until the page settles (no request in flight, the DOM
+ * unchanged, the document loaded) and return its snapshot as `pageAfter` on the response. Sent
+ * only to a host that advertises `settle`; an older host's strict args reject it.
+ */
+const BrowserAutomationSnapshotAfterFields = {
+  snapshot: z.boolean().optional(),
+};
+/** Delta 104: how long an action with `snapshot` waits for the page to settle. */
+export const BROWSER_AUTOMATION_SNAPSHOT_SETTLE_TIMEOUT_MS = 4_000;
+/** Delta 104: how long the snapshot after a settle may take before it is given up. */
+export const BROWSER_AUTOMATION_SNAPSHOT_AFTER_TIMEOUT_MS = 5_000;
 const BrowserAutomationBase64UrlSchema = z.string().regex(/^[A-Za-z0-9_-]+$/);
 const BrowserAutomationMouseButtonSchema = z.enum(["left", "right", "middle"]);
 const BrowserAutomationInputModifierSchema = z.enum(["Alt", "Control", "Meta", "Shift"]);
@@ -125,6 +138,7 @@ export const BrowserAutomationClickCommandSchema = z.object({
     doubleClick: z.boolean().default(false),
     modifiers: z.array(BrowserAutomationInputModifierSchema).default([]),
     ...BrowserAutomationDialogPreArmFields,
+    ...BrowserAutomationSnapshotAfterFields,
   }),
 });
 
@@ -133,6 +147,7 @@ export const BrowserAutomationFillCommandSchema = z.object({
   args: BrowserAutomationTabTargetSchema.extend({
     ref: BrowserAutomationRefSchema,
     value: z.string(),
+    ...BrowserAutomationSnapshotAfterFields,
   }),
 });
 
@@ -165,6 +180,7 @@ export const BrowserAutomationTypeCommandSchema = z.object({
   args: BrowserAutomationTabTargetSchema.extend({
     ref: BrowserAutomationRefSchema.optional(),
     text: z.string(),
+    ...BrowserAutomationSnapshotAfterFields,
   }),
 });
 
@@ -174,6 +190,7 @@ export const BrowserAutomationKeypressCommandSchema = z.object({
     ref: BrowserAutomationRefSchema.optional(),
     key: z.string().min(1),
     ...BrowserAutomationDialogPreArmFields,
+    ...BrowserAutomationSnapshotAfterFields,
   }),
 });
 
@@ -181,22 +198,23 @@ export const BrowserAutomationNavigateCommandSchema = z.object({
   command: z.literal("navigate"),
   args: BrowserAutomationTabTargetSchema.extend({
     url: BrowserAutomationHttpUrlSchema,
+    ...BrowserAutomationSnapshotAfterFields,
   }),
 });
 
 export const BrowserAutomationBackCommandSchema = z.object({
   command: z.literal("back"),
-  args: BrowserAutomationTabTargetSchema,
+  args: BrowserAutomationTabTargetSchema.extend(BrowserAutomationSnapshotAfterFields),
 });
 
 export const BrowserAutomationForwardCommandSchema = z.object({
   command: z.literal("forward"),
-  args: BrowserAutomationTabTargetSchema,
+  args: BrowserAutomationTabTargetSchema.extend(BrowserAutomationSnapshotAfterFields),
 });
 
 export const BrowserAutomationReloadCommandSchema = z.object({
   command: z.literal("reload"),
-  args: BrowserAutomationTabTargetSchema,
+  args: BrowserAutomationTabTargetSchema.extend(BrowserAutomationSnapshotAfterFields),
 });
 
 export const BrowserAutomationScreenshotCommandSchema = z.object({
@@ -221,6 +239,7 @@ export const BrowserAutomationSelectCommandSchema = z.object({
   args: BrowserAutomationTabTargetSchema.extend({
     ref: BrowserAutomationRefSchema,
     value: z.string(),
+    ...BrowserAutomationSnapshotAfterFields,
   }),
 });
 
@@ -228,6 +247,7 @@ export const BrowserAutomationHoverCommandSchema = z.object({
   command: z.literal("hover"),
   args: BrowserAutomationTabTargetSchema.extend({
     ref: BrowserAutomationRefSchema,
+    ...BrowserAutomationSnapshotAfterFields,
   }),
 });
 
@@ -265,6 +285,7 @@ export const BrowserAutomationHandleDialogCommandSchema = z.object({
   args: BrowserAutomationTabTargetSchema.extend({
     accept: z.boolean(),
     promptText: z.string().max(10_000).optional(),
+    ...BrowserAutomationSnapshotAfterFields,
   }),
 });
 
@@ -283,6 +304,7 @@ export const BrowserAutomationScrollCommandSchema = z.object({
     ref: BrowserAutomationRefSchema.optional(),
     deltaX: z.number(),
     deltaY: z.number(),
+    ...BrowserAutomationSnapshotAfterFields,
   }),
 });
 
@@ -496,6 +518,20 @@ export const BrowserAutomationPasskeyUseCommandSchema = z.object({
   }),
 });
 
+/**
+ * Daseo delta 104: waits until the tab's page has settled: not loading, no request in flight for a
+ * quiet window, and the DOM unchanged for a quiet window with the document complete. Always
+ * answers with `settled` true or false at the deadline; `snapshot` adds the page's snapshot. A
+ * separate command (not a `wait` condition) so the broker can gate it on `supportedCommands`.
+ */
+export const BrowserAutomationSettleCommandSchema = z.object({
+  command: z.literal("settle"),
+  args: BrowserAutomationTabTargetSchema.extend({
+    timeoutMs: z.number().int().positive().max(30_000).optional(),
+    snapshot: z.boolean().optional(),
+  }),
+});
+
 export const BrowserAutomationCommandSchema = z.discriminatedUnion("command", [
   BrowserAutomationListTabsCommandSchema,
   BrowserAutomationNewTabCommandSchema,
@@ -531,6 +567,7 @@ export const BrowserAutomationCommandSchema = z.discriminatedUnion("command", [
   BrowserAutomationTabReportCommandSchema,
   BrowserAutomationNetworkExportCommandSchema,
   BrowserAutomationPasskeyUseCommandSchema,
+  BrowserAutomationSettleCommandSchema,
 ]);
 
 export const BrowserAutomationTabInfoSchema = z.object({
@@ -1130,6 +1167,27 @@ export const BrowserAutomationTabReportResultSchema = z.object({
   pressureLevel: z.number().int().optional(),
 });
 
+/**
+ * Daseo delta 104: whether the page settled, and the snapshot when one was asked for. Also the
+ * `pageAfter` of an action sent with `snapshot`.
+ */
+export const BrowserAutomationSettleResultSchema = z.object({
+  command: z.literal("settle"),
+  browserId: BrowserAutomationBrowserIdSchema,
+  settled: z.boolean(),
+  elapsedMs: z.number().int().nonnegative(),
+  /** What was still going on at the deadline (absent when settled). */
+  loading: z.boolean().optional(),
+  inflightRequests: z.number().int().nonnegative().optional(),
+  /** How long before the deadline the DOM last changed. */
+  domChangedMsAgo: z.number().int().nonnegative().optional(),
+  /** False when the tab's requests could not be watched (no debugger), so only the DOM counted. */
+  networkWatched: z.boolean().optional(),
+  snapshot: BrowserAutomationSnapshotResultSchema.optional(),
+  /** Why the asked-for snapshot is missing. */
+  snapshotError: z.string().optional(),
+});
+
 export const BrowserAutomationResultSchema = z.discriminatedUnion("command", [
   BrowserAutomationListTabsResultSchema,
   BrowserAutomationNewTabResultSchema,
@@ -1165,6 +1223,7 @@ export const BrowserAutomationResultSchema = z.discriminatedUnion("command", [
   BrowserAutomationTabReportResultSchema,
   BrowserAutomationNetworkExportResultSchema,
   BrowserAutomationPasskeyUseResultSchema,
+  BrowserAutomationSettleResultSchema,
 ]);
 
 export const BrowserAutomationErrorSchema = z.object({
@@ -1222,6 +1281,8 @@ export const BrowserAutomationExecuteResponseSchema = z.object({
       events: z.array(BrowserAutomationTabEventSchema).optional(),
       /** Daseo delta 93: a confirm or prompt the page holds open after this command. */
       openDialog: BrowserAutomationOpenDialogSchema.optional(),
+      /** Daseo delta 104: the settled page after an action sent with `snapshot`. */
+      pageAfter: BrowserAutomationSettleResultSchema.optional(),
     }),
     z.object({
       requestId: z.string().min(1),
@@ -1303,6 +1364,8 @@ export type BrowserAutomationResizeCommandArgs = z.infer<
 export type BrowserAutomationResizeResult = z.infer<typeof BrowserAutomationResizeResultSchema>;
 export type BrowserAutomationDownload = z.infer<typeof BrowserAutomationDownloadSchema>;
 export type BrowserAutomationTabEvent = z.infer<typeof BrowserAutomationTabEventSchema>;
+export type BrowserAutomationSettleResult = z.infer<typeof BrowserAutomationSettleResultSchema>;
+export type BrowserAutomationSnapshotResult = z.infer<typeof BrowserAutomationSnapshotResultSchema>;
 export type BrowserAutomationTabReportEntry = z.infer<typeof BrowserAutomationTabReportEntrySchema>;
 export type BrowserAutomationTabReportResult = z.infer<
   typeof BrowserAutomationTabReportResultSchema

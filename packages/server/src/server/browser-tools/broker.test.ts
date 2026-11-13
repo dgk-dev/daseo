@@ -814,6 +814,103 @@ describe("BrowserToolsBroker", () => {
     expect(client.receivedRequests).toEqual([]);
   });
 
+  test("a host without settle gets no snapshot argument and no settle (delta 104)", async () => {
+    const broker = createBroker();
+    const oldDesktop = BROWSER_AUTOMATION_COMMAND_NAMES.filter((name) => name !== "settle");
+    const client = new FakeBrowserHostClient("host-1", {
+      supportedCommands: oldDesktop,
+      hostKind: "desktop app",
+    });
+    broker.registerClient(client);
+
+    await expect(
+      broker.execute({
+        command: {
+          command: "click",
+          args: {
+            browserId: BROWSER_ID,
+            ref: "@e1",
+            button: "left",
+            doubleClick: false,
+            modifiers: [],
+            snapshot: true,
+          },
+        },
+      }),
+    ).resolves.toEqual({
+      requestId: "req-1",
+      ok: false,
+      error: {
+        code: "browser_unsupported",
+        message:
+          "snapshot needs a newer Daseo desktop app than the desktop app. Call without it, then browser_snapshot.",
+        retryable: false,
+      },
+    });
+    await expect(
+      broker.execute({ command: { command: "settle", args: { browserId: BROWSER_ID } } }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "browser_unsupported",
+        message: expect.stringContaining("Waiting for the page to settle needs a newer Daseo"),
+      },
+    });
+    expect(client.receivedRequests).toEqual([]);
+
+    // Without the new argument the same click goes through unchanged.
+    void broker.execute({
+      command: {
+        command: "click",
+        args: {
+          browserId: BROWSER_ID,
+          ref: "@e1",
+          button: "left",
+          doubleClick: false,
+          modifiers: [],
+        },
+      },
+    });
+    expect(client.receivedRequests.map((request) => request.command.args)).toEqual([
+      { browserId: BROWSER_ID, ref: "@e1", button: "left", doubleClick: false, modifiers: [] },
+    ]);
+  });
+
+  test("a command with snapshot gets the settle and snapshot budget on top of its deadline (delta 104)", async () => {
+    vi.useFakeTimers();
+    const broker = createBroker({ timeoutMs: 15_000 });
+    const client = new FakeBrowserHostClient("host-1");
+    broker.registerClient(client);
+
+    const navigate = broker.execute({
+      command: {
+        command: "navigate",
+        args: { browserId: BROWSER_ID, url: "https://a.test/", snapshot: true },
+      },
+    });
+    // 15 s plus 4 s settle, 5 s snapshot, 2 s arming and transport.
+    await vi.advanceTimersByTimeAsync(25_900);
+    expect(broker.getPendingRequestCount()).toBeGreaterThanOrEqual(1);
+    const navigateRequest = client.receivedRequests.find(
+      (request) => request.command.command === "navigate",
+    )!;
+    client.resolveRequestWith(broker, navigateRequest, {
+      requestId: "req-1",
+      ok: true,
+      result: { command: "navigate", browserId: BROWSER_ID, url: "https://a.test/" },
+    });
+    await expect(navigate).resolves.toMatchObject({ ok: true });
+
+    const plain = broker.execute({
+      command: { command: "navigate", args: { browserId: BROWSER_ID, url: "https://a.test/" } },
+    });
+    await vi.advanceTimersByTimeAsync(15_000);
+    await expect(plain).resolves.toMatchObject({
+      ok: false,
+      error: { message: expect.stringContaining("did not respond within 15000ms") },
+    });
+  });
+
   test("unregistering a host strands its browser ids instead of routing them to another host", async () => {
     const broker = createBroker();
     const owner = new FakeBrowserHostClient("host-1");

@@ -18,11 +18,16 @@ import type {
   BrowserAutomationPasskeyUseCommandArgs,
   BrowserAutomationReadCommandArgs,
   BrowserAutomationResult,
+  BrowserAutomationSettleResult,
   BrowserAutomationResizeCommandArgs,
   BrowserAutomationStylesCommandArgs,
   BrowserAutomationTabReportResult,
   BrowserAutomationWaitLoadState,
   BrowserAutomationDownload,
+} from "@getpaseo/protocol/browser-automation/rpc-schemas";
+import {
+  BROWSER_AUTOMATION_SNAPSHOT_AFTER_TIMEOUT_MS,
+  BROWSER_AUTOMATION_SNAPSHOT_SETTLE_TIMEOUT_MS,
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import { waitForActionableTarget, type ActionabilityResult } from "./actionability.js";
 import { summarizeElementStyles, type RawElementStyles } from "./css-styles.js";
@@ -57,6 +62,7 @@ import {
   type HostInputEffect,
   type InputEffectHostSignals,
 } from "./input-effect.js";
+import { watchPageSettle, type PageSettleWatch } from "./page-settle.js";
 import { BrowserSnapshotEngine } from "./snapshot-engine.js";
 import {
   dispatchTrustedClick,
@@ -235,6 +241,21 @@ const NAVIGATION_COMMANDS: ReadonlySet<BrowserAutomationCommand["command"]> = ne
   "forward",
   "reload",
 ]);
+// Daseo delta 104: actions that take `snapshot` and answer with the settled page's snapshot.
+const SNAPSHOT_AFTER_COMMANDS: ReadonlySet<BrowserAutomationCommand["command"]> = new Set([
+  "click",
+  "fill",
+  "type",
+  "keypress",
+  "select",
+  "hover",
+  "scroll",
+  "navigate",
+  "back",
+  "forward",
+  "reload",
+  "handle_dialog",
+]);
 // After an answer the page runs on; a follow-up dialog it opens synchronously (a confirm is often
 // followed by an alert) is caught within this window.
 const DIALOG_FOLLOW_UP_SETTLE_MS = 1_500;
@@ -290,11 +311,16 @@ async function runWithPageDialogs(
     fail(
       requestId,
       "browser_denied",
-      `The page opened a ${outcome.dialog.type} dialog while browser_${command.command} ran, so this command has no result. ${dialogOpenMessage(browserId, outcome.dialog)}`,
+      `The page opened a ${outcome.dialog.type} dialog while ${toolNameFor(command)} ran, so this command has no result. ${dialogOpenMessage(browserId, outcome.dialog)}`,
     ),
     outcome.dialogs,
     openDialog,
   );
+}
+
+function toolNameFor(command: BrowserAutomationCommand): string {
+  // The settle command is browser_wait settled, or the page snapshot of browser_new_tab.
+  return command.command === "settle" ? "browser_wait" : `browser_${command.command}`;
 }
 
 function withDialogFields(
@@ -632,9 +658,17 @@ export function executeAutomationCommand(
       streamSink: options?.streamSink,
     });
   const tabDialogs = resolveTabPageDialogs(command, workspaceId, registry);
-  const payload = tabDialogs
-    ? runWithPageDialogs(request, tabDialogs.browserId, tabDialogs.dialogs, run)
-    : run();
+  const runCommand = () =>
+    tabDialogs ? runWithPageDialogs(request, tabDialogs.browserId, tabDialogs.dialogs, run) : run();
+  const payload = requestsPageAfter(command)
+    ? runWithPageAfter({
+        request,
+        registry,
+        snapshotEngine,
+        dialogs: tabDialogs?.dialogs ?? null,
+        runCommand,
+      })
+    : runCommand();
   if (!(payload instanceof Promise)) {
     return payload;
   }
@@ -646,6 +680,166 @@ export function executeAutomationCommand(
     }
     throw error;
   });
+}
+
+function requestsPageAfter(command: BrowserAutomationCommand): boolean {
+  return (
+    SNAPSHOT_AFTER_COMMANDS.has(command.command) &&
+    (command.args as { snapshot?: unknown }).snapshot === true
+  );
+}
+
+/**
+ * Daseo delta 104: an action sent with `snapshot`. The tab's requests are watched from before the
+ * action, so what the action itself sends (a fetch behind a button) keeps the page from counting
+ * as settled; then the page settles and its snapshot rides on the result as `pageAfter`. A failed
+ * action, or one that left a confirm or prompt open, returns as it would without `snapshot`.
+ */
+async function runWithPageAfter(input: {
+  request: BrowserAutomationExecuteRequest;
+  registry: BrowserRegistry;
+  snapshotEngine: BrowserSnapshotEngine;
+  dialogs: TabPageDialogs | null;
+  runCommand: () => AutomationCommandPayload | Promise<AutomationCommandPayload>;
+}): Promise<AutomationCommandPayload> {
+  const { request, registry, snapshotEngine, dialogs } = input;
+  const { requestId, workspaceId, command } = request;
+  const browserId = (command.args as { browserId: string }).browserId;
+  const target = resolveTabTarget({ requestId, workspaceId, browserId, registry });
+  if ("ok" in target) {
+    return input.runCommand();
+  }
+  // A navigation replaces the document the observer would sit in, and a page held by a dialog
+  // runs no script until it is answered.
+  const watch = await watchPageSettle(target.contents, {
+    observeDom: !NAVIGATION_COMMANDS.has(command.command) && dialogs?.current() == null,
+  });
+  try {
+    const payload = await input.runCommand();
+    if (!payload.ok || payload.openDialog) {
+      return payload;
+    }
+    const settle = (signal?: AbortSignal) =>
+      settleTab({
+        requestId,
+        workspaceId,
+        target,
+        watch,
+        timeoutMs: BROWSER_AUTOMATION_SNAPSHOT_SETTLE_TIMEOUT_MS,
+        snapshot: true,
+        registry,
+        snapshotEngine,
+        ...(signal ? { signal } : {}),
+      });
+    if (!dialogs) {
+      return { ...payload, pageAfter: await settle() };
+    }
+    // A dialog the page opens while it settles is answered or held as during any command.
+    const abort = new AbortController();
+    const outcome = await dialogs.runCommand({ returnWhenHeld: true }, () => settle(abort.signal));
+    const merged = [...(payload.dialogs ?? []), ...outcome.dialogs];
+    const withDialogs = { ...payload, ...(merged.length > 0 ? { dialogs: merged } : {}) };
+    if (outcome.kind === "held") {
+      abort.abort();
+      return { ...withDialogs, openDialog: openDialogInfo(target.browserId, outcome.dialog) };
+    }
+    const open = dialogs.current();
+    return {
+      ...withDialogs,
+      pageAfter: outcome.result,
+      ...(open ? { openDialog: openDialogInfo(target.browserId, open) } : {}),
+    };
+  } finally {
+    await watch.release();
+  }
+}
+
+// Daseo delta 104: browser_wait settled, and the snapshot of a tab browser_new_tab opened.
+async function executeSettle(
+  requestId: string,
+  workspaceId: string | undefined,
+  args: Extract<BrowserAutomationCommand, { command: "settle" }>["args"],
+  registry: BrowserRegistry,
+  snapshotEngine: BrowserSnapshotEngine,
+): Promise<AutomationCommandPayload> {
+  const target = resolveTabTarget({ requestId, workspaceId, browserId: args.browserId, registry });
+  if ("ok" in target) {
+    return target;
+  }
+  const watch = await watchPageSettle(target.contents, { observeDom: true });
+  try {
+    return {
+      requestId,
+      ok: true,
+      result: await settleTab({
+        requestId,
+        workspaceId,
+        target,
+        watch,
+        timeoutMs: args.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS,
+        snapshot: args.snapshot === true,
+        registry,
+        snapshotEngine,
+      }),
+    };
+  } finally {
+    await watch.release();
+  }
+}
+
+async function settleTab(input: {
+  requestId: string;
+  workspaceId: string | undefined;
+  target: ResolvedTabTarget;
+  watch: PageSettleWatch;
+  timeoutMs: number;
+  snapshot: boolean;
+  registry: BrowserRegistry;
+  snapshotEngine: BrowserSnapshotEngine;
+  signal?: AbortSignal;
+}): Promise<BrowserAutomationSettleResult> {
+  const { target } = input;
+  const outcome = await input.watch.settle({
+    deadline: Date.now() + input.timeoutMs,
+    ...(input.signal ? { signal: input.signal } : {}),
+  });
+  const result: BrowserAutomationSettleResult = {
+    command: "settle",
+    browserId: target.browserId,
+    ...outcome,
+  };
+  if (!input.snapshot || input.signal?.aborted) {
+    return result;
+  }
+  if (target.contents.pageDialogs?.current()) {
+    return { ...result, snapshotError: "A page dialog is open, so the page cannot be read." };
+  }
+  try {
+    const polled = await pollBeforeDeadline(
+      executeSnapshot(
+        input.requestId,
+        input.workspaceId,
+        target.browserId,
+        {},
+        input.registry,
+        input.snapshotEngine,
+      ),
+      Date.now() + BROWSER_AUTOMATION_SNAPSHOT_AFTER_TIMEOUT_MS,
+    );
+    if (polled.kind === "deadline") {
+      return {
+        ...result,
+        snapshotError: `The page did not answer the snapshot within ${BROWSER_AUTOMATION_SNAPSHOT_AFTER_TIMEOUT_MS / 1000}s.`,
+      };
+    }
+    const payload = polled.value;
+    if (!payload.ok) {
+      return { ...result, snapshotError: payload.error.message };
+    }
+    return payload.result.command === "snapshot" ? { ...result, snapshot: payload.result } : result;
+  } catch (error) {
+    return { ...result, snapshotError: `The snapshot failed: ${evaluateErrorMessage(error)}` };
+  }
 }
 
 function resolveTabPageDialogs(
@@ -962,6 +1156,10 @@ const commandHandlers: Record<BrowserAutomationCommand["command"], CommandHandle
       { command: "handle_dialog" }
     >;
     return executeHandleDialog(requestId, workspaceId, dialogCommand.args, registry);
+  },
+  settle: ({ command, requestId, workspaceId, registry, snapshotEngine }) => {
+    const settleCommand = command as Extract<BrowserAutomationCommand, { command: "settle" }>;
+    return executeSettle(requestId, workspaceId, settleCommand.args, registry, snapshotEngine);
   },
   network_export: ({ command, requestId, workspaceId, registry }) => {
     const exportCommand = command as Extract<

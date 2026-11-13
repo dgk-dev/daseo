@@ -5964,9 +5964,233 @@ async function verifyClickEffectNavigations(fixture) {
   );
 }
 
+// Delta 104: an action sent with snapshot answers with the settled page, and browser_wait settled
+// (the settle command) ends when the page is quiet. The fixture page has a button whose fetch takes
+// 600 ms before it renders, a button that starts a ticker that never stops, and a /late page that
+// renders content 300 ms after load from a fetch.
+async function startPageSettleServer() {
+  const server = http.createServer((request, response) => {
+    const url = request.url ?? "/";
+    if (url.startsWith("/api/slow") || url.startsWith("/api/late")) {
+      setTimeout(
+        () => {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(JSON.stringify({ count: 3 }));
+        },
+        url.startsWith("/api/slow") ? 600 : 300,
+      );
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    if (url.startsWith("/late")) {
+      response.end(`<!doctype html><title>Late</title><main><h1>Late page</h1></main>
+        <script>
+          fetch("/api/late").then((r) => r.json()).then(() => {
+            document.querySelector("main").insertAdjacentHTML("beforeend", "<h2>Late content</h2>");
+          });
+        </script>`);
+      return;
+    }
+    response.end(`<!doctype html><title>Settle fixture</title>
+      <main>
+        <button id="load">Load results</button>
+        <button id="tick">Start ticker</button>
+        <p id="ticker">idle</p>
+      </main>
+      <script>
+        document.getElementById("load").addEventListener("click", async () => {
+          const data = await (await fetch("/api/slow")).json();
+          document.querySelector("main").insertAdjacentHTML("beforeend", "<h2>" + data.count + " results</h2>");
+        });
+        document.getElementById("tick").addEventListener("click", () => {
+          let n = 0;
+          setInterval(() => { document.getElementById("ticker").textContent = "tick " + (n += 1); }, 50);
+        });
+      </script>`);
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  return { server, origin: `http://127.0.0.1:${server.address().port}` };
+}
+
+async function runPageSettleGroup() {
+  const target = await startPageSettleServer();
+  const handle = createInactiveHarnessWindow({
+    width: 1000,
+    height: 700,
+    backgroundColor: "#202020",
+    webPreferences: { webviewTag: true, contextIsolation: true, nodeIntegration: false },
+  });
+  const { win } = handle;
+  installHarnessWebviewGuards(win);
+  const tracker = trackAttachedGuests(win, { disableGuestBackgroundThrottlingAtAttach: true });
+  const results = [];
+  try {
+    await withTimeout(
+      win.loadFile(path.join(ROOT, "index.html"), {
+        query: { webviewCount: "0", permanentParkingState: "p1-overflow-1x1" },
+      }),
+      "page-settle harness window loadFile",
+    );
+    await waitForInactiveReveal(handle, "page-settle harness window");
+    const { guest } = await appendPermanentWebview({
+      win,
+      tracker,
+      state: { id: "p1-overflow-1x1" },
+      sourceUrl: `${target.origin}/`,
+    });
+    await settleClickEffectGuest(guest);
+    const fixture = createPageSettleFixture(createFramesAutomation(guest), target.origin, results);
+    await verifyPageSettleClicks(fixture);
+    await verifyPageSettleWaits(fixture);
+    await verifyPageSettleNavigate(fixture);
+    const failed = results.filter((result) => !result.pass).map((result) => result.check);
+    if (failed.length > 0) fail(`page-settle checks failed: ${failed.join(", ")}`);
+    return results;
+  } finally {
+    await fsp.writeFile(
+      path.join(OUT_DIR, "page-settle-results.json"),
+      `${JSON.stringify({ generatedAt: new Date().toISOString(), results }, null, 2)}\n`,
+    );
+    if (!win.isDestroyed()) win.close();
+    await closeServer(target.server);
+  }
+}
+
+function createPageSettleFixture(harness, origin, results) {
+  const { browserId, guest } = harness;
+  return {
+    harness,
+    browserId,
+    origin,
+    record(check, ok, detail) {
+      results.push({ group: "page-settle", check, pass: ok, ...detail });
+      console.log(`${ok ? "PASS" : "FAIL"} page-settle ${check} ${JSON.stringify(detail)}`);
+    },
+    async timed(label, command) {
+      const started = Date.now();
+      const response = await withTimeout(harness.execute(command), `page-settle ${label}`, 30_000);
+      return { response, ms: Date.now() - started };
+    },
+    // Loads the fixture page and returns the ref of the named control from a fresh snapshot.
+    async open() {
+      await harness.run("navigate fixture", {
+        command: "navigate",
+        args: { browserId, url: `${origin}/` },
+      });
+      await settleClickEffectGuest(guest);
+      const { snapshot } = await harness.run("snapshot", {
+        command: "snapshot",
+        args: { browserId },
+      });
+      return (line) => {
+        const escaped = line.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const ref = new RegExp(`${escaped} \\[(?:[a-z]+=[^\\]\\s]+ )*ref=(@e\\d+)\\]`).exec(
+          snapshot,
+        )?.[1];
+        if (!ref) fail(`page-settle snapshot has no ref for ${line}:\n${snapshot}`);
+        return ref;
+      };
+    },
+  };
+}
+
+function snapshotText(pageAfter) {
+  return pageAfter?.snapshot?.snapshot ?? "";
+}
+
+// Without the argument the click answers as before; with it, the click's own 600 ms fetch is
+// waited for and its rendered result is in the snapshot.
+async function verifyPageSettleClicks(fixture) {
+  const { browserId } = fixture;
+  let refOf = await fixture.open();
+  const plain = await fixture.timed("plain click", {
+    command: "click",
+    args: { browserId, ref: refOf('button "Load results"') },
+  });
+  fixture.record(
+    "click without snapshot unchanged",
+    plain.response.ok && !("pageAfter" in plain.response) && plain.ms < 1_500,
+    { ms: plain.ms, effect: plain.response.result?.effect },
+  );
+
+  refOf = await fixture.open();
+  const clicked = await fixture.timed("click snapshot", {
+    command: "click",
+    args: { browserId, ref: refOf('button "Load results"'), snapshot: true },
+  });
+  const pageAfter = clicked.response.pageAfter;
+  const hasResults = /heading "3 results"/.test(snapshotText(pageAfter));
+  fixture.record(
+    "click snapshot after a 600 ms fetch",
+    clicked.response.ok &&
+      pageAfter?.settled === true &&
+      pageAfter.networkWatched !== false &&
+      hasResults &&
+      clicked.ms >= 600 &&
+      clicked.ms < 3_000,
+    {
+      ms: clicked.ms,
+      settledInMs: pageAfter?.elapsedMs,
+      effect: clicked.response.result?.effect,
+      snapshotHasResults: hasResults,
+    },
+  );
+}
+
+// An already quiet page settles in about the quiet window; one that never stops changing ends at
+// the bound, not settled.
+async function verifyPageSettleWaits(fixture) {
+  const { browserId } = fixture;
+  const quiet = await fixture.timed("settle quiet", { command: "settle", args: { browserId } });
+  fixture.record(
+    "settle on a quiet page",
+    quiet.response.ok && quiet.response.result.settled === true && quiet.ms < 1_000,
+    { ms: quiet.ms, settledInMs: quiet.response.result?.elapsedMs },
+  );
+
+  const refOf = await fixture.open();
+  await fixture.harness.run("start ticker", {
+    command: "click",
+    args: { browserId, ref: refOf('button "Start ticker"') },
+  });
+  const busy = await fixture.timed("settle busy", {
+    command: "settle",
+    args: { browserId, timeoutMs: 1_500 },
+  });
+  const result = busy.response.ok ? busy.response.result : null;
+  fixture.record(
+    "settle on a never-quiet page ends at the bound",
+    result?.settled === false &&
+      result.domChangedMsAgo !== undefined &&
+      busy.ms >= 1_500 &&
+      busy.ms < 3_000,
+    { ms: busy.ms, result },
+  );
+}
+
+// A navigation's snapshot is the new document after its late content rendered.
+async function verifyPageSettleNavigate(fixture) {
+  const url = `${fixture.origin}/late`;
+  const navigated = await fixture.timed("navigate snapshot", {
+    command: "navigate",
+    args: { browserId: fixture.browserId, url, snapshot: true },
+  });
+  const late = navigated.response.pageAfter;
+  const hasLateContent = /heading "Late content"/.test(snapshotText(late));
+  fixture.record(
+    "navigate snapshot reads the new document after it settles",
+    navigated.response.ok && late?.settled === true && late.snapshot?.url === url && hasLateContent,
+    { ms: navigated.ms, settledInMs: late?.elapsedMs, url: late?.snapshot?.url, hasLateContent },
+  );
+}
+
 // Groups that run on their own: each writes results.json under its own key.
 const SINGLE_GROUPS = {
   "click-effect": ["clickEffectResults", runClickEffectGroup],
+  "page-settle": ["pageSettleResults", runPageSettleGroup],
   "tab-lifecycle": ["tabLifecycleResults", runTabLifecycleGroup],
   "tab-discard": ["tabDiscardResults", runTabDiscardGroup],
   dialogs: ["dialogsResults", runDialogsGroup],
