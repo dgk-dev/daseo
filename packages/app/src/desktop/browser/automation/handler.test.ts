@@ -6,6 +6,7 @@ import type { DesktopHostBridge } from "@/desktop/host";
 import { getBrowserRecord, useBrowserStore } from "@/desktop/browser/store";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
+import { useBrowserProvenanceStore } from "@/desktop/browser/provenance";
 
 type BrowserAutomationExecuteRequest = Extract<
   SessionOutboundMessage,
@@ -327,6 +328,9 @@ useBrowserStore.persist.setOptions({
 useWorkspaceLayoutStore.persist.setOptions({
   storage: createJSONStorage(() => browserAutomationStorage),
 });
+useBrowserProvenanceStore.persist.setOptions({
+  storage: createJSONStorage(() => browserAutomationStorage),
+});
 
 describe("mountBrowserAutomationHandler", () => {
   beforeEach(async () => {
@@ -337,6 +341,11 @@ describe("mountBrowserAutomationHandler", () => {
     ]);
     useBrowserStore.setState({ browsersById: {} });
     useWorkspaceLayoutStore.setState({ layoutByWorkspace: {} });
+    useBrowserProvenanceStore.setState({
+      provenanceByBrowserId: {},
+      agentLastCommandAt: {},
+      recentlyClosedByWorkspace: {},
+    });
   });
 
   test("browser_new_tab creates a workspace browser tab without stealing focus", async () => {
@@ -614,6 +623,50 @@ describe("mountBrowserAutomationHandler", () => {
     expect(useBrowserStore.getState().browsersById[result.browserId]).toBeUndefined();
     expect(browser.browser.unregisteredWorkspaceBrowsers).toEqual([result.browserId]);
     expect(currentBrowserTabs()).toEqual([]);
+  });
+
+  test("records who opened a tab and who used it last (delta 98)", async () => {
+    const browser = new BrowserAutomationHandlerHarness();
+    browser.mount({ serverId: "server-1" });
+
+    browser.receive(browserNewTabRequest());
+    await flushAsyncWork();
+    const agentTab = newTabResultFrom(browser.client.payloadAt(0)).browserId;
+    expect(useBrowserProvenanceStore.getState().provenanceByBrowserId[agentTab]).toEqual({
+      openedBy: "agent",
+      creatorAgentId: "agent-1",
+      openedAt: expect.any(Number),
+      lastAgentCommandAt: expect.any(Number),
+      lastAgentId: "agent-1",
+      humanTouched: false,
+    });
+    expect(useBrowserProvenanceStore.getState().agentLastCommandAt).toEqual({
+      "agent-1": expect.any(Number),
+    });
+
+    // The phone's commands carry no agent id: a person used the tab.
+    const { agentId: _agentId, ...phoneResize } = browserResizeRequest(agentTab);
+    browser.receive({ ...phoneResize, requestId: "req-phone" });
+    // Resize answers after two presentation frames (up to 50 ms each).
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(useBrowserProvenanceStore.getState().provenanceByBrowserId[agentTab]).toMatchObject({
+      humanTouched: true,
+      lastHumanInteractionAt: expect.any(Number),
+    });
+
+    // A tab the phone opens is a person's.
+    const { agentId: _phone, ...phoneNewTab } = browserNewTabRequest();
+    browser.receive(phoneNewTab);
+    await flushAsyncWork();
+    const phoneTab = newTabResultFrom(browser.client.payloadAt(2)).browserId;
+    expect(useBrowserProvenanceStore.getState().provenanceByBrowserId[phoneTab]).toMatchObject({
+      openedBy: "human",
+      humanTouched: true,
+    });
+
+    browser.receive(browserCloseTabRequest(agentTab));
+    await flushAsyncWork();
+    expect(useBrowserProvenanceStore.getState().provenanceByBrowserId[agentTab]).toBeUndefined();
   });
 
   test("browser_close_tab returns not found after the tab is gone", async () => {

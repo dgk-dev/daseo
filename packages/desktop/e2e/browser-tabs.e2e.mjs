@@ -30,6 +30,8 @@ const timeoutMs = 90_000;
 const LIFECYCLE_THROTTLE_MS = 4_000;
 const LIFECYCLE_FREEZE_MS = 8_000;
 const LIFECYCLE_BACKGROUND_RGB = { r: 42, g: 157, b: 143 };
+// Delta 98: the agent-tab auto-close runs on (not rehearsal) in this run and sweeps every 3 s.
+const AUTO_CLOSE_SWEEP_MS = 3_000;
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -1867,6 +1869,114 @@ async function runPageDialogSurfaceRegression({ page, serverId, targetUrl, artif
   return { browserId: id, card: shown.rect, clip, composer: composerState, answer };
 }
 
+// Delta 98: an agent opens two tabs, a person shows one of them, and the agent is archived. Only
+// the tab no person saw is closed; it lands in the workspace's recently closed list and reopens at
+// its URL from the new-tab menu. Every other agent in this run stays active and under 24 hours
+// idle, so none of their tabs qualify.
+function autoCloseLogLines(artifactDir, action) {
+  const log = fs.readFileSync(path.join(artifactDir, "desktop.log"), "utf8");
+  return log.split(`[browser-auto-close] ${action}`).slice(1);
+}
+
+async function runAgentTabAutoCloseRegression({
+  page,
+  serverId,
+  daemonPort,
+  targetUrl,
+  artifactDir,
+}) {
+  const workspaceId = workspaceIds[0];
+  const agentId = await createCallerAgent(daemonPort, workspaceId);
+  const transport = new StreamableHTTPClientTransport(
+    new URL(
+      `http://127.0.0.1:${daemonPort}/mcp/agents?callerAgentId=${encodeURIComponent(agentId)}`,
+    ),
+  );
+  const agentClient = await experimental_createMCPClient({ transport });
+  let shown;
+  let unseen;
+  try {
+    shown = (await callBrowserTool(agentClient, "browser_new_tab", { url: `${targetUrl}shown` }))
+      .browserId;
+    unseen = (await callBrowserTool(agentClient, "browser_new_tab", { url: `${targetUrl}unseen` }))
+      .browserId;
+  } finally {
+    await agentClient.close();
+  }
+
+  await page.getByTestId(`sidebar-workspace-row-${serverId}:${workspaceId}`).click();
+  const deck = page.getByTestId(`workspace-deck-entry-${serverId}:${workspaceId}`);
+  await deck.waitFor({ state: "visible", timeout: timeoutMs });
+  // A person looks at one tab, then moves on to the agent's tab.
+  await deck.getByTestId(`workspace-tab-browser_${shown}`).click();
+  await page.waitForFunction(
+    (id) => document.querySelector(`[data-testid="browser-webview-clip-${id}"]`) !== null,
+    shown,
+    { timeout: timeoutMs },
+  );
+  await delay(500);
+  await deck.getByTestId(`workspace-tab-agent_${agentId}`).click();
+
+  const root = await experimental_createMCPClient({
+    transport: new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${daemonPort}/mcp/agents`),
+    ),
+  });
+  try {
+    const archived = await root.callTool({ name: "archive_agent", args: { agentId } });
+    assert(
+      archived.structuredContent?.success === true,
+      `archive_agent failed: ${JSON.stringify(archived)}`,
+    );
+  } finally {
+    await root.close();
+  }
+
+  const deadline = Date.now() + AUTO_CLOSE_SWEEP_MS * 5 + 15_000;
+  while (
+    !autoCloseLogLines(artifactDir, "closed").some((chunk) => chunk.slice(0, 400).includes(unseen))
+  ) {
+    assert(Date.now() < deadline, `The unseen agent tab ${unseen} was never closed`);
+    await delay(250);
+  }
+  // A few more sweeps: the shown tab must stay.
+  await delay(AUTO_CLOSE_SWEEP_MS * 2);
+  const closedLines = autoCloseLogLines(artifactDir, "closed");
+  assert(
+    !closedLines.some((chunk) => chunk.slice(0, 400).includes(shown)),
+    `A tab a person had on screen was closed: ${shown}`,
+  );
+  assert(
+    (await deck.getByTestId(`workspace-tab-browser_${unseen}`).count()) === 0,
+    "The closed tab is still in the workspace tab row",
+  );
+  assert(
+    (await deck.getByTestId(`workspace-tab-browser_${shown}`).count()) === 1,
+    "The tab a person saw is gone from the workspace tab row",
+  );
+
+  // Reopen it from the new-tab menu's recently closed section.
+  const browserTabsBefore = await deck.locator('[data-testid^="workspace-tab-browser_"]').count();
+  await deck.getByTestId("workspace-new-tab-menu-trigger").first().click();
+  await page.getByTestId(`workspace-new-tab-menu-reopen-${unseen}`).click();
+  await page.waitForFunction(
+    (url) => {
+      for (const webview of document.querySelectorAll("[data-paseo-browser-id]")) {
+        if (typeof webview.getURL === "function" && webview.getURL() === url) return true;
+      }
+      return false;
+    },
+    `${targetUrl}unseen`,
+    { timeout: timeoutMs },
+  );
+  const browserTabsAfter = await deck.locator('[data-testid^="workspace-tab-browser_"]').count();
+  assert(
+    browserTabsAfter === browserTabsBefore + 1,
+    `Reopening added ${browserTabsAfter - browserTabsBefore} tabs`,
+  );
+  return { agentId, shown, unseen, closedLines: closedLines.length, browserTabsAfter };
+}
+
 async function main() {
   const artifactDir =
     process.env.PASEO_DESKTOP_BROWSER_E2E_ARTIFACT_DIR ??
@@ -1877,6 +1987,11 @@ async function main() {
   const userData = path.join(runtimeDir, "electron-user-data");
   const workspaceRoot = path.join(runtimeDir, "workspaces");
   fs.mkdirSync(paseoHome, { recursive: true });
+  // Delta 98: agent-tab auto-close on for this run (it ships in rehearsal).
+  writeJson(path.join(userData, "desktop-settings.json"), {
+    version: 1,
+    settings: { browser: { autoCloseAgentTabs: "on" } },
+  });
 
   const [daemonPort, expoPort, cdpPort] = await Promise.all([
     reservePort(),
@@ -1938,6 +2053,7 @@ async function main() {
           PASEO_ELECTRON_USER_DATA_DIR: userData,
           PASEO_ELECTRON_FLAGS: `--remote-debugging-address=127.0.0.1 --remote-debugging-port=${cdpPort}`,
           PASEO_BROWSER_TAB_LIFECYCLE_MS: `${LIFECYCLE_THROTTLE_MS},${LIFECYCLE_FREEZE_MS}`,
+          PASEO_BROWSER_AUTO_CLOSE_SWEEP_MS: String(AUTO_CLOSE_SWEEP_MS),
         },
       },
       artifactDir,
@@ -1999,6 +2115,16 @@ async function main() {
       artifactDir,
     });
     console.log(`Page dialog surface regression passed: ${JSON.stringify(report.pageDialog)}`);
+    report.agentTabAutoClose = await runAgentTabAutoCloseRegression({
+      page,
+      serverId: status.serverId,
+      daemonPort,
+      targetUrl: target.url,
+      artifactDir,
+    });
+    console.log(
+      `Agent tab auto-close regression passed: ${JSON.stringify(report.agentTabAutoClose)}`,
+    );
     writeJson(path.join(artifactDir, "result.json"), report);
     console.log(
       `Browser desktop browser E2E passed: WebContents ${report.originalWebContentsId} remained ${report.finalWebContentsId}; viewport, inactive capture, cross-session focus continuity, list, snapshot, click, local-page selectors passed.`,

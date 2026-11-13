@@ -204,6 +204,24 @@ export interface DesktopBrowserPageDialogEvent {
   dialogId?: string;
 }
 
+export interface DesktopBrowserAutoCloseCheck {
+  mode: "off" | "rehearse" | "on";
+  afterHours: number;
+  blockers: Record<string, string | null>;
+  /** E2E seam: how often to sweep, when main was started with a test override. */
+  sweepIntervalMs?: number;
+}
+
+export interface DesktopBrowserAutoCloseLogEntry {
+  action: "would-close" | "closed";
+  browserId: string;
+  workspaceId: string;
+  reason: "creator-archived" | "creator-idle";
+  creatorAgentId: string;
+  idleHours: number;
+  host: string;
+}
+
 export interface DesktopBrowserBridge {
   setShortcutPolicy?: (input: BrowserKeyboardPolicy) => Promise<void>;
   readonly profilePartition?: string;
@@ -216,6 +234,13 @@ export interface DesktopBrowserBridge {
   }) => Promise<void>;
   /** Delta 33: a pane started or stopped presenting this browser; main keeps a presented tab awake. */
   setBrowserPresented?: (input: { browserId: string; presented: boolean }) => Promise<void>;
+  /**
+   * Delta 98: whether agent-tab auto-close is off, rehearsing, or on, its idle hours, and what live
+   * state keeps each of these browsers open (null: nothing). Null for input main rejects.
+   */
+  autoCloseCheck?: (browserIds: string[]) => Promise<DesktopBrowserAutoCloseCheck | null>;
+  /** Delta 98: writes the sweep's would-close and closed lines to the Mac app log. */
+  recordAutoClose?: (entries: DesktopBrowserAutoCloseLogEntry[]) => Promise<void>;
   listPopupTargets?: (rootBrowserId: string) => Promise<DesktopBrowserPopupTargetsSnapshot | null>;
   presentPopupTarget?: (input: DesktopBrowserPopupPresentation) => Promise<boolean>;
   closePopupTarget?: (input: { browserId: string; workspaceId: string }) => Promise<boolean>;

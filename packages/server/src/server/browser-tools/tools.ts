@@ -287,7 +287,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Create browser tab",
       description:
-        "Create a new Paseo browser tab in this agent's workspace on the most recently connected browser automation host, opened in the background without switching the user's view. Pass an http(s) URL or a scheme-less host URL, which is treated as http; the returned browserId is used by tab-scoped tools.",
+        "Create a new Paseo browser tab in this agent's workspace on the most recently connected browser automation host, opened in the background without switching the user's view. Pass an http(s) URL or a scheme-less host URL, which is treated as http; the returned browserId is used by tab-scoped tools. When your task is done, close the tabs you opened with browser_close_tab, unless the user should look at them.",
       inputSchema: {
         url: BrowserHttpUrlInputSchema.optional(),
       },
@@ -1461,25 +1461,7 @@ function summarizeBrowserSuccess(
   }
 
   if (payload.result.command === "list_tabs") {
-    const count = payload.result.tabs.length;
-    if (count === 0) {
-      return "No Paseo browser tabs are open. Call browser_new_tab to create one.";
-    }
-    const tabLines = payload.result.tabs.map((tab) => {
-      const active = tab.isActive ? " active" : "";
-      const ownership =
-        tab.kind === "popup"
-          ? ` popup rootBrowserId=${tab.rootBrowserId ?? "unknown"} openerBrowserId=${tab.openerBrowserId ?? "unknown"}`
-          : "";
-      const loading = tab.isLoading ? ` ${formatTabLoading(tab.loadingForMs)}` : "";
-      return `- browserId=${tab.browserId}${active}${ownership}${loading} title=${JSON.stringify(tab.title || "Untitled")} url=${tab.url}`;
-    });
-    return withDialogs(
-      [
-        `Found ${count} Paseo browser target${count === 1 ? "" : "s"}. Use these browserId values for target-scoped browser tools.`,
-        ...tabLines,
-      ].join("\n"),
-    );
+    return withDialogs(summarizeBrowserListTabs(payload.result));
   }
 
   if (payload.result.command === "new_tab") {
@@ -1990,6 +1972,37 @@ function summarizeBrowserRefActionSuccess(
 }
 
 const MEMORY_PRESSURE_NAMES: Record<number, string> = { 1: "normal", 2: "warning", 4: "critical" };
+
+function summarizeBrowserListTabs(
+  result: Extract<
+    Extract<BrowserToolsResponsePayload, { ok: true }>["result"],
+    { command: "list_tabs" }
+  >,
+): string {
+  const count = result.tabs.length;
+  if (count === 0) {
+    return "No Paseo browser tabs are open. Call browser_new_tab to create one.";
+  }
+  const tabLines = result.tabs.map((tab) => {
+    const active = tab.isActive ? " active" : "";
+    const ownership =
+      tab.kind === "popup"
+        ? ` popup rootBrowserId=${tab.rootBrowserId ?? "unknown"} openerBrowserId=${tab.openerBrowserId ?? "unknown"}`
+        : "";
+    const loading = tab.isLoading ? ` ${formatTabLoading(tab.loadingForMs)}` : "";
+    return `- browserId=${tab.browserId}${active}${ownership}${loading} title=${JSON.stringify(tab.title || "Untitled")} url=${tab.url}`;
+  });
+  const unseen = result.unseenOpenedByAgent;
+  return [
+    `Found ${count} Paseo browser target${count === 1 ? "" : "s"}. Use these browserId values for target-scoped browser tools.`,
+    ...tabLines,
+    ...(unseen
+      ? [
+          `${unseen} of these tabs you opened have not been looked at by the user; close the ones you no longer need with browser_close_tab.`,
+        ]
+      : []),
+  ].join("\n");
+}
 
 function summarizeBrowserTabReport(result: BrowserAutomationTabReportResult): string {
   const settings = [

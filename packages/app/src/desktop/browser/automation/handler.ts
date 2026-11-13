@@ -20,6 +20,9 @@ import {
   useWorkspaceLayoutStore,
 } from "@/stores/workspace-layout-store";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
+import { useBrowserProvenanceStore } from "@/desktop/browser/provenance";
+import { mountBrowserAutoCloseSweeper } from "@/desktop/browser/provenance/sweeper";
+import { countUnseenTabsOpenedByAgent } from "@/desktop/browser/provenance/state";
 
 type BrowserAutomationExecuteRequest = Extract<
   SessionOutboundMessage,
@@ -52,6 +55,10 @@ interface BrowserAutomationClient {
     height: number;
     dataBase64: string;
   }): void;
+  /** Delta 98: the daemon's record of an agent (archived ones included), for the tab auto-close. */
+  fetchAgent?(agentId: string): Promise<{
+    agent: { status: string; archivedAt?: string | null; backgroundWaits?: { pending: number } };
+  } | null>;
 }
 
 function isBrowserStreamFramePayload(payload: unknown): payload is {
@@ -126,7 +133,20 @@ export function mountBrowserAutomationHandler(
       hostPingTimeoutMs: options.hostPingTimeoutMs ?? BROWSER_HOST_PING_TIMEOUT_MS,
     });
   });
+  // Delta 98: the desktop app closes agent-opened tabs nobody looked at (rehearsal by default).
+  const fetchAgent = options.client.fetchAgent?.bind(options.client);
+  const unmountAutoClose =
+    options.serverId && fetchAgent && getHost()?.browser?.autoCloseCheck
+      ? mountBrowserAutoCloseSweeper({
+          serverId: options.serverId,
+          fetchAgent: async (agentId) => (await fetchAgent(agentId))?.agent ?? null,
+          getBrowserHost: () => getHost()?.browser,
+          closeTab: (input) =>
+            removeWorkspaceBrowserTab({ ...input, browserHost: getHost()?.browser }),
+        })
+      : undefined;
   return () => {
+    unmountAutoClose?.();
     unsubscribeStreamFrames?.();
     unsubscribe();
   };
@@ -187,6 +207,7 @@ async function resolveBrowserAutomationRequest(
   } = params;
   const browserHost = getHost()?.browser;
   const executeAutomationCommand = browserHost?.executeAutomationCommand;
+  recordBrowserCommandUse(request);
 
   try {
     if (request.command.command === "list_tabs" && serverId && request.workspaceId) {
@@ -232,6 +253,23 @@ async function resolveBrowserAutomationRequest(
     return normalizeBridgePayload(request.requestId, payload);
   } catch (error) {
     return normalizeThrownBridgeError(request.requestId, error);
+  }
+}
+
+/**
+ * Daseo delta 98: who used which tab. Agent tools send their agent id; the phone's remote open,
+ * stream, and stream input reach here without one, so a command with no agent id on a tab counts
+ * as a person using it. That errs toward keeping tabs: an agent command that lost its id only
+ * marks a tab seen.
+ */
+function recordBrowserCommandUse(request: BrowserAutomationExecuteRequest): void {
+  const args = request.command.args as { browserId?: unknown } | undefined;
+  const browserId = typeof args?.browserId === "string" ? args.browserId : undefined;
+  const provenance = useBrowserProvenanceStore.getState();
+  if (request.agentId) {
+    provenance.agentCommanded({ agentId: request.agentId, ...(browserId ? { browserId } : {}) });
+  } else if (browserId) {
+    provenance.humanUsed({ browserId });
   }
 }
 
@@ -476,9 +514,31 @@ async function listWorkspaceBrowserTabsForRequest(params: {
   return {
     requestId: request.requestId,
     ok: true,
-    result: { command: "list_tabs", tabs },
+    result: {
+      command: "list_tabs",
+      tabs,
+      ...unseenAgentTabHint(
+        request.agentId,
+        layoutTabs.map((tab) => tab.browserId),
+      ),
+    },
     ...(events && events.length > 0 ? { events } : {}),
   };
+}
+
+const UNSEEN_AGENT_TAB_HINT_THRESHOLD = 3;
+
+/** Delta 98: a nudge, past three, to close tabs the agent opened that nobody looked at. */
+function unseenAgentTabHint(
+  agentId: string | undefined,
+  browserIds: readonly string[],
+): { unseenOpenedByAgent?: number } {
+  if (!agentId) return {};
+  const unseenOpenedByAgent = countUnseenTabsOpenedByAgent(useBrowserProvenanceStore.getState(), {
+    agentId,
+    browserIds,
+  });
+  return unseenOpenedByAgent > UNSEEN_AGENT_TAB_HINT_THRESHOLD ? { unseenOpenedByAgent } : {};
 }
 
 async function resizeBrowserTabForRequest(params: {
@@ -668,10 +728,7 @@ async function closeBrowserTabForRequest(params: {
     });
   }
   if (workspaceTab && getBrowserRecord(browserId)) {
-    useWorkspaceLayoutStore.getState().closeTab(workspaceTab.workspaceKey, workspaceTab.tabId);
-    useBrowserStore.getState().removeBrowser(browserId);
-    removeResidentBrowserWebview(browserId);
-    await browserHost?.unregisterWorkspaceBrowser?.(browserId);
+    await removeWorkspaceBrowserTab({ ...workspaceTab, browserId, browserHost });
     return {
       requestId: request.requestId,
       ok: true,
@@ -692,6 +749,24 @@ async function closeBrowserTabForRequest(params: {
     code: "browser_tab_not_found",
     message: `No browser tab found for ID: ${browserId}`,
   });
+}
+
+/**
+ * Removes a regular browser tab everywhere the app keeps it: the workspace layout, the browser
+ * record and its provenance, the resident webview, and main's registry. Shared by
+ * browser_close_tab and the agent-tab auto-close (delta 98).
+ */
+export async function removeWorkspaceBrowserTab(input: {
+  workspaceKey: string;
+  tabId: string;
+  browserId: string;
+  browserHost: DesktopHostBridge["browser"] | undefined;
+}): Promise<void> {
+  useWorkspaceLayoutStore.getState().closeTab(input.workspaceKey, input.tabId);
+  useBrowserStore.getState().removeBrowser(input.browserId);
+  useBrowserProvenanceStore.getState().forget(input.browserId);
+  removeResidentBrowserWebview(input.browserId);
+  await input.browserHost?.unregisterWorkspaceBrowser?.(input.browserId);
 }
 
 function findWorkspaceBrowserTab(input: {
@@ -794,6 +869,12 @@ async function openBrowserTabForRequest(params: {
     throw error;
   }
 
+  // Delta 98: an agent's tab starts unseen; one the phone opened (no agent id) was a person's.
+  if (request.agentId) {
+    useBrowserProvenanceStore.getState().agentOpened({ browserId, agentId: request.agentId });
+  } else {
+    useBrowserProvenanceStore.getState().humanOpened({ browserId });
+  }
   return {
     requestId: request.requestId,
     ok: true,

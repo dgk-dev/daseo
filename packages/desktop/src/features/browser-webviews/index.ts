@@ -259,9 +259,8 @@ function readMacMemoryPressureLevel(): Promise<number | undefined> {
 export function getPaseoBrowserTabDiscardBlock(
   webContentsId: number,
 ): BrowserTabDiscardBlockReason | null {
-  if (editedWebContentsIds.has(webContentsId)) return "edited";
-  if ((downloadsByWebContentsId.get(webContentsId) ?? 0) > 0) return "downloading";
-  if (freezeExemptions.some((isExempt) => isExempt(webContentsId))) return "freeze-exempt";
+  const pageKeep = getPaseoBrowserPageKeepReason(webContentsId);
+  if (pageKeep) return pageKeep;
   const contents = allWebContents.fromId(webContentsId);
   if (!contents || contents.isDestroyed()) {
     return "destroyed";
@@ -278,6 +277,62 @@ export function getPaseoBrowserTabDiscardBlock(
         other.id !== webContentsId && !other.isDestroyed() && other.getOSProcessId() === pid,
     );
   return shared ? "shared-renderer" : null;
+}
+
+/** What on the page itself must not be lost: typed-in input, a download, a capture or dialog. */
+function getPaseoBrowserPageKeepReason(
+  webContentsId: number,
+): "edited" | "downloading" | "freeze-exempt" | null {
+  if (editedWebContentsIds.has(webContentsId)) return "edited";
+  if ((downloadsByWebContentsId.get(webContentsId) ?? 0) > 0) return "downloading";
+  if (freezeExemptions.some((isExempt) => isExempt(webContentsId))) return "freeze-exempt";
+  return null;
+}
+
+/** Why the agent-tab auto-close must leave a browser open (delta 98). */
+export type BrowserCloseBlockReason =
+  | "presented"
+  | "held"
+  | "edited"
+  | "downloading"
+  | "freeze-exempt"
+  | "audible"
+  | "popup-open";
+
+/**
+ * Delta 98: for each browser id, what live state keeps it open, or null when nothing does: a pane
+ * shows it, something holds it awake (a command, capture, or phone stream), its page was typed
+ * into, is downloading, capturing network, holding a dialog, or playing sound, or a popup it
+ * opened is still open. A browser with no guest has no live state and gets null.
+ */
+export function getPaseoBrowserCloseBlocks(
+  browserIds: readonly string[],
+): Record<string, BrowserCloseBlockReason | null> {
+  const blocks: Record<string, BrowserCloseBlockReason | null> = {};
+  for (const browserId of browserIds) blocks[browserId] = null;
+  const block = (browserId: string, reason: BrowserCloseBlockReason) => {
+    if (blocks[browserId] === null) blocks[browserId] = reason;
+  };
+  for (const key of presentedBrowserKeys) {
+    const browserId = key.slice(key.indexOf(":") + 1);
+    if (browserId in blocks) block(browserId, "presented");
+  }
+  for (const entry of browserTabLifecycle.describe()) {
+    const browserId = browserRegistry.getBrowserIdForWebContents(entry.webContentsId);
+    if (!browserId) continue;
+    const metadata = browserRegistry.getTargetMetadata(browserId);
+    if (metadata.kind === "popup" && metadata.rootBrowserId && metadata.rootBrowserId in blocks) {
+      block(metadata.rootBrowserId, "popup-open");
+    }
+    if (!(browserId in blocks)) continue;
+    const contents = allWebContents.fromId(entry.webContentsId);
+    if (!contents || contents.isDestroyed()) continue;
+    if (entry.held) block(browserId, "held");
+    const pageKeep = getPaseoBrowserPageKeepReason(entry.webContentsId);
+    if (pageKeep) block(browserId, pageKeep);
+    if (contents.isCurrentlyAudible()) block(browserId, "audible");
+  }
+  return blocks;
 }
 
 /**

@@ -28,8 +28,18 @@ export interface DesktopSettings {
      * next used. 0 turns it off; memory-pressure discards (delta 43) still run. File-only; no UI.
      */
     discardIdleTabsAfterMinutes: number;
+    /**
+     * Daseo delta 98: browser tabs an agent opened and no person ever looked at are closed once
+     * their agent is archived or has sent no browser command for `autoCloseAgentTabsAfterHours`,
+     * into the workspace's recently closed list. `rehearse` (the default until it has run a week)
+     * only logs `would close`; `on` closes; `off` does neither. File-only; no UI.
+     */
+    autoCloseAgentTabs: BrowserAutoCloseMode;
+    autoCloseAgentTabsAfterHours: number;
   };
 }
+
+export type BrowserAutoCloseMode = "off" | "rehearse" | "on";
 
 interface DesktopSettingsPatch {
   releaseChannel?: AppReleaseChannel;
@@ -56,6 +66,8 @@ export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   browser: {
     suspendIdleTabs: true,
     discardIdleTabsAfterMinutes: 180,
+    autoCloseAgentTabs: "rehearse",
+    autoCloseAgentTabsAfterHours: 24,
   },
 };
 
@@ -84,6 +96,14 @@ const BrowserSchema = z
       .int()
       .nonnegative()
       .catch(DEFAULT_DESKTOP_SETTINGS.browser.discardIdleTabsAfterMinutes),
+    autoCloseAgentTabs: z
+      .enum(["off", "rehearse", "on"])
+      .catch(DEFAULT_DESKTOP_SETTINGS.browser.autoCloseAgentTabs),
+    autoCloseAgentTabsAfterHours: z
+      .number()
+      .int()
+      .positive()
+      .catch(DEFAULT_DESKTOP_SETTINGS.browser.autoCloseAgentTabsAfterHours),
   })
   .catch(() => ({ ...DEFAULT_DESKTOP_SETTINGS.browser }));
 
@@ -169,6 +189,8 @@ function toDesktopSettings(stored: StoredDesktopSettings): DesktopSettings {
     browser: {
       suspendIdleTabs: stored.browser.suspendIdleTabs,
       discardIdleTabsAfterMinutes: stored.browser.discardIdleTabsAfterMinutes,
+      autoCloseAgentTabs: stored.browser.autoCloseAgentTabs,
+      autoCloseAgentTabsAfterHours: stored.browser.autoCloseAgentTabsAfterHours,
     },
   };
 }
@@ -217,6 +239,20 @@ function coerceDesktopSettingsPatch(input: unknown): DesktopSettingsPatch {
     );
     if (discardIdleTabsAfterMinutes !== null) {
       browserPatch.discardIdleTabsAfterMinutes = discardIdleTabsAfterMinutes;
+    }
+    const autoCloseAgentTabs = input.browser.autoCloseAgentTabs;
+    if (
+      autoCloseAgentTabs === "off" ||
+      autoCloseAgentTabs === "rehearse" ||
+      autoCloseAgentTabs === "on"
+    ) {
+      browserPatch.autoCloseAgentTabs = autoCloseAgentTabs;
+    }
+    const autoCloseAgentTabsAfterHours = coerceNonNegativeInteger(
+      input.browser.autoCloseAgentTabsAfterHours,
+    );
+    if (autoCloseAgentTabsAfterHours !== null && autoCloseAgentTabsAfterHours > 0) {
+      browserPatch.autoCloseAgentTabsAfterHours = autoCloseAgentTabsAfterHours;
     }
     if (Object.keys(browserPatch).length > 0) {
       patch.browser = browserPatch;

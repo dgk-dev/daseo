@@ -86,7 +86,12 @@ describe("desktop-settings", () => {
         manageBuiltInDaemon: true,
         keepRunningAfterQuit: false,
       },
-      browser: { suspendIdleTabs: true, discardIdleTabsAfterMinutes: 180 },
+      browser: {
+        suspendIdleTabs: true,
+        discardIdleTabsAfterMinutes: 180,
+        autoCloseAgentTabs: "rehearse",
+        autoCloseAgentTabsAfterHours: 24,
+      },
     });
   });
 
@@ -109,7 +114,12 @@ describe("desktop-settings", () => {
         manageBuiltInDaemon: true,
         keepRunningAfterQuit: false,
       },
-      browser: { suspendIdleTabs: true, discardIdleTabsAfterMinutes: 180 },
+      browser: {
+        suspendIdleTabs: true,
+        discardIdleTabsAfterMinutes: 180,
+        autoCloseAgentTabs: "rehearse",
+        autoCloseAgentTabsAfterHours: 24,
+      },
     });
     expect(files).toEqual(["desktop-settings.json"]);
   });
@@ -277,7 +287,12 @@ describe("desktop-settings", () => {
         manageBuiltInDaemon: false,
         keepRunningAfterQuit: false,
       },
-      browser: { suspendIdleTabs: true, discardIdleTabsAfterMinutes: 180 },
+      browser: {
+        suspendIdleTabs: true,
+        discardIdleTabsAfterMinutes: 180,
+        autoCloseAgentTabs: "rehearse",
+        autoCloseAgentTabsAfterHours: 24,
+      },
     });
     expect(ignoredSecondMigration).toEqual(migrated);
   });
@@ -320,7 +335,12 @@ describe("desktop-settings", () => {
       releaseChannel: "beta",
       notifications: { playSound: false },
       daemon: { manageBuiltInDaemon: true, keepRunningAfterQuit: false },
-      browser: { suspendIdleTabs: true, discardIdleTabsAfterMinutes: 180 },
+      browser: {
+        suspendIdleTabs: true,
+        discardIdleTabsAfterMinutes: 180,
+        autoCloseAgentTabs: "rehearse",
+        autoCloseAgentTabsAfterHours: 24,
+      },
     });
   });
 
@@ -337,7 +357,12 @@ describe("desktop-settings", () => {
       JSON.stringify({ version: 1, settings: { browser: { suspendIdleTabs: "no" } } }),
     );
     await expect(createDesktopSettingsStore({ userDataPath }).get()).resolves.toMatchObject({
-      browser: { suspendIdleTabs: true, discardIdleTabsAfterMinutes: 180 },
+      browser: {
+        suspendIdleTabs: true,
+        discardIdleTabsAfterMinutes: 180,
+        autoCloseAgentTabs: "rehearse",
+        autoCloseAgentTabsAfterHours: 24,
+      },
     });
   });
 
@@ -347,7 +372,12 @@ describe("desktop-settings", () => {
     const store = createDesktopSettingsStore({ userDataPath });
 
     await expect(store.get()).resolves.toMatchObject({
-      browser: { suspendIdleTabs: true, discardIdleTabsAfterMinutes: 180 },
+      browser: {
+        suspendIdleTabs: true,
+        discardIdleTabsAfterMinutes: 180,
+        autoCloseAgentTabs: "rehearse",
+        autoCloseAgentTabsAfterHours: 24,
+      },
     });
     await expect(
       store.patch({ browser: { discardIdleTabsAfterMinutes: 0 } }),
@@ -372,6 +402,36 @@ describe("desktop-settings", () => {
         browser: { suspendIdleTabs: true, discardIdleTabsAfterMinutes: 180 },
       });
     }
+  });
+
+  it("ships agent tab auto-close in rehearsal and accepts only known modes and whole hours", async () => {
+    const userDataPath = await createTempUserDataDir();
+    directories.add(userDataPath);
+    const store = createDesktopSettingsStore({ userDataPath });
+
+    await expect(store.get()).resolves.toMatchObject({
+      browser: { autoCloseAgentTabs: "rehearse", autoCloseAgentTabsAfterHours: 24 },
+    });
+    await expect(
+      store.patch({ browser: { autoCloseAgentTabs: "on", autoCloseAgentTabsAfterHours: 12 } }),
+    ).resolves.toMatchObject({
+      browser: { autoCloseAgentTabs: "on", autoCloseAgentTabsAfterHours: 12 },
+    });
+    await expect(
+      store.patch({ browser: { autoCloseAgentTabs: "always", autoCloseAgentTabsAfterHours: 0 } }),
+    ).resolves.toMatchObject({
+      browser: { autoCloseAgentTabs: "on", autoCloseAgentTabsAfterHours: 12 },
+    });
+    await writeFile(
+      settingsFilePath(userDataPath),
+      JSON.stringify({
+        version: 1,
+        settings: { browser: { autoCloseAgentTabs: true, autoCloseAgentTabsAfterHours: 2.5 } },
+      }),
+    );
+    await expect(createDesktopSettingsStore({ userDataPath }).get()).resolves.toMatchObject({
+      browser: { autoCloseAgentTabs: "rehearse", autoCloseAgentTabsAfterHours: 24 },
+    });
   });
 
   it("keeps keys written by another build across the legacy renderer migration", async () => {

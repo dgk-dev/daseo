@@ -697,6 +697,7 @@ export const ko: TranslationResources = {
         preparingTerminal: "터미널 탭 준비 중",
         preparingTerminalTooltip: "터미널 준비 중...",
         newBrowser: "새 브라우저",
+        recentlyClosedTabs: "최근 닫은 탭",
         exitFocusMode: "집중 모드 종료",
         splitRight: "창을 오른쪽으로 분할",
         splitDown: "창을 아래로 분할",

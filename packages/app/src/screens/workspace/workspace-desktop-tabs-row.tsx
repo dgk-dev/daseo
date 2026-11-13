@@ -89,6 +89,13 @@ import { runPinnedTabTarget, type TabTargetHandlers } from "@/workspace-pins/run
 import type { PinnedTabTarget } from "@/workspace-pins/target";
 import { PinnedTargetsRow } from "@/workspace-pins/pinned-targets-row";
 import { PinnableMenuItem } from "@/workspace-pins/pinnable-menu-item";
+import { getIsElectron } from "@/constants/platform";
+import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
+import {
+  useRecentlyClosedBrowsers,
+  type RecentlyClosedBrowser,
+} from "@/desktop/browser/provenance";
+import { reopenRecentlyClosedBrowser } from "@/desktop/browser/provenance/reopen";
 
 const DROPDOWN_WIDTH = 220;
 const LOADING_TAB_LABEL_SKELETON_WIDTH = 80;
@@ -215,8 +222,41 @@ interface WorkspaceTabRowExtrasProps {
   onCreateTerminalWithProfile: (profile: TerminalProfileInput) => void;
   onEditProfiles: () => void;
   normalizedServerId: string;
+  normalizedWorkspaceId: string;
   showCreateBrowserTab: boolean;
   terminalDisabled: boolean;
+}
+
+/** Delta 98: at most this many recently closed tabs in the menu, newest first. */
+const RECENTLY_CLOSED_MENU_LIMIT = 10;
+
+function recentlyClosedLabel(entry: RecentlyClosedBrowser): string {
+  if (entry.title.trim()) return entry.title.trim();
+  try {
+    return new URL(entry.url).host || entry.url;
+  } catch {
+    return entry.url;
+  }
+}
+
+function RecentlyClosedMenuItem({
+  entry,
+  workspaceKey,
+}: {
+  entry: RecentlyClosedBrowser;
+  workspaceKey: string;
+}) {
+  const handleSelect = useCallback(() => {
+    reopenRecentlyClosedBrowser({ workspaceKey, browserId: entry.browserId });
+  }, [entry.browserId, workspaceKey]);
+  return (
+    <DropdownMenuItem
+      testID={`workspace-new-tab-menu-reopen-${entry.browserId}`}
+      onSelect={handleSelect}
+    >
+      {recentlyClosedLabel(entry)}
+    </DropdownMenuItem>
+  );
 }
 
 function WorkspaceTabRowExtras({
@@ -226,10 +266,20 @@ function WorkspaceTabRowExtras({
   onCreateTerminalWithProfile,
   onEditProfiles,
   normalizedServerId,
+  normalizedWorkspaceId,
   showCreateBrowserTab,
   terminalDisabled,
 }: WorkspaceTabRowExtrasProps) {
   const { t } = useTranslation();
+  // Delta 98: tabs the agent-tab auto-close closed here, reopenable for 14 days. Nothing shows
+  // until a tab has been closed that way.
+  const workspaceKey = buildWorkspaceTabPersistenceKey({
+    serverId: normalizedServerId,
+    workspaceId: normalizedWorkspaceId,
+  });
+  const recentlyClosed = useRecentlyClosedBrowsers(
+    showCreateBrowserTab && getIsElectron() ? workspaceKey : null,
+  );
   const { config } = useDaemonConfig(normalizedServerId);
   const profiles = useMemo(
     () => resolveTerminalProfiles(config?.terminalProfiles),
@@ -297,6 +347,21 @@ function WorkspaceTabRowExtras({
               leading={BROWSER_ICON}
               onSelect={onCreateBrowser}
             />
+          ) : null}
+          {workspaceKey && recentlyClosed.length > 0 ? (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>
+                {t("workspace.tabs.actions.recentlyClosedTabs")}
+              </DropdownMenuLabel>
+              {recentlyClosed.slice(0, RECENTLY_CLOSED_MENU_LIMIT).map((entry) => (
+                <RecentlyClosedMenuItem
+                  key={entry.browserId}
+                  entry={entry}
+                  workspaceKey={workspaceKey}
+                />
+              ))}
+            </>
           ) : null}
           <DropdownMenuSeparator />
           <DropdownMenuLabel>{t("workspace.tabs.actions.terminalProfilesMenu")}</DropdownMenuLabel>
@@ -1068,6 +1133,7 @@ export function WorkspaceDesktopTabsRow({
           onCreateTerminalWithProfile={handleCreateTerminalWithProfile}
           onEditProfiles={handleEditProfiles}
           normalizedServerId={normalizedServerId}
+          normalizedWorkspaceId={normalizedWorkspaceId}
           showCreateBrowserTab={showCreateBrowserTab}
           terminalDisabled={terminalDisabled}
         />

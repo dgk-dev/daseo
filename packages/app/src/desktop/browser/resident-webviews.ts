@@ -5,6 +5,7 @@ import {
 } from "@/desktop/host";
 import type { BrowserViewport } from "@/desktop/browser/store";
 import { WEB_SURFACE_PLANE } from "@/lib/overlay-root";
+import { useBrowserProvenanceStore } from "@/desktop/browser/provenance";
 
 const RESIDENT_BROWSER_HOST_ID = "paseo-browser-resident-webviews";
 const BROWSER_ID_ATTRIBUTE = "data-paseo-browser-id";
@@ -106,8 +107,13 @@ function reportBrowserPresentation(browserId: string, presented: boolean): void 
   if ((reportedPresentationByBrowserId.get(browserId) ?? false) === presented) {
     return;
   }
-  if (presented) reportedPresentationByBrowserId.set(browserId, true);
-  else reportedPresentationByBrowserId.delete(browserId);
+  if (presented) {
+    reportedPresentationByBrowserId.set(browserId, true);
+    // Delta 98: a tab a pane shows is one a person may have seen; it is never closed for them.
+    useBrowserProvenanceStore.getState().humanUsed({ browserId });
+  } else {
+    reportedPresentationByBrowserId.delete(browserId);
+  }
   void getDesktopHost()
     ?.browser?.setBrowserPresented?.({ browserId, presented })
     .catch((error) => {

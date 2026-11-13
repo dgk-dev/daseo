@@ -702,6 +702,7 @@ export const ptBR: TranslationResources = {
         preparingTerminal: "Preparando aba de terminal",
         preparingTerminalTooltip: "Preparando terminal...",
         newBrowser: "Novo navegador",
+        recentlyClosedTabs: "Abas fechadas recentemente",
         exitFocusMode: "Sair do modo de foco",
         splitRight: "Dividir painel à direita",
         splitDown: "Dividir painel abaixo",

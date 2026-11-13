@@ -958,6 +958,28 @@ describe("registerBrowserTools", () => {
     });
   });
 
+  test("list_tabs ends with a nudge when the agent left more than three unseen tabs (delta 98)", async () => {
+    const harness = new BrowserToolHarness();
+    const listed = listTabsPayload();
+    harness.broker.setResponse({
+      ...listed,
+      result: {
+        command: "list_tabs",
+        tabs: listed.result.command === "list_tabs" ? listed.result.tabs : [],
+        unseenOpenedByAgent: 4,
+      },
+    });
+    const response = await harness.execute("browser_list_tabs", {});
+    const text = (response.content[0] as { text: string }).text;
+    expect(text.split("\n").at(-1)).toBe(
+      "4 of these tabs you opened have not been looked at by the user; close the ones you no longer need with browser_close_tab.",
+    );
+
+    harness.broker.setResponse(listTabsPayload());
+    const plain = await harness.execute("browser_list_tabs", {});
+    expect((plain.content[0] as { text: string }).text).not.toContain("not been looked at");
+  });
+
   test("tab report lists resident tabs largest first with state, memory, and what keeps them (delta 97)", async () => {
     const harness = new BrowserToolHarness();
     const otherBrowserId = "22222222-2222-4222-8222-222222222222";

@@ -83,6 +83,7 @@ import {
   getPaseoBrowserTabLifecycle,
   setPaseoBrowserContentsPresented,
   setPaseoBrowserPresented,
+  getPaseoBrowserCloseBlocks,
   trackPaseoBrowserDownload,
 } from "./features/browser-webviews/index.js";
 import {
@@ -111,6 +112,12 @@ import {
 import { parseOpenProjectPathFromArgv } from "./open-project-routing.js";
 import { PendingOpenProjectStore } from "./pending-open-project-store.js";
 import { getDesktopSettingsStore } from "./settings/desktop-settings-electron.js";
+import {
+  readAutoCloseSweepOverride,
+  readBrowserAutoCloseLogEntries,
+  readBrowserIdList,
+  type BrowserAutoCloseCheck,
+} from "./features/browser-webviews/auto-close.js";
 import { clampWindowStateToWorkAreas, createWindowStateStore } from "./settings/window-state.js";
 import {
   isDesktopManagedDaemonRunningSync,
@@ -866,6 +873,43 @@ ipcMain.handle("paseo:browser:set-presented", (event, rawInput: unknown) => {
     browserId,
     presented: input.presented,
   });
+});
+
+// Delta 98: the app asks which agent-opened tabs it may close and whether closing is on. A
+// settings file that cannot be read turns closing off for that check.
+ipcMain.handle(
+  "paseo:browser:auto-close-check",
+  async (_event, rawBrowserIds: unknown): Promise<BrowserAutoCloseCheck | null> => {
+    const browserIds = readBrowserIdList(rawBrowserIds);
+    if (!browserIds) {
+      return null;
+    }
+    let mode: BrowserAutoCloseCheck["mode"] = "off";
+    let afterHours = 24;
+    try {
+      const settings = await getDesktopSettingsStore().get();
+      mode = settings.browser.autoCloseAgentTabs;
+      afterHours = settings.browser.autoCloseAgentTabsAfterHours;
+    } catch (error) {
+      log.warn("[browser-auto-close] settings unavailable; nothing is closed", error);
+    }
+    const sweepIntervalMs = readAutoCloseSweepOverride(
+      process.env.PASEO_BROWSER_AUTO_CLOSE_SWEEP_MS,
+    );
+    return {
+      mode,
+      afterHours,
+      blockers: getPaseoBrowserCloseBlocks(browserIds),
+      ...(sweepIntervalMs !== undefined ? { sweepIntervalMs } : {}),
+    };
+  },
+);
+
+ipcMain.handle("paseo:browser:auto-close-record", (_event, rawEntries: unknown) => {
+  for (const entry of readBrowserAutoCloseLogEntries(rawEntries)) {
+    const { action, ...detail } = entry;
+    log.info(`[browser-auto-close] ${action === "closed" ? "closed" : "would close"}`, detail);
+  }
 });
 
 ipcMain.handle("paseo:browser:list-popup-targets", (event, rootBrowserId: unknown) => {

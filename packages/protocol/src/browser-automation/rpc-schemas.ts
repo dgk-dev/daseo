@@ -508,6 +508,11 @@ export const BrowserAutomationTabInfoSchema = z.object({
 export const BrowserAutomationListTabsResultSchema = z.object({
   command: z.literal("list_tabs"),
   tabs: z.array(BrowserAutomationTabInfoSchema),
+  /**
+   * Daseo delta 98: how many of these tabs the calling agent opened that no person has looked at,
+   * sent only when there are more than three.
+   */
+  unseenOpenedByAgent: z.number().int().positive().optional(),
 });
 
 export const BrowserAutomationNewTabResultSchema = z.object({

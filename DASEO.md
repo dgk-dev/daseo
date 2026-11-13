@@ -2241,6 +2241,56 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       `packages/protocol/src/browser-automation/rpc-schemas.ts`,
       `packages/server/src/server/browser-tools/tools.ts`.
 
+98. **Tabs an agent opened and nobody looked at close when the agent is done** — the
+    2026-11-13 RAM plan: over 14 days agents opened 1,933 tabs and closed 940, and tab records
+    said neither who opened a tab nor when it was last used, so a finished job's tabs could not be
+    told from a person's.
+    - **Provenance.** A new per-client store, `workspace-browser-provenance`, records for each tab
+      who opened it (`agent` with the creator's id, or `human`), when an agent last sent it a
+      command and which agent, and whether a person has ever had it on screen or used it. It is
+      kept apart from the browser records on purpose: those are validated strictly and an older
+      build deletes the whole store on an unknown field, which would lose every tab's URL on a
+      rollback; an older build simply ignores the new store. Agent tool calls carry an agent id;
+      the phone's remote open, stream, and stream input reach the desktop without one and count as
+      a person. A pane presenting a tab marks it seen. Tabs with no record (opened before this
+      build, by a person in the app, or adopted) have unknown origin and are never closed.
+    - **Rule.** Every 10 minutes (first sweep 2 minutes after connecting) the desktop app looks at
+      this daemon's workspaces and closes a tab only when an agent opened it, no person ever saw
+      or used it, it is not the selected tab of any pane, no other agent used it within the idle
+      time, and its creator is archived, or has sent no browser command for
+      `browser.autoCloseAgentTabsAfterHours` (24) and is not running or holding background waits.
+      The creator's state comes from the daemon (`fetch_agent` reads archived records too); a
+      creator the daemon cannot be asked about keeps the tab. Main then vetoes any tab a pane
+      shows, a command, capture, or phone stream holds, that was typed into, is downloading,
+      capturing network, holding a dialog, playing sound, or has a popup open. Each close is
+      re-checked against the stores and main right before it happens.
+    - **Rehearsal.** `browser.autoCloseAgentTabs` is `rehearse` by default: main logs a
+      `[browser-auto-close] would close` line (browser id, workspace id, reason, creator agent id,
+      idle hours, host) once a day per tab and nothing closes. `on` closes and logs `closed`;
+      `off` does neither. File-only; no UI.
+    - **Recently closed.** A closed tab goes to its workspace's list (URL, title, time, reason) for
+      14 days, at most 50. The tab row's ∨ menu shows the newest ten under "Recently closed tabs"
+      only when the list is not empty; choosing one reopens it focused at its URL as a person's
+      tab. In rehearsal the list stays empty, so nothing in the UI changes.
+    - **Agents.** `browser_new_tab` asks the agent to close the tabs it opened when its task is
+      done, unless the user should see them. `browser_list_tabs` ends with one line when more than
+      three listed tabs are the calling agent's and unseen (optional `unseenOpenedByAgent` on the
+      result; an older daemon strips it). The plan's "when the agent ends its turn" is approximated
+      by every list call: the app has no turn-end signal.
+    - **Checks.** Unit tests in `provenance/{auto-close,sweeper}.test.ts`, `handler.test.ts`,
+      `desktop-settings.test.ts`, `browser-webviews/auto-close.test.ts`; the desktop browser E2E's
+      auto-close regression (an agent opens two tabs, a person shows one, the agent is archived:
+      only the other closes, appears under recently closed, and reopens at its URL), run with
+      `autoCloseAgentTabs: "on"` and `PASEO_BROWSER_AUTO_CLOSE_SWEEP_MS` (a test seam main passes
+      to the app).
+    - **Key files:** `packages/app/src/desktop/browser/provenance/{state,index,auto-close,sweeper,reopen}.ts`,
+      `packages/app/src/desktop/browser/automation/handler.ts`, `resident-webviews.ts`,
+      `packages/app/src/screens/workspace/workspace-desktop-tabs-row.tsx`,
+      `packages/desktop/src/features/browser-webviews/{index,auto-close}.ts`,
+      `packages/desktop/src/{main,preload}.ts`, `packages/desktop/src/settings/desktop-settings.ts`,
+      `packages/protocol/src/browser-automation/rpc-schemas.ts`,
+      `packages/server/src/server/browser-tools/tools.ts`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

@@ -695,6 +695,7 @@ export const ar: TranslationResources = {
         preparingTerminal: "إعداد علامة التبويب المحطة الطرفية",
         preparingTerminalTooltip: "جارٍ تحضير المحطة...",
         newBrowser: "متصفح جديد",
+        recentlyClosedTabs: "علامات التبويب المغلقة مؤخرًا",
         exitFocusMode: "إنهاء وضع التركيز",
         splitRight: "تقسيم الجزء الأيمن",
         splitDown: "تقسيم الجزء لأسفل",

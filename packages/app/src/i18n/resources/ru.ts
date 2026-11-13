@@ -701,6 +701,7 @@ export const ru: TranslationResources = {
         preparingTerminal: "Подготовка вкладки терминала",
         preparingTerminalTooltip: "Подготовка терминала...",
         newBrowser: "Новый браузер",
+        recentlyClosedTabs: "Недавно закрытые вкладки",
         exitFocusMode: "Выйти из режима фокусировки",
         splitRight: "Разделить панель справа",
         splitDown: "Разделить панель вниз",
