@@ -1135,6 +1135,38 @@ describe("registerBrowserTools", () => {
     });
   });
 
+  test("passkeys use names a request that waits because the page navigated after the click (delta 102)", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-passkey-use",
+      ok: true,
+      result: {
+        command: "passkey_use",
+        browserId: BROWSER_ID,
+        outcome: "choose",
+        unmatchedAccount: "someone",
+        request: {
+          rpId: "github.com",
+          reason: "navigated_after_gesture",
+          since: "2026-11-13T05:00:00.000Z",
+          accounts: [{ credentialId: "AAAA", account: "ax•••p" }],
+        },
+      },
+    });
+    const response = await harness.execute("browser_passkeys", {
+      action: "use",
+      browserId: BROWSER_ID,
+      account: "someone",
+    });
+    expect(response.content[0]).toEqual({
+      type: "text",
+      text: [
+        'No waiting account matches "someone"; nothing was signed in.',
+        "The page's passkey request for github.com waits for confirmation (the page navigated after the click, so it may be the login view's autofill) since 2026-11-13T05:00:00.000Z; browser_passkeys use answers it. Accounts: ax•••p credentialId=AAAA.",
+      ].join("\n"),
+    });
+  });
+
   test("passkeys use answers the tab's waiting request, or lists the accounts to choose (delta 102)", async () => {
     const harness = new BrowserToolHarness();
     const request = {

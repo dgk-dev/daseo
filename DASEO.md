@@ -2508,21 +2508,32 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        pending until the callback runs and resolves when it is called seconds later; a late
        callback for a request the page aborted is a no-op. `navigator.userActivation.isActive` reads
        true for a request a click or key started (person, CDP input, or the agents' user-gesture
-       background click) and false after a page load and after a link navigation. Presence
+       background click) and false after a page load and after a link navigation, but it survives
+       a same-document navigation: after a click on a `pushState` "Sign in" link the login view's
+       autofill still read true (harness). Electron's `input-event` fires for CDP-dispatched and
+       `sendInputEvent` input on a guest; a user-gesture page script raises none. Presence
        simulation off: the request never reaches the picker and turning presence on does not revive
        it, so that route was rejected. No wrapper around `navigator.credentials.get`: page-visible
        built-ins are what bot checks compare (delta 81).
-     - **Rule.** The account picker is the hold point. A request is answered at once only when the
-       tab has transient user activation and one stored account fits. Activation is read in an
-       isolated world through CDP, beside the tab's CDP queue rather than in it, so a long command
-       cannot outlast Chromium's 5 s activation window; a failed read counts as none. With
-       activation and two or more accounts it waits 60 s for a choice: a card in the tab's pane
-       (delta 93's placement, its own `browser-passkey-choice` event; Cancel refuses) or
-       `browser_passkeys use` with `account`. Without activation it waits with no deadline and no
-       card, as autofill does, until `browser_passkeys use` answers it. A newer request from the
-       same frame, a navigation, or a closed tab ends the held one. A site with no stored passkey
-       still fails at once (the picker never runs), registration is unchanged, and a request that
-       names the credential in `allowCredentials` never reaches the picker and is answered as before.
+     - **Rule.** The account picker is the hold point. A request counts as asked for when the tab
+       has transient user activation and its main frame has not navigated (full or in-page:
+       `did-navigate`, `did-navigate-in-page`) since the tab's last gesture. Gestures are recorded in
+       main: Electron's `input-event` (person and CDP input, the phone's remote input) and the
+       automation adapter's user-gesture scripts (an agent's click or drag). Activation is read in
+       an isolated world through CDP, beside the tab's CDP queue rather than in it, so a long command
+       cannot outlast Chromium's 5 s activation window; a failed read counts as none. Asked for with
+       one stored account: answered at once. Asked for with two or more: waits 60 s for a choice
+       (`choose_account`). Activation but a navigation after the gesture, or an activation no
+       recorded gesture explains: waits 60 s for confirmation even with one account
+       (`navigated_after_gesture`). Both show a card in the tab's pane (delta 93's placement, its own
+       `browser-passkey-choice` event): one account shows its name with Cancel and Sign in, several
+       show one button each and Cancel; names are shown as stored, and agent results mask them.
+       `browser_passkeys use` answers either. No activation (page load, link navigation): waits with
+       no deadline and no card, as autofill does, until `browser_passkeys use` answers it. A newer
+       request from the same frame, a navigation, or a closed tab ends the held one. A site with no
+       stored passkey still fails at once (the picker never runs), registration is unchanged, and a
+       request that names the credential in `allowCredentials` never reaches the picker and is
+       answered as before.
      - **Records.** The authenticator signs before the picker runs, so the counter still moves (and
        syncs to the other tabs) on every assertion, but `lastUsedAt` is set when the assertion
        reaches the page, or at the signature for a credential loaded non-discoverable, which only an
@@ -2533,16 +2544,30 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        names in results. Wire ledger updated.
      - **Not covered.** A site whose only passkey route is autofill offers the person nothing in the
        tab (Electron has no autofill dropdown); its passkey button or an agent's `use` signs in. A
-       single-page app that starts autofill within 5 s of the click that showed the form is
-       answered at once. A held request the page aborted stays in `status` until the next request
+       site that shows its login view after a click without any navigation (no `pushState`, no
+       hash change) and starts autofill within 5 s is answered at once; client-side routers change
+       the URL, which this rule catches. A held request the page aborted stays in `status` until the next request
        from that frame or a navigation, and `use` on it signs in nothing.
      - **Checks.** `passkeys.test.ts` (waits without a gesture, at once with one account, a choice
        with two, pane answer, Cancel, expiry, same-frame replacement, navigation, foreign account,
        unreadable activation, `lastUsedAt`), `service.test.ts`, protocol, broker, and tools tests,
        `passkey-choices.test.ts`; capture harness group `passkeys` (autofill on load waits 3 s and
        `use` answers it, a modal request without a gesture waits, the background click on the
-       passkey button signs in and aborts autofill, two accounts wait and the named one signs in,
-       the pane surface shows and hides). Real site, webauthn.io with the compiled hub in a
+       passkey button signs in and aborts autofill, a `pushState` "Sign in" link followed by autofill
+       300 ms later stays signed out as `navigated_after_gesture` with the card shown, a CDP trusted
+       click on the passkey button signs in at once, two accounts wait and the named one signs in,
+       the pane surface shows and hides).
+     - **GitHub, observed** (throwaway session, a synthetic discoverable `github.com` credential with
+       a random key, the picker wrapped so it could only answer null; no form submitted). `/login`
+       loaded directly, the header "Sign in" link from `/` (`href=/login`, a trusted click), and
+       the owner's `/login?add_account=1&return_to=%2Flogin%2Fdevice` were each a full document load
+       (`did-navigate`, then two in-page `replaceState` navigations). In this fresh session GitHub
+       called `credentials.get` in none of them (`isConditionalMediationAvailable()` true, the
+       `js-conditional-webauthn-placeholder` form present, the username field's autocomplete plain
+       `username`), so the picker never fired and no POST was sent: GitHub starts passkey autofill
+       only for a browser it already knows, which a throwaway session cannot reproduce. For the
+       owner's flows, which were full loads here, the new document has no activation, so the
+       request waits silently (`no_gesture`). Real site, webauthn.io with the compiled hub in a
        throwaway session: after a reload the page posted only `/authentication/options` for 6 s and
        stayed signed out; Authenticate posted `/authentication/verification` 0.36 s later and showed
        "You're logged in!".
@@ -2551,7 +2576,8 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        `packages/server/src/server/browser-tools/{broker,tools}.ts`,
        `packages/app/src/desktop/browser/{passkey-choices.ts,panel.tsx}`,
        `packages/app/src/desktop/browser/pane/{index,passkey-choice-card}.electron.tsx`,
-       `packages/app/src/desktop/host.ts`; capture harness group `passkeys`.
+       `packages/app/src/desktop/host.ts`; capture harness group `passkeys`. Card screenshots and the
+       pixel critic's verdict: `~/.pi/agent/tmp/ui-critic/2026-11-13-passkey-card/`.
 103. **A research worker archives itself once its report has reached the lead** — the owner's
      ask on 2026-11-13 ("리서치 워커 자동 보관되게 해줘 어차피 이어서 안하잖아"). The
      research-fanout lead archived each worker when its notice arrived, which was late whenever

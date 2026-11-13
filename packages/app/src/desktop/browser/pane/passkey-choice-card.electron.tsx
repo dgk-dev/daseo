@@ -1,6 +1,7 @@
-// Daseo delta 102: the person asked a site to sign in with a passkey and two or more stored accounts
-// fit, so the tab's pane asks which one, the way a browser's passkey sheet does. Shown inside the
-// tab's own pane like a delta 93 page dialog; nothing else in the window changes.
+// Daseo delta 102: a passkey sign-in that waits for the person, inside the tab's own pane like a
+// delta 93 page dialog, the way a browser's passkey sheet asks. Two or more stored accounts: pick
+// one. One account (the page navigated after the click, so the request may be the login view's
+// autofill rather than a passkey button): confirm it. Nothing else in the window changes.
 import { createElement, useCallback, useEffect, useRef } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
@@ -34,19 +35,34 @@ export function BrowserPasskeyChoiceCard({
   const title = t("workspace.browser.passkeyChoice.title", { host: choice.rpId });
 
   const cancel = useCallback(() => onAnswer(null), [onAnswer]);
+  const single = choice.accounts.length === 1 ? choice.accounts[0] : null;
+  const signIn = useCallback(() => {
+    if (single) onAnswer(single.credentialId);
+  }, [onAnswer, single]);
 
   useEffect(() => {
     if (takeFocus) containerRef.current?.focus();
   }, [choice.id, takeFocus]);
 
   const handleKeyDown = useCallback(
-    (event: { key: string; preventDefault(): void; stopPropagation(): void }) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      cancel();
+    (event: {
+      key: string;
+      shiftKey: boolean;
+      preventDefault(): void;
+      stopPropagation(): void;
+    }) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        cancel();
+      } else if (event.key === "Enter" && !event.shiftKey && single) {
+        // As the page dialog card's OK: Enter takes the one primary action.
+        event.preventDefault();
+        event.stopPropagation();
+        signIn();
+      }
     },
-    [cancel],
+    [cancel, signIn, single],
   );
 
   return (
@@ -66,20 +82,33 @@ export function BrowserPasskeyChoiceCard({
           <Text numberOfLines={1} style={styles.title}>
             {title}
           </Text>
-          <Text style={styles.message}>{t("workspace.browser.passkeyChoice.message")}</Text>
-          <View style={styles.accounts}>
-            {choice.accounts.map((account) => (
-              <PasskeyAccountButton
-                key={account.credentialId}
-                account={account}
-                onAnswer={onAnswer}
-              />
-            ))}
-          </View>
+          {single ? (
+            <Text numberOfLines={1} style={styles.account}>
+              {passkeyAccountLabel(single)}
+            </Text>
+          ) : (
+            <>
+              <Text style={styles.message}>{t("workspace.browser.passkeyChoice.message")}</Text>
+              <View style={styles.accounts}>
+                {choice.accounts.map((account) => (
+                  <PasskeyAccountButton
+                    key={account.credentialId}
+                    account={account}
+                    onAnswer={onAnswer}
+                  />
+                ))}
+              </View>
+            </>
+          )}
           <View style={styles.actions}>
             <Button variant="ghost" size="sm" onPress={cancel}>
               {t("workspace.browser.passkeyChoice.cancel")}
             </Button>
+            {single ? (
+              <Button variant="default" size="sm" onPress={signIn}>
+                {t("workspace.browser.passkeyChoice.signIn")}
+              </Button>
+            ) : null}
           </View>
         </View>,
       )}
@@ -142,11 +171,16 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     color: theme.colors.foregroundMuted,
   },
+  account: {
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foreground,
+  },
   accounts: {
     gap: theme.spacing[2],
   },
   actions: {
     flexDirection: "row",
     justifyContent: "flex-end",
+    gap: theme.spacing[2],
   },
 }));

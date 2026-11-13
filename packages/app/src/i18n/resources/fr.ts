@@ -639,7 +639,8 @@ export const fr: TranslationResources = {
       },
       passkeyChoice: {
         title: "Se connecter à {{host}} avec une clé d’accès",
-        message: "Choisissez le compte à utiliser",
+        message: "Choisissez un compte",
+        signIn: "Se connecter",
         cancel: "Annuler",
       },
       annotate: {

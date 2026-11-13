@@ -1005,7 +1005,11 @@ export const BrowserAutomationPasskeyRequestAccountSchema = z.object({
 /** Delta 102: a passkey request the tab's page waits on. */
 export const BrowserAutomationPasskeyRequestSchema = z.object({
   rpId: z.string(),
-  /** `no_gesture`: started with no click or key (page load); `choose_account`: several accounts. */
+  /**
+   * `no_gesture`: started with no click or key (page load); `choose_account`: several accounts;
+   * `navigated_after_gesture`: the page navigated after the click, so it waits for confirmation.
+   * An open string: a newer host may add reasons.
+   */
   reason: z.string(),
   /** ISO time the request started waiting. */
   since: z.string(),

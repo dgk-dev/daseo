@@ -640,7 +640,8 @@ export const es: TranslationResources = {
       },
       passkeyChoice: {
         title: "Iniciar sesión en {{host}} con una llave de acceso",
-        message: "Elige la cuenta con la que iniciar sesión",
+        message: "Elige una cuenta",
+        signIn: "Iniciar sesión",
         cancel: "Cancelar",
       },
       annotate: {

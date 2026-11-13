@@ -634,7 +634,8 @@ export const ko: TranslationResources = {
       },
       passkeyChoice: {
         title: "패스키로 {{host}}에 로그인",
-        message: "로그인할 계정을 고르세요",
+        message: "계정을 고르세요",
+        signIn: "로그인",
         cancel: "취소",
       },
       annotate: {

@@ -637,7 +637,8 @@ export const ja: TranslationResources = {
       },
       passkeyChoice: {
         title: "パスキーで {{host}} にサインイン",
-        message: "サインインするアカウントを選択してください",
+        message: "アカウントを選択してください",
+        signIn: "サインイン",
         cancel: "キャンセル",
       },
       annotate: {

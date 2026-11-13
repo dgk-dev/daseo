@@ -639,7 +639,8 @@ export const ru: TranslationResources = {
       },
       passkeyChoice: {
         title: "Вход на {{host}} с ключом доступа",
-        message: "Выберите аккаунт для входа",
+        message: "Выберите аккаунт",
+        signIn: "Войти",
         cancel: "Отмена",
       },
       annotate: {

@@ -640,7 +640,8 @@ export const ptBR: TranslationResources = {
       },
       passkeyChoice: {
         title: "Entrar em {{host}} com uma chave de acesso",
-        message: "Escolha a conta para entrar",
+        message: "Escolha uma conta",
+        signIn: "Entrar",
         cancel: "Cancelar",
       },
       annotate: {

@@ -58,10 +58,14 @@ after a navigation with a rising counter, and `browser_passkeys status` and `del
 the production service. Delta 102 cases: passkey autofill started on page load stays pending for
 3 s and `passkey_use` answers it; a modal request with no gesture waits too; the production
 background click on the page's passkey button signs in at once and aborts the autofill request;
+a `pushState` "Sign in" link followed by autofill 300 ms later keeps activation but stays signed
+out as `navigated_after_gesture` with the pane surface shown; a CDP trusted click on the passkey
+button signs in at once (Electron reports it as `input-event` on the guest);
 with two stored accounts the click waits, the pane surface is shown, `passkey_use` without an
 account lists both masked and with one signs that account in. Pages get a user gesture only from
 real input or `executeJavaScript(code, true)`, so the checks that must not sign in run their page
-code with `false`.
+code with `false`; the group's own gesture scripts mark the gesture the way the production adapter
+does for an agent's click.
 
 The delta92 group (`PASEO_CAPTURE_HARNESS_GROUP=delta92`) serves a page that holds one image
 open forever, a page that alerts while it loads, a download link, and a page that busy-loops. It

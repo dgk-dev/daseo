@@ -3597,7 +3597,14 @@ const PASSKEY_PAGE = `<!doctype html><html><head><title>Passkey target</title></
   <h1>Passkey target</h1>
   <input aria-label="Username" autocomplete="username webauthn">
   <button onclick="window.__clickGet()">Sign in with a passkey</button>
+  <a href="/login-view" onclick="event.preventDefault(); window.__spaSignIn()">Sign in</a>
   <script>
+    // A client-side routed "Sign in" link (Turbo, an SPA router): the document stays, the login
+    // view starts passkey autofill shortly after.
+    window.__spaSignIn = () => {
+      history.pushState({}, '', '/login-view');
+      setTimeout(() => window.__cond(), 300);
+    };
     const rnd = () => crypto.getRandomValues(new Uint8Array(32));
     // Passkey autofill, as login pages start it on load; the site's button aborts it first.
     window.__cond = () => {
@@ -3832,13 +3839,13 @@ async function pagePoll(guest, expression, timeoutMs) {
 }
 
 // Clicks a button the way browser_click does for an agent (background click, user gesture).
-async function passkeyClick(run, browserId, name) {
+async function passkeyClick(run, browserId, name, role = "button") {
   const snapshot = await run("passkeys snapshot", {
     command: "snapshot",
     args: { browserId },
   });
-  const ref = snapshot.snapshot?.match(new RegExp(`button "${name}" \\[ref=(@e\\d+)\\]`))?.[1];
-  if (!ref) fail(`passkeys: no ref for button "${name}" in ${snapshot.snapshot}`);
+  const ref = snapshot.snapshot?.match(new RegExp(`${role} "${name}" \\[ref=(@e\\d+)\\]`))?.[1];
+  if (!ref) fail(`passkeys: no ref for ${role} "${name}" in ${snapshot.snapshot}`);
   return run(`click ${name}`, { command: "click", args: { browserId, ref } });
 }
 
@@ -3933,6 +3940,81 @@ async function verifyPasskeyButton({ checks, second, harness, url, created, run,
       [harness.hub.waitingRequest(second.id), null],
     ]),
     { before, clicked, condAfter },
+  );
+}
+
+async function verifyPasskeyAfterClientRoute({
+  checks,
+  second,
+  harness,
+  url,
+  created,
+  run,
+  browserId,
+}) {
+  const surfaceEvents = [];
+  harness.passkeys.setPaseoBrowserPasskeyChoiceSurface({
+    show: (request) => surfaceEvents.push(`show ${request.reason} ${request.accounts.length}`),
+    hide: () => surfaceEvents.push("hide"),
+  });
+  await loadPasskeyPage(harness, second, url);
+  const routed = await passkeyClick(run, browserId, "Sign in", "link");
+  await delay(3000);
+  const signedIn = await second.executeJavaScript("window.__condResult ?? null", false);
+  const location = await second.executeJavaScript("location.pathname", false);
+  const waiting = harness.hub.waitingRequest(second.id);
+  const status = await run("passkeys status (after route)", {
+    command: "passkeys",
+    args: { action: "status", browserId },
+  });
+  const used = await run("passkey_use (after route)", {
+    command: "passkey_use",
+    args: { browserId },
+  });
+  const answered = await pagePoll(second, "window.__condResult", 3000);
+  harness.passkeys.setPaseoBrowserPasskeyChoiceSurface(null);
+  passkeyCheck(
+    checks,
+    "a client-routed 'Sign in' click then autofill within 1 s stays signed out and asks to confirm",
+    passkeyProblems([
+      [location, "/login-view"],
+      [signedIn, null],
+      [waiting?.reason, "navigated_after_gesture"],
+      [status.tab?.request?.reason, "navigated_after_gesture"],
+      [JSON.stringify(surfaceEvents), JSON.stringify(["show navigated_after_gesture 1", "hide"])],
+      [used.outcome, "used"],
+      [answered?.id, created.id],
+    ]),
+    { routed, signedIn, waiting, surfaceEvents, used, answered },
+  );
+}
+
+// A person's click arrives as trusted input; on a guest Electron reports it as input-event.
+async function verifyPasskeyTrustedClick({ checks, second, harness, url, created }) {
+  await loadPasskeyPage(harness, second, url);
+  const rect = await second.executeJavaScript(
+    `(() => { const b = [...document.querySelectorAll('button')].find((x) => x.textContent === 'Sign in with a passkey'); const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
+    false,
+  );
+  for (const type of ["mousePressed", "mouseReleased"]) {
+    await second.debugger.sendCommand("Input.dispatchMouseEvent", {
+      type,
+      x: rect.x,
+      y: rect.y,
+      button: "left",
+      clickCount: 1,
+    });
+  }
+  const clicked = await pagePoll(second, "window.__clickResult", 3000);
+  passkeyCheck(
+    checks,
+    "a trusted click on the passkey button signs in at once (input-event on the guest)",
+    passkeyProblems([
+      [clicked?.ok, true],
+      [clicked?.id, created.id],
+      [harness.hub.waitingRequest(second.id), null],
+    ]),
+    { clicked },
   );
 }
 
@@ -4046,7 +4128,12 @@ async function runPasskeysGroup() {
   // The production wiring: bind the picker to the guest session and attach every guest.
   win.webContents.on("did-attach-webview", (_event, contents) => harness.attach(contents));
   const checks = [];
-  const page = (guest, code) => guest.executeJavaScript(code, true);
+  // A user-gesture page script, marked as a gesture the way the production adapter marks an
+  // agent's focus-isolated click (ipc.ts).
+  const page = (guest, code) => {
+    harness.passkeys.markPaseoBrowserUserGesture(guest.id);
+    return guest.executeJavaScript(code, true);
+  };
   const openGuest = async () => {
     const { guest } = await appendPermanentWebview({
       win,
@@ -4075,6 +4162,8 @@ async function runPasskeysGroup() {
     const context = { checks, second, harness, url, created, run, browserId };
     await verifyPasskeyAutofillWaits(context);
     await verifyPasskeyButton(context);
+    await verifyPasskeyAfterClientRoute(context);
+    await verifyPasskeyTrustedClick(context);
     await verifyPasskeyAccountChoice(context);
     await verifyPasskeyTool({ checks, second, harness, page, created, stored, run, browserId });
     return checks;

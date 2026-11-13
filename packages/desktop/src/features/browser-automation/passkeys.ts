@@ -40,10 +40,13 @@ import { CdpSessionQueue } from "./cdp-session-queue.js";
 // discoverable get() reaches (one account included, measured on Electron 44.10.2) and which keeps
 // the request pending until it is called. The request is answered at once only when the tab has
 // transient user activation (a person's click or key, or an agent's tool click, within Chromium's
-// activation window), read in an isolated world so the page's built-ins stay untouched: a click on
-// the site's passkey button starts a request under activation, a page load or a link navigation
-// does not. Everything else waits until an agent calls browser_passkeys use or, when the site has
-// two or more stored accounts, the person picks one in the tab. Presence simulation was measured
+// activation window), read in an isolated world so the page's built-ins stay untouched, and the
+// tab has not navigated since that click or key: a click on the site's passkey button starts a
+// request under activation, a page load or a link navigation does not, and a client-side route
+// change (pushState) keeps the click's activation, so a request after one waits for confirmation
+// in the tab. Everything else waits until an agent calls browser_passkeys use or, when the site
+// has two or more stored accounts or the page navigated after the click, the person picks in the
+// tab. Presence simulation was measured
 // and rejected: with presence off the request never reaches the picker and turning presence back
 // on does not revive it.
 
@@ -365,7 +368,10 @@ export interface PasskeyTabContents {
   readonly debugger: PasskeyTabDebugger;
   isDestroyed(): boolean;
   getURL(): string;
-  on(event: "did-navigate" | "dom-ready", listener: (...args: unknown[]) => void): unknown;
+  on(
+    event: "did-navigate" | "did-navigate-in-page" | "dom-ready" | "input-event",
+    listener: (...args: unknown[]) => void,
+  ): unknown;
   once(event: "destroyed", listener: () => void): unknown;
 }
 
@@ -402,10 +408,31 @@ export interface PasskeyRequestAccount {
 
 /**
  * Delta 102. Why a passkey request waits: `no_gesture` started with no click or key in the tab
- * (page load, link navigation; a conditional-mediation request is always this), `choose_account`
- * was asked for explicitly and the site has two or more stored accounts.
+ * (page load, link navigation), `choose_account` was asked for with a click or key and the site has
+ * two or more stored accounts, `navigated_after_gesture` came after a click or key that the page
+ * followed with a navigation (a client-side route change keeps the click's activation, so it may be
+ * the login view's autofill, not a passkey button), and waits for someone to confirm it.
  */
-export type PasskeyRequestWait = "no_gesture" | "choose_account";
+export type PasskeyRequestWait = "no_gesture" | "choose_account" | "navigated_after_gesture";
+
+/** Reasons the person sees as a card in the tab, each cancelled after PASSKEY_CHOICE_HOLD_MS. */
+function waitsInPane(reason: PasskeyRequestWait): boolean {
+  return reason !== "no_gesture";
+}
+
+/**
+ * Input that gives a page user activation, as Electron's `input-event` names it (person input,
+ * CDP-dispatched input, and `sendInputEvent`; measured on 44.10.2).
+ */
+const GESTURE_INPUT_TYPES = new Set([
+  "mouseDown",
+  "mouseUp",
+  "rawKeyDown",
+  "keyDown",
+  "touchStart",
+  "touchEnd",
+  "gestureTap",
+]);
 
 export interface WaitingPasskeyRequest {
   readonly id: string;
@@ -415,7 +442,7 @@ export interface WaitingPasskeyRequest {
   readonly reason: PasskeyRequestWait;
   /** Epoch ms. */
   readonly since: number;
-  /** `choose_account` only: when an unanswered choice is cancelled (epoch ms). */
+  /** A request shown in the pane: when it is cancelled unanswered (epoch ms). */
   readonly expiresAt?: number;
 }
 
@@ -456,6 +483,10 @@ interface TabState {
   generation: number;
   /** Delta 102: passkey requests waiting for someone to ask, newest last. */
   held: HeldRequest[];
+  /** Delta 102: last click or key in the tab (epoch ms): person, CDP, or an agent's tool click. */
+  lastGestureAt: number;
+  /** Delta 102: last main-frame navigation of any kind, in-page ones included (epoch ms). */
+  lastNavigationAt: number;
 }
 
 export interface PasskeyHubOptions {
@@ -533,7 +564,7 @@ export class PaseoBrowserPasskeys {
     const choices: WaitingPasskeyRequest[] = [];
     for (const state of this.tabs.values()) {
       for (const entry of state.held) {
-        if (entry.request.reason === "choose_account") choices.push(entry.request);
+        if (waitsInPane(entry.request.reason)) choices.push(entry.request);
       }
     }
     return choices;
@@ -597,17 +628,31 @@ export class PaseoBrowserPasskeys {
       this.release(state, stale, null);
     }
     const activated = await this.hasUserActivation(state);
-    if (activated && accounts.length === 1) {
+    // Activation outlives a same-document navigation: a click on a client-side routed "Sign in"
+    // link leaves the login view activated for seconds, and its autofill would read as asked for.
+    // A click counts as asking only when the tab has not navigated since (read after the
+    // activation, so a navigation the request raced with is already recorded).
+    const askedFor = activated && state.lastGestureAt > state.lastNavigationAt;
+    const reason = requestWait(activated, askedFor, accounts.length);
+    this.log("[browser-passkeys] passkey request", {
+      contentsId: state.contents.id,
+      rpId: details.relyingPartyId,
+      accounts: accounts.length,
+      activated,
+      navigatedSinceGesture: activated && !askedFor,
+      decision: reason ?? "answered",
+    });
+    if (reason === null) {
       this.deliver(answer, accounts[0].credentialId);
       return;
     }
-    this.hold(state, {
-      frameKey,
-      rpId: details.relyingPartyId,
-      accounts,
-      reason: activated ? "choose_account" : "no_gesture",
-      answer,
-    });
+    this.hold(state, { frameKey, rpId: details.relyingPartyId, accounts, reason, answer });
+  }
+
+  /** Delta 102: a click Daseo dispatched for an agent (a user-gesture page script). */
+  public markGesture(contentsId: number): void {
+    const state = this.tabs.get(contentsId);
+    if (state) state.lastGestureAt = this.now().getTime();
   }
 
   private tabOfFrame(frame: unknown): TabState | undefined {
@@ -689,7 +734,7 @@ export class PaseoBrowserPasskeys {
       accounts: input.accounts,
       reason: input.reason,
       since,
-      ...(input.reason === "choose_account" ? { expiresAt: since + holdMs } : {}),
+      ...(waitsInPane(input.reason) ? { expiresAt: since + holdMs } : {}),
     };
     const entry: HeldRequest = {
       request,
@@ -699,17 +744,11 @@ export class PaseoBrowserPasskeys {
     };
     // A request that waits for no gesture stays pending, as a browser leaves passkey autofill
     // pending until the person picks; an explicit request with an open choice times out.
-    if (input.reason === "choose_account") {
+    if (waitsInPane(input.reason)) {
       entry.timer = setTimeout(() => this.release(state, entry, null), holdMs);
     }
     state.held.push(entry);
-    this.log("[browser-passkeys] passkey request waits", {
-      contentsId: state.contents.id,
-      rpId: input.rpId,
-      accounts: input.accounts.length,
-      reason: input.reason,
-    });
-    if (input.reason === "choose_account") choiceSurface?.show(request);
+    if (waitsInPane(input.reason)) choiceSurface?.show(request);
   }
 
   /** Answers a held request (`null` cancels it) and forgets it. */
@@ -718,7 +757,7 @@ export class PaseoBrowserPasskeys {
     if (index === -1) return;
     state.held.splice(index, 1);
     if (entry.timer) clearTimeout(entry.timer);
-    if (entry.request.reason === "choose_account") {
+    if (waitsInPane(entry.request.reason)) {
       choiceSurface?.hide(state.contents.id, entry.request.id);
     }
     if (credentialId === null) {
@@ -755,6 +794,8 @@ export class PaseoBrowserPasskeys {
       discoverable: new Set(),
       generation: 0,
       held: [],
+      lastGestureAt: Number.NEGATIVE_INFINITY,
+      lastNavigationAt: Number.NEGATIVE_INFINITY,
     };
     this.tabs.set(contents.id, state);
     contents.debugger.on?.("message", (_event, method, params) => {
@@ -769,8 +810,18 @@ export class PaseoBrowserPasskeys {
     // for the new document in the same DidFinishNavigation pass, and an enable sent from inside
     // did-navigate landed before that reset and was wiped (capture harness, 2026-11-02).
     contents.on("did-navigate", () => {
+      state.lastNavigationAt = this.now().getTime();
       this.dropHeld(state);
       setTimeout(() => void this.install(state), 0);
+    });
+    contents.on("did-navigate-in-page", (_event, _url, isMainFrame) => {
+      if (isMainFrame !== false) state.lastNavigationAt = this.now().getTime();
+    });
+    contents.on("input-event", (_event, input) => {
+      const type = (input as { type?: unknown } | undefined)?.type;
+      if (typeof type === "string" && GESTURE_INPUT_TYPES.has(type)) {
+        state.lastGestureAt = this.now().getTime();
+      }
     });
     contents.on("dom-ready", () => {
       if (state.authenticatorId === null) void this.install(state);
@@ -1049,6 +1100,25 @@ export function hostMatchesRpId(host: string, rpId: string): boolean {
   const h = host.toLowerCase();
   const rp = rpId.toLowerCase();
   return h === rp || h.endsWith(`.${rp}`);
+}
+
+/**
+ * Delta 102: `null` answers at once (a click or key with no navigation since, and one account).
+ * Otherwise why the request waits.
+ */
+export function requestWait(
+  activated: boolean,
+  askedFor: boolean,
+  accounts: number,
+): PasskeyRequestWait | null {
+  if (!activated) return "no_gesture";
+  if (!askedFor) return "navigated_after_gesture";
+  return accounts === 1 ? null : "choose_account";
+}
+
+/** Delta 102: an agent's tool click on this tab counts as a gesture (see markGesture). */
+export function markPaseoBrowserUserGesture(contentsId: number): void {
+  activeHub?.markGesture(contentsId);
 }
 
 function frameKeyOf(frame: unknown): string {

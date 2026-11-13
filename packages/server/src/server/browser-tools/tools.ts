@@ -1183,7 +1183,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Browser passkeys",
       description:
-        "Passkeys in the Paseo browser. Every tab carries an agent-owned software authenticator with no Touch ID or phone. A stored passkey never signs in on page load: a login page's passkey autofill request waits, so the page stays signed out and any account can still be typed. It signs in when you ask for it: click the site's passkey button ('Sign in with a passkey', security key) with browser_click, or call action use on the tab (needed on a page that offers passkeys only through autofill). When the site has two or more stored passkeys, name one with account (credentialId, user name, or display name); without it use lists the accounts and signs in with none. A passkey a site registers (create) is saved here, encrypted, and served to every later tab. A site with no stored passkey gets an immediate NotAllowedError instead of a hanging prompt, so take its password, code, or 'other method' option (browser_login fills saved passwords), or register a passkey for it once while signed in. action list (default) shows stored passkeys with credentialId, site and account, never keys; status says whether the tab's site has one, whether the authenticator is installed, and which passkey request the page waits on; use answers that request; delete removes one by credentialId.",
+        "Passkeys in the Paseo browser. Every tab carries an agent-owned software authenticator with no Touch ID or phone. A stored passkey never signs in on page load: a login page's passkey autofill request waits, so the page stays signed out and any account can still be typed. It signs in when you ask for it: click the site's passkey button ('Sign in with a passkey', security key) with browser_click, or call action use on the tab (needed on a page that offers passkeys only through autofill, and when the page navigated between your click and its request; status then shows reason navigated_after_gesture). When the site has two or more stored passkeys, name one with account (credentialId, user name, or display name); without it use lists the accounts and signs in with none. A passkey a site registers (create) is saved here, encrypted, and served to every later tab. A site with no stored passkey gets an immediate NotAllowedError instead of a hanging prompt, so take its password, code, or 'other method' option (browser_login fills saved passwords), or register a passkey for it once while signed in. action list (default) shows stored passkeys with credentialId, site and account, never keys; status says whether the tab's site has one, whether the authenticator is installed, and which passkey request the page waits on; use answers that request; delete removes one by credentialId.",
       inputSchema: {
         action: z.enum(["list", "status", "use", "delete"]).default("list"),
         browserId: BrowserAutomationBrowserIdSchema.optional(),
@@ -1646,10 +1646,12 @@ function summarizeBrowserPasskeys(result: BrowserAutomationPasskeysResult): stri
 }
 
 function describePasskeyRequest(request: BrowserAutomationPasskeyRequest): string {
-  const why =
-    request.reason === "choose_account"
-      ? "waits for an account choice"
-      : "waits (started with no click: passkey autofill or page load)";
+  let why = "waits (started with no click: passkey autofill or page load)";
+  if (request.reason === "choose_account") why = "waits for an account choice";
+  if (request.reason === "navigated_after_gesture") {
+    why =
+      "waits for confirmation (the page navigated after the click, so it may be the login view's autofill)";
+  }
   const accounts = request.accounts
     .map((account) => `${account.account} credentialId=${account.credentialId}`)
     .join("; ");

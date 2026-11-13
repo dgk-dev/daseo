@@ -633,7 +633,8 @@ export const ar: TranslationResources = {
       },
       passkeyChoice: {
         title: "تسجيل الدخول إلى {{host}} بمفتاح مرور",
-        message: "اختر الحساب الذي تريد تسجيل الدخول به",
+        message: "اختر حسابًا",
+        signIn: "تسجيل الدخول",
         cancel: "إلغاء",
       },
       annotate: {

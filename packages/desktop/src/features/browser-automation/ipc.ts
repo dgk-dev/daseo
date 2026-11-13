@@ -42,7 +42,7 @@ import {
   unwatchPaseoBrowserPasskeyChoices,
   watchPaseoBrowserPasskeyChoices,
 } from "./passkey-choice-surface.js";
-import { getPaseoBrowserPasskeys } from "./passkeys.js";
+import { getPaseoBrowserPasskeys, markPaseoBrowserUserGesture } from "./passkeys.js";
 import { executeAutomationCommand } from "./service.js";
 import { startScreencast, stopScreencast } from "./screencast.js";
 import {
@@ -273,6 +273,9 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
     // 3 ms against no answer in 3 s).
     executeJavaScript: (code: string, userGesture?: boolean) => {
       markPaseoBrowserAutomationActivity(contentsId);
+      // Delta 102: a user-gesture script is an agent's click (focus-isolated input); a passkey
+      // request it starts counts as asked for, like a person's click.
+      if (userGesture === true) markPaseoBrowserUserGesture(contentsId);
       return rendererHealth.runPageScript(contents, code, userGesture, "this tab");
     },
     insertText: (text: string) => {

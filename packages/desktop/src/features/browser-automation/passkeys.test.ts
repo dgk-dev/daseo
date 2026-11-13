@@ -13,8 +13,11 @@ import {
   PasskeyKeyMismatchError,
   PasskeyStore,
   fromBase64Url,
+  markPaseoBrowserUserGesture,
   maskAccountName,
   matchAccount,
+  requestWait,
+  setPaseoBrowserPasskeys,
   hostMatchesRpId,
   toBase64Url,
   type PasskeyChoiceSurface,
@@ -201,6 +204,24 @@ function recordingSurface() {
     hide: (_contentsId: number, requestId: string) => events.push(`hide ${requestId}`),
   };
   return { events, surface };
+}
+
+/** A person's click in the tab: the page has activation and Electron reports the input. */
+function click(tab: FakeTab) {
+  clock = new Date(clock.getTime() + 1);
+  tab.activation = true;
+  tab.emit("input-event", {}, { type: "mouseDown" });
+}
+
+/** A main-frame navigation: `inPage` is a pushState or hash change, which keeps activation. */
+function navigate(tab: FakeTab, inPage: boolean) {
+  clock = new Date(clock.getTime() + 1);
+  if (inPage) {
+    tab.emit("did-navigate-in-page", {}, `${tab.url}#view`, true);
+  } else {
+    tab.activation = false;
+    tab.emit("did-navigate", {}, tab.url);
+  }
 }
 
 /** Lets the activation read (three CDP round trips) finish. */
@@ -692,14 +713,14 @@ describe("PaseoBrowserPasskeys", () => {
     });
     expect(added.at(-1)?.params?.credential).toMatchObject({ signCount: 7 });
 
-    second.activation = true;
+    click(second);
     const answers = session.request({
       contentsId: 2,
       accounts: [{ credentialId: SITE_CREDENTIAL_ID_URL, name: "alice@example.com" }],
     });
     await flush();
     expect(answers).toEqual([SITE_CREDENTIAL_ID_URL]);
-    expect(h.listInfo()[0]).toMatchObject({ signCount: 7, lastUsedAt: "2026-11-02T04:00:00.000Z" });
+    expect(h.listInfo()[0]).toMatchObject({ signCount: 7, lastUsedAt: "2026-11-02T04:00:00.001Z" });
   });
 
   test("a credential the site named in allowCredentials is used at its signature", async () => {
@@ -774,7 +795,7 @@ describe("PaseoBrowserPasskeys", () => {
     const tab = new FakeTab(1);
     h.attach(tab, new CdpSessionQueue());
     await settle(h, tab);
-    tab.activation = true;
+    click(tab);
     const answers = session.request({ contentsId: 1, accounts: [TWO_ACCOUNTS[0]] });
     await flush();
     expect(answers).toEqual(["older"]);
@@ -805,7 +826,7 @@ describe("PaseoBrowserPasskeys", () => {
       const tab = new FakeTab(1);
       h.attach(tab, new CdpSessionQueue());
       await settle(h, tab);
-      tab.activation = true;
+      click(tab);
       const answers = session.request({ contentsId: 1, accounts: TWO_ACCOUNTS });
       await flush();
       expect(answers).toEqual([]);
@@ -841,7 +862,7 @@ describe("PaseoBrowserPasskeys", () => {
     const tab = new FakeTab(1);
     h.attach(tab, new CdpSessionQueue());
     await settle(h, tab);
-    tab.activation = true;
+    click(tab);
 
     const picked = session.request({ contentsId: 1, accounts: TWO_ACCOUNTS });
     await flush();
@@ -904,12 +925,119 @@ describe("PaseoBrowserPasskeys", () => {
     await flush();
     expect(h.waitingRequest(1)?.reason).toBe("no_gesture");
     // The button's click aborts the autofill request and starts a modal one in the same frame.
-    tab.activation = true;
+    click(tab);
     const clicked = session.request({ contentsId: 1, accounts: [TWO_ACCOUNTS[0]] });
     await flush();
     expect(autofill).toEqual([null]);
     expect(clicked).toEqual(["older"]);
     expect(h.waitingRequest(1)).toBeNull();
+  });
+
+  test("a click the page followed with an in-page navigation asks for confirmation, even with one account", async () => {
+    const { events, surface } = recordingSurface();
+    setPaseoBrowserPasskeyChoiceSurface(surface);
+    try {
+      const h = hub(storeWithTwoAccounts());
+      const session = fakeSession();
+      h.bindSession(session);
+      const tab = new FakeTab(1);
+      h.attach(tab, new CdpSessionQueue());
+      await settle(h, tab);
+      // A client-side routed "Sign in" link: click, pushState to the login view, its autofill.
+      click(tab);
+      navigate(tab, true);
+      const answers = session.request({ contentsId: 1, accounts: [TWO_ACCOUNTS[0]] });
+      await flush();
+      expect(answers).toEqual([]);
+      const waiting = h.waitingRequest(1);
+      expect(waiting).toMatchObject({
+        reason: "navigated_after_gesture",
+        expiresAt: clock.getTime() + 60_000,
+      });
+      expect(events).toEqual([`show ${waiting?.id}`]);
+      // The person confirms in the tab.
+      expect(h.answerChoice(1, waiting?.id ?? "", "older")).toBe(true);
+      expect(answers).toEqual(["older"]);
+
+      // Another click after that navigation is asked for again.
+      click(tab);
+      const again = session.request({ contentsId: 1, accounts: [TWO_ACCOUNTS[0]] });
+      await flush();
+      expect(again).toEqual(["older"]);
+    } finally {
+      setPaseoBrowserPasskeyChoiceSurface(null);
+    }
+  });
+
+  test("a click that led to a full navigation leaves the new page's request silent", async () => {
+    const { events, surface } = recordingSurface();
+    setPaseoBrowserPasskeyChoiceSurface(surface);
+    try {
+      const h = hub(storeWithTwoAccounts());
+      const session = fakeSession();
+      h.bindSession(session);
+      const tab = new FakeTab(1);
+      h.attach(tab, new CdpSessionQueue());
+      await settle(h, tab);
+      click(tab);
+      navigate(tab, false);
+      await settle(h, tab);
+      const answers = session.request({ contentsId: 1, accounts: [TWO_ACCOUNTS[0]] });
+      await flush();
+      expect(answers).toEqual([]);
+      expect(h.waitingRequest(1)?.reason).toBe("no_gesture");
+      expect(events).toEqual([]);
+    } finally {
+      setPaseoBrowserPasskeyChoiceSurface(null);
+    }
+  });
+
+  test("an agent's tool click counts as asking, and a subframe's in-page navigation does not count", async () => {
+    const h = hub(storeWithTwoAccounts());
+    setPaseoBrowserPasskeys(h);
+    try {
+      const session = fakeSession();
+      h.bindSession(session);
+      const tab = new FakeTab(1);
+      h.attach(tab, new CdpSessionQueue());
+      await settle(h, tab);
+      navigate(tab, true);
+      // focus-isolated click: a user-gesture page script, no input event.
+      clock = new Date(clock.getTime() + 1);
+      tab.activation = true;
+      markPaseoBrowserUserGesture(1);
+      clock = new Date(clock.getTime() + 1);
+      tab.emit("did-navigate-in-page", {}, `${tab.url}#frame`, false);
+      const answers = session.request({ contentsId: 1, accounts: [TWO_ACCOUNTS[1]] });
+      await flush();
+      expect(answers).toEqual(["newer"]);
+    } finally {
+      setPaseoBrowserPasskeys(null);
+    }
+  });
+
+  test("activation from an input Daseo never saw is not taken as asking", async () => {
+    const h = hub(storeWithTwoAccounts());
+    const session = fakeSession();
+    h.bindSession(session);
+    const tab = new FakeTab(1);
+    h.attach(tab, new CdpSessionQueue());
+    await settle(h, tab);
+    tab.activation = true;
+    const answers = session.request({ contentsId: 1, accounts: [TWO_ACCOUNTS[0]] });
+    await flush();
+    expect(answers).toEqual([]);
+    expect(h.waitingRequest(1)?.reason).toBe("navigated_after_gesture");
+    expect(h.use(1)).toMatchObject({ kind: "used" });
+    expect(answers).toEqual(["older"]);
+  });
+
+  test("requestWait maps activation, navigation since the click, and the account count", () => {
+    expect(requestWait(false, false, 1)).toBe("no_gesture");
+    expect(requestWait(true, false, 1)).toBe("navigated_after_gesture");
+    expect(requestWait(true, false, 2)).toBe("navigated_after_gesture");
+    expect(requestWait(true, true, 1)).toBeNull();
+    expect(requestWait(true, true, 2)).toBe("choose_account");
   });
 
   test("an account the store never held, or a frame outside the browser tabs, is refused", async () => {

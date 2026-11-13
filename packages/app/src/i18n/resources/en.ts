@@ -632,7 +632,8 @@ export const en = {
       },
       passkeyChoice: {
         title: "Sign in to {{host}} with a passkey",
-        message: "Choose the account to sign in with",
+        message: "Choose an account",
+        signIn: "Sign in",
         cancel: "Cancel",
       },
       annotate: {

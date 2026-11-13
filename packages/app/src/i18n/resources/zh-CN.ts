@@ -632,7 +632,8 @@ export const zhCN: TranslationResources = {
       },
       passkeyChoice: {
         title: "使用通行密钥登录 {{host}}",
-        message: "选择要登录的账号",
+        message: "选择账号",
+        signIn: "登录",
         cancel: "取消",
       },
       annotate: {
