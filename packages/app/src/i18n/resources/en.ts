@@ -395,6 +395,14 @@ export const en = {
         hold: "On hold",
       },
       dropped: "{{count}} dropped",
+      section: {
+        running: "In progress",
+        decision: "Needs your decision",
+        pending: "To do",
+        hold: "On hold",
+        completed: "Done",
+        deleted: "Dropped",
+      },
       activity: {
         created: "Created {{count}} tasks",
         added: "Added",

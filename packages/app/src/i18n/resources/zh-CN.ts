@@ -395,6 +395,14 @@ export const zhCN: TranslationResources = {
         hold: "搁置",
       },
       dropped: "已放弃 {{count}}",
+      section: {
+        running: "进行中",
+        decision: "待决定",
+        pending: "待办",
+        hold: "搁置",
+        completed: "已完成",
+        deleted: "已放弃",
+      },
       activity: {
         created: "已创建 {{count}} 项任务",
         added: "已添加",

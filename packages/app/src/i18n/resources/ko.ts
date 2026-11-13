@@ -397,6 +397,14 @@ export const ko: TranslationResources = {
         hold: "보류",
       },
       dropped: "버림 {{count}}",
+      section: {
+        running: "진행 중",
+        decision: "결정 대기",
+        pending: "할 일",
+        hold: "보류",
+        completed: "완료",
+        deleted: "뺀 작업",
+      },
       activity: {
         created: "작업 {{count}}개 생성",
         added: "추가됨",

@@ -47,12 +47,7 @@ import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import { resolveFocusedChatTarget } from "@/composer/focused-chat-target";
 import { createWorkspaceFileAttachment } from "@/attachments/workspace-file";
 import { useDraftStore } from "@/stores/draft-store";
-import {
-  TaskListBody,
-  useAgentTasks,
-  useDroppedGroupToggle,
-  useTaskBoard,
-} from "@/composer/task-list/body";
+import { TaskSectionsBody, useAgentTasks, useTaskBoard } from "@/composer/task-list/body";
 import type { TodoEntry } from "@/types/stream";
 
 function logExplorerSidebar(_event: string, _details: Record<string, unknown>): void {}
@@ -313,7 +308,7 @@ interface TaskSidebarContentProps {
   onClose: () => void;
 }
 
-// Daseo delta 101: the viewed session's task list, read-only, in the agent's order.
+// Daseo delta 101: the viewed session's task list, read-only, grouped by state.
 function TaskSidebarContent({ serverId, agentId, onClose }: TaskSidebarContentProps) {
   const { t } = useTranslation();
   const tasks = useAgentTasks(serverId, agentId);
@@ -343,9 +338,8 @@ function TaskSidebarBoard({
   closeLabel: string;
   onClose: () => void;
 }) {
-  // The list below shows the task in progress, so the line leaves out "Now: …".
-  const { summary, label } = useTaskBoard(tasks, { withCurrent: false });
-  const { droppedExpanded, toggleDropped } = useDroppedGroupToggle();
+  // The sections below show the task in progress and count what waits and what is held.
+  const { label } = useTaskBoard(tasks, { withCurrent: false, withStateCounts: false });
   return (
     <View style={styles.sidebarContent} pointerEvents="auto">
       <SidebarHeader closeLabel={closeLabel} onClose={onClose}>
@@ -361,11 +355,7 @@ function TaskSidebarBoard({
         </View>
       </SidebarHeader>
       <ScrollView style={styles.contentArea} testID="task-sidebar-list">
-        <TaskListBody
-          summary={summary}
-          droppedExpanded={droppedExpanded}
-          onToggleDropped={toggleDropped}
-        />
+        <TaskSectionsBody tasks={tasks} />
       </ScrollView>
     </View>
   );
@@ -707,7 +697,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing[1],
   },
   taskSummary: {
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.base,
     fontWeight: theme.fontWeight.normal,
     color: theme.colors.foreground,
   },

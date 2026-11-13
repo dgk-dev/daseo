@@ -402,6 +402,14 @@ export const fr: TranslationResources = {
         hold: "En attente",
       },
       dropped: "{{count}} abandonnées",
+      section: {
+        running: "En cours",
+        decision: "À décider",
+        pending: "À faire",
+        hold: "En attente",
+        completed: "Terminées",
+        deleted: "Abandonnées",
+      },
       activity: {
         created: "{{count}} tâches créées",
         added: "Ajoutée",

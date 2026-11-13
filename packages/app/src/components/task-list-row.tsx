@@ -58,11 +58,25 @@ function resolveTaskSuffix(
   return label ?? note ?? null;
 }
 
-export const TaskListRow = memo(function TaskListRow({ task }: { task: TodoEntry }) {
+export type TaskListRowVariant = "board" | "sidebar";
+
+/**
+ * One task. `board` is the composer board's one-line row (delta 95); `sidebar` is the task
+ * sidebar's two-line row at reading size, whose section header already names the state
+ * (delta 101).
+ */
+export const TaskListRow = memo(function TaskListRow({
+  task,
+  variant = "board",
+}: {
+  task: TodoEntry;
+  variant?: TaskListRowVariant;
+}) {
   const { t } = useTranslation();
   const state = resolveTaskRowState(task);
-  const text = state === "running" && task.activeForm ? task.activeForm : task.text;
   const suffix = resolveTaskSuffix(state, task.note, t);
+  if (variant === "sidebar") return <SidebarTaskRow task={task} state={state} suffix={suffix} />;
+  const text = state === "running" && task.activeForm ? task.activeForm : task.text;
 
   return (
     <View style={styles.row} accessibilityLabel={suffix ? `${text}, ${suffix}` : text}>
@@ -82,6 +96,51 @@ export const TaskListRow = memo(function TaskListRow({ task }: { task: TodoEntry
     </View>
   );
 });
+
+/** What the task in progress is doing now, when that says more than its subject. */
+function resolveRunningDetail(task: TodoEntry, state: TaskRowState): string | null {
+  if (state !== "running" || !task.activeForm || task.activeForm === task.text) return null;
+  return task.activeForm;
+}
+
+function SidebarTaskRow({
+  task,
+  state,
+  suffix,
+}: {
+  task: TodoEntry;
+  state: TaskRowState;
+  suffix: string | null;
+}) {
+  const runningDetail = resolveRunningDetail(task, state);
+  const closed = state === "completed" || state === "deleted";
+  const detailStyle = [styles.sidebarDetail, closed && styles.droppedText];
+  const accessibilityLabel = [task.text, runningDetail, suffix].filter(Boolean).join(", ");
+
+  // What runs now and the agent's note each get their own line under the subject; the section
+  // header already says the state.
+  return (
+    <View style={styles.sidebarRow} accessibilityLabel={accessibilityLabel}>
+      <View style={styles.sidebarIconSlot}>
+        <TaskStatusIcon state={state} />
+      </View>
+      <View style={styles.sidebarContent}>
+        <Text
+          numberOfLines={3}
+          style={[
+            styles.sidebarText,
+            state === "completed" && styles.completedText,
+            state === "deleted" && styles.droppedText,
+          ]}
+        >
+          {task.text}
+        </Text>
+        {runningDetail ? <Text style={detailStyle}>{runningDetail}</Text> : null}
+        {task.note ? <Text style={detailStyle}>{task.note}</Text> : null}
+      </View>
+    </View>
+  );
+}
 
 const styles = StyleSheet.create((theme) => ({
   row: {
@@ -107,5 +166,31 @@ const styles = StyleSheet.create((theme) => ({
   note: {
     color: theme.colors.foregroundExtraMuted,
     textDecorationLine: "none",
+  },
+  sidebarRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: theme.spacing[3],
+    paddingVertical: theme.spacing[2],
+  },
+  // As tall as the subject's first line, so the icon centers on it however far the subject wraps.
+  sidebarIconSlot: {
+    height: Math.round(theme.fontSize.base * 1.4),
+    justifyContent: "center",
+  },
+  sidebarContent: {
+    flex: 1,
+    minWidth: 0,
+    gap: theme.spacing[0.5],
+  },
+  // The chat's prose size and line height (markdown body), the app's reading size.
+  sidebarText: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.base,
+    lineHeight: Math.round(theme.fontSize.base * 1.4),
+  },
+  sidebarDetail: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
   },
 }));

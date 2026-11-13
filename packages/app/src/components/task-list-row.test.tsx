@@ -7,8 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { theme } = vi.hoisted(() => ({
   theme: {
-    spacing: { 2: 8 },
-    fontSize: { sm: 13 },
+    spacing: { 0.5: 2, 2: 8, 3: 12 },
+    fontSize: { sm: 14, base: 16 },
     colors: {
       foreground: "#foreground",
       foregroundMuted: "#muted",
@@ -22,13 +22,22 @@ const { theme } = vi.hoisted(() => ({
 vi.mock("react-native", () => ({
   View: ({ children, ...props }: React.PropsWithChildren<Record<string, unknown>>) =>
     React.createElement("div", props, children),
-  Text: ({ children, style }: React.PropsWithChildren<{ style?: Record<string, unknown>[] }>) => {
-    const resolvedStyle = Object.assign({}, ...(style ?? []).filter(Boolean));
+  Text: ({
+    children,
+    style,
+    numberOfLines,
+  }: React.PropsWithChildren<{
+    style?: Record<string, unknown> | Record<string, unknown>[];
+    numberOfLines?: number;
+  }>) => {
+    const resolvedStyle = Object.assign({}, ...[style ?? []].flat().filter(Boolean));
     return React.createElement(
       "span",
       {
         "data-color": resolvedStyle.color,
         "data-decoration": resolvedStyle.textDecorationLine,
+        "data-size": resolvedStyle.fontSize,
+        "data-lines": numberOfLines,
       },
       children,
     );
@@ -73,6 +82,13 @@ const runningTask = {
   status: "in_progress",
 } as const;
 const completedTask = { text: "Finished", completed: true, status: "completed" } as const;
+const decisionTask = {
+  text: "Pick a model",
+  completed: false,
+  status: "pending",
+  state: "decision",
+  note: "Opus or Sonnet",
+} as const;
 
 describe("TaskListRow", () => {
   let container: HTMLElement;
@@ -115,5 +131,68 @@ describe("TaskListRow", () => {
     const text = container.querySelector("[data-color]");
     expect(text?.getAttribute("data-color")).toBe("#extra-muted");
     expect(text?.getAttribute("data-decoration")).toBe("line-through");
+  });
+
+  it("keeps the board's one-line row with the state and note as a suffix", () => {
+    act(() => root.render(<TaskListRow task={decisionTask} />));
+
+    // No i18n instance in this test: the state word renders as its key.
+    expect(container.textContent).toBe(
+      "Pick a model · message.todo.state.decision: Opus or Sonnet",
+    );
+  });
+});
+
+function renderedLines(
+  container: HTMLElement,
+): { text: string | null; color: string | null; size: string | null }[] {
+  return [...container.querySelectorAll("[data-color]")].map((line) => ({
+    text: line.textContent,
+    color: line.getAttribute("data-color"),
+    size: line.getAttribute("data-size"),
+  }));
+}
+
+describe("TaskListRow in the task sidebar (Daseo delta 101)", () => {
+  let container: HTMLElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it("puts the note on its own smaller muted line, without the state word", () => {
+    act(() => root.render(<TaskListRow task={decisionTask} variant="sidebar" />));
+
+    expect(renderedLines(container)).toEqual([
+      { text: "Pick a model", color: "#foreground", size: "16" },
+      { text: "Opus or Sonnet", color: "#muted", size: "14" },
+    ]);
+    expect(container.querySelector('[data-icon="CircleQuestionMark"]')?.getAttribute("color")).toBe(
+      "#warning",
+    );
+    expect(container.querySelector('[data-lines="3"]')?.textContent).toBe("Pick a model");
+  });
+
+  it("shows what the task in progress is doing under its subject", () => {
+    act(() => root.render(<TaskListRow task={runningTask} variant="sidebar" />));
+
+    expect(renderedLines(container).map((line) => line.text)).toEqual([
+      "Run checks",
+      "Running checks",
+    ]);
+  });
+
+  it("shows a task without a note on one line", () => {
+    act(() => root.render(<TaskListRow task={pendingTask} variant="sidebar" />));
+
+    expect(renderedLines(container).map((line) => line.text)).toEqual(["Queued"]);
   });
 });

@@ -5,9 +5,21 @@ import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
 import { Button } from "@/components/ui/button";
 import { TaskListRow } from "@/components/task-list-row";
+import { SidebarSectionHeader } from "@/components/sidebar/pinned-section-header";
 import { useSessionStore } from "@/stores/session-store";
 import type { TodoEntry } from "@/types/stream";
-import { formatTaskBoardLabel, summarizeTasks, type TaskBoardSummary } from "./summary";
+import {
+  groupTasksBySection,
+  isTaskSectionCollapsible,
+  type TaskSection,
+  type TaskSectionKey,
+} from "./sections";
+import {
+  formatTaskBoardLabel,
+  summarizeTasks,
+  type TaskBoardLabelOptions,
+  type TaskBoardSummary,
+} from "./summary";
 
 /** The viewed agent's task list, or undefined when it has none (Daseo delta 95). */
 export function useAgentTasks(serverId: string, agentId: string | null): TodoEntry[] | undefined {
@@ -19,7 +31,7 @@ export function useAgentTasks(serverId: string, agentId: string | null): TodoEnt
 /** The board's summary and its status line, shared by the composer board and the task sidebar. */
 export function useTaskBoard(
   tasks: readonly TodoEntry[],
-  options: { withCurrent?: boolean } = {},
+  options: TaskBoardLabelOptions = {},
 ): {
   summary: TaskBoardSummary;
   label: string;
@@ -40,9 +52,8 @@ export function useDroppedGroupToggle(): {
 }
 
 /**
- * The task rows in the agent's order, then the dropped tasks dimmed in their own collapsed group.
- * One source for the composer board (compact layouts) and the right sidebar (wide layouts,
- * Daseo delta 101).
+ * The composer board's rows (compact layouts and focus mode): the agent's order, then the dropped
+ * tasks dimmed in their own collapsed group.
  */
 export const TaskListBody = memo(function TaskListBody({
   summary,
@@ -96,6 +107,86 @@ export const TaskListBody = memo(function TaskListBody({
   );
 });
 
+const SECTION_LABEL_KEYS = {
+  running: "message.todo.section.running",
+  decision: "message.todo.section.decision",
+  pending: "message.todo.section.pending",
+  hold: "message.todo.section.hold",
+  completed: "message.todo.section.completed",
+  deleted: "message.todo.section.deleted",
+} as const satisfies Record<TaskSectionKey, string>;
+
+const NO_EXPANDED_SECTIONS: ReadonlySet<TaskSectionKey> = new Set();
+
+/**
+ * The task sidebar's list (wide layouts, Daseo delta 101): in progress, waiting on a decision, to
+ * do, on hold, then done and dropped folded away. Sections with no task are left out, and done
+ * and dropped start folded on every mount.
+ */
+export const TaskSectionsBody = memo(function TaskSectionsBody({
+  tasks,
+}: {
+  tasks: readonly TodoEntry[];
+}) {
+  const sections = useMemo(() => groupTasksBySection(tasks), [tasks]);
+  const [expanded, setExpanded] = useState(NO_EXPANDED_SECTIONS);
+  const toggleSection = useCallback((key: TaskSectionKey) => {
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  return (
+    <View style={styles.sections}>
+      {sections.map((section) => (
+        <TaskSectionBlock
+          key={section.key}
+          section={section}
+          collapsed={isTaskSectionCollapsible(section.key) && !expanded.has(section.key)}
+          onToggle={toggleSection}
+        />
+      ))}
+    </View>
+  );
+});
+
+const TaskSectionBlock = memo(function TaskSectionBlock({
+  section,
+  collapsed,
+  onToggle,
+}: {
+  section: TaskSection;
+  collapsed: boolean;
+  onToggle: (key: TaskSectionKey) => void;
+}) {
+  const { t } = useTranslation();
+  const { key, tasks } = section;
+  const toggle = useCallback(() => onToggle(key), [onToggle, key]);
+  const title = `${t(SECTION_LABEL_KEYS[key]).toLowerCase()} · ${tasks.length}`;
+
+  return (
+    <View testID={`task-sidebar-section-${key}`}>
+      <SidebarSectionHeader
+        title={title}
+        tone={key === "decision" ? "warning" : undefined}
+        collapsed={collapsed}
+        onToggle={isTaskSectionCollapsible(key) ? toggle : undefined}
+        testID={`task-sidebar-section-${key}-header`}
+      />
+      {collapsed ? null : (
+        <View style={styles.sectionRows}>
+          {tasks.map((task, index) => (
+            <TaskListRow key={task.id ?? `${index}:${task.text}`} task={task} variant="sidebar" />
+          ))}
+        </View>
+      )}
+    </View>
+  );
+});
+
 const styles = StyleSheet.create((theme) => ({
   list: {
     paddingHorizontal: theme.spacing[3],
@@ -119,5 +210,16 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing[3],
     paddingBottom: theme.spacing[1],
     gap: theme.spacing[1],
+  },
+  // The header's own inset (spacing[2]) plus this one puts the rule, the icons, and the summary
+  // line above them on one rail.
+  sections: {
+    paddingHorizontal: theme.spacing[1],
+    paddingTop: theme.spacing[2],
+    paddingBottom: theme.spacing[6],
+    gap: theme.spacing[4],
+  },
+  sectionRows: {
+    paddingHorizontal: theme.spacing[2],
   },
 }));

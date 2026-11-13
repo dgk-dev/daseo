@@ -396,6 +396,14 @@ export const ar: TranslationResources = {
         hold: "معلّقة",
       },
       dropped: "{{count}} متروكة",
+      section: {
+        running: "قيد التنفيذ",
+        decision: "بانتظار القرار",
+        pending: "للتنفيذ",
+        hold: "معلّقة",
+        completed: "مكتملة",
+        deleted: "متروكة",
+      },
       activity: {
         created: "تم إنشاء {{count}} مهام",
         added: "أُضيفت",

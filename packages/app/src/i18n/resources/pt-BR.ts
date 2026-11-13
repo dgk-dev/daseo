@@ -402,6 +402,14 @@ export const ptBR: TranslationResources = {
         hold: "Em espera",
       },
       dropped: "{{count}} descartadas",
+      section: {
+        running: "Em andamento",
+        decision: "Aguardando decisão",
+        pending: "A fazer",
+        hold: "Em espera",
+        completed: "Concluídas",
+        deleted: "Descartadas",
+      },
       activity: {
         created: "{{count}} tarefas criadas",
         added: "Adicionada",

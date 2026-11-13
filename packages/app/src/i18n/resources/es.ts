@@ -402,6 +402,14 @@ export const es: TranslationResources = {
         hold: "En espera",
       },
       dropped: "{{count}} descartadas",
+      section: {
+        running: "En curso",
+        decision: "Por decidir",
+        pending: "Por hacer",
+        hold: "En espera",
+        completed: "Hechas",
+        deleted: "Descartadas",
+      },
       activity: {
         created: "Se crearon {{count}} tareas",
         added: "Añadida",

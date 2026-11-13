@@ -2173,7 +2173,7 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       prompt below the header on the Fold 7 inner screen. Claude Code and Codex lines change only
       by the `Now:` word on a task in progress.
       Since delta 101 this board is the compact layouts' (phone, folded Fold) and desktop focus
-      mode's; on wide layouts the same rows and line live in the right sidebar.
+      mode's; on wide layouts the right sidebar shows the tasks grouped by state.
     - **Reopening.** The board used to be derived from the loaded timeline page alone (40 rows),
       so a chat whose last task update was older than the page lost its board on reopen, and a
       page without a `todo` row deleted it, for every provider. Tail and after pages now carry
@@ -2433,10 +2433,23 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        resize handle, close button, and persisted open state (`desktop.fileExplorerOpen`), and
        holds the viewed tab's task list instead of the Changes, Files, and PR tabs. The toggle no
        longer carries the `+N -M` changes count (it opens the task list, not the changes). The header
-       carries delta 95's line without `Now: …` (the list shows that row); the rows, the order,
-       and the collapsed dropped group are the board's own (`composer/task-list/body.tsx`, one
-       source for both). A tab that is not an agent session, or a session without a list, shows
-       "No task list yet". Read-only. The toggle says "Open/Close/Toggle tasks" in every locale.
+       carries only the progress of delta 95's line (`작업 3/9개`), at reading size: the sections
+       below show the task in progress and count what waits and what is held. A tab that is not an
+       agent session, or a session without a list, shows "No task list yet". Read-only. The toggle
+       says "Open/Close/Toggle tasks" in every locale.
+     - **Sections.** The owner's follow-up the same day ("상태에 따라서 섹션 나눠서 정리되면 …
+       기존 순서대로 섞여있으니까 헷갈려서. 그 폰트 크기도 적당히 크게"): the sidebar groups the
+       tasks as In progress, Needs your decision, To do, On hold, Done, Dropped, each under the
+       left sidebar's `── label · count ──` rule (delta 89); a section with no task is not drawn.
+       The decision rule is in the warning status color. Done and Dropped fold like the pinned
+       section (▸/▾ on hover) and start folded on every mount. Inside a section tasks keep the
+       agent's order, so numbered subjects still read in order. A row is the subject at the chat's
+       prose size (up to three lines), then what a task in progress is doing now, then the agent's
+       note, each on its own smaller muted line without the state word. Claude Code and Codex
+       lists show only In progress, To do, and Done. One pure function places the tasks
+       (`composer/task-list/sections.ts`, on `resolveTaskRowState`); the board above the composer
+       keeps its full line, the agent's flat order, and its one-line rows (`TaskListBody`, the
+       row's `board` variant).
      - **Board.** The board above the composer is not rendered where that sidebar exists; it stays
        unchanged on compact layouts and in desktop focus mode (`task-sidebar/layout.ts`). The
        subagents track is unchanged.
@@ -2479,12 +2492,17 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
      - **Checks.** `task-sidebar/auto-open.test.ts` (first live list in the viewed session opens
        once; closing then updating, or clearing and refilling, does not reopen; another session;
        reopen and reload; history replay; compact then wide), `summary.test.ts` (line without
-       `Now:`). Measured on the dev daemon's request metrics (2026-11-13, wide, a dirty checkout,
-       sidebar closed then open, six 30 s windows): no checkout-diff subscription, file-tree,
+       `Now:`; the sidebar's progress-only line), `sections.test.ts` (section order, order kept
+       inside a section, empty sections left out, an unknown state reads as To do, a list without
+       states), `task-list-row.test.tsx` (the sidebar row's lines and sizes; the board row
+       unchanged). Measured on the dev daemon's request metrics (2026-11-13, wide, a dirty
+       checkout, sidebar closed then open, six 30 s windows): no checkout-diff subscription, file-tree,
        branch-list, or PR-timeline request; checkout status and PR status are still requested
        once per load for the header's branch label and git actions button.
      - **Key files:** `packages/app/src/components/explorer-sidebar.tsx`,
-       `packages/app/src/composer/task-list/{body,index,summary}.ts{,x}`,
+       `packages/app/src/composer/task-list/{body,index,summary,sections}.ts{,x}`,
+       `components/task-list-row.tsx`,
+       `components/sidebar/{sidebar-section-rule,pinned-section-header}.tsx`,
        `packages/app/src/task-sidebar/{auto-open,store,use-auto-open,layout}.ts`,
        `timeline/session-stream-reducers.ts` (`onLiveTaskListAppeared`),
        `contexts/session-context.tsx`, `stores/panel-store/index.ts`

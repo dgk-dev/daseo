@@ -6,13 +6,26 @@ import { StyleSheet } from "react-native-unistyles";
  * is in the border colour and the title in muted text, so the section reads as a divider and
  * not as one more row. The rule and the trailing mark are drawing, hidden from assistive tech.
  */
-export function SidebarSectionRule({ title, trailing }: { title: string; trailing?: string }) {
+export function SidebarSectionRule({
+  title,
+  trailing,
+  tone,
+}: {
+  title: string;
+  trailing?: string;
+  /** `warning`: the section waits on the owner (the task sidebar's decisions, delta 101). */
+  tone?: "warning";
+}) {
   return (
     <View style={styles.row}>
       <Text style={styles.rule} selectable={false} aria-hidden>
         {"── "}
       </Text>
-      <Text style={styles.title} numberOfLines={1} selectable={false}>
+      <Text
+        style={[styles.title, tone === "warning" && styles.warningTitle]}
+        numberOfLines={1}
+        selectable={false}
+      >
         {title}
       </Text>
       <Text style={styles.rule} selectable={false} aria-hidden>
@@ -46,6 +59,9 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: theme.fontWeight.normal,
     minWidth: 0,
     flexShrink: 1,
+  },
+  warningTitle: {
+    color: theme.colors.statusWarning,
   },
   trailing: {
     marginLeft: theme.spacing[1],

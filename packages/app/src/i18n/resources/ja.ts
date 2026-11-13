@@ -399,6 +399,14 @@ export const ja: TranslationResources = {
         hold: "保留",
       },
       dropped: "取り下げ {{count}}",
+      section: {
+        running: "進行中",
+        decision: "決定待ち",
+        pending: "やること",
+        hold: "保留",
+        completed: "完了",
+        deleted: "取り下げ",
+      },
       activity: {
         created: "{{count}}件のタスクを作成",
         added: "追加",

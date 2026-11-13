@@ -91,6 +91,13 @@ describe("task board summary (Daseo delta 95)", () => {
     );
   });
 
+  it("keeps only the progress in the task sidebar, whose sections count the rest", () => {
+    const summary = summarizeTasks(board);
+    const sidebar = { withCurrent: false, withStateCounts: false };
+    expect(formatTaskBoardLabel(summary, i18n.getFixedT("ko"), sidebar)).toBe("작업 3/9개");
+    expect(formatTaskBoardLabel(summary, i18n.getFixedT("en"), sidebar)).toBe("3/9 tasks");
+  });
+
   it("shows the next ordinary task, never a held one, when nothing runs", () => {
     const tasks: TodoEntry[] = [
       { id: "1", text: "Wiki", status: "pending", completed: false, state: "hold" },

@@ -69,22 +69,32 @@ function resolveCurrentTask(
   return null;
 }
 
+export interface TaskBoardLabelOptions {
+  /** What runs now (`Now: …`); default on. */
+  withCurrent?: boolean;
+  /** The waiting and held counts; default on. */
+  withStateCounts?: boolean;
+}
+
 /**
  * The status line: progress, what waits on the user, what is held, and what runs now. The task
- * sidebar (Daseo delta 101) leaves out what runs now, because its list shows that row already.
+ * sidebar (Daseo delta 101) keeps only the progress: its sections show the task in progress and
+ * carry the waiting and held counts in their headers.
  */
 export function formatTaskBoardLabel(
   summary: TaskBoardSummary,
   t: TFunction,
-  options: { withCurrent?: boolean } = {},
+  options: TaskBoardLabelOptions = {},
 ): string {
   const parts = [
     t("message.todo.tasksProgress", { completed: summary.completed, total: summary.total }),
   ];
-  if (summary.decision > 0) {
-    parts.push(t("message.todo.decisionCount", { count: summary.decision }));
+  if (options.withStateCounts !== false) {
+    if (summary.decision > 0) {
+      parts.push(t("message.todo.decisionCount", { count: summary.decision }));
+    }
+    if (summary.hold > 0) parts.push(t("message.todo.holdCount", { count: summary.hold }));
   }
-  if (summary.hold > 0) parts.push(t("message.todo.holdCount", { count: summary.hold }));
   if (summary.current && options.withCurrent !== false) {
     parts.push(
       summary.current.running

@@ -400,6 +400,14 @@ export const ru: TranslationResources = {
         hold: "Отложено",
       },
       dropped: "Отброшено: {{count}}",
+      section: {
+        running: "В работе",
+        decision: "Ждут решения",
+        pending: "К выполнению",
+        hold: "Отложено",
+        completed: "Готово",
+        deleted: "Отброшено",
+      },
       activity: {
         created: "Создано задач: {{count}}",
         added: "Добавлена",
