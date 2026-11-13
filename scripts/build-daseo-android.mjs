@@ -47,6 +47,14 @@ export function buildAndroid() {
     ANDROID_HOME: sdk,
     ANDROID_SDK_ROOT: sdk,
   };
+  // Metro bundles the app's workspace packages from their gitignored dist/ and build/ output, so
+  // build them from this commit first; otherwise an APK that embeds this commit can carry package
+  // code left by an older build (a fresh checkout has none and fails at the JS bundle). The same
+  // pre-build step as packages/app's eas-build-post-install, minus build:terminal-webview, whose
+  // output is committed.
+  for (const script of ["brand:check", "build:app-deps"]) {
+    execFileSync("npm", ["run", script], { cwd: root, env, stdio: "inherit" });
+  }
   execFileSync("npx", ["expo", "prebuild", "--platform", "android", "--clean"], {
     cwd: app,
     env,

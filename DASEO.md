@@ -2904,6 +2904,10 @@ exists here; carrying them means routing the preview through the opener first.
   SDK (`JAVA_HOME=$(/usr/libexec/java_home -v 17)`,
   `ANDROID_HOME=/opt/homebrew/share/android-commandlinetools`), then run
   `npm run build:daseo:android` from the repository root for the Fold arm64 download.
+  It first runs `brand:check` and `build:app-deps` from the checkout: Metro bundles the app's
+  workspace packages from their gitignored `dist/` and `build/` output, and before 0.5.116 the
+  script reused whatever an earlier build had left there, so an APK could embed one source commit
+  while bundling package code from an older one (a fresh checkout failed at the JS bundle).
   This carries APP_VARIANT and source commit through both prebuild and Gradle: expo-constants
   regenerates embedded config during Gradle, so setting the variant only for prebuild is unsafe.
   The command checks native and embedded package/version/name, direct FCM, source commit and

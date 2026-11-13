@@ -1,6 +1,7 @@
 # Daseo personal-variant APK built on a GitHub-hosted runner (RAM offload PoC, 2026-11-13).
-# Runs the same `npm run build:daseo:android` the Mac mini uses, including its identity and
-# signer checks, and keeps the APK as a 7-day workflow artifact. It never publishes a release.
+# Runs the same `npm run build:daseo:android` the Mac mini uses, including its workspace-package
+# build and its identity and signer checks, and keeps the APK as a 7-day workflow artifact. It
+# never publishes a release.
 # The signer is the Expo template debug key that `expo prebuild` copies from the
 # lockfile-pinned `expo` package, so no signing key is stored here.
 name: Daseo Android APK (PoC)
@@ -85,15 +86,6 @@ jobs:
         with:
           cache-provider: basic
           cache-disabled: ${{ !inputs.gradle_cache }}
-
-      # The Mac mini bundles the workspace packages' ignored dist/ output left by earlier builds;
-      # a fresh checkout has none. This is the repo's own pre-build step for native builds
-      # (packages/app eas-build-post-install), minus build:terminal-webview, whose output is
-      # committed and which the Mac build does not regenerate either.
-      - name: Build app workspace packages
-        run: |
-          npm run brand:check
-          npm run build:app-deps
 
       - name: Write personal Firebase config
         env:
