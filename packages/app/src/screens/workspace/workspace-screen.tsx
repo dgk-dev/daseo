@@ -59,6 +59,8 @@ import {
   FloatingPanelPortalHostNameProvider,
 } from "@/components/ui/floating-panel-portal";
 import { ExplorerSidebar } from "@/components/explorer-sidebar";
+import { useTaskSidebarAutoOpen } from "@/task-sidebar/use-auto-open";
+import { isTaskListInSidebar } from "@/task-sidebar/layout";
 import { SplitContainer } from "@/components/split-container";
 import { RetainedPanel } from "@/components/retained-panel";
 import { WindowChromeRegion } from "@/utils/desktop-window";
@@ -280,8 +282,6 @@ const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMut
 const extraMutedColorMapping = (theme: Theme) => ({
   color: theme.colors.foregroundExtraMuted,
 });
-
-const sourceControlPanelStrokeWidth15 = { strokeWidth: 1.5 };
 
 const MENU_NEW_AGENT_ICON = <ThemedSquarePen size={16} uniProps={mutedColorMapping} />;
 const MENU_NEW_TERMINAL_ICON = <ThemedSquareTerminal size={16} uniProps={mutedColorMapping} />;
@@ -1606,18 +1606,25 @@ function shouldShowWorkspaceExplorerSidebar(input: {
   isFocusModeEnabled: boolean;
   isMobile: boolean;
 }): boolean {
-  return !input.isMobile && input.isRouteFocused && shouldShowWorkspaceScreenHeader(input);
+  return (
+    input.isRouteFocused &&
+    isTaskListInSidebar({
+      isCompact: input.isMobile,
+      isFocusModeEnabled: input.isFocusModeEnabled,
+    })
+  );
 }
 
-interface WorkspaceChromeRowProps extends Omit<
-  ComponentProps<typeof ExplorerSidebar>,
-  "workspaceRoot"
-> {
+/** The agent session in the viewed tab, whose task list the right sidebar shows (delta 101). */
+function resolveViewedAgentId(descriptor: WorkspaceTabDescriptor | null): string | null {
+  return descriptor?.target.kind === "agent" ? descriptor.target.agentId : null;
+}
+
+interface WorkspaceChromeRowProps extends ComponentProps<typeof ExplorerSidebar> {
   children: ReactNode;
   explorerOpen: boolean;
   portalHostName: string;
   showExplorerSidebar: boolean;
-  workspaceRoot: string | null;
 }
 
 function WorkspaceChromeRow({
@@ -1625,10 +1632,10 @@ function WorkspaceChromeRow({
   explorerOpen,
   portalHostName,
   showExplorerSidebar,
-  workspaceRoot,
   ...explorerProps
 }: WorkspaceChromeRowProps) {
-  const explorerRendered = showExplorerSidebar && explorerOpen && workspaceRoot !== null;
+  // Daseo delta 101: the sidebar's task list needs no workspace directory.
+  const explorerRendered = showExplorerSidebar && explorerOpen;
 
   return (
     <View style={styles.threePaneRow}>
@@ -1640,9 +1647,9 @@ function WorkspaceChromeRow({
 
       <FloatingPanelPortalHost name={portalHostName} />
 
-      {showExplorerSidebar && workspaceRoot ? (
+      {showExplorerSidebar ? (
         <WindowChromeRegion corners="top-right">
-          <ExplorerSidebar {...explorerProps} workspaceRoot={workspaceRoot} />
+          <ExplorerSidebar {...explorerProps} />
         </WindowChromeRegion>
       ) : null}
     </View>
@@ -2473,23 +2480,6 @@ function WorkspaceScreenContent({
     workspaceSetupSnapshot,
   ]);
 
-  const handleOpenFileFromExplorer = useCallback(
-    function handleOpenFileFromExplorer(filePath: string) {
-      if (!persistenceKey) {
-        return;
-      }
-      const location = normalizeWorkspaceFileLocation({ path: filePath });
-      if (!location) {
-        return;
-      }
-      const tabId = openWorkspaceTabFocused(persistenceKey, createWorkspaceFileTabTarget(location));
-      if (tabId) {
-        navigateToTabId(tabId);
-      }
-    },
-    [navigateToTabId, openWorkspaceTabFocused, persistenceKey],
-  );
-
   const handleOpenFileFromChat = useCallback(
     (location: WorkspaceFileLocation, options?: { parentTabId?: string | null }) => {
       const normalizedLocation = normalizeWorkspaceFileLocation(location);
@@ -2658,9 +2648,10 @@ function WorkspaceScreenContent({
     }),
     [t],
   );
+  // Daseo delta 101: the right sidebar holds the task list.
   const explorerToggleLabel = isExplorerOpen
-    ? t("workspace.tabs.explorer.close")
-    : t("workspace.tabs.explorer.open");
+    ? t("workspace.tabs.tasks.close")
+    : t("workspace.tabs.tasks.open");
 
   const activeTabKey = useMemo(() => activeTabId ?? "", [activeTabId]);
   const tabFallbackLabels = useMemo(
@@ -3303,13 +3294,14 @@ function WorkspaceScreenContent({
 
   const handleWorkspaceSidebarAction = useCallback(
     (action: KeyboardActionDefinition): boolean => {
-      if (action.id !== "sidebar.toggle.right") {
+      // Daseo delta 101: compact layouts have no right sidebar entry point.
+      if (action.id !== "sidebar.toggle.right" || isMobile) {
         return false;
       }
       handleToggleExplorer();
       return true;
     },
-    [handleToggleExplorer],
+    [handleToggleExplorer, isMobile],
   );
 
   const handleWorkspacePaneAction = useCallback(
@@ -3758,7 +3750,7 @@ function WorkspaceScreenContent({
                 >
                   <View style={styles.explorerTooltipRow}>
                     <Text style={styles.explorerTooltipText}>
-                      {t("workspace.tabs.explorer.toggle")}
+                      {t("workspace.tabs.tasks.toggle")}
                     </Text>
                     <Shortcut keys={EXPLORER_TOGGLE_KEYS} style={styles.explorerTooltipShortcut} />
                   </View>
@@ -3771,7 +3763,7 @@ function WorkspaceScreenContent({
           <HeaderToggleButton
             testID="workspace-explorer-toggle"
             onPress={handleToggleExplorer}
-            tooltipLabel={t("workspace.tabs.explorer.toggle")}
+            tooltipLabel={t("workspace.tabs.tasks.toggle")}
             tooltipKeys={EXPLORER_TOGGLE_KEYS}
             tooltipSide="left"
             style={[styles.compactHeaderActionButton, styles.explorerPanelButton]}
@@ -3784,34 +3776,6 @@ function WorkspaceScreenContent({
               const colorMapping =
                 hovered || pressed ? foregroundColorMapping : extraMutedColorMapping;
               return <ThemedPanelRight size={16} uniProps={colorMapping} />;
-            }}
-          </HeaderToggleButton>
-        ) : null}
-        {isMobile ? (
-          <HeaderToggleButton
-            testID="workspace-explorer-toggle"
-            onPress={handleToggleExplorer}
-            tooltipLabel={t("workspace.tabs.explorer.toggle")}
-            tooltipKeys={EXPLORER_TOGGLE_KEYS}
-            tooltipSide="left"
-            style={styles.headerActionButton}
-            accessible
-            accessibilityRole="button"
-            accessibilityLabel={explorerToggleLabel}
-            accessibilityState={explorerToggleAccessibilityState}
-          >
-            {({ hovered }) => {
-              const colorMapping =
-                isExplorerOpen || hovered ? foregroundColorMapping : mutedColorMapping;
-              return isGitCheckout ? (
-                <ThemedSourceControlPanelIcon
-                  size={20}
-                  uniProps={colorMapping}
-                  {...sourceControlPanelStrokeWidth15}
-                />
-              ) : (
-                <ThemedPanelRight size={20} uniProps={colorMapping} />
-              );
             }}
           </HeaderToggleButton>
         ) : null}
@@ -3831,7 +3795,6 @@ function WorkspaceScreenContent({
       showCompactButtonLabels,
       isGitCheckout,
       handleToggleExplorer,
-      isExplorerOpen,
       explorerToggleLabel,
       explorerToggleAccessibilityState,
       explorerToggleStyle,
@@ -3847,6 +3810,16 @@ function WorkspaceScreenContent({
     () => shouldShowWorkspaceExplorerSidebar({ isRouteFocused, isFocusModeEnabled, isMobile }),
     [isRouteFocused, isFocusModeEnabled, isMobile],
   );
+  // Daseo delta 101: the right sidebar shows the viewed session's task list and opens by itself
+  // once when a list first appears live there.
+  const viewedAgentId = resolveViewedAgentId(activeTabDescriptor);
+  const openDesktopFileExplorer = usePanelStore((state) => state.openDesktopFileExplorer);
+  useTaskSidebarAutoOpen({
+    serverId: normalizedServerId,
+    agentId: viewedAgentId,
+    enabled: showExplorerSidebar,
+    open: openDesktopFileExplorer,
+  });
   const createTerminalDisabled = useMemo(
     () => createTerminalMutation.isPending || pendingTerminalCreateInput !== null,
     [createTerminalMutation.isPending, pendingTerminalCreateInput],
@@ -4081,10 +4054,7 @@ function WorkspaceScreenContent({
               showExplorerSidebar={showExplorerSidebar}
               explorerOpen={isExplorerOpen}
               serverId={normalizedServerId}
-              workspaceId={normalizedWorkspaceId}
-              workspaceRoot={workspaceDirectory}
-              isGit={isGitCheckout}
-              onOpenFile={handleOpenFileFromExplorer}
+              agentId={viewedAgentId}
             >
               {workspaceCenterColumn}
             </WorkspaceChromeRow>

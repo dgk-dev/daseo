@@ -76,6 +76,7 @@ import {
 } from "@/screens/agent/agent-ready-screen-bottom-anchor";
 import { WorkspaceDraftAgentTab } from "@/composer/draft/workspace-tab";
 import { AgentTaskList } from "@/composer/task-list";
+import { isTaskListInSidebar } from "@/task-sidebar/layout";
 import { useCreateFlowStore } from "@/stores/create-flow-store";
 import { buildDraftStoreKey, generateDraftId } from "@/stores/draft-keys";
 import { usePanelStore } from "@/stores/panel-store";
@@ -1603,6 +1604,12 @@ function ActiveAgentComposer({
 }) {
   const insets = useSafeAreaInsets();
   const isCompactFormFactor = useIsCompactFormFactor();
+  // Daseo delta 101: on wide layouts the task list is in the right sidebar, not above the composer.
+  const isFocusModeEnabled = usePanelStore((state) => state.desktop.focusModeEnabled);
+  const taskListInSidebar = isTaskListInSidebar({
+    isCompact: isCompactFormFactor,
+    isFocusModeEnabled,
+  });
   const { onLayout: onInputAreaLayout, isBelow: isCompactComposerLayout } = useContainerWidthBelow(
     COMPACT_FORM_FACTOR_WIDTH,
     { initialIsBelow: isCompactFormFactor },
@@ -1743,7 +1750,7 @@ function ActiveAgentComposer({
 
   return (
     <ReanimatedAnimated.View style={inputAreaStyle} onLayout={onInputAreaLayout}>
-      <AgentTaskList serverId={serverId} agentId={agentId} />
+      {taskListInSidebar ? null : <AgentTaskList serverId={serverId} agentId={agentId} />}
       <SubagentsTrack
         rows={subagentRows}
         onOpenSubagent={handleOpenSubagent}

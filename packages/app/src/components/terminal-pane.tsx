@@ -85,7 +85,8 @@ interface TerminalPaneProps {
   terminalId: string;
   isWorkspaceFocused: boolean;
   isPaneFocused: boolean;
-  onOpenFileExplorer: () => void;
+  /** Swiping left opens the explorer; Daseo delta 101 retired it, so the terminal panel omits it. */
+  onOpenFileExplorer?: () => void;
   onOpenWorkspaceFile: (request: WorkspaceFileOpenRequest) => void;
 }
 
@@ -971,7 +972,7 @@ export function TerminalPane({
   }, [swipeGesturesEnabled, showMobileAgentList]);
 
   const handleSwipeLeft = useCallback(() => {
-    if (!swipeGesturesEnabled) return;
+    if (!swipeGesturesEnabled || !onOpenFileExplorer) return;
     emulatorRef.current?.blur();
     onOpenFileExplorer();
   }, [swipeGesturesEnabled, onOpenFileExplorer]);

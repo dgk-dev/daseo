@@ -718,6 +718,12 @@ export const ptBR: TranslationResources = {
         changes: "Alterações",
         files: "Arquivos",
       },
+      tasks: {
+        open: "Abrir tarefas",
+        close: "Fechar tarefas",
+        toggle: "Alternar tarefas",
+        empty: "Ainda não há lista de tarefas",
+      },
       toasts: {
         copyFailed: "Falha ao copiar",
         agentIdCopiedLabel: "ID do agente",

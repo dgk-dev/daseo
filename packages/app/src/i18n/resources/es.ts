@@ -719,6 +719,12 @@ export const es: TranslationResources = {
         changes: "Cambios",
         files: "Archivos",
       },
+      tasks: {
+        open: "Abrir tareas",
+        close: "Cerrar tareas",
+        toggle: "Alternar tareas",
+        empty: "Aún no hay lista de tareas",
+      },
       toasts: {
         copyFailed: "Copia fallida",
         agentIdCopiedLabel: "AgentID",

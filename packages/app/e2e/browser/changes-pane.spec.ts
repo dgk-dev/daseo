@@ -9,6 +9,7 @@ import { getServerId } from "../support/helpers/server-id";
 import { connectSeedClient } from "../support/helpers/seed-client";
 import { createTempGitRepo } from "../support/helpers/workspace";
 import { waitForWorkspaceTabsVisible } from "../support/helpers/workspace-tabs";
+import { skipRetiredExplorer } from "../support/helpers/explorer-retired";
 
 interface DirtyWorkspace {
   id: string;
@@ -799,6 +800,7 @@ async function openWorkspaceChanges(page: Page, workspace: DirtyWorkspace): Prom
   await page.setViewportSize({ width: 1400, height: 900 });
   await page.goto(buildHostWorkspaceRoute(getServerId(), workspace.id));
   await waitForWorkspaceTabsVisible(page);
+  skipRetiredExplorer();
   await page.getByRole("button", { name: "Open explorer" }).click();
   await openChangesInVisibleExplorer(page);
   await page.getByTestId("diff-file-0").click();

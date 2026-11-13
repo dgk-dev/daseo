@@ -1,5 +1,6 @@
 import { expect, type Page } from "@playwright/test";
 import { escapeRegex } from "./regex";
+import { skipRetiredExplorer } from "./explorer-retired";
 
 // The branch switcher lives in the git diff panel's Changes header (right-side
 // ExplorerSidebar), not in the workspace header. It renders as a button whose
@@ -20,6 +21,7 @@ function branchSwitcherTrigger(page: Page, branchName: string) {
 // switcher and diff live. Git checkouts default to the Changes tab when the
 // explorer opens, so this is enough to reveal the switcher on desktop and mobile.
 export async function openChangesPanel(page: Page): Promise<void> {
+  skipRetiredExplorer();
   await expect(page.getByTestId("workspace-explorer-toggle").first()).toBeVisible({
     timeout: 30_000,
   });

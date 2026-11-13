@@ -713,6 +713,12 @@ export const ko: TranslationResources = {
         changes: "변경 사항",
         files: "파일",
       },
+      tasks: {
+        open: "작업 목록 열기",
+        close: "작업 목록 닫기",
+        toggle: "작업 목록 토글",
+        empty: "아직 작업 목록이 없습니다",
+      },
       toasts: {
         copyFailed: "복사 실패",
         agentIdCopiedLabel: "에이전트 ID",

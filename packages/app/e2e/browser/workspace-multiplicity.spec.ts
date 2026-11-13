@@ -14,6 +14,7 @@ import { expectExplorerEntryVisible } from "../support/helpers/file-explorer";
 import { getServerId } from "../support/helpers/server-id";
 import { projectEquivalenceViewKey } from "../support/helpers/project-view-key";
 import { waitForSidebarHydration } from "../support/helpers/workspace-ui";
+import { skipRetiredExplorer } from "../support/helpers/explorer-retired";
 
 // Model B reshape: a workspace is the unit, its isolation (local checkout or
 // worktree) is a CHOICE at creation, and creation NEVER dedupes by
@@ -27,6 +28,7 @@ function workspaceRowTestId(workspaceId: string): string {
 // On desktop the file explorer is pinned open; on narrower layouts it must be
 // toggled first. Open it either way, then select the Files tab.
 async function openFilesTab(page: Page): Promise<void> {
+  skipRetiredExplorer();
   const openButton = page.getByRole("button", { name: "Open explorer" }).first();
   if (await openButton.isVisible().catch(() => false)) {
     await openButton.click();

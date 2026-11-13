@@ -19,6 +19,7 @@ import {
   type TimelineReducerSideEffect,
 } from "@/timeline/session-stream-reducers";
 import { useCreateFlowStore } from "@/stores/create-flow-store";
+import { useTaskSidebarStore } from "@/task-sidebar/store";
 import {
   isTimelineResumeSnapshotAuthoritative,
   planTimelineTailFetch,
@@ -790,6 +791,8 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       setAgentStreamState,
       setAgentTimelineCursor,
       recoverTimelineGap,
+      onLiveTaskListAppeared: (agentId) =>
+        useTaskSidebarStore.getState().recordLiveTaskListAppeared(serverId, agentId),
     });
 
     const unsubAgentStream = client.on("agent_stream", (message) => {

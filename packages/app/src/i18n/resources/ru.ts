@@ -717,6 +717,12 @@ export const ru: TranslationResources = {
         changes: "Изменения",
         files: "Файлы",
       },
+      tasks: {
+        open: "Открыть задачи",
+        close: "Закрыть задачи",
+        toggle: "Переключить задачи",
+        empty: "Списка задач пока нет",
+      },
       toasts: {
         copyFailed: "Не удалось скопировать",
         agentIdCopiedLabel: "AgentID",

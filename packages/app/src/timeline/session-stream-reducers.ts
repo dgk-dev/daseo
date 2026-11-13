@@ -2,6 +2,7 @@ import type { AgentStreamEventPayload } from "@getpaseo/protocol/messages";
 import { selectAgentTimelineState, useSessionStore } from "@/stores/session-store";
 import type { AssistantMessageItem, StreamItem, TodoEntry } from "@/types/stream";
 import type { TurnLivenessTransition } from "@/timeline/turn-liveness";
+import { isLiveTaskListFirstAppearance } from "@/task-sidebar/auto-open";
 import {
   applyStreamEvent,
   flushHeadToTail,
@@ -1829,6 +1830,8 @@ export interface CreateSessionAgentStreamReducerQueueInput {
     state: (prev: Map<string, TimelineCursor>) => Map<string, TimelineCursor>,
   ) => void;
   recoverTimelineGap: (agentId: string, cursor: { epoch: string; endSeq: number }) => void;
+  /** Daseo delta 101: a live event gave a session with no task list its first one. */
+  onLiveTaskListAppeared?: (agentId: string) => void;
 }
 
 function scheduleAgentStreamReducerFlush(callback: () => void): number {
@@ -1842,7 +1845,22 @@ function cancelAgentStreamReducerFlush(id: number) {
 export function createSessionAgentStreamReducerQueue(
   input: CreateSessionAgentStreamReducerQueueInput,
 ): AgentStreamReducerQueue {
-  const { serverId, setAgentStreamState, setAgentTimelineCursor, recoverTimelineGap } = input;
+  const {
+    serverId,
+    setAgentStreamState,
+    setAgentTimelineCursor,
+    recoverTimelineGap,
+    onLiveTaskListAppeared,
+  } = input;
+
+  function didLiveTaskListAppear(agentId: string, next: readonly TodoEntry[]): boolean {
+    const session = useSessionStore.getState().sessions[serverId];
+    return isLiveTaskListFirstAppearance({
+      previous: session?.agentTasks.get(agentId),
+      next,
+      timelineSynced: selectAgentTimelineState(session, agentId).status === "synced",
+    });
+  }
 
   return createAgentStreamReducerQueue({
     getSnapshot: (agentId) => {
@@ -1863,6 +1881,8 @@ export function createSessionAgentStreamReducerQueue(
         result.acknowledgedClientMessageIds.length > 0 ||
         result.taskSnapshot !== undefined
       ) {
+        const taskListAppeared =
+          result.taskSnapshot !== undefined && didLiveTaskListAppear(agentId, result.taskSnapshot);
         setAgentStreamState(serverId, agentId, {
           ...(result.changedTail ? { tail: result.tail } : {}),
           ...(result.changedHead ? { head: result.head } : {}),
@@ -1871,6 +1891,7 @@ export function createSessionAgentStreamReducerQueue(
             : {}),
           ...(result.taskSnapshot !== undefined ? { taskSnapshot: result.taskSnapshot } : {}),
         });
+        if (taskListAppeared) onLiveTaskListAppeared?.(agentId);
       }
       if (result.cursorChanged && result.cursor) {
         const nextCursor = result.cursor;

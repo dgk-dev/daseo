@@ -5,6 +5,7 @@ import { gotoWorkspace, clickNewTerminal } from "../support/helpers/launcher";
 import { seedWorkspace, type SeededWorkspace } from "../support/helpers/seed-client";
 import { expectExplorerEntryVisible } from "../support/helpers/file-explorer";
 import { expectNoTerminalTabs, clickFirstTerminalTab } from "../support/helpers/workspace-tabs";
+import { skipRetiredExplorer } from "../support/helpers/explorer-retired";
 
 // Model B: two workspaces can back the SAME directory. What follows from that
 // split is the contract these specs pin:
@@ -16,6 +17,7 @@ import { expectNoTerminalTabs, clickFirstTerminalTab } from "../support/helpers/
 // On desktop the explorer is pinned open; on narrow layouts it must be toggled.
 // Open it either way, then select the requested tab.
 async function openExplorerTab(page: Page, tab: "files" | "changes"): Promise<void> {
+  skipRetiredExplorer();
   const openButton = page.getByRole("button", { name: "Open explorer" }).first();
   if (await openButton.isVisible().catch(() => false)) {
     await openButton.click();

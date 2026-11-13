@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test, expect, type Page } from "../support/fixtures";
 import { seedMockAgentWorkspace, openAgentRoute } from "../support/helpers/mock-agent";
+import { skipRetiredExplorer } from "../support/helpers/explorer-retired";
 
 function visibleComposer(page: Page) {
   return page.locator("textarea[data-composer-input]").filter({ visible: true }).first();
@@ -31,6 +32,7 @@ test("adds a changed file to the focused chat without replacing its composer dra
     await expect(agentComposer).toBeEditable({ timeout: 30_000 });
     await agentComposer.fill("Preserve this thought");
 
+    skipRetiredExplorer();
     await page.getByRole("button", { name: "Open explorer" }).click();
     await page.getByTestId("explorer-tab-changes").click();
     const changedFile = page.getByText("changed file.ts", { exact: true }).first();

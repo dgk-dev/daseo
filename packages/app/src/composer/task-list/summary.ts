@@ -69,8 +69,15 @@ function resolveCurrentTask(
   return null;
 }
 
-/** The status line: progress, what waits on the user, what is held, and what runs now. */
-export function formatTaskBoardLabel(summary: TaskBoardSummary, t: TFunction): string {
+/**
+ * The status line: progress, what waits on the user, what is held, and what runs now. The task
+ * sidebar (Daseo delta 101) leaves out what runs now, because its list shows that row already.
+ */
+export function formatTaskBoardLabel(
+  summary: TaskBoardSummary,
+  t: TFunction,
+  options: { withCurrent?: boolean } = {},
+): string {
   const parts = [
     t("message.todo.tasksProgress", { completed: summary.completed, total: summary.total }),
   ];
@@ -78,7 +85,7 @@ export function formatTaskBoardLabel(summary: TaskBoardSummary, t: TFunction): s
     parts.push(t("message.todo.decisionCount", { count: summary.decision }));
   }
   if (summary.hold > 0) parts.push(t("message.todo.holdCount", { count: summary.hold }));
-  if (summary.current) {
+  if (summary.current && options.withCurrent !== false) {
     parts.push(
       summary.current.running
         ? t("message.todo.now", { task: summary.current.text })

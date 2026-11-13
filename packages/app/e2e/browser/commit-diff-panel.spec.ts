@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test, expect } from "../support/fixtures";
+import { skipRetiredExplorer } from "../support/helpers/explorer-retired";
 
 const COMMIT_SUBJECT = "Show commit timestamps";
 
@@ -13,6 +14,7 @@ test("commit history explains when the workspace has no commits ahead of its bas
   execFileSync("git", ["checkout", "-b", "feature"], { cwd: workspace.repoPath, stdio: "ignore" });
   await workspace.navigateTo();
 
+  skipRetiredExplorer();
   await page.getByRole("button", { name: "Open explorer" }).click();
   const commitsSection = page.getByRole("button", { name: /Commits/i });
   await expect(commitsSection).toBeVisible({ timeout: 30_000 });
@@ -33,6 +35,7 @@ test("commit history shows dates and shares diff layout preferences", async ({
   await page.setViewportSize({ width: 1400, height: 900 });
   await workspace.navigateTo();
 
+  skipRetiredExplorer();
   await page.getByRole("button", { name: "Open explorer" }).click();
   const commitsSection = page.getByRole("button", { name: /Commits/i });
   await expect(commitsSection).toBeVisible({ timeout: 30_000 });

@@ -84,6 +84,13 @@ describe("task board summary (Daseo delta 95)", () => {
     );
   });
 
+  it("leaves out the current task in the task sidebar, whose list shows it (delta 101)", () => {
+    const summary = summarizeTasks(board);
+    expect(formatTaskBoardLabel(summary, i18n.getFixedT("ko"), { withCurrent: false })).toBe(
+      "작업 3/9개 · 결정 대기 2 · 보류 2",
+    );
+  });
+
   it("shows the next ordinary task, never a held one, when nothing runs", () => {
     const tasks: TodoEntry[] = [
       { id: "1", text: "Wiki", status: "pending", completed: false, state: "hold" },

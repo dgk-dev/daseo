@@ -710,6 +710,12 @@ export const en = {
         changes: "Changes",
         files: "Files",
       },
+      tasks: {
+        open: "Open tasks",
+        close: "Close tasks",
+        toggle: "Toggle tasks",
+        empty: "No task list yet",
+      },
       toasts: {
         copyFailed: "Copy failed",
         agentIdCopiedLabel: "Agent ID",

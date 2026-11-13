@@ -331,7 +331,8 @@ test.describe("Half-screen desktop layout", () => {
     await expect(page.getByTestId("sidebar-settings")).not.toBeVisible();
   });
 
-  test("yields app navigation to the Explorer", async ({ page }) => {
+  // Daseo delta 101: the right sidebar holds the viewed session's task list.
+  test("yields app navigation to the task sidebar", async ({ page }) => {
     const workspace = await seedWorkspace({ repoPrefix: "sidebar-half-screen-explorer-" });
 
     try {
@@ -341,7 +342,7 @@ test.describe("Half-screen desktop layout", () => {
 
       await page.getByTestId("workspace-explorer-toggle").first().click();
       await expect(
-        page.getByTestId("explorer-tab-files").filter({ visible: true }).first(),
+        page.getByTestId("task-sidebar-empty").filter({ visible: true }).first(),
       ).toBeVisible();
       await expect(page.getByTestId("workspace-explorer-toggle").first()).toBeVisible();
       await expect(page.getByTestId("explorer-close")).toBeVisible();
@@ -375,7 +376,7 @@ test.describe("Half-screen desktop layout", () => {
         .toBeGreaterThanOrEqual(400);
 
       await page.getByTestId("explorer-close").click();
-      await expect(page.getByTestId("explorer-tab-files")).not.toBeVisible();
+      await expect(page.getByTestId("task-sidebar-empty")).not.toBeVisible();
       await expect(page.getByTestId("workspace-explorer-toggle").first()).toBeVisible();
     } finally {
       await workspace.cleanup();

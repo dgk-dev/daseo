@@ -711,6 +711,12 @@ export const ar: TranslationResources = {
         changes: "التغييرات",
         files: "ملفات",
       },
+      tasks: {
+        open: "افتح المهام",
+        close: "إغلاق المهام",
+        toggle: "تبديل المهام",
+        empty: "لا توجد قائمة مهام بعد",
+      },
       toasts: {
         copyFailed: "فشل النسخ",
         agentIdCopiedLabel: "AgentID",

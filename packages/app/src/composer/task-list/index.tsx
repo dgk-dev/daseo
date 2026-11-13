@@ -4,12 +4,10 @@ import { ChevronDown, ChevronRight } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
 import { Button } from "@/components/ui/button";
-import { TaskListRow } from "@/components/task-list-row";
 import { useKeyboardHeight } from "@/hooks/use-keyboard-height";
-import { useSessionStore } from "@/stores/session-store";
 import type { TodoEntry } from "@/types/stream";
+import { TaskListBody, useAgentTasks, useDroppedGroupToggle, useTaskBoard } from "./body";
 import { resolveMaxTaskListHeight } from "./list-height";
-import { formatTaskBoardLabel, summarizeTasks } from "./summary";
 
 export const AgentTaskList = memo(function AgentTaskList({
   serverId,
@@ -18,7 +16,7 @@ export const AgentTaskList = memo(function AgentTaskList({
   serverId: string;
   agentId: string;
 }) {
-  const tasks = useSessionStore((state) => state.sessions[serverId]?.agentTasks.get(agentId));
+  const tasks = useAgentTasks(serverId, agentId);
   if (!tasks?.length) return null;
   return <TaskListCard tasks={tasks} />;
 });
@@ -26,17 +24,10 @@ export const AgentTaskList = memo(function AgentTaskList({
 const TaskListCard = memo(function TaskListCard({ tasks }: { tasks: TodoEntry[] }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
-  const [droppedExpanded, setDroppedExpanded] = useState(false);
-  const summary = useMemo(() => summarizeTasks(tasks), [tasks]);
-  const label = formatTaskBoardLabel(summary, t);
+  const { summary, label } = useTaskBoard(tasks);
+  const { droppedExpanded, toggleDropped } = useDroppedGroupToggle();
   const toggle = useCallback(() => setExpanded((current) => !current), []);
-  const toggleDropped = useCallback(() => setDroppedExpanded((current) => !current), []);
   const accessibilityState = useMemo(() => ({ expanded }), [expanded]);
-  const droppedAccessibilityState = useMemo(
-    () => ({ expanded: droppedExpanded }),
-    [droppedExpanded],
-  );
-  const droppedLabel = t("message.todo.dropped", { count: summary.dropped.length });
 
   return (
     <View style={styles.container} accessibilityLabel={t("message.todo.title")}>
@@ -56,34 +47,11 @@ const TaskListCard = memo(function TaskListCard({ tasks }: { tasks: TodoEntry[] 
           </Button>
           {expanded ? (
             <TaskListScroll>
-              <View style={styles.list}>
-                {summary.listed.map((task, index) => (
-                  <TaskListRow key={task.id ?? `${index}:${task.text}`} task={task} />
-                ))}
-              </View>
-              {summary.dropped.length > 0 ? (
-                <View style={styles.dropped}>
-                  <Button
-                    variant="ghost"
-                    size="xs"
-                    onPress={toggleDropped}
-                    accessibilityLabel={droppedLabel}
-                    accessibilityState={droppedAccessibilityState}
-                    leftIcon={droppedExpanded ? ChevronDown : ChevronRight}
-                    style={styles.header}
-                    textStyle={styles.droppedText}
-                  >
-                    {droppedLabel}
-                  </Button>
-                  {droppedExpanded ? (
-                    <View style={styles.droppedList}>
-                      {summary.dropped.map((task, index) => (
-                        <TaskListRow key={task.id ?? `${index}:${task.text}`} task={task} />
-                      ))}
-                    </View>
-                  ) : null}
-                </View>
-              ) : null}
+              <TaskListBody
+                summary={summary}
+                droppedExpanded={droppedExpanded}
+                onToggleDropped={toggleDropped}
+              />
             </TaskListScroll>
           ) : null}
         </View>
@@ -133,22 +101,5 @@ const styles = StyleSheet.create((theme) => ({
   scroll: {
     borderTopWidth: theme.borderWidth[1],
     borderTopColor: theme.colors.border,
-  },
-  list: {
-    paddingHorizontal: theme.spacing[3],
-    paddingTop: theme.spacing[2],
-    paddingBottom: theme.spacing[2],
-    gap: theme.spacing[1],
-  },
-  dropped: {
-    paddingBottom: theme.spacing[1],
-  },
-  droppedText: {
-    color: theme.colors.foregroundExtraMuted,
-  },
-  droppedList: {
-    paddingHorizontal: theme.spacing[3],
-    paddingBottom: theme.spacing[1],
-    gap: theme.spacing[1],
   },
 }));

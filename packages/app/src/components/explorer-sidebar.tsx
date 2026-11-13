@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
   Pressable,
+  ScrollView,
   useWindowDimensions,
   StyleSheet as RNStyleSheet,
 } from "react-native";
@@ -46,6 +47,13 @@ import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import { resolveFocusedChatTarget } from "@/composer/focused-chat-target";
 import { createWorkspaceFileAttachment } from "@/attachments/workspace-file";
 import { useDraftStore } from "@/stores/draft-store";
+import {
+  TaskListBody,
+  useAgentTasks,
+  useDroppedGroupToggle,
+  useTaskBoard,
+} from "@/composer/task-list/body";
+import type { TodoEntry } from "@/types/stream";
 
 function logExplorerSidebar(_event: string, _details: Record<string, unknown>): void {}
 
@@ -148,23 +156,23 @@ export function CompactExplorerSidebar({
   );
 }
 
-export function ExplorerSidebar({
-  serverId,
-  workspaceId,
-  workspaceRoot,
-  isGit,
-  onOpenFile,
-}: ExplorerSidebarProps) {
+interface ExplorerSidebarDesktopProps {
+  serverId: string;
+  /** The agent session in the viewed tab, or null when the viewed tab is not one. */
+  agentId: string | null;
+}
+
+/**
+ * The right sidebar on wide layouts. Daseo delta 101: it keeps its toggle, width, resize, and
+ * persisted open state, and holds the viewed session's task list instead of the Changes, Files, and
+ * PR tabs (the explorer is retired from the UI there; its code stays for compact layouts).
+ */
+export function ExplorerSidebar({ serverId, agentId }: ExplorerSidebarDesktopProps) {
   const insets = useSafeAreaInsets();
   const explorerWidth = usePanelStore((state) => state.explorerWidth);
   const setExplorerWidth = usePanelStore((state) => state.setExplorerWidth);
   const isOpen = usePanelStore((state) => selectIsFileExplorerOpen(state, { isCompact: false }));
   const closeDesktopFileExplorer = usePanelStore((state) => state.closeDesktopFileExplorer);
-  const { explorerTab, handleTabPress } = useExplorerSidebarSharedState({
-    serverId,
-    workspaceRoot,
-    isGit,
-  });
   const { width: viewportWidth } = useWindowDimensions();
   const visibleExplorerWidth = resolveDesktopExplorerWidth({
     requestedWidth: explorerWidth,
@@ -249,19 +257,117 @@ export function ExplorerSidebar({
           testID="explorer-sidebar-resize-handle"
         />
 
-        <ExplorerSidebarContent
-          activeTab={explorerTab}
-          onTabPress={handleTabPress}
-          onClose={handleDesktopClose}
-          serverId={serverId}
-          workspaceId={workspaceId}
-          workspaceRoot={workspaceRoot}
-          isGit={isGit}
-          isOpen={isOpen}
-          onOpenFile={onOpenFile}
-        />
+        <TaskSidebarContent serverId={serverId} agentId={agentId} onClose={handleDesktopClose} />
       </View>
     </Animated.View>
+  );
+}
+
+interface SidebarHeaderProps {
+  children: ReactNode;
+  closeLabel: string;
+  onClose: () => void;
+}
+
+/** The sidebar's header row: the content's title slot on the left, the close button on the right. */
+function SidebarHeader({ children, closeLabel, onClose }: SidebarHeaderProps) {
+  const { theme } = useUnistyles();
+  const hasRightWindowControls = useHasOwnedWindowChromeObstruction("top-right");
+  return (
+    <WindowChromeSafeArea
+      placement="inline"
+      horizontalPadding={theme.spacing[2]}
+      style={styles.header}
+      testID="explorer-header"
+    >
+      <TitlebarDragRegion />
+      {children}
+      <View style={styles.headerRightSection}>
+        {!hasRightWindowControls && (
+          <Pressable
+            onPress={onClose}
+            style={styles.closeButton}
+            testID="explorer-close"
+            nativeID="explorer-close"
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel={closeLabel}
+            hitSlop={8}
+          >
+            {({ hovered, pressed }) => (
+              <X
+                size={18}
+                color={hovered || pressed ? theme.colors.foreground : theme.colors.foregroundMuted}
+              />
+            )}
+          </Pressable>
+        )}
+      </View>
+    </WindowChromeSafeArea>
+  );
+}
+
+interface TaskSidebarContentProps {
+  serverId: string;
+  agentId: string | null;
+  onClose: () => void;
+}
+
+// Daseo delta 101: the viewed session's task list, read-only, in the agent's order.
+function TaskSidebarContent({ serverId, agentId, onClose }: TaskSidebarContentProps) {
+  const { t } = useTranslation();
+  const tasks = useAgentTasks(serverId, agentId);
+  const closeLabel = t("workspace.tabs.tasks.close");
+
+  if (!tasks?.length) {
+    return (
+      <View style={styles.sidebarContent} pointerEvents="auto">
+        <SidebarHeader closeLabel={closeLabel} onClose={onClose}>
+          <View style={styles.taskSummarySlot} />
+        </SidebarHeader>
+        <View style={styles.emptyContainer} testID="task-sidebar-empty">
+          <Text style={styles.emptyText}>{t("workspace.tabs.tasks.empty")}</Text>
+        </View>
+      </View>
+    );
+  }
+  return <TaskSidebarBoard tasks={tasks} closeLabel={closeLabel} onClose={onClose} />;
+}
+
+function TaskSidebarBoard({
+  tasks,
+  closeLabel,
+  onClose,
+}: {
+  tasks: TodoEntry[];
+  closeLabel: string;
+  onClose: () => void;
+}) {
+  // The list below shows the task in progress, so the line leaves out "Now: …".
+  const { summary, label } = useTaskBoard(tasks, { withCurrent: false });
+  const { droppedExpanded, toggleDropped } = useDroppedGroupToggle();
+  return (
+    <View style={styles.sidebarContent} pointerEvents="auto">
+      <SidebarHeader closeLabel={closeLabel} onClose={onClose}>
+        <View style={styles.taskSummarySlot}>
+          <Text
+            style={styles.taskSummary}
+            numberOfLines={1}
+            accessibilityRole="header"
+            testID="task-sidebar-summary"
+          >
+            {label}
+          </Text>
+        </View>
+      </SidebarHeader>
+      <ScrollView style={styles.contentArea} testID="task-sidebar-list">
+        <TaskListBody
+          summary={summary}
+          droppedExpanded={droppedExpanded}
+          onToggleDropped={toggleDropped}
+        />
+      </ScrollView>
+    </View>
   );
 }
 
@@ -319,7 +425,6 @@ function ExplorerSidebarContent({
   const { theme } = useUnistyles();
   const { t } = useTranslation();
   const toast = useToast();
-  const hasRightWindowControls = useHasOwnedWindowChromeObstruction("top-right");
   const canQueryPullRequest = isGit && Boolean(workspaceRoot);
   const prPane = usePrPaneData({
     serverId,
@@ -347,13 +452,7 @@ function ExplorerSidebarContent({
   return (
     <View style={styles.sidebarContent} pointerEvents="auto">
       {/* Header with tabs and close button */}
-      <WindowChromeSafeArea
-        placement="inline"
-        horizontalPadding={theme.spacing[2]}
-        style={styles.header}
-        testID="explorer-header"
-      >
-        <TitlebarDragRegion />
+      <SidebarHeader closeLabel={t("workspace.tabs.explorer.close")} onClose={onClose}>
         <View style={styles.tabsContainer}>
           {isGit && (
             <ExplorerTabButton
@@ -389,30 +488,7 @@ function ExplorerSidebarContent({
             </ExplorerTabButton>
           )}
         </View>
-        <View style={styles.headerRightSection}>
-          {!hasRightWindowControls && (
-            <Pressable
-              onPress={onClose}
-              style={styles.closeButton}
-              testID="explorer-close"
-              nativeID="explorer-close"
-              accessible
-              accessibilityRole="button"
-              accessibilityLabel={t("workspace.tabs.explorer.close")}
-              hitSlop={8}
-            >
-              {({ hovered, pressed }) => (
-                <X
-                  size={18}
-                  color={
-                    hovered || pressed ? theme.colors.foreground : theme.colors.foregroundMuted
-                  }
-                />
-              )}
-            </Pressable>
-          )}
-        </View>
-      </WindowChromeSafeArea>
+      </SidebarHeader>
 
       {/* Content based on active tab */}
       <View style={styles.contentArea} testID="explorer-content-area">
@@ -623,5 +699,27 @@ const styles = StyleSheet.create((theme) => ({
   contentArea: {
     flex: 1,
     minHeight: 0,
+  },
+  // Daseo delta 101: the task summary sits where the tabs were; its text lines up with the rows.
+  taskSummarySlot: {
+    flex: 1,
+    minWidth: 0,
+    paddingHorizontal: theme.spacing[1],
+  },
+  taskSummary: {
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.normal,
+    color: theme.colors.foreground,
+  },
+  // The Changes pane's empty state, the sibling in this sidebar.
+  emptyContainer: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingTop: theme.spacing[16],
+  },
+  emptyText: {
+    fontSize: theme.fontSize.lg,
+    color: theme.colors.foregroundMuted,
   },
 }));

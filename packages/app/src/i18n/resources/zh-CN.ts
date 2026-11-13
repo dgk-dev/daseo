@@ -710,6 +710,12 @@ export const zhCN: TranslationResources = {
         changes: "变更",
         files: "文件",
       },
+      tasks: {
+        open: "打开任务列表",
+        close: "关闭任务列表",
+        toggle: "切换任务列表",
+        empty: "还没有任务列表",
+      },
       toasts: {
         copyFailed: "复制失败",
         agentIdCopiedLabel: "Agent ID",

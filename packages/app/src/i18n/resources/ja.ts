@@ -716,6 +716,12 @@ export const ja: TranslationResources = {
         changes: "変更",
         files: "ファイル",
       },
+      tasks: {
+        open: "タスク一覧を開く",
+        close: "タスク一覧を閉じる",
+        toggle: "タスク一覧を切り替え",
+        empty: "タスク一覧はまだありません",
+      },
       toasts: {
         copyFailed: "コピーに失敗しました",
         agentIdCopiedLabel: "エージェントID",

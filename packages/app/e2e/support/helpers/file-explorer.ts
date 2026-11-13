@@ -1,4 +1,5 @@
 import { expect, type Page } from "@playwright/test";
+import { skipRetiredExplorer } from "./explorer-retired";
 
 function fileExplorerTree(page: Page) {
   return page.getByTestId("file-explorer-tree-scroll");
@@ -9,6 +10,7 @@ function fileExplorerEntry(page: Page, name: string) {
 }
 
 export async function openFileExplorer(page: Page): Promise<void> {
+  skipRetiredExplorer();
   await page.getByRole("button", { name: "Open explorer" }).first().click();
   await page.getByTestId("explorer-tab-files").click();
   await expect(fileExplorerTree(page)).toBeVisible({ timeout: 30_000 });

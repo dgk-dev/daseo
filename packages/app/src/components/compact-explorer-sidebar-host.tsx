@@ -23,6 +23,10 @@ interface CompactExplorerOpenGestureSurfaceProps {
 }
 
 const COMPACT_WEB_GESTURE_TOUCH_ACTION = isWeb ? "auto" : "pan-y";
+// Daseo delta 101: the explorer is retired from the UI, so swiping in from the right edge no longer
+// opens it on compact layouts. The overlay stays mounted for the requests that still open it
+// (a review attachment, a folder link in the chat).
+const COMPACT_EXPLORER_SWIPE_OPENS = false;
 
 function CompactExplorerOpenGestureSurface({
   children,
@@ -137,7 +141,7 @@ export function CompactExplorerSidebarHost({ children, enabled }: CompactExplore
   return (
     <>
       <CompactExplorerOpenGestureSurface
-        enabled={enabled && Boolean(model?.workspaceRoot)}
+        enabled={COMPACT_EXPLORER_SWIPE_OPENS && enabled && Boolean(model?.workspaceRoot)}
         onOpenExplorer={handleOpenExplorer}
       >
         {children}

@@ -99,6 +99,7 @@ export interface PanelState {
   openDesktopAgentList: () => void;
   closeDesktopAgentList: () => void;
   toggleDesktopAgentList: () => void;
+  openDesktopFileExplorer: () => void;
   closeDesktopFileExplorer: () => void;
   openAgentListForLayout: (input: PanelLayoutInput) => void;
   closeAgentListForLayout: (input: PanelLayoutInput) => void;
@@ -200,6 +201,14 @@ export const usePanelStore = create<PanelState>()(
           desktop: { ...state.desktop, agentListOpen: !state.desktop.agentListOpen },
         })),
 
+      openDesktopFileExplorer: () =>
+        set((state) => {
+          if (state.desktop.fileExplorerOpen) {
+            return state;
+          }
+          return { desktop: { ...state.desktop, fileExplorerOpen: true } };
+        }),
+
       closeDesktopFileExplorer: () =>
         set((state) => {
           if (!state.desktop.fileExplorerOpen) {
@@ -241,8 +250,11 @@ export const usePanelStore = create<PanelState>()(
           };
         }),
 
+      // Daseo delta 101: on wide layouts the right sidebar holds the task list and the explorer is
+      // gone from the UI, so a request to show the explorer (a review attachment, a folder link)
+      // does not open that sidebar. The toggle opens it through its own patch.
       openFileExplorerForCheckout: (input) =>
-        set((state) => buildOpenFileExplorerPatch(state, input)),
+        set((state) => (input.isCompact ? buildOpenFileExplorerPatch(state, input) : state)),
 
       toggleFileExplorerForCheckout: (input) =>
         set((state) => buildToggleFileExplorerPatch(state, input)),
