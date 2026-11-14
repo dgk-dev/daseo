@@ -3951,6 +3951,65 @@ describe("send_agent_prompt MCP tool", () => {
       expect.objectContaining({ waitForActive: true }),
     );
   });
+
+  it("returns the reply of a prompt Daseo answered as a slash command (delta 109)", async () => {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    const parentAgent = {
+      id: "parent-agent",
+      cwd: existingCwd,
+      workspaceId: "wks_parent",
+      provider: "codex",
+      currentModeId: "full-access",
+    } as ManagedAgent;
+    const childAgent = {
+      id: "child-agent",
+      cwd: existingCwd,
+      lifecycle: "idle",
+      currentModeId: null,
+      availableModes: [],
+      config: { title: "Child" },
+    } as ManagedAgent;
+    spies.agentManager.getAgent.mockImplementation((agentId: string) => {
+      if (agentId === "parent-agent") return parentAgent;
+      if (agentId === "child-agent") return childAgent;
+      return null;
+    });
+    spies.agentManager.tryRunOutOfBand.mockImplementation(
+      (
+        _agentId: string,
+        _prompt: unknown,
+        _options: unknown,
+        onDispatched?: (outcome: Promise<{ replies: string[] }>) => void,
+      ) => {
+        onDispatched?.(Promise.resolve({ replies: ["다시 읽었습니다."] }));
+        return true;
+      },
+    );
+
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      callerAgentId: "parent-agent",
+      logger,
+    });
+
+    const tool = registeredTool(server, "send_agent_prompt");
+    const response = await invokeToolWithParsedInput(tool, {
+      agentId: "child-agent",
+      prompt: "/reload",
+    });
+
+    // No finish watch and no wait: the command started no turn.
+    expect(spies.agentManager.subscribe).not.toHaveBeenCalled();
+    expect(spies.agentManager.waitForAgentEvent).not.toHaveBeenCalled();
+    expect(response.structuredContent).toMatchObject({
+      success: true,
+      status: "idle",
+      lastMessage: "다시 읽었습니다.",
+      guidance: expect.stringContaining("did not start a turn"),
+    });
+  });
 });
 
 describe("update_agent MCP tool", () => {

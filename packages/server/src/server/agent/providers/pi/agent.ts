@@ -82,7 +82,7 @@ import {
   findPiBuiltinCommand,
   formatUnknownSlashCommand,
   parseSlashCommandToken,
-  suggestSlashCommands,
+  suggestTypoCommands,
 } from "./builtin-commands.js";
 import { listPiImportableSessions, readPiImportSessionConfig } from "./session-descriptor.js";
 import type { PiRuntime, PiRuntimeSession, PiStartSessionInput } from "./runtime.js";
@@ -2367,16 +2367,19 @@ export class PiRpcAgentSession implements AgentSession {
       this.refreshRpcCommandNames();
       return null;
     }
+    // Only a likely typo of a known command is stopped. Anything else goes on as before: the
+    // Claude Code harness behind the Pi bridge answers its own commands (`/code-review`, `/loop`),
+    // and `/tmp 봐줘` is text.
+    const suggestions = suggestTypoCommands(token.name, [
+      ...PI_BUILTIN_COMMANDS.map((command) => command.name),
+      ...[...rpcCommandNames].filter((name) => !PI_INTERNAL_EXTENSION_COMMANDS.has(name)),
+    ]);
+    if (suggestions.length === 0) {
+      return null;
+    }
     return {
       run: async ({ emit }) => {
-        const known = [
-          ...PI_BUILTIN_COMMANDS.map((command) => command.name),
-          ...[...rpcCommandNames].filter((name) => !PI_INTERNAL_EXTENSION_COMMANDS.has(name)),
-        ];
-        this.emitCommandReply(
-          emit,
-          formatUnknownSlashCommand(token.name, suggestSlashCommands(token.name, known)),
-        );
+        this.emitCommandReply(emit, formatUnknownSlashCommand(token.name, suggestions));
       },
     };
   }

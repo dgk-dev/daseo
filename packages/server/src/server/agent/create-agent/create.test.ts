@@ -96,6 +96,58 @@ test("session create forwards clientMessageId to the initial prompt run options"
   });
 });
 
+test("an initial prompt Daseo answers out of band returns its reply and starts no watch", async () => {
+  const snapshot = {
+    id: "agent-1",
+    provider: "pi",
+    cwd: "/tmp/paseo-create-test",
+    runtimeInfo: null,
+  } as ManagedAgent;
+  const streamAgent = vi.fn(() => (async function* noop() {})());
+  const waitForAgentRunStart = vi.fn(async () => undefined);
+  const subscribe = vi.fn(() => () => {});
+  const dependencies: Parameters<typeof createAgentCommand>[0] = {
+    agentManager: {
+      createAgent: vi.fn(async () => snapshot),
+      getAgent: vi.fn(() => snapshot),
+      tryRunOutOfBand: vi.fn(
+        (
+          _agentId: string,
+          _prompt: unknown,
+          _options: unknown,
+          onDispatched?: (outcome: Promise<{ replies: string[] }>) => void,
+        ) => {
+          onDispatched?.(Promise.resolve({ replies: ["/relaod 명령은 없습니다."] }));
+          return true;
+        },
+      ),
+      hasInFlightRun: vi.fn(() => false),
+      streamAgent,
+      waitForAgentRunStart,
+      subscribe,
+    } as unknown as Parameters<typeof createAgentCommand>[0]["agentManager"],
+    agentStorage: {} as Parameters<typeof createAgentCommand>[0]["agentStorage"],
+    logger: createTestLogger(),
+    providerSnapshotManager: createProviderSnapshotManagerStub().manager,
+  };
+
+  const result = await createAgentCommand(dependencies, {
+    kind: "session",
+    config: { provider: "pi", cwd: "/tmp/paseo-create-test" },
+    workspaceId: "ws-create-test",
+    initialPrompt: "/relaod",
+    labels: {},
+    provisionalTitle: null,
+    firstAgentContext: { attachments: [] },
+    buildSessionConfig: async (config) => ({ sessionConfig: config }),
+  });
+
+  expect(result.initialPromptStarted).toBe(false);
+  expect(result.initialPromptReply).toBe("/relaod 명령은 없습니다.");
+  expect(streamAgent).not.toHaveBeenCalled();
+  expect(waitForAgentRunStart).not.toHaveBeenCalled();
+});
+
 test("session create validates the requested mode against the provider's modes", async () => {
   const snapshot = {
     id: "agent-1",

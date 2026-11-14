@@ -244,13 +244,59 @@ export function suggestSlashCommands(
   return scored.slice(0, limit).map((entry) => entry.name);
 }
 
-export function formatUnknownSlashCommand(name: string, suggestions: readonly string[]): string {
-  const lines = [`/${name} 명령은 없습니다. 모델에게 보내지 않았습니다.`];
-  if (suggestions.length > 0) {
-    lines.push(`비슷한 명령: ${suggestions.map((suggestion) => `/${suggestion}`).join(", ")}`);
+/** Edit distance where swapping two neighbors counts as one edit (optimal string alignment). */
+function typoDistance(a: string, b: string): number {
+  const rows: number[][] = [];
+  for (let i = 0; i <= a.length; i += 1) {
+    const row = Array.from({ length: b.length + 1 }, () => 0);
+    row[0] = i;
+    rows.push(row);
   }
-  lines.push("명령 목록은 입력창에 /를 치면 나옵니다. 글을 보내려면 앞에 공백을 넣으세요.");
-  return lines.join("\n");
+  for (let j = 0; j <= b.length; j += 1) rows[0]![j] = j;
+  for (let i = 1; i <= a.length; i += 1) {
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      let best = Math.min(rows[i - 1]![j]! + 1, rows[i]![j - 1]! + 1, rows[i - 1]![j - 1]! + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        best = Math.min(best, rows[i - 2]![j - 2]! + 1);
+      }
+      rows[i]![j] = best;
+    }
+  }
+  return rows[a.length]![b.length]!;
+}
+
+/** Shortest name that can count as a typo; `/tmp`, `/etc`, `/bin` stay text. */
+const MIN_TYPO_NAME_LENGTH = 4;
+
+/**
+ * Known names one edit away from `name` (a changed, missing, extra, or swapped character). Only
+ * these make an unknown `/word` look like a typo and stop it before the model. Prefix and
+ * substring matches never do: autocomplete already offers those, and a Claude Code command such
+ * as `/code-review` or `/loop`, which the harness behind the Pi bridge answers itself, must reach
+ * it. Two edits were measured too loose: `/effort` hit `/export` and `/rename` hit `/name`.
+ */
+export function suggestTypoCommands(
+  name: string,
+  knownNames: readonly string[],
+  limit = 3,
+): string[] {
+  const target = name.toLowerCase();
+  if (target.length < MIN_TYPO_NAME_LENGTH) return [];
+  const matches = new Set<string>();
+  for (const candidate of knownNames) {
+    const lower = candidate.toLowerCase();
+    if (lower !== target && typoDistance(target, lower) === 1) matches.add(candidate);
+  }
+  return [...matches].sort().slice(0, limit);
+}
+
+export function formatUnknownSlashCommand(name: string, suggestions: readonly string[]): string {
+  return [
+    `/${name} 명령은 없습니다. 모델에게 보내지 않았습니다.`,
+    `혹시 이 명령인가요: ${suggestions.map((suggestion) => `/${suggestion}`).join(", ")}`,
+    `명령이 아니라 글이었다면 앞에 낱말을 하나 붙여 다시 보내세요(예: "경로 /${name}").`,
+  ].join("\n");
 }
 
 /** What a `guide` built-in says, by name. `login`/`logout` add the account commands they find. */

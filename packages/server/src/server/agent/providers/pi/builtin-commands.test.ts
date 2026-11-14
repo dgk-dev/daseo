@@ -9,6 +9,7 @@ import {
   formatUnknownSlashCommand,
   parseSlashCommandToken,
   suggestSlashCommands,
+  suggestTypoCommands,
 } from "./builtin-commands.js";
 
 // Pi 1.5.2 `BUILTIN_SLASH_COMMANDS` (dist/core/slash-commands.js). The pi-local doctor compares
@@ -134,12 +135,34 @@ describe("unknown command answers", () => {
     expect(suggestSlashCommands("zzzz", known)).toEqual([]);
   });
 
-  test("says the prompt was not sent and lists suggestions", () => {
+  test("a typo is one edit away, swaps included, from a name of four or more letters", () => {
+    const known = [...PI_BUILTIN_COMMANDS.map((command) => command.name), "review", "solo"];
+    expect(suggestTypoCommands("relaod", known)).toEqual(["reload"]);
+    expect(suggestTypoCommands("modle", known)).toEqual(["model"]);
+    expect(suggestTypoCommands("sesion", known)).toEqual(["session"]);
+    expect(suggestTypoCommands("Reload", known)).toEqual([]);
+    for (const name of [
+      "code-review",
+      "loop",
+      "init",
+      "effort",
+      "rename",
+      "hooks",
+      "cost",
+      "tmp",
+      "etc",
+      "rev",
+    ]) {
+      expect(suggestTypoCommands(name, known), name).toEqual([]);
+    }
+  });
+
+  test("says the prompt was not sent, the likely command, and how to send text", () => {
     expect(formatUnknownSlashCommand("relaod", ["reload"])).toBe(
       [
         "/relaod 명령은 없습니다. 모델에게 보내지 않았습니다.",
-        "비슷한 명령: /reload",
-        "명령 목록은 입력창에 /를 치면 나옵니다. 글을 보내려면 앞에 공백을 넣으세요.",
+        "혹시 이 명령인가요: /reload",
+        '명령이 아니라 글이었다면 앞에 낱말을 하나 붙여 다시 보내세요(예: "경로 /relaod").',
       ].join("\n"),
     );
   });

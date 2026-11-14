@@ -276,6 +276,11 @@ interface ProviderEnabledFlag {
 type ProviderEnabledMap = Partial<Record<AgentProvider, ProviderEnabledFlag>>;
 type ProviderClientMap = Partial<Record<AgentProvider, AgentClient>>;
 
+/** Local fork (delta 109): what an out-of-band command said, in order. */
+export interface OutOfBandOutcome {
+  replies: string[];
+}
+
 export interface CreateAgentOptions {
   labels?: Record<string, string>;
   initialPrompt?: string;
@@ -2268,8 +2273,17 @@ export class AgentManager {
    * accepted the prompt as a side-effect command (e.g. /goal pause). Events
    * emitted by the handler flow through dispatchStream so they persist and
    * broadcast like normal timeline events.
+   *
+   * Local fork (delta 109): `onDispatched` receives a promise of the handler's replies, so a
+   * sender that is not looking at the timeline (an MCP caller) learns what happened instead of
+   * waiting on a turn that never starts.
    */
-  tryRunOutOfBand(agentId: string, prompt: AgentPromptInput, options?: AgentRunOptions): boolean {
+  tryRunOutOfBand(
+    agentId: string,
+    prompt: AgentPromptInput,
+    options?: AgentRunOptions,
+    onDispatched?: (outcome: Promise<OutOfBandOutcome>) => void,
+  ): boolean {
     const agent = this.requireSessionAgent(agentId);
     const handler = agent.session.tryHandleOutOfBand?.(prompt);
     if (!handler) {
@@ -2279,10 +2293,12 @@ export class AgentManager {
       this.recordSubmittedPrompt(agent, prompt, options.clientMessageId);
       this.emitState(agent);
     }
+    const replies: string[] = [];
     const dispatch = (event: AgentStreamEvent): void => {
       // Persist timeline items so they show up in fetchAgentTimeline; broadcast
       // for live subscribers. Other event types are broadcast only.
       if (event.type === "timeline") {
+        if (event.item.type === "assistant_message") replies.push(event.item.text);
         this.touchUpdatedAt(agent);
         const row = this.recordTimeline(agent.id, event.item);
         this.dispatchStream(agent.id, event, {
@@ -2294,7 +2310,7 @@ export class AgentManager {
       }
       this.dispatchStream(agent.id, event, { timestamp: new Date().toISOString() });
     };
-    void (async () => {
+    const outcome = (async (): Promise<OutOfBandOutcome> => {
       try {
         await handler.run({ emit: dispatch, host: this.createOutOfBandHost(agentId) });
       } catch (error) {
@@ -2305,7 +2321,9 @@ export class AgentManager {
           item: { type: "assistant_message", text: `[Error] ${text}` },
         });
       }
+      return { replies };
     })();
+    onDispatched?.(outcome);
     return true;
   }
 

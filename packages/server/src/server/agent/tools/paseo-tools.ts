@@ -62,7 +62,10 @@ import {
   waitForAgentWithTimeout,
 } from "../mcp-shared.js";
 import {
+  OUT_OF_BAND_GUIDANCE,
   callerReadsNextTurn,
+  forgetCallerReadsNextTurn,
+  joinOutOfBandReplies,
   sendPromptToAgent,
   setupFinishNotification,
 } from "../agent-prompt.js";
@@ -1531,6 +1534,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         snapshot,
         background: createdInBackground,
         initialPromptStarted,
+        initialPromptReply,
       } = await createAgentCommand(
         {
           agentManager,
@@ -1600,10 +1604,13 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
 
       // Return immediately for async creation.
       const currentSnapshot = agentManager.getAgent(snapshot.id) ?? snapshot;
-      const guidance =
-        callerAgentId && notifyOnFinish && initialPromptStarted
-          ? "You will get notified when the created agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives."
-          : undefined;
+      let guidance: string | undefined;
+      if (initialPromptReply !== undefined) {
+        guidance = OUT_OF_BAND_GUIDANCE;
+      } else if (callerAgentId && notifyOnFinish && initialPromptStarted) {
+        guidance =
+          "You will get notified when the created agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives.";
+      }
       const structuredContent = ensureValidJson({
         agentId: currentSnapshot.id,
         type: snapshot.provider,
@@ -1612,7 +1619,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         ...(currentSnapshot.workspaceId ? { workspaceId: currentSnapshot.workspaceId } : {}),
         currentModeId: currentSnapshot.currentModeId,
         availableModes: currentSnapshot.availableModes,
-        lastMessage: null,
+        lastMessage: initialPromptReply ?? null,
         permission: null,
         ...(guidance ? { guidance } : {}),
       });
@@ -2098,7 +2105,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         callerReadsNextTurn({ agentManager, childAgentId: agentId, callerAgentId });
       }
 
-      await sendPromptToAgent({
+      const dispatch = await sendPromptToAgent({
         agentManager,
         agentStorage,
         agentId,
@@ -2106,6 +2113,23 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         sessionMode,
         logger: childLogger,
       });
+
+      // Delta 109: a slash command Daseo answered starts no turn, so nothing would ever be
+      // reported; hand its reply back now instead of waiting or watching for a finish.
+      if (dispatch.outOfBand) {
+        if (callerAgentId && !shouldNotifyOnFinish) {
+          forgetCallerReadsNextTurn({ agentManager, childAgentId: agentId, callerAgentId });
+        }
+        const outcome = dispatch.outOfBandOutcome ? await dispatch.outOfBandOutcome : null;
+        const validJson = ensureValidJson({
+          success: true,
+          status: agentManager.getAgent(agentId)?.lifecycle ?? "idle",
+          lastMessage: outcome ? joinOutOfBandReplies(outcome) : null,
+          permission: null,
+          guidance: OUT_OF_BAND_GUIDANCE,
+        });
+        return { content: [], structuredContent: validJson };
+      }
 
       if (shouldNotifyOnFinish && callerAgentId) {
         setupFinishNotification({

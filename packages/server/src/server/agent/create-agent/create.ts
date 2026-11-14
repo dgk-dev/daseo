@@ -11,7 +11,12 @@ import type {
   CreatePaseoWorktreeWorkflowResult,
 } from "../../worktree-session.js";
 import type { AgentAttachment, FirstAgentContext, GitSetupOptions } from "../../messages.js";
-import type { AgentManager, CreateAgentOptions, ManagedAgent } from "../agent-manager.js";
+import type {
+  AgentManager,
+  CreateAgentOptions,
+  ManagedAgent,
+  OutOfBandOutcome,
+} from "../agent-manager.js";
 import type { AgentPromptInput, AgentRunOptions, AgentSessionConfig } from "../agent-sdk-types.js";
 import type { AgentStorage } from "../agent-storage.js";
 import type { AgentOwner } from "../agent-owner.js";
@@ -19,6 +24,7 @@ import type { ProviderSnapshotManager } from "../provider-snapshot-manager.js";
 import {
   ARCHIVE_ON_FINISH_LABEL,
   archiveAfterFirstTurn,
+  joinOutOfBandReplies,
   setupFinishNotification,
   startCreatedAgentInitialPrompt,
 } from "../agent-prompt.js";
@@ -133,6 +139,11 @@ export interface CreateAgentCommandResult {
   background: boolean;
   initialPromptStarted: boolean;
   initialPromptError: unknown | null;
+  /**
+   * Delta 109: the initial prompt was a slash command Daseo answered without a turn; its reply
+   * (empty when it said nothing). No finish watch is set up for it.
+   */
+  initialPromptReply?: string;
   createdWorktree?: CreatePaseoWorktreeWorkflowResult;
 }
 
@@ -199,6 +210,7 @@ export async function createAgentCommand(
   let liveSnapshot = snapshot;
   let initialPromptStarted = false;
   let initialPromptError: unknown | null = null;
+  let initialPromptReply: string | undefined;
   if (input.kind === "mcp") {
     input.onCreated?.({ agentId: snapshot.id, createdWorktree: resolved.createdWorktree ?? null });
   }
@@ -207,6 +219,7 @@ export async function createAgentCommand(
     initialPromptStarted = sendResult.started;
     liveSnapshot = sendResult.liveSnapshot;
     initialPromptError = sendResult.error ?? null;
+    initialPromptReply = sendResult.outOfBandReply;
   }
 
   if (input.kind === "mcp" && input.notifyOnFinish && input.callerAgentId && initialPromptStarted) {
@@ -233,6 +246,7 @@ export async function createAgentCommand(
     background: resolved.background,
     initialPromptStarted,
     initialPromptError,
+    ...(initialPromptReply !== undefined ? { initialPromptReply } : {}),
     ...(resolved.createdWorktree ? { createdWorktree: resolved.createdWorktree } : {}),
   };
 }
@@ -465,20 +479,38 @@ async function sendInitialPrompt(
   dependencies: CreateAgentCommandDependencies,
   resolved: ResolvedCreateAgent,
   snapshot: ManagedAgent,
-): Promise<{ started: boolean; liveSnapshot: ManagedAgent; error?: unknown }> {
+): Promise<{
+  started: boolean;
+  liveSnapshot: ManagedAgent;
+  error?: unknown;
+  outOfBandReply?: string;
+}> {
   try {
     const prompt = resolved.prompt;
     if (prompt === undefined) {
       return { started: false, liveSnapshot: snapshot };
     }
+    let outOfBand: Promise<OutOfBandOutcome> | null = null;
     const liveSnapshot = await startCreatedAgentInitialPrompt({
       agentManager: dependencies.agentManager,
       agentId: snapshot.id,
       snapshot,
       prompt,
       runOptions: resolved.runOptions,
+      onOutOfBand: (outcome) => {
+        outOfBand = outcome;
+      },
       logger: resolved.promptLogger ?? dependencies.logger,
     });
+    if (outOfBand) {
+      // Delta 109: no turn runs, so a finish watch would wait forever; return the reply instead.
+      const outcome: OutOfBandOutcome = await outOfBand;
+      return {
+        started: false,
+        liveSnapshot,
+        outOfBandReply: joinOutOfBandReplies(outcome) ?? "",
+      };
+    }
     return { started: true, liveSnapshot };
   } catch (error) {
     if (resolved.promptFailure === "throw") {

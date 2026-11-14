@@ -7,7 +7,7 @@ import type {
   AgentRunOptions,
   AgentTimelineItem,
 } from "./agent-sdk-types.js";
-import type { AgentManager, ManagedAgent } from "./agent-manager.js";
+import type { AgentManager, ManagedAgent, OutOfBandOutcome } from "./agent-manager.js";
 import type { AgentStorage } from "./agent-storage.js";
 import { ensureAgentLoaded } from "./agent-loading.js";
 import { archiveAgentCommand } from "./lifecycle-command.js";
@@ -30,6 +30,20 @@ export interface StartAgentRunOptions {
   runOptions?: AgentRunOptions;
 }
 
+export interface AgentRunDispatch {
+  outOfBand: boolean;
+  /** Set when the prompt was answered out of band (delta 109): the command's replies. */
+  outOfBandOutcome?: Promise<OutOfBandOutcome>;
+}
+
+/** Told to a non-timeline sender whose prompt Daseo answered itself (delta 109). */
+export const OUT_OF_BAND_GUIDANCE =
+  "Daseo answered this prompt as a slash command; lastMessage is its reply. The agent did not start a turn, so no finish notification follows.";
+
+export function joinOutOfBandReplies(outcome: OutOfBandOutcome): string | null {
+  return outcome.replies.length > 0 ? outcome.replies.join("\n\n") : null;
+}
+
 // This coordinator intentionally keeps out-of-band, steer, replace, and drain
 // policy in one place so every prompt entrypoint shares identical ordering.
 // oxlint-disable-next-line complexity
@@ -39,7 +53,7 @@ export async function startAgentRun(
   prompt: AgentPromptInput,
   logger: Logger,
   options?: StartAgentRunOptions,
-): Promise<{ outOfBand: boolean }> {
+): Promise<AgentRunDispatch> {
   const snapshot = agentManager.getAgent(agentId);
   logger.trace(
     {
@@ -56,8 +70,13 @@ export async function startAgentRun(
   // Out-of-band commands (e.g. /goal pause) must run WITHOUT canceling an
   // in-flight turn — replaceAgentRun would interrupt the running turn. The
   // intercept lives at this layer so it covers every prompt entrypoint.
-  if (agentManager.tryRunOutOfBand(agentId, prompt, options?.runOptions)) {
-    return { outOfBand: true };
+  let outOfBandOutcome: Promise<OutOfBandOutcome> | undefined;
+  if (
+    agentManager.tryRunOutOfBand(agentId, prompt, options?.runOptions, (outcome) => {
+      outOfBandOutcome = outcome;
+    })
+  ) {
+    return outOfBandOutcome ? { outOfBand: true, outOfBandOutcome } : { outOfBand: true };
   }
   const hasInFlightRun = agentManager.hasInFlightRun(agentId);
   const runOptions = options?.runOptions;
@@ -188,6 +207,8 @@ export interface StartCreatedAgentInitialPromptParams {
   snapshot?: ManagedAgent;
   prompt: AgentPromptInput | null;
   runOptions?: AgentRunOptions;
+  /** Delta 109: the prompt was answered out of band; no run starts. */
+  onOutOfBand?: (outcome: Promise<OutOfBandOutcome>) => void;
   logger: Logger;
 }
 
@@ -220,7 +241,7 @@ export async function waitForAgentRunStartWithTimeout(
  */
 export async function sendPromptToAgent(
   params: SendPromptToAgentParams,
-): Promise<{ outOfBand: boolean }> {
+): Promise<AgentRunDispatch> {
   const unarchive = params.unarchive ?? true;
 
   const record = await params.agentStorage.get(params.agentId);
@@ -275,6 +296,8 @@ export async function startCreatedAgentInitialPrompt(
 
   if (!dispatchResult.outOfBand) {
     await waitForAgentRunStartWithTimeout(params.agentManager, params.agentId);
+  } else if (dispatchResult.outOfBandOutcome) {
+    params.onOutOfBand?.(dispatchResult.outOfBandOutcome);
   }
 
   const refreshedSnapshot = params.agentManager.getAgent(params.agentId) ?? params.snapshot ?? null;
@@ -461,6 +484,8 @@ interface LiveFinishWatcher {
   end(reason: string): void;
   /** The caller reads the next turn's result itself; do not report that turn again. */
   callerReadsNextTurn(): void;
+  /** Delta 109: that prompt was answered out of band, so no such turn follows. */
+  forgetCallerReadsNextTurn(): void;
 }
 
 /**
@@ -756,6 +781,17 @@ export function callerReadsNextTurn(params: {
     ?.callerReadsNextTurn();
 }
 
+/** Delta 109: undo `callerReadsNextTurn` for a prompt Daseo answered without a turn. */
+export function forgetCallerReadsNextTurn(params: {
+  agentManager: AgentManager;
+  childAgentId: string;
+  callerAgentId: string;
+}): void {
+  finishWatchRegistry(params.agentManager)
+    .live.get(finishWatcherKey(params.childAgentId, params.callerAgentId))
+    ?.forgetCallerReadsNextTurn();
+}
+
 export function setupFinishNotification(params: SetupFinishNotificationParams): void {
   const existing = finishWatchRegistry(params.agentManager).live.get(
     finishWatcherKey(params.childAgentId, params.callerAgentId),
@@ -811,6 +847,9 @@ function startFinishWatcher(params: SetupFinishNotificationParams): void {
     end: endQuietly,
     callerReadsNextTurn: () => {
       callerReadsTurn = true;
+    },
+    forgetCallerReadsNextTurn: () => {
+      callerReadsTurn = false;
     },
   };
   registry.live.set(key, watcher);

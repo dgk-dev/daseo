@@ -3132,7 +3132,41 @@ describe("PiRpcAgentClient", () => {
       expect(result.handled).toBe(true);
       expect(pi.latestSession().prompts).toEqual([]);
       expect(result.texts[0]).toContain("/relaod 명령은 없습니다");
-      expect(result.texts[0]).toContain("/reload");
+      expect(result.texts[0]).toContain("혹시 이 명령인가요: /reload");
+    });
+
+    test("an unknown command that is not a typo goes on to the model", async () => {
+      const { pi, session } = await createSession();
+      pi.latestSession().commands = [
+        { name: "review", description: "Review changes", source: "extension" },
+        { name: "solo", description: "Solo mode", source: "prompt" },
+      ];
+      await session.listCommands();
+
+      // Claude Code harness commands, one-word paths, and near-but-not-typo names.
+      for (const prompt of [
+        "/code-review",
+        "/loop 5m check",
+        "/init",
+        "/security-review",
+        "/simplify",
+        "/effort high",
+        "/rename x",
+        "/tmp 봐줘",
+        "/etc 확인",
+        "/rev",
+      ]) {
+        expect(session.tryHandleOutOfBand?.(prompt) ?? null, prompt).toBeNull();
+      }
+    });
+
+    test("a word before the slash sends a would-be typo as text", async () => {
+      const { session } = await createSession();
+      await session.listCommands();
+
+      expect(session.tryHandleOutOfBand?.("경로 /relaod") ?? null).toBeNull();
+      // A leading space alone does not: clients trim the message before sending it.
+      expect(session.tryHandleOutOfBand?.("  /relaod") ?? null).not.toBeNull();
     });
 
     test("extension, prompt, and skill commands still go to Pi", async () => {
