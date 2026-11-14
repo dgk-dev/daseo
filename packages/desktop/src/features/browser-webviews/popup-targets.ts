@@ -250,6 +250,8 @@ export class BrowserPopupTargetManager {
     // A hidden WebContentsView collapses its renderer viewport to 0x0. The host parks the
     // target inside a never-shown native BaseWindow instead, preserving its real viewport
     // for trusted background input and screenshots without painting over the workspace.
+    // That window gives no frames of its own once a view was hidden; the paint hold in
+    // popup-painting.ts keeps an awake parked popup rendering (delta 107).
     input.view.setBounds(parkingBounds);
     input.hostView.addChildView(input.view);
     this.targetsByBrowserId.set(browserId, target);

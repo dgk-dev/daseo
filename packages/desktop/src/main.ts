@@ -296,7 +296,9 @@ function acquireBrowserPopupParkingHost(mainWindow: BrowserWindow): BrowserPopup
     return existing;
   }
   // A WebContentsView with setVisible(false) receives a 0x0 renderer viewport. Park all
-  // background targets for one app window in a shared, never-shown BaseWindow instead.
+  // background targets for one app window in a shared, never-shown BaseWindow instead. A view
+  // moved in here from the app window is hidden by Chromium and never shown again by this
+  // window; an awake parked popup paints through its paint hold (popup-painting.ts, delta 107).
   const parkingHost = {
     window: new BaseWindow({
       show: false,
@@ -488,7 +490,9 @@ function getBrowserPopupWindowOptions(
       webSecurity: true,
       webviewTag: false,
       allowRunningInsecureContent: false,
-      backgroundThrottling: false,
+      // Delta 107: no `backgroundThrottling: false`. Electron's "throttling off" keeps a swapped-out
+      // widget shown, and the opener-site widget an OAuth popup returns to never paints again; a
+      // parked popup paints through its paint hold instead (browser-webviews/popup-painting.ts).
       // Delta 93: Daseo answers page dialogs itself (page-dialog-hook.ts); should that hook ever
       // be missing, Electron answers them without a native box instead of showing one.
       disableDialogs: true,
@@ -559,7 +563,7 @@ function installBrowserWindowOpenHandler(input: {
             throw new Error("Popup WebContents did not inherit the Paseo browser profile");
           }
 
-          preparePaseoBrowserWebContents(popupContents);
+          preparePaseoBrowserWebContents(popupContents, { popup: true });
           adaptWebContents(popupContents);
           getPaseoBrowserPasskeys()?.attach(
             popupContents,

@@ -16,6 +16,7 @@ import {
   isEditingKeyInput,
   type BrowserTabDiscardBlockReason,
 } from "./discard.js";
+import { PopupPaintHold } from "./popup-painting.js";
 import { restoreDiscardedBrowserContents } from "./restore.js";
 import { measureProcessFootprints } from "./renderer-footprint.js";
 
@@ -96,6 +97,7 @@ const browserTabDiscarder = new BrowserTabDiscarder({
 // browser before its guest registers, so the hold is taken whenever both sides are known.
 const presentedBrowserKeys = new Set<string>();
 const presentationReleasesByWebContentsId = new Map<number, () => void>();
+const popupPaintHoldsByWebContentsId = new Map<number, PopupPaintHold>();
 
 interface BrowserWebContentsIdentity {
   readonly id: number;
@@ -109,6 +111,7 @@ interface RegisteredBrowserWebContents extends BrowserWebContentsIdentity {
     isAttached(): boolean;
     attach(protocolVersion?: string): void;
     sendCommand(command: string, params?: Record<string, unknown>): Promise<unknown>;
+    on?(event: "detach", listener: (event: unknown, reason: string) => void): unknown;
   };
   isLoading(): boolean;
   isCurrentlyAudible(): boolean;
@@ -418,6 +421,7 @@ export function trackPaseoBrowserDownload(webContentsId: number): () => void {
 function toLifecycleTarget(
   contents: RegisteredBrowserWebContents,
   discardable: DiscardableBrowserWebContents | null,
+  paintHold: PopupPaintHold | null,
 ): BrowserTabLifecycleTarget {
   return {
     ...(discardable ? discardTarget(discardable) : {}),
@@ -425,8 +429,10 @@ function toLifecycleTarget(
     isDestroyed: () => contents.isDestroyed(),
     isLoading: () => contents.isLoading(),
     isCurrentlyAudible: () => contents.isCurrentlyAudible(),
+    // A popup never touches Electron's flag (delta 107, popup-painting.ts); awake is its paint hold.
     setBackgroundThrottling: (allowed) => {
-      if (!contents.isDestroyed()) contents.setBackgroundThrottling(allowed);
+      if (paintHold) paintHold.setAwake(!allowed);
+      else if (!contents.isDestroyed()) contents.setBackgroundThrottling(allowed);
     },
     setWebLifecycleState: async (state) => {
       if (contents.isDestroyed()) return;
@@ -472,17 +478,47 @@ async function markIfPageWasEdited(contents: DiscardableBrowserWebContents): Pro
   }
 }
 
+function createPopupPaintHold(contents: RegisteredBrowserWebContents): PopupPaintHold {
+  const hold = new PopupPaintHold(
+    {
+      setFocusEmulation: async (enabled) => {
+        if (contents.isDestroyed()) return;
+        if (!contents.debugger.isAttached()) contents.debugger.attach("1.3");
+        await contents.debugger.sendCommand("Emulation.setFocusEmulationEnabled", { enabled });
+      },
+    },
+    (error) => {
+      if (!contents.isDestroyed()) {
+        log.warn("[browser-popup] paint hold failed", { webContentsId: contents.id, error });
+      }
+    },
+  );
+  // Emulation state belongs to the debugger session; a new session starts without it. A closing
+  // popup detaches with "target closed", and attaching again to it from here crashed the main
+  // process (SIGSEGV), so only a live popup is re-held, after the detach has finished.
+  contents.debugger.on?.("detach", (_event, reason) => {
+    if (reason === "target closed") return;
+    setImmediate(() => {
+      if (!contents.isDestroyed()) hold.invalidate();
+    });
+  });
+  return hold;
+}
+
 /**
  * `discardable` is true for plain browser tabs (webview guests). Popup windows are never discarded:
- * reloading one can break the opener relationship an OAuth or payment flow depends on.
+ * reloading one can break the opener relationship an OAuth or payment flow depends on. `popup`
+ * marks an adopted popup window, which keeps painting while parked through its paint hold.
  */
 export function preparePaseoBrowserWebContents(
   contents: RegisteredBrowserWebContents,
-  options: { discardable?: boolean } = {},
+  options: { discardable?: boolean; popup?: boolean } = {},
 ): void {
   const webContentsId = contents.id;
   const discardable = options.discardable ? (contents as DiscardableBrowserWebContents) : null;
-  browserTabLifecycle.track(toLifecycleTarget(contents, discardable));
+  const paintHold = options.popup ? createPopupPaintHold(contents) : null;
+  if (paintHold) popupPaintHoldsByWebContentsId.set(webContentsId, paintHold);
+  browserTabLifecycle.track(toLifecycleTarget(contents, discardable, paintHold));
   if (discardable) {
     discardable.on("before-input-event", (_event, input) => {
       if (isEditingKeyInput(input)) editedWebContentsIds.add(webContentsId);
@@ -509,6 +545,8 @@ export function preparePaseoBrowserWebContents(
     presentationReleasesByWebContentsId.delete(webContentsId);
     downloadsByWebContentsId.delete(webContentsId);
     editedWebContentsIds.delete(webContentsId);
+    popupPaintHoldsByWebContentsId.get(webContentsId)?.dispose();
+    popupPaintHoldsByWebContentsId.delete(webContentsId);
   });
 }
 
@@ -529,6 +567,7 @@ export function setPaseoBrowserPresented(input: {
 
 /** Popup targets are native views; main knows their visibility directly. */
 export function setPaseoBrowserContentsPresented(webContentsId: number, presented: boolean): void {
+  popupPaintHoldsByWebContentsId.get(webContentsId)?.setPresented(presented);
   const release = presentationReleasesByWebContentsId.get(webContentsId);
   if (presented && !release) {
     presentationReleasesByWebContentsId.set(webContentsId, browserTabLifecycle.hold(webContentsId));

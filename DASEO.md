@@ -167,7 +167,10 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     `WebContents` into a workspace/browser target graph instead of showing an OS child window.
     OAuth, POST, named-window reuse, direct opener relationships, recursive popups,
     `postMessage`, and `window.close()` retain browser semantics. Background and agent-created
-    targets stay in non-focusable native parking windows with paintable viewports; users see them
+    targets stay in non-focusable native parking windows with paintable viewports. That window
+    gives no frames of its own once a view was hidden, and Electron's "throttling off" broke the
+    OAuth return to the opener's site, so a parked popup renders through a DevTools focus emulation
+    hold while it is awake and never has background throttling turned off (delta 107); users see them
     inside the opener browser, while agents and mobile clients can snapshot, input, debug, stream,
     resize, or close each target by its own browser id. User focus is authoritative: Chromium
     navigation autofocus is disabled for embedded targets, inactive workspaces cannot advertise an
@@ -493,7 +496,8 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     its tab until `stream_stop`. Loading, audible, downloading, and network-capturing tabs
     throttle but never freeze. A frozen page's WebSockets drop and reconnect on wake, as in any
     frozen Chrome tab. Panes report presentation from `resident-webviews.ts`, the one place guests
-    are presented and parked; popups report through their native view. Desktop setting file
+    are presented and parked; popups report through their native view, and for a popup "throttling
+    off" is its paint hold, never Electron's flag (delta 107). Desktop setting file
     `browser.suspendIdleTabs: false` restores always-active tabs. Discarding tabs (loses state) is
     not done. (b) **Listing starts no guests** (delta 2). (c) **Bounded directory suggestions.**
     Discovery charges a read budget of 60,000 directory entries, cache hits included; a directory
@@ -2796,6 +2800,63 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        `providers/pi/agent.test.ts` ("a wake built before a new registration does not erase it").
        Takes effect with the next release and daemon restart. Leads on the old skill text may get
        more notices; each reads like today's "finished".
+
+107. **A parked popup renders while it is awake** — the lead's report on 2026-11-14: Google sign-in
+     on dashboard.capsolver.com never finished. Its `/passport/oauth2/google` callback posts to the
+     opener from `requestAnimationFrame` and closes; in Daseo the callback never ran. Measured with
+     a two-site repro (opener on `127.0.0.1`, identity page on `localhost`, callback back on the
+     opener's site): in 0.5.117 and in a fresh dev build the parked popup rendered 0 frames per
+     second with `visibilityState` "visible" and 10 timer ticks a second, `browser_screenshot`
+     answered "has not painted yet", and the same callback without rAF reached the opener in 569 ms.
+     The hidden parking window was not the cause: a bare Electron 44.10.2 popup in the same window
+     rendered 75 fps. Bisecting the adoption path pointed at `preparePaseoBrowserWebContents`,
+     whose lifecycle `track` calls `webContents.setBackgroundThrottling(false)`.
+     - **Two Electron behaviors.** (1) With throttling turned off by that call (at adoption, or by
+       a lifecycle throttle followed by a wake), Electron sets `disable_hidden_` on the popup's
+       widgets, so the opener-site widget Chromium swaps out when the popup leaves for the identity
+       provider is never hidden. The return navigation reuses it, nothing shows it again, and its
+       surface is never embedded: no frames until the popup leaves that site again. Hiding and
+       showing the view or toggling the flag did not recover it; the `webPreferences` value at
+       creation did not cause it. (2) A popup moved from the app window back into the never-shown
+       parking window (presented, then the user switched away) is hidden by Chromium and never
+       shown again: `visibilityState` "hidden", 0 frames, with any throttling setting.
+     - **Mechanism.** Popups keep Chromium's default throttling for their whole life; the popup
+       options no longer carry `backgroundThrottling: false`. For a popup the lifecycle's "throttling
+       off" is a paint hold: CDP `Emulation.setFocusEmulationEnabled` on its own debugger session,
+       which Chromium implements as a visible capture, so the page renders and reports visible
+       wherever its view sits (the state of a tab being recorded). The hold is taken while the
+       popup is awake and parked and released while it is presented, so a popup the user looks at
+       keeps real focus and blur. Idle steps are unchanged: throttled after 2 minutes releases the
+       hold, frozen after 15 stops rendering, the next command, capture, stream, or presentation
+       wakes it and takes the hold again. A held page reports `document.hasFocus()` true, as a
+       Chrome popup window does when it opens. Rejected: parking inside the app window (a child
+       view at index 0 still paints over the app page, measured), a view outside the window bounds
+       ("hidden", measured), and a shown transparent window (not tried: it would show in Mission
+       Control and the window switcher).
+       `webContents.incrementCapturerCount` no longer exists in Electron 44.
+     - **Crash found on the way.** Re-attaching the debugger from its `detach` event while the
+       popup closes (reason "target closed") crashed the main process (SIGSEGV). The hold ignores
+       that reason and re-applies after any other detach one macrotask later, only to a live popup.
+     - **Measured after the change** (dev build, 2026-11-14): the rAF callback reached the opener
+       in 360-583 ms and the popup closed in 402-603 ms, from an agent tab in the foreground
+       workspace and in a background workspace; a parked popup rendered 150 frames in 2 s and,
+       left alone, froze (longest frame gap 1588 ms) and rendered 149 frames in 2 s after a
+       command woke it. App CPU with five parked popups, percent of one core over 20 s: awake
+       11.1 (animated page) and 10.7 (static), frozen 2.5 and 1.9; before the change 11.6 and
+       11.4, frozen 2.5 and 2.4 (those popups painted before too, since they made no cross-site
+       return). Turnstile on `/passport/change-password` (the lead's "Captcha Loading") issued
+       its token in 1.2-1.8 s in 0.5.117 in a root tab and in a parked popup: not reproduced,
+       nothing changed for it.
+     - **Tests.** `packages/desktop/e2e/browser-tabs.e2e.mjs` runs a last phase after Playwright
+       disconnects, because Playwright attaches focus emulation to every new page and would keep a
+       parked popup painting by itself: an OAuth round trip from each workspace within 2 s, frames
+       in a parked popup and in a background-workspace tab, host focus kept (read through one plain
+       CDP session on the app renderer), and the idle freeze and wake. With the old popup options
+       restored it fails at the first round trip. Unit tests: `popup-painting.test.ts`.
+     - **Key files:** `packages/desktop/src/features/browser-webviews/popup-painting.ts`
+       (`PopupPaintHold`, `shouldHoldPopupPainting`), `browser-webviews/index.ts`
+       (`createPopupPaintHold`, `preparePaseoBrowserWebContents` `popup`), and `main.ts`
+       (`getBrowserPopupWindowOptions`).
 
 ## Local reliability contracts
 

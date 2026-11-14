@@ -222,6 +222,95 @@ async function startTargetPage() {
         </html>`);
       return;
     }
+    // Delta 107: an OAuth-shaped round trip. The opener (127.0.0.1) opens the identity page on
+    // another site (localhost, same port), which sends the popup back to the opener's site; the
+    // callback reports from requestAnimationFrame, the way CapSolver's Google sign-in does.
+    if (requestUrl.pathname === "/oauth-opener") {
+      response.end(`<!doctype html>
+        <html>
+          <head><title>OAuth opener</title></head>
+          <body>
+            <button id="oauth-sign-in" onclick="window.__oauthStart()">Sign in with popup</button>
+            <script>
+              window.__oauth = { openedAt: null, messageAt: null, closedAt: null, message: null };
+              window.addEventListener('message', (event) => {
+                if (event.data?.type !== 'oauth-callback') return;
+                window.__oauth.messageAt = Date.now();
+                window.__oauth.message = event.data;
+              });
+              window.__oauthStart = () => {
+                const idp = new URL('/oauth-idp', location.href);
+                idp.hostname = 'localhost';
+                const popup = window.open(idp.toString(), 'oauth-popup', 'width=500,height=600');
+                window.__oauth.openedAt = Date.now();
+                const watch = setInterval(() => {
+                  if (!popup.closed) return;
+                  window.__oauth.closedAt = Date.now();
+                  clearInterval(watch);
+                }, 50);
+              };
+            </script>
+          </body>
+        </html>`);
+      return;
+    }
+    if (requestUrl.pathname === "/oauth-idp") {
+      response.end(`<!doctype html>
+        <html>
+          <head><title>Identity provider</title></head>
+          <body>
+            <p>Identity provider</p>
+            <script>
+              setTimeout(() => {
+                const callback = new URL('/oauth-callback', location.href);
+                callback.hostname = '127.0.0.1';
+                location.href = callback.toString();
+              }, 300);
+            </script>
+          </body>
+        </html>`);
+      return;
+    }
+    if (requestUrl.pathname === "/oauth-callback") {
+      response.end(`<!doctype html>
+        <html>
+          <head><title>OAuth callback</title></head>
+          <body>
+            <p>Signing in</p>
+            <script>
+              requestAnimationFrame(() => {
+                window.opener.postMessage({ type: 'oauth-callback', token: 'raf-callback' }, '*');
+                window.close();
+              });
+            </script>
+          </body>
+        </html>`);
+      return;
+    }
+    if (requestUrl.pathname === "/frames-popup") {
+      response.end(`<!doctype html>
+        <html>
+          <head><title>Frames popup</title></head>
+          <body>
+            <p>Frames popup</p>
+            <script>
+              // The longest gap between two animation frames proves whether the page stopped
+              // rendering while nobody used it.
+              window.__frames = 0;
+              window.__lastFrameAt = performance.now();
+              window.__maxFrameGapMs = 0;
+              const frame = (now) => {
+                window.__frames++;
+                window.__maxFrameGapMs = Math.max(window.__maxFrameGapMs, now - window.__lastFrameAt);
+                window.__lastFrameAt = now;
+                requestAnimationFrame(frame);
+              };
+              requestAnimationFrame(frame);
+            </script>
+          </body>
+        </html>`);
+      return;
+    }
     if (requestUrl.pathname === "/dialog-fixture") {
       response.end(`<!doctype html>
         <html>
@@ -1985,6 +2074,198 @@ async function runAgentTabAutoCloseRegression({
   return { agentId, shown, unseen, closedLines: closedLines.length, browserTabsAfter };
 }
 
+// One plain CDP session on the app renderer only. Playwright attaches to every new page with
+// DevTools focus emulation, a visible capture that would keep a parked popup painting by itself,
+// so the delta 107 phase runs after Playwright has disconnected and reads the host through this.
+async function openHostCdpSession(cdpPort, expoPort) {
+  const targets = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json();
+  const host = targets.find(
+    (target) => target.type === "page" && target.url.includes(`localhost:${expoPort}`),
+  );
+  assert(host?.webSocketDebuggerUrl, `App renderer CDP target missing: ${JSON.stringify(targets)}`);
+  const socket = new WebSocket(host.webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => {
+    socket.addEventListener("open", resolve, { once: true });
+    socket.addEventListener("error", reject, { once: true });
+  });
+  let nextId = 0;
+  const pending = new Map();
+  socket.addEventListener("message", (event) => {
+    const message = JSON.parse(String(event.data));
+    const waiter = pending.get(message.id);
+    if (!waiter) return;
+    pending.delete(message.id);
+    if (message.error) waiter.reject(new Error(JSON.stringify(message.error)));
+    else waiter.resolve(message.result);
+  });
+  const evaluate = async (expression) => {
+    nextId += 1;
+    const id = nextId;
+    const result = await new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      socket.send(
+        JSON.stringify({
+          id,
+          method: "Runtime.evaluate",
+          params: { expression, returnByValue: true, awaitPromise: true },
+        }),
+      );
+    });
+    return result.result?.value;
+  };
+  return { evaluate, close: () => socket.close() };
+}
+
+async function evaluateJson(client, browserId, fn) {
+  const evaluated = await callBrowserTool(client, "browser_evaluate", { browserId, function: fn });
+  return JSON.parse(evaluated.resultJson);
+}
+
+const COUNT_FRAMES_FOR_2S = `() => new Promise((resolve) => {
+  let frames = 0;
+  const frame = () => { frames++; requestAnimationFrame(frame); };
+  requestAnimationFrame(frame);
+  setTimeout(() => resolve({ frames, visibility: document.visibilityState }), 2000);
+})`;
+
+/** An agent clicks "Sign in"; the parked popup's rAF callback must reach the opener and close it. */
+async function runOAuthRoundTrip(client, targetUrl, label) {
+  const created = await callBrowserTool(client, "browser_new_tab", {
+    url: new URL("/oauth-opener", targetUrl).toString(),
+  });
+  const openerId = created.browserId;
+  const button = await callBrowserTool(client, "browser_find", {
+    browserId: openerId,
+    role: "button",
+    name: "Sign in with popup",
+  });
+  const ref = button.matches?.[0]?.ref;
+  assert(ref, `${label}: sign-in button missing: ${JSON.stringify(button)}`);
+  await callBrowserTool(client, "browser_click", { browserId: openerId, ref });
+  const deadline = Date.now() + 5_000;
+  let state;
+  while (Date.now() < deadline) {
+    state = await evaluateJson(client, openerId, "() => window.__oauth");
+    if (state.closedAt !== null && state.messageAt !== null) break;
+    await delay(100);
+  }
+  const messageMs = state.messageAt === null ? null : state.messageAt - state.openedAt;
+  const closedMs = state.closedAt === null ? null : state.closedAt - state.openedAt;
+  assert(
+    messageMs !== null && messageMs <= 2_000 && state.message?.token === "raf-callback",
+    `${label}: the parked popup's requestAnimationFrame callback never reached its opener: ${JSON.stringify(state)}`,
+  );
+  assert(
+    closedMs !== null && closedMs <= 2_000,
+    `${label}: the parked popup did not close itself within 2 s: ${JSON.stringify(state)}`,
+  );
+  const openerFrames = await evaluateJson(client, openerId, COUNT_FRAMES_FOR_2S);
+  await callBrowserTool(client, "browser_close_tab", { browserId: openerId });
+  return { messageMs, closedMs, openerFrames };
+}
+
+// Delta 107: a popup Daseo parks (agent-opened, or in a workspace that is not in front) renders
+// like a background page that is being captured, keeps the user's focus where it was, and stops
+// rendering once the tab lifecycle lets it idle.
+async function runParkedPopupFrameRegression({
+  cdpPort,
+  expoPort,
+  client,
+  backgroundClient,
+  targetUrl,
+  artifactDir,
+}) {
+  const host = await openHostCdpSession(cdpPort, expoPort);
+  try {
+    await host.evaluate(`(() => {
+      const input = document.createElement("input");
+      input.id = "parked-popup-focus-sentinel";
+      input.value = "keep-parked-popup-focus";
+      input.style.position = "fixed";
+      input.style.left = "8px";
+      input.style.bottom = "40px";
+      input.style.zIndex = "100000";
+      document.body.appendChild(input);
+      input.focus();
+      return document.activeElement === input;
+    })()`);
+    const hostFocusKept = async () =>
+      await host.evaluate(
+        `document.activeElement?.id === "parked-popup-focus-sentinel" && document.activeElement.value === "keep-parked-popup-focus"`,
+      );
+
+    const foreground = await runOAuthRoundTrip(client, targetUrl, "Foreground workspace");
+    assert(await hostFocusKept(), "A parked sign-in popup took the user's host input focus");
+    const background = await runOAuthRoundTrip(backgroundClient, targetUrl, "Background workspace");
+    assert(await hostFocusKept(), "A background workspace sign-in popup took host focus");
+    // The opener is a root agent tab in a workspace that is not in front: it renders as well.
+    assert(
+      background.openerFrames.frames > 30,
+      `A background workspace agent tab rendered no frames: ${JSON.stringify(background.openerFrames)}`,
+    );
+
+    const opener = await callBrowserTool(client, "browser_new_tab", { url: targetUrl });
+    await callBrowserTool(client, "browser_evaluate", {
+      browserId: opener.browserId,
+      function:
+        "() => Boolean(window.__framesPopup = window.open('/frames-popup', 'frames-popup', 'width=480,height=360'))",
+    });
+    const { popups } = await waitForPopupTabs(client, opener.browserId, 1);
+    const framesPopup = popups[0];
+    assert(framesPopup?.isActive === false, "The frames popup was presented instead of parked");
+    const parkedFrames = await evaluateJson(client, framesPopup.browserId, COUNT_FRAMES_FOR_2S);
+    assert(
+      parkedFrames.frames > 60 && parkedFrames.visibility === "visible",
+      `A parked popup rendered too few frames in 2 s: ${JSON.stringify(parkedFrames)}`,
+    );
+    assert(await hostFocusKept(), "Rendering a parked popup took host focus");
+
+    // Left alone, it throttles and then freezes on the shortened lifecycle of this run; its own
+    // longest frame gap shows it stopped rendering, and the next command wakes it again.
+    await evaluateJson(
+      client,
+      framesPopup.browserId,
+      "() => { window.__maxFrameGapMs = 0; return true; }",
+    );
+    const freezes = await waitForLifecycleFreeze(artifactDir, framesPopup.browserId, 0);
+    await delay(1_500);
+    const idle = await evaluateJson(
+      client,
+      framesPopup.browserId,
+      // The gap still open when the wake lands counts too: no frame may have run since.
+      "() => ({ maxFrameGapMs: Math.round(Math.max(window.__maxFrameGapMs, performance.now() - window.__lastFrameAt)) })",
+    );
+    assert(
+      idle.maxFrameGapMs >= 1_000,
+      `An idle parked popup kept rendering after the lifecycle froze it: ${JSON.stringify(idle)}`,
+    );
+    const wokenFrames = await evaluateJson(client, framesPopup.browserId, COUNT_FRAMES_FOR_2S);
+    assert(
+      wokenFrames.frames > 60,
+      `A woken parked popup did not render again: ${JSON.stringify(wokenFrames)}`,
+    );
+    assert(await hostFocusKept(), "Waking a parked popup took host focus");
+
+    await callBrowserTool(client, "browser_close_tab", { browserId: framesPopup.browserId });
+    await callBrowserTool(client, "browser_close_tab", { browserId: opener.browserId });
+    await host.evaluate(`document.querySelector("#parked-popup-focus-sentinel")?.remove(); true`);
+    return {
+      foreground: { messageMs: foreground.messageMs, closedMs: foreground.closedMs },
+      background: {
+        messageMs: background.messageMs,
+        closedMs: background.closedMs,
+        openerFrames2s: background.openerFrames.frames,
+      },
+      parkedFrames2s: parkedFrames.frames,
+      idleMaxFrameGapMs: idle.maxFrameGapMs,
+      freezes,
+      wokenFrames2s: wokenFrames.frames,
+    };
+  } finally {
+    host.close();
+  }
+}
+
 async function main() {
   const artifactDir =
     process.env.PASEO_DESKTOP_BROWSER_E2E_ARTIFACT_DIR ??
@@ -2132,6 +2413,20 @@ async function main() {
     });
     console.log(
       `Agent tab auto-close regression passed: ${JSON.stringify(report.agentTabAutoClose)}`,
+    );
+    // Playwright's sessions hold every page it attached to as visibly captured; drop them first.
+    await browser.close();
+    browser = null;
+    report.parkedPopupFrames = await runParkedPopupFrameRegression({
+      cdpPort,
+      expoPort,
+      client,
+      backgroundClient,
+      targetUrl: target.url,
+      artifactDir,
+    });
+    console.log(
+      `Parked popup frame regression passed: ${JSON.stringify(report.parkedPopupFrames)}`,
     );
     writeJson(path.join(artifactDir, "result.json"), report);
     console.log(
