@@ -16,7 +16,7 @@ import { findEmptyDraftTabs, isWorkspaceUnused } from "./discard-empty-rules";
 // Daseo delta 70: a workspace the owner opened and left without a single message is deleted, not
 // archived, so it never shows up in the sidebar or the archive. Inside a workspace that stays,
 // empty new-agent tabs close when the owner leaves. The daemon re-checks emptiness itself
-// (agents, terminals, worktree changes, checkout, pin, manual title) before deleting anything.
+// (agents, terminals, worktree changes, pin, manual title) before deleting anything.
 
 function isDraftUsed(serverId: string, draftId: string): boolean {
   const draft = useDraftStore
@@ -47,7 +47,6 @@ async function cleanUpLeftWorkspace(selection: ActiveWorkspaceSelection): Promis
     (agent) => agent.workspaceId === workspaceId,
   );
   const unused = isWorkspaceUnused({
-    workspaceKind: workspace.workspaceKind,
     pinned: Boolean(workspace.pinnedAt),
     hasAgents,
     tabs,

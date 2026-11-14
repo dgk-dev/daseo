@@ -10,8 +10,10 @@ const WORK_TAB_KINDS = new Set<WorkspaceTabTarget["kind"]>([
   "browser",
 ]);
 
+// Every workspace kind can be unused. A "local_checkout" is not one special project checkout:
+// "+ New workspace" with local isolation in a git project records a new one at the project root
+// each time (Daseo delta 114), and deleting it only drops the record, never the directory.
 export interface EmptyWorkspaceFacts {
-  workspaceKind: string;
   pinned: boolean;
   hasAgents: boolean;
   tabs: readonly WorkspaceTab[];
@@ -20,9 +22,6 @@ export interface EmptyWorkspaceFacts {
 }
 
 export function isWorkspaceUnused(facts: EmptyWorkspaceFacts): boolean {
-  if (facts.workspaceKind === "local_checkout" || facts.workspaceKind === "checkout") {
-    return false;
-  }
   if (facts.pinned || facts.hasAgents) {
     return false;
   }

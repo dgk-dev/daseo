@@ -9597,7 +9597,99 @@ test("discard empty workspace deletes a workspace with no agent and no terminal"
   });
 });
 
-test("discard empty workspace keeps a workspace that has an agent, a pin, or is the checkout", async () => {
+// Daseo delta 114: "+ New workspace" with local isolation in a git project records a
+// local_checkout at the project root, many of them per project. An empty one is deleted like a
+// directory workspace; only the record goes, the shared checkout directory is never touched.
+test("discard empty workspace deletes an empty local checkout workspace in a git project", async () => {
+  const emitted: SessionOutboundMessage[] = [];
+  const workspace = emptyWorkspaceFixture({ kind: "local_checkout", displayName: "main" });
+  const removed: string[] = [];
+  const session = createSessionForWorkspaceTests({ onMessage: (message) => emitted.push(message) });
+  session.workspaceRegistry.get = async (id: string) =>
+    id === workspace.workspaceId && !removed.includes(id) ? workspace : null;
+  session.workspaceRegistry.remove = async (id: string) => {
+    removed.push(id);
+  };
+  session.workspaceRegistry.archive = async () => {
+    throw new Error("a local checkout must not go through the archive path");
+  };
+  session.agentStorage.list = async () => [];
+
+  await session.handleMessage({
+    type: "workspace.discard_empty.request",
+    workspaceId: workspace.workspaceId,
+    requestId: "req-discard-checkout",
+  });
+
+  expect(removed).toEqual([workspace.workspaceId]);
+  expect(findByType(emitted, "workspace.discard_empty.response").payload).toEqual({
+    requestId: "req-discard-checkout",
+    workspaceId: workspace.workspaceId,
+    discarded: true,
+    reason: null,
+  });
+});
+
+// Daseo delta 114: after a reconnect, a sequenced (sync) fetch returns only the workspaces that
+// changed since the client's cursor. The client still holds the others, so deleting one of them
+// must still reach the client as a remove; before, the session only remembered the delta entries
+// and skipped the remove, leaving the deleted workspace in the sidebar.
+test("a sync subscription after reconnect still emits remove for an unchanged known workspace", async () => {
+  const emitted: SessionOutboundMessage[] = [];
+  const session = asTestSession(
+    createSessionForWorkspaceTests({ onMessage: (message) => emitted.push(message) }),
+  );
+  const project = createPersistedProjectRecord({
+    projectId: "proj-sync-remove",
+    rootPath: REPO_CWD,
+    kind: "git",
+    displayName: "repo",
+    createdAt: "2026-11-14T12:00:00.000Z",
+    updatedAt: "2026-11-14T12:00:00.000Z",
+  });
+  const workspace = emptyWorkspaceFixture({
+    projectId: project.projectId,
+    kind: "local_checkout",
+    displayName: "main",
+  });
+  let workspaces = [workspace];
+  session.listAgentPayloads = async () => [];
+  session.projectRegistry.list = async () => [project];
+  session.projectRegistry.get = async () => project;
+  session.workspaceRegistry.list = async () => workspaces;
+  session.workspaceRegistry.get = async (id: string) =>
+    workspaces.find((candidate) => candidate.workspaceId === id) ?? null;
+
+  await session.handleMessage({
+    type: "fetch_workspaces_request",
+    requestId: "initial",
+    subscribe: { subscriptionId: "sub-before" },
+    sync: {},
+  });
+  const initial = findByType(emitted, "fetch_workspaces_response")?.payload;
+  expect(initial?.entries.map((entry) => entry.id)).toEqual([workspace.workspaceId]);
+
+  // Reconnect: nothing changed since the cursor, so the catch-up carries no entries.
+  await session.handleMessage({
+    type: "fetch_workspaces_request",
+    requestId: "catch-up",
+    subscribe: { subscriptionId: "sub-after" },
+    sync: { generation: initial?.sync?.generation, afterSeq: initial?.sync?.headSeq },
+  });
+  const catchUp = filterByType(emitted, "fetch_workspaces_response").at(-1)?.payload;
+  expect(catchUp?.requestId).toBe("catch-up");
+  expect(catchUp?.entries).toEqual([]);
+
+  workspaces = [];
+  await session.emitWorkspaceUpdatesForWorkspaceIds([workspace.workspaceId]);
+
+  const removeUpdate = filterByType(emitted, "workspace_update").find(
+    (message) => message.payload.kind === "remove",
+  );
+  expect(removeUpdate?.payload).toMatchObject({ kind: "remove", id: workspace.workspaceId });
+});
+
+test("discard empty workspace keeps a workspace that has an agent, a pin, or a manual title", async () => {
   const cases: Array<{
     workspace: ReturnType<typeof emptyWorkspaceFixture>;
     agents: StoredAgentRecord[];
@@ -9623,9 +9715,9 @@ test("discard empty workspace keeps a workspace that has an agent, a pin, or is 
       reason: "pinned",
     },
     {
-      workspace: emptyWorkspaceFixture({ kind: "local_checkout" }),
+      workspace: emptyWorkspaceFixture({ title: "Release notes", titleSource: "manual" }),
       agents: [],
-      reason: "main_checkout",
+      reason: "renamed",
     },
   ];
   for (const { workspace, agents, reason } of cases) {

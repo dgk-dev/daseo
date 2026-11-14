@@ -18,7 +18,6 @@ const terminal: WorkspaceTab = {
   createdAt: 0,
 };
 const base = {
-  workspaceKind: "directory",
   pinned: false,
   hasAgents: false,
   tabs: [draft("d1")],
@@ -31,13 +30,12 @@ describe("isWorkspaceUnused", () => {
     expect(isWorkspaceUnused({ ...base, tabs: [] })).toBe(true);
   });
 
-  it("keeps a workspace with typed text, an agent, a terminal, a pin, or the project checkout", () => {
+  it("keeps a workspace with typed text, an agent, a terminal, or a pin", () => {
     expect(isWorkspaceUnused({ ...base, isDraftUsed: (id) => id === "d1" })).toBe(false);
     expect(isWorkspaceUnused({ ...base, hasAgents: true })).toBe(false);
     expect(isWorkspaceUnused({ ...base, tabs: [draft("d1"), terminal] })).toBe(false);
     expect(isWorkspaceUnused({ ...base, tabs: [agent] })).toBe(false);
     expect(isWorkspaceUnused({ ...base, pinned: true })).toBe(false);
-    expect(isWorkspaceUnused({ ...base, workspaceKind: "local_checkout" })).toBe(false);
   });
 });
 

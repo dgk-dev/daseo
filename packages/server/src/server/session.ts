@@ -405,6 +405,12 @@ type FetchWorkspacesResponsePayload = Extract<
   { type: "fetch_workspaces_response" }
 >["payload"];
 type FetchWorkspacesResponseEntry = FetchWorkspacesResponsePayload["entries"][number];
+/** A workspace directory read: the response payload and every workspace the client then holds. */
+interface WorkspaceDirectoryRead {
+  payload: Pick<FetchWorkspacesResponsePayload, "entries" | "emptyProjects" | "pageInfo"> &
+    Partial<Pick<FetchWorkspacesResponsePayload, "sync">>;
+  clientWorkspaces: readonly WorkspaceDescriptorPayload[];
+}
 type FetchWorkspacesResponsePageInfo = FetchWorkspacesResponsePayload["pageInfo"];
 type WorkspaceProjectDescriptorPayload = FetchWorkspacesResponsePayload["emptyProjects"][number];
 type WorkspaceGithubSearchRepositoriesResponsePayload = Extract<
@@ -5719,9 +5725,10 @@ export class Session {
         };
       }
 
-      const payload = request.sync
+      const read = request.sync
         ? await this.readWorkspaceDirectorySync(request)
-        : await this.listFetchWorkspacesEntries(request);
+        : await this.readWorkspaceDirectoryPage(request);
+      const { payload } = read;
       this.workspaceGitObserver.syncObservers(payload.entries);
       this.sessionLogger.debug(
         {
@@ -5736,7 +5743,7 @@ export class Session {
       this.seedWorkspaceSubscriptionSnapshot(
         subscriptionId,
         request.filter,
-        payload.entries,
+        read.clientWorkspaces,
         payload.emptyProjects,
       );
 
@@ -5821,19 +5828,33 @@ export class Session {
     return this.directorySync.synchronizeAgents(snapshot.entries, request.sync ?? {});
   }
 
+  private async readWorkspaceDirectoryPage(
+    request: Extract<SessionInboundMessage, { type: "fetch_workspaces_request" }>,
+  ): Promise<WorkspaceDirectoryRead> {
+    const payload = await this.listFetchWorkspacesEntries(request);
+    return { payload, clientWorkspaces: payload.entries };
+  }
+
+  /**
+   * A sequenced read answers with only the workspaces changed after the client's cursor, but the
+   * client keeps every other one from its replica. The subscription has to know all of them, or
+   * a later remove of an unchanged workspace is skipped as "never sent" (Daseo delta 114: an
+   * empty workspace deleted on leave after a reconnect stayed in the sidebar).
+   */
   private async readWorkspaceDirectorySync(
     request: Extract<SessionInboundMessage, { type: "fetch_workspaces_request" }>,
-  ) {
+  ): Promise<WorkspaceDirectoryRead> {
     if (request.filter) {
       throw new SessionRequestError(
         "invalid_request",
         "Sequenced workspace directory reads do not support filters.",
       );
     }
-    return this.directorySync.synchronizeWorkspaces(
-      await this.workspaceDirectory.listDescriptors(),
-      request.sync ?? {},
-    );
+    const descriptors = await this.workspaceDirectory.listDescriptors();
+    return {
+      payload: this.directorySync.synchronizeWorkspaces(descriptors, request.sync ?? {}),
+      clientWorkspaces: descriptors,
+    };
   }
 
   // Build the bootstrap snapshot used by `flushBootstrappedWorkspaceUpdates`
@@ -5866,7 +5887,7 @@ export class Session {
   private seedWorkspaceSubscriptionSnapshot(
     subscriptionId: string | null,
     filter: FetchWorkspacesRequestFilter | undefined,
-    entries: FetchWorkspacesResponseEntry[],
+    entries: readonly WorkspaceDescriptorPayload[],
     emptyProjects: WorkspaceProjectDescriptorPayload[],
   ): void {
     const subscription = this.workspaceUpdatesSubscription;
@@ -6675,7 +6696,9 @@ export class Session {
    * Daseo delta 70: deletes a workspace the owner opened and left without a message. Nothing is
    * archived; the workspace simply stops existing. Anything that counts as work keeps it: an
    * agent (archived ones too), a terminal, uncommitted or unpushed changes in a Paseo-owned
-   * worktree, or being the project's checkout, pinned, or renamed by hand.
+   * worktree, or being pinned or renamed by hand. Delta 114: a local_checkout is deleted too.
+   * Every local-isolation workspace in a git project is one, sharing the project root; only the
+   * record goes, the directory is never touched.
    */
   private async handleWorkspaceDiscardEmptyRequest(
     request: Extract<SessionInboundMessage, { type: "workspace.discard_empty.request" }>,
@@ -6725,10 +6748,7 @@ export class Session {
     if (!workspace || workspace.archivedAt) {
       return "not_found";
     }
-    // The project's own checkout, a pinned workspace, or one the owner renamed is kept on purpose.
-    if (workspace.kind === "local_checkout") {
-      return "main_checkout";
-    }
+    // A pinned workspace or one the owner renamed is kept on purpose.
     if (workspace.pinnedAt) {
       return "pinned";
     }
