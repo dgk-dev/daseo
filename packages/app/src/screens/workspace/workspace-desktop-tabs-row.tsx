@@ -14,6 +14,8 @@ import {
   Text,
   View,
   type LayoutChangeEvent,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   type PressableStateCallbackType,
 } from "react-native";
 import {
@@ -62,10 +64,12 @@ import {
   WorkspaceTabPresentationResolver,
   WorkspaceTabStatusMark,
   formatWorkspaceTabIndex,
+  resolveWorkspaceTabTitle,
   type WorkspaceTabPresentation,
 } from "@/screens/workspace/workspace-tab-presentation";
 import { HINT_LINE_CARET, HintWord } from "@/composer/hint-line";
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
+import { STATUS_RING_FRAME_SIZE } from "@/components/status-ring/geometry";
 import { buildDeterministicWorkspaceTabId } from "@/workspace-tabs/identity";
 import {
   buildWorkspaceDesktopTabActions,
@@ -99,9 +103,13 @@ const DROPDOWN_WIDTH = 220;
 const LOADING_TAB_LABEL_SKELETON_WIDTH = 80;
 const DEFAULT_INLINE_ADD_BUTTON_RESERVED_WIDTH = 28;
 // Tab geometry, shared by the styles and the width budget in `useWorkspaceTabLayout`. The
-// leading width is the `N:` index plus the gap after it.
+// leading width is the `N:` index and the status-mark slot, each with the gap after it. The
+// slot is budgeted whether or not the tab has a mark, so a running tab still gets its full
+// title floor.
 const TAB_HORIZONTAL_PADDING = 8;
-const TAB_LEADING_WIDTH = 22;
+const TAB_HANDLE_GAP = 4;
+const TAB_INDEX_WIDTH = 22;
+const TAB_LEADING_WIDTH = TAB_INDEX_WIDTH + STATUS_RING_FRAME_SIZE + TAB_HANDLE_GAP;
 const TAB_CLOSE_SLOT_SIZE = 14;
 const TAB_CLOSE_SLOT_GAP = 6;
 
@@ -558,28 +566,6 @@ interface WorkspaceDesktopTabsRowProps {
   onExitFocusMode: () => void;
 }
 
-function getFallbackTabLabel(
-  tab: WorkspaceTabDescriptor,
-  labels: { newAgent: string; setup: string; terminal: string; agent: string; changes: string },
-): string {
-  if (tab.target.kind === "draft") {
-    return labels.newAgent;
-  }
-  if (tab.target.kind === "setup") {
-    return labels.setup;
-  }
-  if (tab.target.kind === "terminal") {
-    return labels.terminal;
-  }
-  if (tab.target.kind === "file") {
-    return tab.target.path.split("/").findLast(Boolean) ?? tab.target.path;
-  }
-  if (tab.target.kind === "working_diff") {
-    return labels.changes;
-  }
-  return labels.agent;
-}
-
 function useMiddleClickClose(onClose: () => void) {
   const ref = useRef<View>(null);
 
@@ -653,7 +639,7 @@ function TabHandleContent({
           numberOfLines={1}
           ellipsizeMode="tail"
         >
-          {presentation.label}
+          {resolveWorkspaceTabTitle(presentation)}
         </Text>
       ) : null}
     </View>
@@ -981,16 +967,6 @@ export function WorkspaceDesktopTabsRow({
     [exitFocusModeWidth, focusModeEnabled, inlineAddButtonWidth, tabsActionsWidth],
   );
 
-  const fallbackTabLabels = useMemo(
-    () => ({
-      newAgent: t("workspace.tabs.fallback.newAgent"),
-      setup: t("workspace.tabs.fallback.setup"),
-      terminal: t("workspace.tabs.fallback.terminal"),
-      agent: t("workspace.tabs.fallback.agent"),
-      changes: t("panels.diff.changesLabel"),
-    }),
-    [t],
-  );
   const tabMenuLabels = useMemo<WorkspaceTabMenuLabels>(
     () => ({
       copyResumeCommand: t("workspace.tabs.menu.copyResumeCommand"),
@@ -1009,20 +985,66 @@ export function WorkspaceDesktopTabsRow({
     }),
     [t],
   );
-  const tabLabelLengths = useMemo(
-    () =>
-      tabs.map((tab) => {
-        const label = getFallbackTabLabel(tab.tab, fallbackTabLabels);
-        return label.length;
-      }),
-    [fallbackTabLabels, tabs],
-  );
-
+  const activeTabIndex = tabs.findIndex((tab) => tab.isActive);
   const { layout } = useWorkspaceTabLayout({
-    tabLabelLengths,
+    tabCount: tabs.length,
+    activeIndex: activeTabIndex,
     viewportWidthOverride: tabsContainerWidth > 0 ? tabsContainerWidth : null,
     metrics: layoutMetrics,
   });
+
+  // When the row scrolls, keep the active tab in view: it always carries its title (delta 112),
+  // so the scroll position is what decides whether that title can be read.
+  const tabsScrollRef = useRef<ScrollView>(null);
+  const tabsScrollXRef = useRef(0);
+  const [tabsScrollViewportWidth, setTabsScrollViewportWidth] = useState(0);
+  const [tabWidths, setTabWidths] = useState<Record<string, number>>({});
+
+  const handleTabsScrollLayout = useCallback((event: LayoutChangeEvent) => {
+    updateMeasuredWidth(setTabsScrollViewportWidth, event);
+  }, []);
+
+  const handleTabsScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    tabsScrollXRef.current = event.nativeEvent.contentOffset.x;
+  }, []);
+
+  const handleTabSlotLayout = useCallback((tabKey: string, width: number) => {
+    const nextWidth = Math.round(width);
+    setTabWidths((current) =>
+      Math.abs((current[tabKey] ?? -2) - nextWidth) > 1
+        ? { ...current, [tabKey]: nextWidth }
+        : current,
+    );
+  }, []);
+
+  useEffect(() => {
+    if (!layout.requiresHorizontalScrollFallback || activeTabIndex < 0) return;
+    if (tabsScrollViewportWidth <= 0) return;
+    let activeStart = 0;
+    for (let index = 0; index < activeTabIndex; index += 1) {
+      const width = tabWidths[tabs[index]?.tab.key ?? ""];
+      if (width === undefined) return;
+      activeStart += width;
+    }
+    const activeWidth = tabWidths[tabs[activeTabIndex]?.tab.key ?? ""];
+    if (activeWidth === undefined) return;
+    const current = tabsScrollXRef.current;
+    let target = current;
+    if (activeStart < current) target = activeStart;
+    else if (activeStart + activeWidth > current + tabsScrollViewportWidth) {
+      target = activeStart + activeWidth - tabsScrollViewportWidth;
+    }
+    if (target !== current) {
+      tabsScrollRef.current?.scrollTo({ x: target, animated: false });
+      tabsScrollXRef.current = target;
+    }
+  }, [
+    activeTabIndex,
+    layout.requiresHorizontalScrollFallback,
+    tabWidths,
+    tabs,
+    tabsScrollViewportWidth,
+  ]);
 
   const handleDragEnd = useCallback(
     (nextTabs: WorkspaceDesktopTabRowItem[]) => {
@@ -1110,6 +1132,7 @@ export function WorkspaceDesktopTabsRow({
           dragHandleProps={dragHandleProps}
           showDropIndicatorBefore={showDropIndicatorBefore}
           showDropIndicatorAfter={showDropIndicatorAfter}
+          onTabSlotLayout={handleTabSlotLayout}
         />
       );
     },
@@ -1134,6 +1157,7 @@ export function WorkspaceDesktopTabsRow({
       tabMenuLabels,
       tabDropPreviewIndex,
       tabs.length,
+      handleTabSlotLayout,
     ],
   );
 
@@ -1179,8 +1203,12 @@ export function WorkspaceDesktopTabsRow({
         </View>
       ) : null}
       <ScrollView
+        ref={tabsScrollRef}
         horizontal
         scrollEnabled={layout.requiresHorizontalScrollFallback}
+        onLayout={handleTabsScrollLayout}
+        onScroll={handleTabsScroll}
+        scrollEventThrottle={16}
         testID="workspace-tabs-scroll"
         style={tabsScrollStyle}
         contentContainerStyle={styles.tabsContent}
@@ -1266,6 +1294,7 @@ function ResolvedDesktopTabChip({
   dragHandleProps,
   showDropIndicatorBefore,
   showDropIndicatorAfter,
+  onTabSlotLayout,
 }: {
   item: WorkspaceDesktopTabRowItem;
   isFocused: boolean;
@@ -1293,8 +1322,14 @@ function ResolvedDesktopTabChip({
   dragHandleProps: DraggableListDragHandleProps | undefined;
   showDropIndicatorBefore: boolean;
   showDropIndicatorAfter: boolean;
+  onTabSlotLayout: (tabKey: string, width: number) => void;
 }) {
   const { t } = useTranslation();
+  const tabKey = item.tab.key;
+  const handleSlotLayout = useCallback(
+    (event: LayoutChangeEvent) => onTabSlotLayout(tabKey, event.nativeEvent.layout.width),
+    [onTabSlotLayout, tabKey],
+  );
   const resolvedTab = useMemo(
     () =>
       buildWorkspaceDesktopTabActions({
@@ -1344,7 +1379,7 @@ function ResolvedDesktopTabChip({
             : presentation.tooltip;
 
         return (
-          <View style={styles.tabSlot}>
+          <View style={styles.tabSlot} onLayout={handleSlotLayout}>
             {showDropIndicatorBefore ? (
               <View style={[styles.tabDropIndicator, styles.tabDropIndicatorBefore]} />
             ) : null}
@@ -1439,7 +1474,7 @@ const styles = StyleSheet.create((theme) => ({
   tabHandle: {
     flexDirection: "row",
     alignItems: "center",
-    gap: theme.spacing[1],
+    gap: TAB_HANDLE_GAP,
     flexShrink: 1,
     minWidth: 0,
     userSelect: "none",

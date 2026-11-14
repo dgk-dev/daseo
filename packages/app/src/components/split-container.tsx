@@ -68,6 +68,7 @@ import type { TerminalProfileInput } from "@/screens/workspace/terminals/use-wor
 import {
   WorkspaceTabPresentationResolver,
   WorkspaceTabStatusMark,
+  resolveWorkspaceTabTitle,
 } from "@/screens/workspace/workspace-tab-presentation";
 import type { WorkspaceTabDescriptor } from "@/screens/workspace/workspace-tabs-types";
 import {
@@ -706,7 +707,9 @@ function DragOverlayTabChipInner({
     >
       {(presentation) => {
         const label =
-          presentation.titleState === "loading" ? t("common.states.loading") : presentation.label;
+          presentation.titleState === "loading"
+            ? t("common.states.loading")
+            : resolveWorkspaceTabTitle(presentation);
 
         return (
           <View style={chipStyle}>

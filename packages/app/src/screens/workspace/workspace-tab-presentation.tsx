@@ -193,6 +193,28 @@ export function formatWorkspaceTabIndex(position: number): string {
   return `${position}:`;
 }
 
+// What an untitled tab shows as its title (an agent before its first title, a terminal with no
+// cwd label): the same lowercase command vocabulary as the tab row's words, English in every
+// locale. Delta 112: a tab is never just its index because the title came back empty.
+const WORKSPACE_TAB_KIND_WORDS: Record<WorkspaceTabDescriptor["kind"], string> = {
+  draft: "agent",
+  agent: "agent",
+  provider_subagent: "agent",
+  terminal: "term",
+  browser: "web",
+  file: "file",
+  working_diff: "diff",
+  commit_diff: "diff",
+  setup: "setup",
+};
+
+/** The title a tab shows: its label, or its kind word when the label is empty. */
+export function resolveWorkspaceTabTitle(
+  presentation: Pick<WorkspaceTabPresentation, "label" | "kind">,
+): string {
+  return presentation.label.trim() || WORKSPACE_TAB_KIND_WORDS[presentation.kind];
+}
+
 interface WorkspaceTabStatusMarkProps {
   presentation: WorkspaceTabPresentation;
   /**
@@ -299,7 +321,7 @@ export function WorkspaceTabOptionRow({
           <Text numberOfLines={1} style={styles.optionLabel}>
             {presentation.titleState === "loading"
               ? t("workspace.tabs.loading")
-              : presentation.label}
+              : resolveWorkspaceTabTitle(presentation)}
           </Text>
         </View>
       </Pressable>

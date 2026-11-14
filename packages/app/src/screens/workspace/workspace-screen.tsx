@@ -122,6 +122,7 @@ import {
   WorkspaceTabOptionRow,
   WorkspaceTabStatusMark,
   formatWorkspaceTabIndex,
+  resolveWorkspaceTabTitle,
   type WorkspaceTabPresentation,
 } from "@/screens/workspace/workspace-tab-presentation";
 import { HINT_LINE_CARET } from "@/composer/hint-line";
@@ -488,7 +489,7 @@ function ResolvedMobileActiveTabTrigger({
           <Text style={styles.switcherActiveTabText} numberOfLines={1}>
             {presentation.titleState === "loading"
               ? t("workspace.tabs.loading")
-              : presentation.label}
+              : resolveWorkspaceTabTitle(presentation)}
           </Text>
         </View>
       )}
