@@ -1846,14 +1846,29 @@ export class PiRpcAgentSession implements AgentSession {
     return this.backgroundWaitState;
   }
 
+  /**
+   * `source: "wake"` marks a count read from a wake envelope. pi-local computes that count when it
+   * builds the wake, and the wake reaches this adapter only when Pi submits it, so a wait the agent
+   * registered in between is missing from it (DASEO.md delta 106; 2026-11-12: `pending=0` arrived
+   * in the same second as a new registration and the next idle looked wait-free). A wake therefore
+   * never lowers the count below the waits this adapter saw registered and not yet settled. Tool
+   * results are computed when the tool runs, after every earlier registration, and stay
+   * authoritative: they also trim ids whose end this adapter never saw (a reload's lost waits).
+   */
   private recordBackgroundWaits(
-    pending: number,
-    change: { registered?: PiWaitToolSignal["registered"]; settled?: string[] } = {},
+    reported: number,
+    change: {
+      registered?: PiWaitToolSignal["registered"];
+      settled?: string[];
+      source?: "tool" | "wake";
+    } = {},
   ): void {
     if (change.registered) {
       this.pendingWaitDescriptions.set(change.registered.waitId, change.registered.description);
     }
     for (const waitId of change.settled ?? []) this.pendingWaitDescriptions.delete(waitId);
+    const pending =
+      change.source === "wake" ? Math.max(reported, this.pendingWaitDescriptions.size) : reported;
     if (pending === 0) {
       this.clearBackgroundWaits();
       return;
@@ -2860,7 +2875,12 @@ export class PiRpcAgentSession implements AgentSession {
       return true;
     }
     const wake = readPiWaitEnvelope(entry.text);
-    if (wake) this.recordBackgroundWaits(wake.pending, { settled: wake.settledWaitIds });
+    if (wake) {
+      this.recordBackgroundWaits(wake.pending, {
+        settled: wake.settledWaitIds,
+        source: "wake",
+      });
+    }
     let clientMessageId: string | null;
     let steering = false;
     if (this.awaitingInitialUserMessage) {

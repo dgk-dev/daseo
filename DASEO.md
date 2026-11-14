@@ -1523,7 +1523,7 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       quiet). pi-local's delegate-implementation skill tells implementers to end every stop for the
       lead with the marker.
     - **One watcher per (child, caller).** A new watcher for the same pair stops the previous one
-      in memory (the journal entry is shared and stays).
+      in memory (the journal entry is shared and stays). Delta 106: it refreshes the live one.
     - **Key files:** `packages/server/src/server/agent/agent-prompt.ts` (`asksForLeadReview`,
       `liveFinishWatchers`, `reportReviewIfAsked`, `finishAfterReview`), tests in
       `agent-prompt.test.ts` ("lead review and one watcher per pair"). Takes effect with the next
@@ -2719,6 +2719,83 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
      missing width, a native 320 already at v13). Key files:
      `packages/app/src/stores/panel-store/{state,index}.ts` (`DEFAULT_NATIVE_SIDEBAR_WIDTH`,
      `defaultSidebarWidth`, `migratePanelSidebarWidth`).
+
+106. **A lead hears every finished turn of its sub-agent** — the owner's report on 2026-11-14
+     ("워커는 작업을 끝내고 가만히 있는데 리드가 그걸 모르고 주구장창 기다리는 경우가 종종 있다").
+     The finish watcher ended at its first "finished" notice, so every later turn of the child that
+     the lead had not started ended silently. Evidence (audit
+     `brain/Memory/Agent/personal-root/lead-missed-child-finish-audit-2026-11-14.md`): 2026-11-13
+     lead `01a1afcb-789a` / implementer `01a1d234-e260` got "the critic is running" at 15:20 KST;
+     the critic's notice restarted the implementer, whose final `[lead review]` report at 15:30
+     reached nobody until the owner asked at 17:24 (same shape: lead `01a1d237-3f69` / child
+     `01a1d361-15de`). From 2026-10-25 to 11-14, 55 report-like turn ends of 477 non-research
+     children followed a terminal notice with no notice; the first restart cause was the child's
+     own sub-agent's notice in 12 and its own wait wake in 6, and 17 were found only because the
+     owner wrote. Separately, child session `01a1d1b0-0857` at 2026-11-12 22:11:04Z registered a
+     wait (`1 wait(s) pending`) and in the same second received a wake built earlier with
+     `pending=0`; the count dropped to 0, "finished" went out at 22:11:05, and the final report at
+     22:13:25 was never announced (the lead sat idle 27 minutes).
+     - **A watch lasts as long as the parent-child relation.** After a notice the watcher keeps
+       listening. It owes the caller a finish from `create_agent` or a `send_agent_prompt` with
+       notify-on-finish until one is delivered (a failed delivery stays owed and the next turn end
+       retries it). After that, a turn end is reported only when its last message differs from the
+       last report the caller received (compared by a sha256 prefix) and is not empty or exactly
+       `[wait noted]`, and only to the child's own parent: a follow-up to an agent the caller does
+       not own reports that one turn, as before. A `send_agent_prompt` with `background: false`
+       (the tool returns the result) or `notifyOnFinish: false` marks that turn as read by the
+       caller. A new request for the same pair refreshes the live watcher (delta 80's one watcher
+       per pair); it no longer replaces it.
+     - **A child waiting on its own sub-agents is not finished.** Its watched sub-agents (watches
+       whose caller is the child, with a finish still owed) hold its "finished" like background
+       waits do (delta 29), with the same `[lead review]` release at once (delta 80). The hold ends
+       when their finish, error, review, or close notice has been sent to the child, or when their
+       watch ends without one (not owned, caller archived, a failed delivery). A sub-agent with no
+       activity for 61 minutes stops holding; a timer re-checks the held child at that moment, so
+       the cap does not wait for the next state change (the background-wait cap does).
+     - **A wake's stale count no longer erases a newer wait.** The Pi adapter never lowers the count
+       from a wake below the waits it saw registered and not yet settled; a wake's `pending` is
+       computed when pi-local builds it, before a registration that reaches the adapter first. Tool
+       results (`wait_for`, `wait_cancel`, `wait_status`) are computed when the tool runs and stay
+       authoritative, and they also trim an id whose end the adapter never saw (waits lost in an
+       in-process reload). A matching output line (`fired`) keeps its wait; exit and timeout settle
+       it. pi-local is unchanged.
+     - **Which idle sends which notice:**
+
+       | Child event                                                 | Notice to the caller                                         |
+       | ----------------------------------------------------------- | ------------------------------------------------------------ |
+       | idle with background waits or watched sub-agents pending    | none; a `[lead review]` report: "is waiting for your review" |
+       | idle, a finish owed                                         | finished                                                     |
+       | idle, nothing owed, a new report, child owned by the caller | finished                                                     |
+       | idle, nothing owed, same report, empty, or `[wait noted]`   | none                                                         |
+       | idle after a turn the caller read itself or declined        | none                                                         |
+       | error, permission request, 20 min silent while running      | errored, needs permission, stall (unchanged)                 |
+       | closed while a finish is owed or the child is held          | was closed; the watch ends                                   |
+       | closed otherwise, caller archived, child no longer owned    | none; the watch ends                                         |
+
+       An `archiveOnFinish` child keeps delta 103 exactly: its first finish or error is its last
+       notice, then it is archived.
+
+     - **Bounds.** A watch ends when the child closes or is archived, the caller is archived, or the
+       child is detached. A continuing watch (nothing owed, nothing held, no turn running) ends
+       after 7 days with no child activity, and at most 500 watches live per daemon: the quietest
+       continuing one makes room. An idle unload keeps the watch (it emits no close). Registries
+       are per agent manager.
+     - **Journal.** Entries carry `finishOwed` and `lastReportHash` and are updated when they
+       change; an entry written before this delta reads as owed. Restart recovery re-arms a
+       continuing watch without loading its child, re-arms a woken child's watch with its state,
+       and after delivering an owed finish re-arms the parent's continuing watch.
+     - **Logs.** `finish_watch.ended` (child closed, caller-gone, quiet, evicted),
+       `finish_watch.not_delivered` (caller-gone, not-owned) at info; `finish_watch.held` and
+       `finish_watch.repeat_suppressed` at debug.
+     - **Key files:** `packages/server/src/server/agent/agent-prompt.ts`
+       (`setupFinishNotification`, `callerReadsNextTurn`, `finishReportHash`,
+       `SUB_AGENT_HOLD_MAX_MS`), `tools/paseo-tools.ts`, `restart-recovery.ts`,
+       `restart-recovery-runner.ts`, `providers/pi/agent.ts` (`recordBackgroundWaits`); tests in
+       `agent-prompt.test.ts` ("a watch lasts as long as the parent-child relation", "a child
+       waiting on its own sub-agents is not finished"), `restart-recovery.test.ts`, and
+       `providers/pi/agent.test.ts` ("a wake built before a new registration does not erase it").
+       Takes effect with the next release and daemon restart. Leads on the old skill text may get
+       more notices; each reads like today's "finished".
 
 ## Local reliability contracts
 

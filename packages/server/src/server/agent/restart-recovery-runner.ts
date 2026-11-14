@@ -5,9 +5,12 @@ import type { Logger } from "pino";
 
 import { ensureAgentLoaded } from "./agent-loading.js";
 import type { AgentManager, ManagedAgent } from "./agent-manager.js";
+import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
+
 import {
   archivesOnFinish,
   deliverFinishNotification,
+  finishReportHash,
   formatSystemNotificationPrompt,
   sendPromptToAgent,
   setupFinishNotification,
@@ -99,8 +102,9 @@ function collectLostNotices(
 }
 
 /**
- * Re-arm a watcher whose child is about to be woken, or deliver the finish notification of a
- * child that had already settled when the shutdown cut the notification off.
+ * Re-arm a watcher whose child is about to be woken, deliver the finish notification of a child
+ * that had already settled when the shutdown cut the notification off, and re-arm the continuing
+ * watch of a child whose caller had nothing owed (delta 106) without loading that child.
  */
 async function recoverWatcher(
   deps: RecoveryDeps,
@@ -114,22 +118,34 @@ async function recoverWatcher(
       deps.agentStorage.get(watcher.callerAgentId),
     ]);
     if (!child || child.archivedAt || !caller || caller.archivedAt) return "skipped";
-    await ensureAgentLoaded(childAgentId, {
-      agentManager: deps.agentManager,
-      agentStorage: deps.agentStorage,
-      logger: deps.logger,
-    });
-    if (childWillBeWoken) {
+    const finishOwed = watcher.finishOwed ?? true;
+    const archiveOnFinish = archivesOnFinish(child.labels);
+    const watch = (resume?: { finishOwed: boolean; lastReportHash: string | null }) =>
       setupFinishNotification({
         agentManager: deps.agentManager,
         agentStorage: deps.agentStorage,
         childAgentId,
         callerAgentId: watcher.callerAgentId,
         requireParentOwnership: watcher.requireParentOwnership,
+        ...(resume ? { resume: { ...resume, archiveOnFinish } } : {}),
         logger: deps.logger,
       });
+    const continuing = { finishOwed: false, lastReportHash: watcher.lastReportHash ?? null };
+    if (!finishOwed && !childWillBeWoken) {
+      // Nothing owed and nothing to wake: listen again, and leave the child unloaded until used.
+      watch(continuing);
       return "rearmed";
     }
+    await ensureAgentLoaded(childAgentId, {
+      agentManager: deps.agentManager,
+      agentStorage: deps.agentStorage,
+      logger: deps.logger,
+    });
+    if (childWillBeWoken) {
+      watch(finishOwed ? undefined : continuing);
+      return "rearmed";
+    }
+    const message = await deps.agentManager.getLastAssistantMessage(childAgentId);
     const delivery = await deliverFinishNotification({
       agentManager: deps.agentManager,
       agentStorage: deps.agentStorage,
@@ -137,10 +153,15 @@ async function recoverWatcher(
       callerAgentId: watcher.callerAgentId,
       requireParentOwnership: watcher.requireParentOwnership,
       reason: child.lastStatus === "error" ? "errored" : "finished",
-      archiveAfter: archivesOnFinish(child.labels),
+      archiveAfter: archiveOnFinish,
+      lastAssistantMessage: message,
       logger: deps.logger,
     });
-    return delivery === "delivered" ? "delivered" : "skipped";
+    if (delivery !== "delivered") return "skipped";
+    if (!archiveOnFinish && getParentAgentIdFromLabels(child.labels) === watcher.callerAgentId) {
+      watch({ finishOwed: false, lastReportHash: message ? finishReportHash(message) : null });
+    }
+    return "delivered";
   } catch (error) {
     deps.logger.error({ err: error, childAgentId }, "restart_recovery.watcher_failed");
     return "skipped";

@@ -69,6 +69,8 @@ Permission requests are notification checkpoints, not the end of that subscripti
 The permission notification includes the normalized request plus the child and request IDs, so the caller can inspect it and respond without fetching agent status.
 A watched child that closes before its finish event also notifies the caller so delegated work cannot disappear silently during archive or workspace teardown.
 
+The watch on a child lasts as long as the parent-child relation, not until the first notice. A child's later turn can start without its parent asking: its own sub-agent's notice, a `wait_for` wake, a schedule, an automatic resume, or someone typing in its tab. When such a turn ends with a report the parent has not received, the parent gets another "finished" notice. A repeated report, an empty reply, or `[wait noted]` sends nothing. A child that ends its turn while background waits or its own watched sub-agents are still pending is not finished: the notice waits for the turn after they report, and a report marked `[lead review]` goes out at once. A follow-up prompt to an agent the caller does not own reports that one turn only. The table of which idle sends which notice, and the bounds on these longer watches, are in `DASEO.md` delta 106.
+
 ## Provider-managed child agents
 
 Some providers can create their own child sessions inside one provider runtime. OMP's task tool reports these with `child_session` events; `AgentManager` imports the live provider handle, stamps `paseo.parent-agent-id`, and surfaces the result as a normal subagent in the parent's subagents track.

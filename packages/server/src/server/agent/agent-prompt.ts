@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Logger } from "pino";
 
 import type {
@@ -379,6 +380,11 @@ export interface SetupFinishNotificationParams {
   childAgentId: string;
   callerAgentId: string;
   requireParentOwnership?: boolean;
+  /**
+   * Restart recovery (deltas 44, 106): re-arm a watch with the state its journal entry kept,
+   * instead of owing the caller a new finish. The child may still be unloaded.
+   */
+  resume?: ResumedFinishWatch;
   logger: Logger;
 }
 
@@ -419,11 +425,120 @@ export function asksForLeadReview(message: string | null | undefined): boolean {
 }
 
 /**
+ * Local fork (DASEO.md delta 106): a watch lasts as long as the parent-child relation, not until
+ * the first notice. A child's later turn (its own sub-agent's notice, a wait wake, a schedule, an
+ * automatic resume, the owner typing in its tab) used to end silently, and its lead waited on a
+ * report it never got (2026-11-13: 114 minutes). These bound what the longer watches cost.
+ *
+ * A child that ended its turn while sub-agents it started with a finish watch are still working is
+ * not finished either: its "finished" is held like a background wait (delta 29) until their
+ * notices have reached it. A sub-agent that shows no activity for SUB_AGENT_HOLD_MAX_MS stops
+ * holding it; a timer measures that, not the next state change.
+ */
+export const SUB_AGENT_HOLD_MAX_MS = 61 * 60_000;
+/** A continuing watch (nothing owed, nothing held) whose child has been quiet this long ends. */
+export const CONTINUED_WATCH_MAX_QUIET_MS = 7 * 24 * 60 * 60_000;
+/** At most this many watches live at once; the quietest continuing watch makes room. */
+export const MAX_LIVE_FINISH_WATCHERS = 500;
+
+/** Identifies a report the caller already received, without keeping its text in the journal. */
+export function finishReportHash(message: string): string {
+  return createHash("sha256").update(message).digest("hex").slice(0, 16);
+}
+
+interface LiveFinishWatcher {
+  readonly childAgentId: string;
+  readonly callerAgentId: string;
+  /** The caller asked for the child's next finish again (send_agent_prompt with notifyOnFinish). */
+  refresh(requireParentOwnership: boolean): void;
+  /** When this watch stops holding its caller's own finish; null when it does not hold it. */
+  holdsCallerUntil(): number | null;
+  /** Re-evaluate a child idle-held on its sub-agents: one of their watches ended or timed out. */
+  recheckHold(): void;
+  /** The child's last activity when this watch may be dropped to make room, else null. */
+  evictableSince(): number | null;
+  /** End the watch without a notice and leave the journal. */
+  end(reason: string): void;
+  /** The caller reads the next turn's result itself; do not report that turn again. */
+  callerReadsNextTurn(): void;
+}
+
+/**
  * Local fork (delta 80): one live watcher per (child, caller). Every send_agent_prompt with
  * notifyOnFinish used to add another; a lead that sent seven follow-ups to a running implementer got
- * the same finish notice seven times (2026-11-04, 14:21 KST), each one a paid turn.
+ * the same finish notice seven times (2026-11-04, 14:21 KST), each one a paid turn. Delta 106: a
+ * new request refreshes the live watcher instead of replacing it.
  */
-const liveFinishWatchers = new Map<string, () => void>();
+interface FinishWatchRegistry {
+  live: Map<string, LiveFinishWatcher>;
+  /**
+   * Delta 106: watches whose caller is waiting on their notice. Separate from `live` so a watch
+   * that stopped before its last notice was sent keeps holding the caller until it is sent.
+   */
+  holdingCaller: Set<LiveFinishWatcher>;
+}
+
+/** One registry per agent manager: the daemon has one, and each test builds its own. */
+const finishWatchRegistries = new WeakMap<AgentManager, FinishWatchRegistry>();
+
+function finishWatchRegistry(agentManager: AgentManager): FinishWatchRegistry {
+  let registry = finishWatchRegistries.get(agentManager);
+  if (!registry) {
+    registry = { live: new Map(), holdingCaller: new Set() };
+    finishWatchRegistries.set(agentManager, registry);
+  }
+  return registry;
+}
+
+function finishWatcherKey(childAgentId: string, callerAgentId: string): string {
+  return `${childAgentId}\u0000${callerAgentId}`;
+}
+
+interface SubAgentHold {
+  count: number;
+  /** The earliest moment one of them stops holding, or null when none holds. */
+  until: number | null;
+}
+
+function subAgentHold(
+  registry: FinishWatchRegistry,
+  callerAgentId: string,
+  now: number,
+): SubAgentHold {
+  let count = 0;
+  let until: number | null = null;
+  for (const watcher of registry.holdingCaller) {
+    if (watcher.callerAgentId !== callerAgentId) continue;
+    const holdsUntil = watcher.holdsCallerUntil();
+    if (holdsUntil === null || holdsUntil <= now) continue;
+    count += 1;
+    until = until === null ? holdsUntil : Math.min(until, holdsUntil);
+  }
+  return { count, until };
+}
+
+function recheckHoldsOf(registry: FinishWatchRegistry, agentId: string): void {
+  // A recheck can end a watch; deleting from a Map while iterating it is safe.
+  for (const watcher of registry.live.values()) {
+    if (watcher.childAgentId === agentId) watcher.recheckHold();
+  }
+}
+
+function makeRoomForWatcher(registry: FinishWatchRegistry): void {
+  while (registry.live.size >= MAX_LIVE_FINISH_WATCHERS) {
+    let quietest: LiveFinishWatcher | null = null;
+    let quietestSince = Number.POSITIVE_INFINITY;
+    for (const watcher of registry.live.values()) {
+      const since = watcher.evictableSince();
+      if (since !== null && since < quietestSince) {
+        quietest = watcher;
+        quietestSince = since;
+      }
+    }
+    if (!quietest) return;
+    quietest.end("evicted");
+  }
+}
 
 const FINISH_NOTIFICATION_MESSAGE_LIMIT = 4000;
 
@@ -448,7 +563,7 @@ function formatFinishNotificationBody(params: FinishNotificationBodyInput): stri
   }
   if (params.reason === LEAD_REVIEW_NOTIFICATION_REASON) {
     sections.push(
-      "It ended its turn with a report for you while it still holds background waits of its own. Daseo keeps watching: you are told again only if it says something new after they finish.",
+      "It ended its turn with a report for you while it still holds background waits or sub-agents of its own. Daseo keeps watching: you are told again only if it says something new after they finish.",
     );
   }
   if (params.reason === STALL_NOTIFICATION_REASON) {
@@ -487,13 +602,39 @@ interface NotifySafelyOptions {
   archiveAfter?: boolean;
 }
 
+/** Notices after which the caller no longer waits on this child (delta 106). */
+const CALLER_RELEASING_REASONS: ReadonlySet<FinishNotificationReason> = new Set([
+  "finished",
+  "errored",
+  "was closed",
+  LEAD_REVIEW_NOTIFICATION_REASON,
+]);
+
+/** Delta 106: what a watch owes its caller, kept in the journal so a restart re-arms it as is. */
+export interface FinishWatchState {
+  /** The caller asked for the child's next finish and has not been told yet. */
+  finishOwed: boolean;
+  /** `finishReportHash` of the last report delivered as a finish or review notice. */
+  lastReportHash: string | null;
+}
+
+export interface ResumedFinishWatch extends FinishWatchState {
+  archiveOnFinish: boolean;
+}
+
 /**
  * Local fork (DASEO.md delta 44): a watcher lives in daemon memory, so it is journaled to survive a
- * restart. Entries leave the journal only once the terminal notification is delivered (or can never
- * be); while the daemon shuts down nothing is delivered and the entry stays for the next start.
+ * restart. An entry leaves the journal when the watch ends (or can never deliver); while the daemon
+ * shuts down nothing is delivered and the entry stays for the next start. Delta 106: the entry also
+ * carries the watch's state, updated whenever it changes.
  */
 export interface FinishWatcherJournal {
-  addWatcher(childAgentId: string, callerAgentId: string, requireParentOwnership: boolean): void;
+  addWatcher(
+    childAgentId: string,
+    callerAgentId: string,
+    requireParentOwnership: boolean,
+    state?: FinishWatchState,
+  ): void;
   removeWatcher(childAgentId: string, callerAgentId: string): void;
   isFrozen(): boolean;
 }
@@ -514,6 +655,8 @@ export type FinishNotificationDelivery =
  * Send one finish notification for `childAgentId` to `callerAgentId`. With `archiveAfter` the child
  * is archived once the notice has been handed to the caller, or when the caller is archived and
  * can never receive it; never before, because the notice reads the child's last message.
+ * `lastAssistantMessage` passes a message already read, so the notice carries the exact report the
+ * watcher decided on.
  */
 export async function deliverFinishNotification(params: {
   agentManager: AgentManager;
@@ -524,6 +667,7 @@ export async function deliverFinishNotification(params: {
   reason: FinishNotificationReason;
   permissionRequest?: AgentPermissionRequest;
   archiveAfter?: boolean;
+  lastAssistantMessage?: string | null;
   logger: Logger;
 }): Promise<FinishNotificationDelivery> {
   const delivery = await composeAndSendFinishNotification(params);
@@ -558,7 +702,10 @@ async function composeAndSendFinishNotification(
     return "not-owned";
   }
   const title = record?.title ?? childAgentId;
-  const lastAssistantMessage = await agentManager.getLastAssistantMessage(childAgentId);
+  const lastAssistantMessage =
+    params.lastAssistantMessage !== undefined
+      ? params.lastAssistantMessage
+      : await agentManager.getLastAssistantMessage(childAgentId);
   const body = formatFinishNotificationBody({
     childAgentId,
     title,
@@ -579,23 +726,73 @@ async function composeAndSendFinishNotification(
   return "delivered";
 }
 
+/**
+ * Watch `childAgentId` for `callerAgentId` (DASEO.md deltas 29, 44, 54, 80, 103, 106).
+ *
+ * | Child event                                              | Notice to the caller             |
+ * | -------------------------------------------------------- | -------------------------------- |
+ * | idle, background waits or watched sub-agents pending     | none; `[lead review]` report: review notice |
+ * | idle, a finish owed (create_agent, send_agent_prompt)    | finished                         |
+ * | idle, nothing owed, a new report                         | finished (owned children only)   |
+ * | idle, nothing owed, same report, empty, `[wait noted]`   | none                             |
+ * | error / permission / 20 min silent while running         | errored / needs permission / stall |
+ * | closed while a finish is owed or held                    | was closed (watch ends)          |
+ * | closed otherwise, caller archived, child detached        | none (watch ends)                |
+ *
+ * An archiveOnFinish child keeps delta 103: its first finish or error is the last notice.
+ */
+/**
+ * Delta 106: a caller that prompts a child it watches without asking for the finish
+ * (`send_agent_prompt` with `background: false`, which returns the result, or with
+ * `notifyOnFinish: false`) is not sent that turn's report by the continuing watch.
+ */
+export function callerReadsNextTurn(params: {
+  agentManager: AgentManager;
+  childAgentId: string;
+  callerAgentId: string;
+}): void {
+  finishWatchRegistry(params.agentManager)
+    .live.get(finishWatcherKey(params.childAgentId, params.callerAgentId))
+    ?.callerReadsNextTurn();
+}
+
 export function setupFinishNotification(params: SetupFinishNotificationParams): void {
-  const {
-    agentManager,
-    agentStorage,
-    childAgentId,
-    callerAgentId,
-    requireParentOwnership = false,
-    logger,
-  } = params;
+  const existing = finishWatchRegistry(params.agentManager).live.get(
+    finishWatcherKey(params.childAgentId, params.callerAgentId),
+  );
+  if (existing) {
+    // A live watch already holds newer state than a journal entry.
+    if (!params.resume) existing.refresh(params.requireParentOwnership ?? false);
+    return;
+  }
+  startFinishWatcher(params);
+}
+
+function startFinishWatcher(params: SetupFinishNotificationParams): void {
+  const { agentManager, agentStorage, childAgentId, callerAgentId, logger } = params;
+  const resume = params.resume ?? null;
+  // Do NOT treat an immediate "idle" as "finished" below: the agent may not have started yet
+  // (streamAgent sets a pending run before transitioning to "running"). A resumed watch may find
+  // its child unloaded; the subscription still sees it once it loads.
+  const childSnapshot = agentManager.getAgent(childAgentId);
+  if (childSnapshot?.lifecycle === "closed" || (!childSnapshot && !resume)) return;
+  const registry = finishWatchRegistry(agentManager);
+  makeRoomForWatcher(registry);
+
+  const key = finishWatcherKey(childAgentId, callerAgentId);
+  const archiveOnFinish = resume ? resume.archiveOnFinish : archivesOnFinish(childSnapshot?.labels);
+  let requireParentOwnership = params.requireParentOwnership ?? false;
+  let finishOwed = resume ? resume.finishOwed : true;
+  let lastReportHash = resume?.lastReportHash ?? null;
+  let callerWaitsSince: number | null = finishOwed ? Date.now() : null;
   let hasSeenRunning = false;
   let stopped = false;
+  let held = false;
+  let holdTimer: ReturnType<typeof setTimeout> | null = null;
   let reportedReview: string | null = null;
   let reviewHandedOver = false;
-  const archiveOnFinish = archivesOnFinish(agentManager.getAgent(childAgentId)?.labels);
-  const watcherKey = `${childAgentId}\u0000${callerAgentId}`;
-  liveFinishWatchers.get(watcherKey)?.();
-  liveFinishWatchers.set(watcherKey, stop);
+  let notifiedErrorSinceRun = false;
+  let callerReadsTurn = false;
   const notifiedPermissionRequestIds = new Set<string>();
   let unsubscribe: (() => void) | null = null;
   let notificationQueue = Promise.resolve();
@@ -604,12 +801,83 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
   const stallTimer = setInterval(checkStall, FINISH_WATCH_STALL_CHECK_MS);
   stallTimer.unref?.();
 
+  const watcher: LiveFinishWatcher = {
+    childAgentId,
+    callerAgentId,
+    refresh,
+    holdsCallerUntil,
+    recheckHold,
+    evictableSince,
+    end: endQuietly,
+    callerReadsNextTurn: () => {
+      callerReadsTurn = true;
+    },
+  };
+  registry.live.set(key, watcher);
+  if (callerWaitsSince !== null) registry.holdingCaller.add(watcher);
+
   function stop(): void {
     if (stopped) return;
     stopped = true;
     clearInterval(stallTimer);
+    clearHoldTimer();
     unsubscribe?.();
-    if (liveFinishWatchers.get(watcherKey) === stop) liveFinishWatchers.delete(watcherKey);
+    if (registry.live.get(key) === watcher) registry.live.delete(key);
+  }
+
+  function journalState(): void {
+    finishWatcherJournal?.addWatcher(childAgentId, callerAgentId, requireParentOwnership, {
+      finishOwed,
+      lastReportHash,
+    });
+  }
+
+  /** The caller no longer waits on this watch: a caller held on it may report its own finish. */
+  function releaseCaller(): void {
+    if (callerWaitsSince === null) return;
+    callerWaitsSince = null;
+    registry.holdingCaller.delete(watcher);
+    recheckHoldsOf(registry, callerAgentId);
+  }
+
+  function endQuietly(reason: string): void {
+    if (stopped) return;
+    logger.info({ childAgentId, callerAgentId, reason }, "finish_watch.ended");
+    stop();
+    finishWatcherJournal?.removeWatcher(childAgentId, callerAgentId);
+    releaseCaller();
+  }
+
+  function refresh(nextRequireParentOwnership: boolean): void {
+    if (stopped) return;
+    const child = agentManager.getAgent(childAgentId);
+    if (!child || child.lifecycle === "closed") {
+      endQuietly("child-gone");
+      return;
+    }
+    requireParentOwnership = nextRequireParentOwnership;
+    finishOwed = true;
+    reportedReview = null;
+    reviewHandedOver = false;
+    callerWaitsSince = Date.now();
+    registry.holdingCaller.add(watcher);
+    noteProgress();
+    if (child.lifecycle === "running") hasSeenRunning = true;
+    journalState();
+    if (child.lifecycle === "error") {
+      notifiedErrorSinceRun = false;
+      notifyErrored();
+    }
+  }
+
+  function holdsCallerUntil(): number | null {
+    if (callerWaitsSince === null) return null;
+    return Math.max(callerWaitsSince, lastProgressAt) + SUB_AGENT_HOLD_MAX_MS;
+  }
+
+  function evictableSince(): number | null {
+    if (stopped || finishOwed || held || hasSeenRunning || callerWaitsSince !== null) return null;
+    return lastProgressAt;
   }
 
   function noteProgress(): void {
@@ -618,7 +886,12 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
   }
 
   function checkStall(): void {
-    if (stopped || stallNotified) return;
+    if (stopped) return;
+    if (evictableSince() !== null && Date.now() - lastProgressAt >= CONTINUED_WATCH_MAX_QUIET_MS) {
+      endQuietly("quiet");
+      return;
+    }
+    if (stallNotified) return;
     const child = agentManager.getAgent(childAgentId);
     // Only a run in progress can stall; an idle child holding wait_for waits has their deadlines,
     // and a permission request is already reported and waits on a person.
@@ -628,20 +901,72 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
     notifySafely(STALL_NOTIFICATION_REASON, { terminal: false });
   }
 
+  function clearHoldTimer(): void {
+    if (holdTimer) clearTimeout(holdTimer);
+    holdTimer = null;
+  }
+
+  function scheduleHoldRecheck(until: number | null): void {
+    clearHoldTimer();
+    if (until === null) return;
+    holdTimer = setTimeout(
+      () => {
+        holdTimer = null;
+        recheckHold();
+      },
+      Math.max(0, until - Date.now()) + 1,
+    );
+    holdTimer.unref?.();
+  }
+
+  function recheckHold(): void {
+    if (stopped || !held) return;
+    const child = agentManager.getAgent(childAgentId);
+    // A child about to run (a sub-agent's notice was just sent to it) reports at that run's end.
+    if (child && (child.lifecycle !== "idle" || agentManager.hasInFlightRun(childAgentId))) return;
+    // An unloaded child is idle and held no wait (the idle unloader refuses one that does).
+    handleIdle(child?.pendingBackgroundWaits ?? 0);
+  }
+
+  function isNewReport(message: string | null): message is string {
+    const trimmed = message?.trim() ?? "";
+    if (!trimmed || trimmed === WAIT_NOTED_REPLY) return false;
+    return finishReportHash(message!) !== lastReportHash;
+  }
+
+  async function childBelongsToCaller(): Promise<boolean> {
+    const record = await agentStorage.get(childAgentId);
+    return getParentAgentIdFromLabels(record?.labels) === callerAgentId;
+  }
+
+  function enqueue(
+    reason: FinishNotificationReason,
+    task: () => Promise<void>,
+    failure = "Failed to notify caller agent",
+  ): void {
+    notificationQueue = notificationQueue.then(task).catch((error) => {
+      logger.error({ err: error, childAgentId, callerAgentId, reason }, failure);
+    });
+  }
+
   async function notify(
     reason: FinishNotificationReason,
     terminal: boolean,
-    options: Pick<NotifySafelyOptions, "permissionRequest" | "archiveAfter"> = {},
-  ): Promise<void> {
+    options: Pick<NotifySafelyOptions, "permissionRequest" | "archiveAfter"> & {
+      message?: string | null;
+    } = {},
+  ): Promise<FinishNotificationDelivery> {
     const delivery = await deliverFinishNotification({
       agentManager,
       agentStorage,
       childAgentId,
       callerAgentId,
-      requireParentOwnership,
+      // A turn nobody asked about is reported only to the child's own parent.
+      requireParentOwnership: finishOwed ? requireParentOwnership : true,
       reason,
       permissionRequest: options.permissionRequest,
       archiveAfter: options.archiveAfter,
+      lastAssistantMessage: options.message,
       logger,
     });
     if (
@@ -650,12 +975,32 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
     ) {
       reviewHandedOver = true;
     }
-    if (terminal && delivery !== "shutting-down") {
+    if (delivery === "shutting-down") return delivery;
+    const unreachable = delivery === "caller-gone" || delivery === "not-owned";
+    if (unreachable) {
+      logger.info({ childAgentId, callerAgentId, reason, delivery }, "finish_watch.not_delivered");
+    }
+    if (terminal || unreachable) {
+      stop();
       finishWatcherJournal?.removeWatcher(childAgentId, callerAgentId);
     }
+    if (unreachable) releaseCaller();
+    return delivery;
   }
 
-  let notifiedErrorSinceRun = false;
+  function notifySafely(reason: FinishNotificationReason, options: NotifySafelyOptions = {}): void {
+    if (stopped) return;
+    const terminal = options.terminal ?? true;
+    if (terminal) stop();
+    enqueue(reason, async () => {
+      try {
+        await notify(reason, terminal, options);
+      } finally {
+        if (CALLER_RELEASING_REASONS.has(reason)) releaseCaller();
+      }
+    });
+  }
+
   // Local fork (delta 44): an errored child can still recover (restart recovery, quota resume, a
   // human prompt), so the error is reported once per run and the watch continues; the caller
   // hears about the later finish too. An archiveOnFinish child is archived after the error notice
@@ -664,6 +1009,8 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
     if (notifiedErrorSinceRun) return;
     notifiedErrorSinceRun = true;
     hasSeenRunning = false;
+    held = false;
+    clearHoldTimer();
     if (archiveOnFinish) {
       notifySafely("errored", { archiveAfter: true });
       return;
@@ -671,62 +1018,123 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
     notifySafely("errored", { terminal: false });
   }
 
-  function notifySafely(reason: FinishNotificationReason, options: NotifySafelyOptions = {}): void {
-    if (stopped) return;
-    const terminal = options.terminal ?? true;
-    if (terminal) stop();
-    notificationQueue = notificationQueue
-      .then(() => notify(reason, terminal, options))
-      .catch((error) => {
-        logger.error(
-          { err: error, childAgentId, callerAgentId, reason },
-          "Failed to notify caller agent",
-        );
-      });
-  }
-
-  /** Idle with waits still pending: deliver a report that asks for the caller's review, once. */
+  /** Idle with waits or sub-agents pending: deliver a report that asks for review, once. */
   async function reportReviewIfAsked(): Promise<void> {
     const message = await agentManager.getLastAssistantMessage(childAgentId);
-    if (stopped || !asksForLeadReview(message) || message === reportedReview) return;
+    if (stopped || !held || !asksForLeadReview(message) || message === reportedReview) return;
+    if (!isNewReport(message)) return;
     reportedReview = message;
-    notifySafely(LEAD_REVIEW_NOTIFICATION_REASON, { terminal: false });
+    enqueue(LEAD_REVIEW_NOTIFICATION_REASON, async () => {
+      try {
+        const delivery = await notify(LEAD_REVIEW_NOTIFICATION_REASON, false, { message });
+        if (delivery === "delivered") {
+          finishOwed = false;
+          lastReportHash = finishReportHash(message);
+          if (!stopped) journalState();
+        }
+      } finally {
+        releaseCaller();
+      }
+    });
   }
 
-  async function archiveIfReviewHandedOver(): Promise<void> {
-    if (!reviewHandedOver) return;
-    await archiveFinishedChild({ agentManager, agentStorage, childAgentId, logger });
-  }
-
-  /** The final idle after a review notice: deliver it only when the child said something new. */
-  async function finishAfterReview(): Promise<void> {
+  /** A turn ended with nothing pending: tell the caller when it is owed a finish or new report. */
+  async function reportTurnEnd(): Promise<void> {
     if (stopped) return;
-    stop();
+    // A newer turn already started; its own end is reported.
+    if (agentManager.getAgent(childAgentId)?.lifecycle === "running") return;
     const message = await agentManager.getLastAssistantMessage(childAgentId);
-    const trimmed = message?.trim() ?? "";
-    if (!trimmed || trimmed === WAIT_NOTED_REPLY || message === reportedReview) {
-      if (!finishWatcherJournal?.isFrozen()) {
-        finishWatcherJournal?.removeWatcher(childAgentId, callerAgentId);
-      }
-      // The review notice already carried this report; archive once it has been handed over.
-      if (archiveOnFinish) {
-        notificationQueue = notificationQueue.then(archiveIfReviewHandedOver).catch((error) => {
-          logger.error(
-            { err: error, childAgentId, callerAgentId },
-            "Failed to archive after review",
-          );
-        });
-      }
+    if (stopped) return;
+    const readByCaller = callerReadsTurn;
+    callerReadsTurn = false;
+    if (readByCaller && !finishOwed) {
+      lastReportHash = message === null ? null : finishReportHash(message);
+      journalState();
       return;
     }
-    notificationQueue = notificationQueue
-      .then(() => notify("finished", true, { archiveAfter: archiveOnFinish }))
-      .catch((error) => {
-        logger.error(
-          { err: error, childAgentId, callerAgentId, reason: "finished" },
-          "Failed to notify caller agent",
-        );
+    if (!finishOwed && !isNewReport(message)) {
+      logger.debug({ childAgentId, callerAgentId }, "finish_watch.repeat_suppressed");
+      return;
+    }
+    let delivery: FinishNotificationDelivery;
+    try {
+      delivery = await notify("finished", false, { message });
+    } finally {
+      // On a failed delivery the finish stays owed and the next turn end retries it.
+      releaseCaller();
+    }
+    if (delivery !== "delivered") return;
+    finishOwed = false;
+    lastReportHash = message === null ? null : finishReportHash(message);
+    if (stopped) return;
+    if (await childBelongsToCaller()) {
+      journalState();
+      return;
+    }
+    // A follow-up to an agent the caller does not own reports that one turn, as before delta 106.
+    stop();
+    finishWatcherJournal?.removeWatcher(childAgentId, callerAgentId);
+  }
+
+  /** archiveOnFinish (delta 103): the first finish is the last notice, then the child is archived. */
+  function finishArchiveOnFinishChild(): void {
+    if (stopped) return;
+    stop();
+    if (reportedReview === null) {
+      enqueue("finished", async () => {
+        try {
+          await notify("finished", true, { archiveAfter: true });
+        } finally {
+          releaseCaller();
+        }
       });
+      return;
+    }
+    // After a review notice: deliver the final idle only when the child said something new.
+    enqueue("finished", async () => {
+      try {
+        const message = await agentManager.getLastAssistantMessage(childAgentId);
+        if (isNewReport(message)) {
+          await notify("finished", true, { archiveAfter: true, message });
+          return;
+        }
+        finishWatcherJournal?.removeWatcher(childAgentId, callerAgentId);
+        // The review notice already carried this report; archive once it has been handed over.
+        if (reviewHandedOver) {
+          await archiveFinishedChild({ agentManager, agentStorage, childAgentId, logger });
+        }
+      } finally {
+        releaseCaller();
+      }
+    });
+  }
+
+  function handleIdle(pendingBackgroundWaits: number): void {
+    // Local fork: a child that ended its turn to wait on background waits (delta 29) or on
+    // sub-agents it watches (delta 106) is not finished; the idle after its last wake turn is.
+    const subAgents = subAgentHold(registry, childAgentId, Date.now());
+    if (pendingBackgroundWaits > 0 || subAgents.count > 0) {
+      if (!held) {
+        logger.debug(
+          { childAgentId, callerAgentId, pendingBackgroundWaits, subAgents: subAgents.count },
+          "finish_watch.held",
+        );
+      }
+      held = true;
+      scheduleHoldRecheck(subAgents.until);
+      void reportReviewIfAsked().catch((error) => {
+        logger.error({ err: error, childAgentId, callerAgentId }, "Failed to read child report");
+      });
+      return;
+    }
+    held = false;
+    clearHoldTimer();
+    hasSeenRunning = false;
+    if (archiveOnFinish) {
+      finishArchiveOnFinishChild();
+      return;
+    }
+    enqueue("finished", reportTurnEnd);
   }
 
   unsubscribe = agentManager.subscribe(
@@ -747,6 +1155,8 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
             hasSeenRunning = true;
             notifiedErrorSinceRun = false;
           }
+          held = false;
+          clearHoldTimer();
           return;
         }
         if (event.agent.lifecycle === "error") {
@@ -754,31 +1164,16 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
           return;
         }
         if (event.agent.lifecycle === "idle" && hasSeenRunning) {
-          // Local fork: a child that ended its turn to wait on background waits is not finished;
-          // the idle after its last wake turn is.
-          if ((event.agent.pendingBackgroundWaits ?? 0) > 0) {
-            void reportReviewIfAsked().catch((error) => {
-              logger.error(
-                { err: error, childAgentId, callerAgentId },
-                "Failed to read child report",
-              );
-            });
-            return;
-          }
-          if (reportedReview !== null) {
-            void finishAfterReview().catch((error) => {
-              logger.error(
-                { err: error, childAgentId, callerAgentId },
-                "Failed to finish after review",
-              );
-            });
-            return;
-          }
-          notifySafely("finished", { archiveAfter: archiveOnFinish });
+          handleIdle(event.agent.pendingBackgroundWaits ?? 0);
           return;
         }
         if (event.agent.lifecycle === "closed") {
-          notifySafely("was closed");
+          // Archive, close, or workspace teardown: report it only to a caller still waiting.
+          if (finishOwed || held) {
+            notifySafely("was closed");
+          } else {
+            endQuietly("child-closed");
+          }
           return;
         }
         return;
@@ -810,20 +1205,11 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
     { agentId: childAgentId, replayState: false },
   );
 
-  // Check if the child is already running (catches the case where
-  // the lifecycle flipped before our subscribe call was processed).
-  // Do NOT treat an immediate "idle" as "finished" — the agent may
-  // not have started yet (streamAgent sets a pending run before
-  // transitioning to "running").
-  const childSnapshot = agentManager.getAgent(childAgentId);
-  if (!childSnapshot || childSnapshot.lifecycle === "closed") {
-    stop();
-    return;
-  }
-  finishWatcherJournal?.addWatcher(childAgentId, callerAgentId, requireParentOwnership);
-  if (childSnapshot.lifecycle === "running") {
+  journalState();
+  // Catch a child that started running before the subscription (see the note above).
+  if (childSnapshot?.lifecycle === "running") {
     hasSeenRunning = true;
-  } else if (childSnapshot.lifecycle === "error") {
+  } else if (childSnapshot?.lifecycle === "error") {
     notifyErrored();
   }
 }

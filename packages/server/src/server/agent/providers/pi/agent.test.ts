@@ -3442,6 +3442,66 @@ describe("background waits (local fork)", () => {
     expect(session.backgroundWaits).toEqual({ pending: 0, raisedAt: null, labels: [] });
   });
 
+  test("a wake built before a new registration does not erase it (delta 106)", async () => {
+    const { pi, session } = await createSession();
+    const fakeSession = pi.latestSession();
+    await session.startTurn("build, then deploy");
+    fakeSession.emit({ type: "turn_start" });
+    const register = (waitId: string, description: string, pending: number) =>
+      fakeSession.emit({
+        type: "tool_execution_end",
+        toolCallId: `create-${waitId}`,
+        toolName: "wait_for",
+        result: waitResult({ wait: true, wait_id: waitId, pending, kind: "command", description }),
+      });
+    const wake = (line: string) =>
+      fakeSession.finishSubmittedUserMessage({
+        id: `wake-${line}`,
+        parentId: null,
+        text: `<paseo-system>\n${line}\nWait event: done\n</paseo-system>`,
+      });
+    register("w_build", "web build", 1);
+
+    // 2026-11-12 22:11:04Z: pi-local built the build's wake (pending=0), the agent registered a
+    // deploy wait in the same second, and the wake arrived after the registration.
+    register("w_deploy", "deploy log", 1);
+    wake("wait_for: command w_build exited pending=0");
+    expect(session.backgroundWaits).toMatchObject({ pending: 1, labels: ["deploy log"] });
+
+    // A matching output line keeps the wait; its exit or timeout settles it.
+    wake("wait_for: command w_deploy fired pending=0");
+    expect(session.backgroundWaits.pending).toBe(1);
+    wake("wait_for: command w_deploy timed_out pending=0");
+    expect(session.backgroundWaits).toEqual({ pending: 0, raisedAt: null, labels: [] });
+
+    // Cancel and wait_status settle what they report, even when a stale wake follows.
+    register("w_a", "a", 1);
+    register("w_b", "b", 2);
+    fakeSession.emit({
+      type: "tool_execution_end",
+      toolCallId: "cancel-a",
+      toolName: "wait_cancel",
+      result: waitResult({ wait: true, pending: 1, cancelled: ["w_a"] }),
+    });
+    fakeSession.emit({
+      type: "tool_execution_end",
+      toolCallId: "status-b",
+      toolName: "wait_status",
+      result: waitResult({ wait: true, pending: 0, settled: ["w_b"] }),
+    });
+    expect(session.backgroundWaits.pending).toBe(0);
+    wake("wait_for: command w_b exited pending=0");
+    expect(session.backgroundWaits).toEqual({ pending: 0, raisedAt: null, labels: [] });
+
+    // A wait whose end this adapter never saw (lost in an in-process reload) does not keep the
+    // count up: the next tool result is authoritative and trims it.
+    register("w_lost", "lost", 1);
+    register("w_new", "new", 1);
+    expect(session.backgroundWaits).toMatchObject({ pending: 1, labels: ["new"] });
+    wake("wait_for: command w_new exited pending=0");
+    expect(session.backgroundWaits).toEqual({ pending: 0, raisedAt: null, labels: [] });
+  });
+
   test("wait_status's settled ids drop the label of the wait it showed", async () => {
     const { pi, session } = await createSession();
     const fakeSession = pi.latestSession();

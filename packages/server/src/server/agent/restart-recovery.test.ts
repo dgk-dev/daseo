@@ -91,6 +91,24 @@ describe("RestartRecoveryJournal", () => {
     expect(journal.claimRecovery("b")).toBe(false);
   });
 
+  test("a watcher's state is updated in place and keeps its first creation time (delta 106)", async () => {
+    const paseoHome = home();
+    let now = new Date("2026-11-14T01:00:00Z");
+    const journal = new RestartRecoveryJournal({ paseoHome, logger, now: () => now });
+    journal.addWatcher("child", "parent", true, { finishOwed: true, lastReportHash: null });
+    now = new Date("2026-11-14T02:00:00Z");
+    journal.addWatcher("child", "parent", true, { finishOwed: false, lastReportHash: "abc" });
+    await journal.flush();
+    const written = JSON.parse(readFileSync(path.join(paseoHome, RESTART_RECOVERY_FILE), "utf8"));
+    expect(written.watchers.child).toEqual({
+      callerAgentId: "parent",
+      requireParentOwnership: true,
+      createdAt: "2026-11-14T01:00:00.000Z",
+      finishOwed: false,
+      lastReportHash: "abc",
+    });
+  });
+
   test("the cooldown expires", () => {
     let clock = new Date("2026-10-18T12:00:00Z");
     const journal = new RestartRecoveryJournal({ paseoHome: home(), logger, now: () => clock });
@@ -130,6 +148,7 @@ describe("runRestartRecovery", () => {
       waitForAgentClose: async () => undefined,
       getAgent: (id: string) => agents.get(id),
       getLastAssistantMessage: async () => "done",
+      subscribe: () => () => undefined,
     };
     return { prompts, agentStorage, agentManager };
   }
@@ -182,5 +201,38 @@ describe("runRestartRecovery", () => {
       },
     });
     expect(result).toMatchObject({ notified: [], rearmed: [], delivered: [] });
+  });
+
+  test("a continuing watch with nothing owed is re-armed without loading its child or prompting anyone (delta 106)", async () => {
+    const { agentStorage, agentManager, prompts } = fakes({
+      child: { labels: { "paseo.parent-agent-id": "parent" } },
+      parent: {},
+    });
+    const now = new Date("2026-11-14T12:00:00Z");
+    const result = await runRestartRecovery({
+      journal: new RestartRecoveryJournal({ paseoHome: home(), logger }),
+      agentManager: agentManager as never,
+      agentStorage: agentStorage as never,
+      logger,
+      now: () => now,
+      previous: {
+        version: 1,
+        writtenAt: now.toISOString(),
+        agents: {},
+        watchers: {
+          child: {
+            callerAgentId: "parent",
+            requireParentOwnership: true,
+            createdAt: now.toISOString(),
+            finishOwed: false,
+            lastReportHash: "abc",
+          },
+        },
+        recoveredAt: {},
+      },
+    });
+    // The fake manager cannot load an agent: a load attempt would have made this "skipped".
+    expect(result).toMatchObject({ notified: [], rearmed: ["child"], delivered: [] });
+    expect(prompts).toEqual([]);
   });
 });

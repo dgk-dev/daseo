@@ -36,6 +36,13 @@ export interface JournalWatcherEntry {
   callerAgentId: string;
   requireParentOwnership: boolean;
   createdAt: string;
+  /**
+   * Delta 106: whether the caller still waits for the child's next finish. An entry written before
+   * delta 106 has no field and means true: a watch then lived only until that finish.
+   */
+  finishOwed?: boolean;
+  /** Delta 106: hash of the last report the caller received (`finishReportHash`). */
+  lastReportHash?: string | null;
 }
 
 export interface RecoveryJournal {
@@ -167,12 +174,21 @@ export class RestartRecoveryJournal {
     this.schedule();
   }
 
-  addWatcher(childAgentId: string, callerAgentId: string, requireParentOwnership: boolean): void {
+  /** Records a watch, or updates the state of one already recorded for the same caller. */
+  addWatcher(
+    childAgentId: string,
+    callerAgentId: string,
+    requireParentOwnership: boolean,
+    state?: { finishOwed: boolean; lastReportHash: string | null },
+  ): void {
     if (this.frozen) return;
+    const current = this.journal.watchers[childAgentId];
     this.journal.watchers[childAgentId] = {
       callerAgentId,
       requireParentOwnership,
-      createdAt: this.now().toISOString(),
+      createdAt:
+        current?.callerAgentId === callerAgentId ? current.createdAt : this.now().toISOString(),
+      ...(state ? { finishOwed: state.finishOwed, lastReportHash: state.lastReportHash } : {}),
     };
     this.schedule();
   }

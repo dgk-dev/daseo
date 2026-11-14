@@ -61,7 +61,11 @@ import {
   toScheduleSummary,
   waitForAgentWithTimeout,
 } from "../mcp-shared.js";
-import { sendPromptToAgent, setupFinishNotification } from "../agent-prompt.js";
+import {
+  callerReadsNextTurn,
+  sendPromptToAgent,
+  setupFinishNotification,
+} from "../agent-prompt.js";
 import { respondToAgentPermission } from "../permission-response.js";
 import {
   archiveAgentCommand,
@@ -2089,6 +2093,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       notifyOnFinish = Boolean(callerAgentId),
     }) => {
       const shouldNotifyOnFinish = Boolean(callerAgentId && notifyOnFinish && background);
+      if (callerAgentId && !shouldNotifyOnFinish) {
+        // A continuing watch (delta 106) must not report a turn this caller reads or declined.
+        callerReadsNextTurn({ agentManager, childAgentId: agentId, callerAgentId });
+      }
 
       await sendPromptToAgent({
         agentManager,

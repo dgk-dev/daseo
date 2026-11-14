@@ -7,13 +7,17 @@ import { AgentStorage } from "./agent-storage.js";
 import {
   ARCHIVE_ON_FINISH_LABEL,
   archiveAfterFirstTurn,
+  callerReadsNextTurn,
   FINISH_WATCH_STALL_CHECK_MS,
   FINISH_WATCH_STALL_MS,
+  finishReportHash,
+  type FinishWatchState,
   formatSystemNotificationPrompt,
   isSystemInjectedEnvelope,
   sendPromptToAgent,
   setFinishWatcherJournal,
   setupFinishNotification,
+  SUB_AGENT_HOLD_MAX_MS,
 } from "./agent-prompt.js";
 import type { AgentManagerEvent, ManagedAgent } from "./agent-manager.js";
 
@@ -49,10 +53,16 @@ interface FinishNotificationScenarioOptions {
   logger?: Logger;
   childArchivesOnFinish?: boolean;
   callerArchived?: boolean;
+  /** The first this many parent prompts throw, like a provider that rejects the run. */
+  parentPromptFailures?: number;
 }
 
 interface FinishNotificationScenario {
   startWatchingChild(): void;
+  /** Re-arm the watch the way restart recovery does from a journal entry. */
+  resumeWatchingChild(state: FinishWatchState): void;
+  /** send_agent_prompt with background false or notifyOnFinish false. */
+  promptChildWithoutNotice(): void;
   archiveChildAfterFirstTurn(): void;
   unarchiveChild(): void;
   /** Parent prompts and child archives, in the order they happened. */
@@ -87,6 +97,7 @@ function createFinishNotificationScenario(
   const parentPrompts: string[] = [];
   const events: string[] = [];
   let childArchivedAt: string | null = null;
+  let parentPromptFailures = options?.parentPromptFailures ?? 0;
   const childLabels: Record<string, string> = options?.childArchivesOnFinish
     ? { [ARCHIVE_ON_FINISH_LABEL]: "true" }
     : {};
@@ -133,6 +144,10 @@ function createFinishNotificationScenario(
   Reflect.set(agentManager, "trySteerAgentRun", async () => false);
   Reflect.set(agentManager, "hasInFlightRun", () => Boolean(options?.parentPromptError));
   Reflect.set(agentManager, "streamAgent", (_agentId: string, prompt: string) => {
+    if (parentPromptFailures > 0) {
+      parentPromptFailures -= 1;
+      throw new Error("parent provider rejected the run");
+    }
     parentPrompted = true;
     parentPrompts.push(prompt);
     events.push(`prompt ${prompt}`);
@@ -189,6 +204,24 @@ function createFinishNotificationScenario(
         childAgentId: "child-agent",
         callerAgentId: "caller-agent",
         requireParentOwnership: options?.requireParentOwnership,
+        logger: options?.logger ?? createTestLogger(),
+      });
+    },
+    promptChildWithoutNotice() {
+      callerReadsNextTurn({
+        agentManager,
+        childAgentId: "child-agent",
+        callerAgentId: "caller-agent",
+      });
+    },
+    resumeWatchingChild(state: FinishWatchState) {
+      setupFinishNotification({
+        agentManager,
+        agentStorage,
+        childAgentId: "child-agent",
+        callerAgentId: "caller-agent",
+        requireParentOwnership: options?.requireParentOwnership,
+        resume: { ...state, archiveOnFinish: Boolean(options?.childArchivesOnFinish) },
         logger: options?.logger ?? createTestLogger(),
       });
     },
@@ -648,6 +681,7 @@ it("does not notify archived callers", async () => {
     }),
   );
   Reflect.set(agentManager, "hasInFlightRun", vi.fn().mockReturnValue(false));
+  Reflect.set(agentManager, "getLastAssistantMessage", async () => "Done.");
   Reflect.set(agentManager, "streamAgent", streamAgentSpy);
   Reflect.set(agentManager, "replaceAgentRun", replaceAgentRunSpy);
 
@@ -749,20 +783,45 @@ describe("finish watcher journal (delta 44)", () => {
     const calls: string[] = [];
     const journal = {
       frozen,
-      addWatcher: (child: string, caller: string) => calls.push(`add ${child}->${caller}`),
+      addWatcher: (child: string, caller: string, _owned: boolean, state?: FinishWatchState) => {
+        let suffix = "";
+        if (state) suffix = state.finishOwed ? " owed" : " reported";
+        calls.push(`add ${child}->${caller}${suffix}`);
+      },
       removeWatcher: (child: string, caller: string) => calls.push(`remove ${child}->${caller}`),
       isFrozen: () => journal.frozen,
     };
     return { journal, calls };
   }
 
-  test("journals the watcher and drops it once the finish is delivered", async () => {
+  test("journals the watcher, keeps it with nothing owed once the finish is delivered, and drops it when the child closes", async () => {
     const { journal, calls } = recordingJournal();
     setFinishWatcherJournal(journal);
     try {
-      const scenario = createFinishNotificationScenario();
+      const scenario = createFinishNotificationScenario({ childLastAssistantMessage: "Done." });
       scenario.startWatchingChild();
-      expect(calls).toEqual(["add child-agent->caller-agent"]);
+      expect(calls).toEqual(["add child-agent->caller-agent owed"]);
+      await scenario.finishChildAndReadParentPrompt();
+      await vi.waitFor(() =>
+        expect(calls).toEqual([
+          "add child-agent->caller-agent owed",
+          "add child-agent->caller-agent reported",
+        ]),
+      );
+      void scenario.closeChildAndReadParentPrompt();
+      await vi.waitFor(() => expect(calls).toContain("remove child-agent->caller-agent"));
+      expect(scenario.parentPrompts()).toHaveLength(1);
+    } finally {
+      setFinishWatcherJournal(null);
+    }
+  });
+
+  test("a follow-up to an agent the caller does not own leaves the journal after its finish", async () => {
+    const { journal, calls } = recordingJournal();
+    setFinishWatcherJournal(journal);
+    try {
+      const scenario = createFinishNotificationScenario({ childParentAgentId: "another-agent" });
+      scenario.startWatchingChild();
       await scenario.finishChildAndReadParentPrompt();
       await vi.waitFor(() => expect(calls).toContain("remove child-agent->caller-agent"));
     } finally {
@@ -780,7 +839,7 @@ describe("finish watcher journal (delta 44)", () => {
       void scenario.closeChildAndReadParentPrompt();
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(scenario.wasParentPrompted()).toBe(false);
-      expect(calls).toEqual(["add child-agent->caller-agent"]);
+      expect(calls).toEqual(["add child-agent->caller-agent owed"]);
     } finally {
       setFinishWatcherJournal(null);
     }
@@ -996,5 +1055,335 @@ describe("archiveOnFinish (delta 103)", () => {
     scenario.archiveChildAfterFirstTurn();
     scenario.failChild();
     await vi.waitFor(() => expect(scenario.events()).toEqual(["archive child-agent"]));
+  });
+});
+
+describe("a watch lasts as long as the parent-child relation (delta 106)", () => {
+  const flush = async () => {
+    for (let index = 0; index < 5; index += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  };
+
+  test("a later turn nobody asked for is reported when it says something new, and only then", async () => {
+    const scenario = createFinishNotificationScenario({ childLastAssistantMessage: "Report 1" });
+    scenario.startWatchingChild();
+    scenario.finishChild();
+    await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(1));
+
+    // Its own sub-agent's notice, a wait wake, or the owner restarts it: a new report goes out.
+    scenario.setChildLastAssistantMessage("Report 2\n\n[lead review]");
+    scenario.finishChild();
+    await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(2));
+    expect(scenario.parentPrompts()[1]).toContain("Agent child-agent (Child Agent) finished.");
+    expect(scenario.parentPrompts()[1]).toContain("Report 2");
+
+    // The same report again, an acknowledgement, or nothing: no notice.
+    for (const message of ["Report 2\n\n[lead review]", "[wait noted]", "", "   ", null]) {
+      scenario.setChildLastAssistantMessage(message);
+      scenario.finishChild();
+      await flush();
+    }
+    expect(scenario.parentPrompts()).toHaveLength(2);
+  });
+
+  test("a turn the caller asked for is reported once even when the child repeats itself", async () => {
+    const scenario = createFinishNotificationScenario({ childLastAssistantMessage: "Yes." });
+    scenario.startWatchingChild();
+    scenario.finishChild();
+    await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(1));
+
+    scenario.runChild();
+    scenario.startWatchingChild();
+    scenario.finishChild();
+    await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(2));
+    expect(scenario.parentPrompts()[1]).toContain("Yes.");
+    await flush();
+    expect(scenario.parentPrompts()).toHaveLength(2);
+  });
+
+  test("a follow-up to an agent the caller does not own reports that one turn only", async () => {
+    const scenario = createFinishNotificationScenario({
+      childParentAgentId: "another-agent",
+      childLastAssistantMessage: "Answer A",
+    });
+    scenario.startWatchingChild();
+    scenario.finishChild();
+    await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(1));
+
+    scenario.setChildLastAssistantMessage("Answer B");
+    scenario.finishChild();
+    await flush();
+    expect(scenario.parentPrompts()).toHaveLength(1);
+  });
+
+  test("a turn the caller reads itself or declined is not reported again", async () => {
+    const scenario = createFinishNotificationScenario({ childLastAssistantMessage: "Report 1" });
+    scenario.startWatchingChild();
+    scenario.finishChild();
+    await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(1));
+
+    scenario.promptChildWithoutNotice();
+    scenario.setChildLastAssistantMessage("Synchronous answer");
+    scenario.finishChild();
+    await flush();
+    expect(scenario.parentPrompts()).toHaveLength(1);
+
+    scenario.setChildLastAssistantMessage("Report 3");
+    scenario.finishChild();
+    await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(2));
+    expect(scenario.parentPrompts()[1]).toContain("Report 3");
+  });
+
+  test("a failed finish delivery stays owed and goes out at the next turn end", async () => {
+    const scenario = createFinishNotificationScenario({
+      childLastAssistantMessage: "Report",
+      parentPromptFailures: 1,
+    });
+    scenario.startWatchingChild();
+    scenario.finishChild();
+    await flush();
+    expect(scenario.parentPrompts()).toEqual([]);
+
+    scenario.finishChild();
+    await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(1));
+    expect(scenario.parentPrompts()[0]).toContain("Report");
+  });
+
+  test("a watch re-armed from the journal reports only what the caller has not seen", async () => {
+    const scenario = createFinishNotificationScenario({ childLastAssistantMessage: "Report 1" });
+    scenario.resumeWatchingChild({
+      finishOwed: false,
+      lastReportHash: finishReportHash("Report 1"),
+    });
+    scenario.finishChild();
+    await flush();
+    expect(scenario.parentPrompts()).toEqual([]);
+
+    scenario.setChildLastAssistantMessage("Report 2");
+    scenario.finishChild();
+    await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(1));
+    expect(scenario.parentPrompts()[0]).toContain("Report 2");
+  });
+});
+
+interface AgentTree {
+  watch(childAgentId: string, callerAgentId: string): void;
+  run(agentId: string): void;
+  idle(agentId: string, message: string | null, pendingBackgroundWaits?: number): void;
+  turn(agentId: string, message: string | null, pendingBackgroundWaits?: number): void;
+  fail(agentId: string): void;
+  detach(agentId: string): void;
+  promptsTo(agentId: string): string[];
+}
+
+/** Several agents under one fake manager: a lead, its implementer, the implementer's critic. */
+function createAgentTree(parents: Record<string, string | null>): AgentTree {
+  const subscribers = new Set<{
+    callback: (event: AgentManagerEvent) => void;
+    agentId: string | null;
+  }>();
+  const agents = new Map<string, ManagedAgent>();
+  const messages = new Map<string, string | null>();
+  const parentOf = new Map<string, string | null>(Object.entries(parents));
+  const prompts: Array<{ to: string; text: string }> = [];
+  const inFlight = new Set<string>();
+  for (const agentId of Object.keys(parents)) {
+    const agent: ManagedAgent = Object.create(null);
+    Reflect.set(agent, "id", agentId);
+    Reflect.set(agent, "lifecycle", "idle");
+    Reflect.set(agent, "config", { title: agentId });
+    Reflect.set(agent, "pendingPermissions", new Map());
+    Reflect.set(agent, "pendingBackgroundWaits", 0);
+    Reflect.set(agent, "labels", {});
+    agents.set(agentId, agent);
+  }
+
+  function emit(agentId: string): void {
+    const agent = agents.get(agentId)!;
+    for (const subscriber of subscribers) {
+      if (subscriber.agentId === null || subscriber.agentId === agentId) {
+        subscriber.callback({ type: "agent_state", agent });
+      }
+    }
+  }
+
+  function startRun(agentId: string, prompt: string) {
+    prompts.push({ to: agentId, text: prompt });
+    inFlight.add(agentId);
+    return (async function* noop() {})();
+  }
+
+  const agentManager: AgentManager = Object.create(AgentManager.prototype);
+  Reflect.set(agentManager, "getAgent", (agentId: string) => agents.get(agentId) ?? null);
+  Reflect.set(
+    agentManager,
+    "subscribe",
+    (callback: (event: AgentManagerEvent) => void, options?: { agentId?: string }) => {
+      const subscriber = { callback, agentId: options?.agentId ?? null };
+      subscribers.add(subscriber);
+      return () => subscribers.delete(subscriber);
+    },
+  );
+  Reflect.set(agentManager, "getLastAssistantMessage", async (agentId: string) => {
+    return messages.get(agentId) ?? null;
+  });
+  Reflect.set(agentManager, "tryRunOutOfBand", () => false);
+  Reflect.set(agentManager, "trySteerAgentRun", async () => false);
+  Reflect.set(agentManager, "hasInFlightRun", (agentId: string) => inFlight.has(agentId));
+  Reflect.set(agentManager, "streamAgent", startRun);
+  Reflect.set(agentManager, "replaceAgentRun", async (agentId: string, prompt: string) =>
+    startRun(agentId, prompt),
+  );
+
+  const agentStorage: AgentStorage = Object.create(AgentStorage.prototype);
+  Reflect.set(agentStorage, "get", async (agentId: string) => {
+    if (!agents.has(agentId)) return null;
+    const parent = parentOf.get(agentId);
+    return {
+      title: agentId,
+      labels: parent ? { "paseo.parent-agent-id": parent } : {},
+      archivedAt: null,
+    };
+  });
+
+  const tree: AgentTree = {
+    watch(childAgentId, callerAgentId) {
+      setupFinishNotification({
+        agentManager,
+        agentStorage,
+        childAgentId,
+        callerAgentId,
+        requireParentOwnership: true,
+        logger: createTestLogger(),
+      });
+    },
+    run(agentId) {
+      inFlight.delete(agentId);
+      agents.get(agentId)!.lifecycle = "running";
+      emit(agentId);
+    },
+    idle(agentId, message, pendingBackgroundWaits = 0) {
+      messages.set(agentId, message);
+      const agent = agents.get(agentId)!;
+      agent.pendingBackgroundWaits = pendingBackgroundWaits;
+      agent.lifecycle = "idle";
+      emit(agentId);
+    },
+    turn(agentId, message, pendingBackgroundWaits = 0) {
+      tree.run(agentId);
+      tree.idle(agentId, message, pendingBackgroundWaits);
+    },
+    fail(agentId) {
+      agents.get(agentId)!.lifecycle = "error";
+      emit(agentId);
+    },
+    detach(agentId) {
+      parentOf.set(agentId, null);
+    },
+    promptsTo(agentId) {
+      return prompts.filter((prompt) => prompt.to === agentId).map((prompt) => prompt.text);
+    },
+  };
+  return tree;
+}
+
+describe("a child waiting on its own sub-agents is not finished (delta 106)", () => {
+  const flush = async () => {
+    for (let index = 0; index < 5; index += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  };
+
+  function implementerWithCritic(): AgentTree {
+    const tree = createAgentTree({ lead: null, implementer: "lead", critic: "implementer" });
+    tree.watch("implementer", "lead");
+    tree.run("implementer");
+    // The implementer starts a UI critic with a finish watch and ends its turn.
+    tree.watch("critic", "implementer");
+    tree.run("critic");
+    tree.idle("implementer", "The critic is running. I'll continue once its result comes back.");
+    return tree;
+  }
+
+  test("the lead hears only the final report, once", async () => {
+    const tree = implementerWithCritic();
+    await flush();
+    expect(tree.promptsTo("lead")).toEqual([]);
+
+    tree.idle("critic", "PASS");
+    await vi.waitFor(() => expect(tree.promptsTo("implementer")).toHaveLength(1));
+    expect(tree.promptsTo("implementer")[0]).toContain("PASS");
+    await flush();
+    expect(tree.promptsTo("lead")).toEqual([]);
+
+    tree.turn("implementer", "Final report: all checks pass.\n\n[lead review]");
+    await vi.waitFor(() => expect(tree.promptsTo("lead")).toHaveLength(1));
+    expect(tree.promptsTo("lead")[0]).toContain("Agent implementer (implementer) finished.");
+    expect(tree.promptsTo("lead")[0]).toContain("Final report: all checks pass.");
+    await flush();
+    expect(tree.promptsTo("lead")).toHaveLength(1);
+  });
+
+  test("a held report marked [lead review] reaches the lead at once", async () => {
+    const tree = createAgentTree({ lead: null, implementer: "lead", critic: "implementer" });
+    tree.watch("implementer", "lead");
+    tree.run("implementer");
+    tree.watch("critic", "implementer");
+    tree.run("critic");
+    tree.idle("implementer", "Need your decision on the copy.\n[lead review]");
+    await vi.waitFor(() => expect(tree.promptsTo("lead")).toHaveLength(1));
+    expect(tree.promptsTo("lead")[0]).toContain("is waiting for your review");
+
+    tree.idle("critic", "PASS");
+    await vi.waitFor(() => expect(tree.promptsTo("implementer")).toHaveLength(1));
+    tree.turn("implementer", "Need your decision on the copy.\n[lead review]");
+    await flush();
+    expect(tree.promptsTo("lead")).toHaveLength(1);
+    tree.turn("implementer", "Critic passed; decision applied.");
+    await vi.waitFor(() => expect(tree.promptsTo("lead")).toHaveLength(2));
+    expect(tree.promptsTo("lead")[1]).toContain("finished.");
+  });
+
+  test("a sub-agent quiet for the cap stops holding, on a timer", async () => {
+    vi.useFakeTimers();
+    try {
+      const tree = createAgentTree({ lead: null, implementer: "lead", critic: "implementer" });
+      tree.watch("implementer", "lead");
+      tree.run("implementer");
+      tree.watch("critic", "implementer");
+      tree.idle("implementer", "Waiting on the critic.");
+      await vi.advanceTimersByTimeAsync(SUB_AGENT_HOLD_MAX_MS - 60_000);
+      expect(tree.promptsTo("lead")).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(tree.promptsTo("lead")).toHaveLength(1);
+      expect(tree.promptsTo("lead")[0]).toContain("Waiting on the critic.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a sub-agent watch that ends without a notice releases the hold", async () => {
+    const tree = implementerWithCritic();
+    await flush();
+    tree.detach("critic");
+    tree.idle("critic", "PASS");
+    await vi.waitFor(() => expect(tree.promptsTo("lead")).toHaveLength(1));
+    expect(tree.promptsTo("implementer")).toEqual([]);
+    expect(tree.promptsTo("lead")[0]).toContain("The critic is running.");
+  });
+
+  test("a sub-agent that errors hands the decision back to its caller", async () => {
+    const tree = implementerWithCritic();
+    tree.fail("critic");
+    await vi.waitFor(() => expect(tree.promptsTo("implementer")).toHaveLength(1));
+    expect(tree.promptsTo("implementer")[0]).toContain("errored.");
+    await flush();
+    expect(tree.promptsTo("lead")).toEqual([]);
+
+    tree.turn("implementer", "The critic failed; I reviewed the screens myself. Done.");
+    await vi.waitFor(() => expect(tree.promptsTo("lead")).toHaveLength(1));
+    expect(tree.promptsTo("lead")[0]).toContain("reviewed the screens myself");
   });
 });
