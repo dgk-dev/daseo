@@ -5,6 +5,7 @@ import {
   formatDuration,
   formatMessageTimestamp,
   formatTimeAgo,
+  formatTranscriptTimestamp,
 } from "./time";
 
 describe("formatTimeAgo", () => {
@@ -125,5 +126,23 @@ describe("formatMessageTimestamp", () => {
     const formatted = formatMessageTimestamp(date, now);
     expect(formatted).toMatch(/Apr|April/);
     expect(formatted).toMatch(/2026/);
+  });
+});
+
+describe("formatTranscriptTimestamp", () => {
+  const now = new Date(2026, 10, 15, 9, 30);
+
+  it("shows 24-hour HH:mm for today", () => {
+    expect(formatTranscriptTimestamp(new Date(2026, 10, 15, 0, 5), now)).toBe("00:05");
+    expect(formatTranscriptTimestamp(new Date(2026, 10, 15, 9, 1), now)).toBe("09:01");
+  });
+
+  it("adds MM-DD for another day of the same year, yesterday included", () => {
+    expect(formatTranscriptTimestamp(new Date(2026, 10, 14, 23, 34), now)).toBe("11-14 23:34");
+    expect(formatTranscriptTimestamp(new Date(2026, 0, 3, 7, 0), now)).toBe("01-03 07:00");
+  });
+
+  it("adds the year for another year", () => {
+    expect(formatTranscriptTimestamp(new Date(2025, 11, 31, 23, 59), now)).toBe("2025-12-31 23:59");
   });
 });

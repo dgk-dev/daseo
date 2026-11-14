@@ -33,6 +33,7 @@ import {
   type HistoryStartSettleScheduler,
 } from "./history-start-settle-scheduler";
 import { useScrollToMessage } from "./use-scroll-to-message.web";
+import { STREAM_CONTENT_INSET_PX } from "./spacing";
 
 interface CreateWebStreamStrategyInput {
   isMobileBreakpoint: boolean;
@@ -1069,14 +1070,17 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
   ]);
 
   const contentContainerStyle = useMemo((): CSSProperties => {
+    const contentInset = isMobileBreakpoint
+      ? STREAM_CONTENT_INSET_PX.web.compact
+      : STREAM_CONTENT_INSET_PX.web.wide;
     return {
       display: "flex",
       flexDirection: "column",
       minHeight: "100%",
       paddingTop: CONTENT_PADDING_TOP_PX,
       paddingBottom: 16,
-      paddingLeft: isMobileBreakpoint ? 8 : 16,
-      paddingRight: isMobileBreakpoint ? 8 : 16,
+      paddingLeft: contentInset,
+      paddingRight: contentInset,
       boxSizing: "border-box",
     };
   }, [isMobileBreakpoint]);

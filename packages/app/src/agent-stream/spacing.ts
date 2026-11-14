@@ -1,6 +1,22 @@
 import type { StreamItem } from "@/types/stream";
 import { SPACING } from "@/styles/theme";
 
+/**
+ * The transcript's horizontal insets: the scroll content's padding (it differs by strategy) and
+ * each stream item's own padding on top. A row that paints edge to edge (the sent-prompt band,
+ * delta 115) bleeds out by their sum.
+ */
+export const STREAM_CONTENT_INSET_PX = {
+  web: { compact: 8, wide: 16 },
+  native: { compact: SPACING[3], wide: SPACING[4] },
+} as const;
+export const STREAM_ITEM_INSET_PX = SPACING[2];
+
+export function getStreamEdgeBleed(input: { isNative: boolean; isCompact: boolean }): number {
+  const insets = input.isNative ? STREAM_CONTENT_INSET_PX.native : STREAM_CONTENT_INSET_PX.web;
+  return (input.isCompact ? insets.compact : insets.wide) + STREAM_ITEM_INSET_PX;
+}
+
 export function isSameAssistantBlockGroup(params: {
   item: StreamItem | null | undefined;
   other: StreamItem | null | undefined;

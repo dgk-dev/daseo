@@ -58,6 +58,8 @@ import { useReducedMotion } from "react-native-reanimated";
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 import { MarkdownRenderer, type MarkdownStyles } from "@/components/markdown/renderer";
+import { ShellPromptSpans } from "@/composer/input/shell-prompt-view";
+import type { ShellPromptParts } from "@/composer/input/shell-prompt";
 import { usePacedStreamText } from "@/agent-stream/use-paced-stream-text";
 import { resolveMarkdownTextStyle } from "@/components/markdown/heading-style";
 import type { TaskActivity, TodoEntry, UserMessageImageAttachment } from "@/types/stream";
@@ -74,7 +76,7 @@ import type { MarkdownPhase } from "@/components/markdown/fence/types";
 import { splitMarkdownBlocks } from "@/utils/split-markdown-blocks";
 import { colorMarkdownLinkChildren } from "@/components/markdown/link-children";
 import { createAssistantMarkdownParser } from "@/utils/assistant-markdown-parser";
-import { formatDuration, formatMessageTimestamp } from "@/utils/time";
+import { formatDuration, formatTranscriptTimestamp } from "@/utils/time";
 import { writeMarkdownToRichClipboard } from "@/utils/rich-clipboard";
 import { getDefaultMarkdownClipboardEnvironment } from "@/utils/rich-clipboard-default-environment";
 import { setAssistantMarkdownBlockHeight } from "@/utils/assistant-message-height-estimate";
@@ -139,7 +141,23 @@ interface UserMessageProps {
   isPending?: boolean;
   disableOuterSpacing?: boolean;
   isSteering?: boolean;
+  /** The bash prompt in front of the text and how far its band bleeds (Daseo delta 115). */
+  prompt?: UserPromptPresentation;
 }
+
+export interface UserPromptPresentation {
+  parts: ShellPromptParts;
+  /** Phone and folded layouts show only `path$`. */
+  compact: boolean;
+  /** The transcript's horizontal inset, so the band reaches the pane edges. */
+  bandBleed: number;
+}
+
+const NO_PROMPT: UserPromptPresentation = {
+  parts: { user: null, host: null, path: null },
+  compact: true,
+  bandBleed: 0,
+};
 
 const MessageOuterSpacingContext = createContext(false);
 
@@ -293,17 +311,14 @@ function shouldStopDetailWheelPropagation(detailRoot: HTMLElement, event: WheelE
 }
 
 const userMessageStylesheet = StyleSheet.create((theme) => ({
-  // Daseo delta 55: a submitted prompt reads as a terminal input line — left-aligned, a `>`
-  // marker in the accent, no box — instead of a right-aligned chat bubble.
+  // Daseo delta 55 made a submitted prompt a left-aligned terminal input line, not a chat bubble.
+  // Delta 115 (the owner's option B): it starts with Ubuntu's bash prompt, its text is bold bright
+  // white, and it sits on a band one step lighter than the chat that runs to the pane edges, with
+  // no border or rule. The meta row (time, rewind, copy) stays below the band.
   container: {
-    flexDirection: "row",
-    justifyContent: "flex-start",
+    flexDirection: "column",
+    alignItems: "stretch",
     ...(isWeb ? { userSelect: "text" as const } : {}),
-  },
-  content: {
-    alignItems: "flex-start",
-    maxWidth: "100%",
-    cursor: "auto",
   },
   containerSpacing: {
     marginBottom: theme.spacing[1],
@@ -314,31 +329,27 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
   containerLastInGroup: {
     marginBottom: theme.spacing[4],
   },
+  band: {
+    backgroundColor: theme.colors.userPromptBackground,
+    paddingVertical: theme.spacing[1.5],
+  },
   bubble: {
     position: "relative",
-    // Daseo delta 89: the prompt wraps at the prose measure, past its `>` gutter.
-    maxWidth: proseMeasureWidth(theme.fontSize.base, theme.chatTextScale) + theme.spacing[4],
-    paddingLeft: theme.spacing[4],
-    paddingVertical: theme.spacing[1],
+    // Daseo delta 89: the prompt wraps at the prose measure.
+    maxWidth: proseMeasureWidth(theme.fontSize.base, theme.chatTextScale),
     minWidth: 0,
     flexShrink: 1,
-  },
-  promptMarker: {
-    position: "absolute",
-    left: 0,
-    top: theme.spacing[1],
-    color: theme.colors.accent,
-    fontFamily: theme.fontFamily.mono,
-    fontSize: theme.fontSize.base * theme.chatTextScale,
-    fontWeight: theme.fontWeight.semibold,
-    lineHeight: Math.round(22 * theme.chatTextScale),
+    cursor: "auto",
   },
   text: {
-    color: theme.colors.foreground,
+    color: theme.colors.userPromptForeground,
+    fontWeight: theme.fontWeight.bold,
     fontSize: theme.fontSize.base * theme.chatTextScale,
-    ...(isWeb
-      ? { lineHeight: Math.round(22 * theme.chatTextScale), overflowWrap: "anywhere" as const }
-      : {}),
+    lineHeight: Math.round(22 * theme.chatTextScale),
+    ...(isWeb ? { overflowWrap: "anywhere" as const } : {}),
+  },
+  promptLine: {
+    marginBottom: theme.spacing[2],
   },
   foldRow: {
     flexDirection: "row",
@@ -370,7 +381,6 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
   },
   trailingRow: {
     alignSelf: "flex-start",
-    marginLeft: theme.spacing[4],
     flexDirection: "row",
     alignItems: "center",
     height: 24,
@@ -474,7 +484,14 @@ const FOLDED_STATE = { expanded: false } as const;
 const UNFOLDED_STATE = { expanded: true } as const;
 
 /** The prompt's text, folded to its first lines when it is long (see `user-message-fold`). */
-const UserMessageText = memo(function UserMessageText({ message }: { message: string }) {
+const UserMessageText = memo(function UserMessageText({
+  message,
+  prompt,
+}: {
+  message: string;
+  /** The prompt runs into the text's first line; null when it already stands above attachments. */
+  prompt: UserPromptPresentation | null;
+}) {
   const { t } = useTranslation();
   const isFoldable = useMemo(() => shouldFoldUserMessage(message), [message]);
   const [isUnfolded, setIsUnfolded] = useState(false);
@@ -488,6 +505,9 @@ const UserMessageText = memo(function UserMessageText({ message }: { message: st
         style={userMessageStylesheet.text}
         numberOfLines={isFolded ? USER_MESSAGE_FOLD_LINES : undefined}
       >
+        {prompt ? (
+          <ShellPromptSpans parts={prompt.parts} compact={prompt.compact} trailingSpace />
+        ) : null}
         {message}
       </Text>
       {isFoldable ? (
@@ -525,6 +545,7 @@ export const UserMessage = memo(function UserMessage({
   isPending = false,
   disableOuterSpacing,
   isSteering = false,
+  prompt = NO_PROMPT,
 }: UserMessageProps) {
   const { t } = useTranslation();
   const [lightboxMetadata, setLightboxMetadata] = useState<UserMessageImageAttachment | null>(null);
@@ -541,9 +562,20 @@ export const UserMessage = memo(function UserMessage({
   const unavailableImageContent = useMemo(() => getUnavailableImagePillContent(t), [t]);
   const { showTrailingRow, trailingRowStyle } = useUserMessageTrailingRow({ isPending, hasText });
   const formattedTimestamp = useMemo(
-    () => formatMessageTimestamp(new Date(timestamp)),
+    () => formatTranscriptTimestamp(new Date(timestamp)),
     [timestamp],
   );
+  const bandStyle = useMemo(
+    () => [
+      userMessageStylesheet.band,
+      inlineUnistylesStyle({
+        marginHorizontal: -prompt.bandBleed,
+        paddingHorizontal: prompt.bandBleed,
+      }),
+    ],
+    [prompt.bandBleed],
+  );
+  const hasPromptLine = hasImages || hasAttachments;
   const rewindMutation = useRewindAgentMutation({ serverId, agentId, client, messageId });
 
   const getMessageContent = useCallback(() => message, [message]);
@@ -582,11 +614,13 @@ export const UserMessage = memo(function UserMessage({
 
   return (
     <View style={containerStyle} testID="user-message" aria-busy={isPending}>
-      <View style={userMessageStylesheet.content}>
+      <View style={bandStyle} testID="user-message-band">
         <View style={userMessageStylesheet.bubble}>
-          <Text style={userMessageStylesheet.promptMarker} aria-hidden selectable={false}>
-            {">"}
-          </Text>
+          {hasPromptLine ? (
+            <Text style={[userMessageStylesheet.text, userMessageStylesheet.promptLine]}>
+              <ShellPromptSpans parts={prompt.parts} compact={prompt.compact} />
+            </Text>
+          ) : null}
           {hasImages ? (
             <View style={imagePreviewContainerStyle}>
               {images.map((image) => (
@@ -626,43 +660,45 @@ export const UserMessage = memo(function UserMessage({
               })}
             </View>
           ) : null}
-          {hasText ? <UserMessageText message={message} /> : null}
+          {hasText ? (
+            <UserMessageText message={message} prompt={hasPromptLine ? null : prompt} />
+          ) : null}
           <UserMessageDeliveryLabel isPending={isPending} isSteering={isSteering} />
         </View>
-        {hasText ? (
-          <View
-            style={trailingRowStyle}
-            pointerEvents={showTrailingRow ? "auto" : "none"}
-            testID="user-message-trailing-row"
-          >
-            <Text
-              style={userMessageStylesheet.timestampText}
-              dataSet={CODE_SURFACE_DATASET}
-              testID="user-message-timestamp"
-            >
-              {formattedTimestamp}
-            </Text>
-            <View
-              style={userMessageStylesheet.trailingActions}
-              testID="user-message-trailing-actions"
-            >
-              {capabilities && messageId ? (
-                <RewindMenu
-                  capabilities={capabilities}
-                  isPending={rewindMutation.isPending}
-                  rewoundText={message}
-                  onRewind={handleRewind}
-                />
-              ) : null}
-              <TurnCopyButton
-                getContent={getMessageContent}
-                containerStyle={userMessageStylesheet.copyButton}
-                accessibilityLabel={t("message.actions.copyMessage")}
-              />
-            </View>
-          </View>
-        ) : null}
       </View>
+      {hasText ? (
+        <View
+          style={trailingRowStyle}
+          pointerEvents={showTrailingRow ? "auto" : "none"}
+          testID="user-message-trailing-row"
+        >
+          <Text
+            style={userMessageStylesheet.timestampText}
+            dataSet={CODE_SURFACE_DATASET}
+            testID="user-message-timestamp"
+          >
+            {formattedTimestamp}
+          </Text>
+          <View
+            style={userMessageStylesheet.trailingActions}
+            testID="user-message-trailing-actions"
+          >
+            {capabilities && messageId ? (
+              <RewindMenu
+                capabilities={capabilities}
+                isPending={rewindMutation.isPending}
+                rewoundText={message}
+                onRewind={handleRewind}
+              />
+            ) : null}
+            <TurnCopyButton
+              getContent={getMessageContent}
+              containerStyle={userMessageStylesheet.copyButton}
+              accessibilityLabel={t("message.actions.copyMessage")}
+            />
+          </View>
+        </View>
+      ) : null}
       <AttachmentLightbox source={lightboxSource} onClose={handleLightboxClose} />
     </View>
   );
@@ -713,7 +749,7 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
     [durationMs],
   );
   const timestampLabel = useMemo(
-    () => (completedAt ? formatMessageTimestamp(completedAt) : ""),
+    () => (completedAt ? formatTranscriptTimestamp(completedAt) : ""),
     [completedAt],
   );
 
@@ -789,7 +825,7 @@ export const AssistantResponseBlock = memo(function AssistantResponseBlock({
 }: AssistantResponseBlockProps) {
   const { t } = useTranslation();
   const getContent = useCallback(() => content, [content]);
-  const timeLabel = useMemo(() => formatMessageTimestamp(new Date(timestamp)), [timestamp]);
+  const timeLabel = useMemo(() => formatTranscriptTimestamp(new Date(timestamp)), [timestamp]);
 
   return (
     <View>
@@ -1439,6 +1475,18 @@ interface MemoizedMarkdownBlockProps {
   onLinkPress: (url: string) => boolean;
 }
 
+/**
+ * Daseo delta 115: a transcript heading reads as markdown source in a terminal, a faint `##` in
+ * front of body-sized accent text. Copy skips the marks; the heading's copy tag writes its own.
+ */
+function HeadingMarker({ level, style }: { level: number; style: TextStyle | undefined }) {
+  return (
+    <Text style={style} dataSet={markdownCopyDataSet.ignore} selectable={false} aria-hidden>
+      {`${"#".repeat(level)} `}
+    </Text>
+  );
+}
+
 const MemoizedMarkdownBlock = React.memo(function MemoizedMarkdownBlock({
   text,
   rules,
@@ -1448,6 +1496,7 @@ const MemoizedMarkdownBlock = React.memo(function MemoizedMarkdownBlock({
   return (
     <MarkdownRenderer
       text={text}
+      assistantProse
       enableHtmlish={false}
       rules={rules}
       markdownit={parser}
@@ -1568,6 +1617,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         styles: MarkdownStyles,
       ) => (
         <View key={node.key} style={styles._VIEW_SAFE_heading1} dataSet={markdownCopyDataSet.h1}>
+          <HeadingMarker level={1} style={styles.heading_marker} />
           {children}
         </View>
       ),
@@ -1578,6 +1628,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         styles: MarkdownStyles,
       ) => (
         <View key={node.key} style={styles._VIEW_SAFE_heading2} dataSet={markdownCopyDataSet.h2}>
+          <HeadingMarker level={2} style={styles.heading_marker} />
           {children}
         </View>
       ),
@@ -1588,6 +1639,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         styles: MarkdownStyles,
       ) => (
         <View key={node.key} style={styles._VIEW_SAFE_heading3} dataSet={markdownCopyDataSet.h3}>
+          <HeadingMarker level={3} style={styles.heading_marker} />
           {children}
         </View>
       ),
@@ -1598,6 +1650,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         styles: MarkdownStyles,
       ) => (
         <View key={node.key} style={styles._VIEW_SAFE_heading4} dataSet={markdownCopyDataSet.h4}>
+          <HeadingMarker level={4} style={styles.heading_marker} />
           {children}
         </View>
       ),
@@ -1608,6 +1661,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         styles: MarkdownStyles,
       ) => (
         <View key={node.key} style={styles._VIEW_SAFE_heading5} dataSet={markdownCopyDataSet.h5}>
+          <HeadingMarker level={5} style={styles.heading_marker} />
           {children}
         </View>
       ),
@@ -1618,6 +1672,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         styles: MarkdownStyles,
       ) => (
         <View key={node.key} style={styles._VIEW_SAFE_heading6} dataSet={markdownCopyDataSet.h6}>
+          <HeadingMarker level={6} style={styles.heading_marker} />
           {children}
         </View>
       ),

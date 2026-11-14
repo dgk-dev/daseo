@@ -5,7 +5,7 @@ import { ChevronDown, ChevronRight } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import type { Theme } from "@/styles/theme";
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
-import { formatMessageTimestamp } from "@/utils/time";
+import { formatTranscriptTimestamp } from "@/utils/time";
 import {
   formatSystemNotificationLabel,
   parseSystemNotification,
@@ -35,7 +35,7 @@ export const SystemNotificationRow = memo(function SystemNotificationRow({
   const [expanded, setExpanded] = useState(false);
   const notification = useMemo(() => parseSystemNotification(text), [text]);
   const label = formatSystemNotificationLabel(notification.summary, t);
-  const time = useMemo(() => formatMessageTimestamp(new Date(timestamp)), [timestamp]);
+  const time = useMemo(() => formatTranscriptTimestamp(new Date(timestamp)), [timestamp]);
   const handlePress = useCallback(() => setExpanded((previous) => !previous), []);
   const accessibilityState = useMemo(() => ({ expanded }), [expanded]);
   const { summary } = notification;

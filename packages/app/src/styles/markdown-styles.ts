@@ -420,6 +420,57 @@ function buildMarkdownStyles(theme: Theme) {
 }
 
 /**
+ * Daseo delta 115: the assistant's answers in the transcript read as terminal prose. Body text is
+ * one step under the foreground (`assistantText`); every heading level is body-sized, bold, in the
+ * accent, with no rule under it, and the transcript draws faint `#` marks in front of it
+ * (`heading_marker`). Other markdown surfaces (file preview, pull requests) keep the base styles.
+ */
+export function createAssistantMarkdownStyles(theme: Theme) {
+  return scaleConversationText(buildAssistantMarkdownStyles(theme), theme.chatTextScale ?? 1);
+}
+
+function buildAssistantMarkdownStyles(theme: Theme) {
+  const baseStyles = buildMarkdownStyles(theme);
+  const lineHeight = Math.round(theme.fontSize.base * 1.4);
+  const terminalHeading = {
+    ...markdownHeadingContainerStyle,
+    maxWidth: baseStyles.paragraph.maxWidth,
+    ...webSelectableTextStyle,
+    fontSize: theme.fontSize.base,
+    fontWeight: theme.fontWeight.bold,
+    color: theme.colors.accent,
+    lineHeight,
+    marginTop: theme.spacing[3],
+    marginBottom: theme.spacing[1],
+  };
+  return {
+    ...baseStyles,
+    body: { ...baseStyles.body, color: theme.colors.assistantText },
+    text: { ...baseStyles.text, color: theme.colors.assistantText },
+    heading1: terminalHeading,
+    heading2: terminalHeading,
+    heading3: terminalHeading,
+    heading4: terminalHeading,
+    heading5: terminalHeading,
+    heading6: terminalHeading,
+    // Text leaves take `text` after what they inherit, so the heading colour and weight are
+    // restated here, where the heading rule re-applies them.
+    heading_text: {
+      ...markdownHeadingTextStyle,
+      color: theme.colors.accent,
+      fontWeight: theme.fontWeight.bold,
+    },
+    heading_marker: {
+      ...webSelectableTextStyle,
+      color: theme.colors.foregroundExtraMuted,
+      fontSize: theme.fontSize.base,
+      fontWeight: theme.fontWeight.normal,
+      lineHeight,
+    },
+  };
+}
+
+/**
  * Creates a smaller variant of markdown styles for compact UI elements
  * like thought bubbles, tooltips, or side panels.
  */

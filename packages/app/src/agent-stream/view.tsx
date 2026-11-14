@@ -110,7 +110,9 @@ import {
 import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { useForkAgent } from "@/hooks/use-fork-agent";
-import { isWeb } from "@/constants/platform";
+import { isNative, isWeb } from "@/constants/platform";
+import { useShellPromptParts } from "@/composer/input/use-shell-prompt-parts";
+import { getStreamEdgeBleed, STREAM_CONTENT_INSET_PX, STREAM_ITEM_INSET_PX } from "./spacing";
 import type { Theme } from "@/styles/theme";
 import { recordRenderProfileReasons } from "@/utils/render-profiler";
 import { useRetainedPanelActive } from "@/components/retained-panel";
@@ -388,6 +390,16 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     );
 
     const workspaceRoot = context.cwd?.trim() || "";
+    // Daseo delta 115: every sent prompt starts with the bash prompt, on a band to the pane edges.
+    const shellPromptParts = useShellPromptParts(resolvedServerId, workspaceRoot);
+    const userPrompt = useMemo(
+      () => ({
+        parts: shellPromptParts,
+        compact: isMobile,
+        bandBleed: getStreamEdgeBleed({ isNative, isCompact: isMobile }),
+      }),
+      [isMobile, shellPromptParts],
+    );
     const { revealDirectory } = useFileExplorerActions({
       serverId: resolvedServerId,
       workspaceId: context.workspaceId,
@@ -794,6 +806,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
             isFirstInGroup={layoutItem.isFirstInUserGroup}
             isLastInGroup={layoutItem.isLastInUserGroup}
             isSteering={item.steering === true}
+            prompt={userPrompt}
             isPending={
               item.clientMessageId !== undefined &&
               pendingClientMessageIds.has(item.clientMessageId)
@@ -801,7 +814,14 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           />
         );
       },
-      [context.capabilities, agentId, client, pendingClientMessageIds, resolvedServerId],
+      [
+        context.capabilities,
+        agentId,
+        client,
+        pendingClientMessageIds,
+        resolvedServerId,
+        userPrompt,
+      ],
     );
 
     const renderAssistantMessageItem = useCallback(
@@ -1722,8 +1742,8 @@ const stylesheet = StyleSheet.create((theme) => ({
     paddingVertical: 0,
     flexGrow: 1,
     paddingHorizontal: {
-      xs: theme.spacing[3],
-      md: theme.spacing[4],
+      xs: STREAM_CONTENT_INSET_PX.native.compact,
+      md: STREAM_CONTENT_INSET_PX.native.wide,
     },
   },
   forwardListContentContainer: {
@@ -1735,7 +1755,7 @@ const stylesheet = StyleSheet.create((theme) => ({
   },
   streamItemWrapper: {
     width: "100%",
-    paddingHorizontal: theme.spacing[2],
+    paddingHorizontal: STREAM_ITEM_INSET_PX,
   },
   emptyState: {
     flex: 1,

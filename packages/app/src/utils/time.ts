@@ -146,6 +146,28 @@ export function formatMessageTimestamp(date: Date, now: Date = new Date()): stri
   return `${dateLabel}, ${time}`;
 }
 
+const pad2 = (value: number) => String(value).padStart(2, "0");
+
+/**
+ * Daseo delta 115: the transcript's clock, as a terminal prints it — 24-hour and numeric,
+ * whatever the locale. Only the conversation uses it (message rows, turn footers, system
+ * notification rows); History, schedules and settings keep `formatMessageTimestamp`.
+ * - Today: "23:34"
+ * - Another day this year: "11-14 23:34"
+ * - Another year: "2025-12-31 23:34"
+ */
+export function formatTranscriptTimestamp(date: Date, now: Date = new Date()): string {
+  const time = `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+  if (localCalendarDaysBetween(date, now) === 0) {
+    return time;
+  }
+  const monthDay = `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+  if (date.getFullYear() === now.getFullYear()) {
+    return `${monthDay} ${time}`;
+  }
+  return `${date.getFullYear()}-${monthDay} ${time}`;
+}
+
 /**
  * Format a duration as a compact human-readable string.
  * - 0-60s: whole seconds ("47s")

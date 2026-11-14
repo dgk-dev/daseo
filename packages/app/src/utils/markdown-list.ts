@@ -10,7 +10,8 @@ interface MarkdownNode {
   children?: MarkdownNode[];
 }
 
-const LIST_BULLET = "•";
+// Daseo delta 115: a terminal list marker, as in plain-text and `man` output.
+const LIST_BULLET = "-";
 const DEFAULT_ORDERED_LIST_MARKUP = ".";
 const MARKDOWN_LIST_MARGIN_TOP = SPACING[1];
 const MARKDOWN_LIST_MARGIN_BOTTOM_TO_PROSE = SPACING[4];

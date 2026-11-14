@@ -91,7 +91,7 @@ vi.mock("react-i18next", () => ({
 }));
 
 vi.mock("@/utils/time", () => ({
-  formatMessageTimestamp: (date: Date) => `at ${date.toISOString()}`,
+  formatTranscriptTimestamp: (date: Date) => `at ${date.toISOString()}`,
 }));
 
 import { SystemNotificationRow } from "./system-notification-row";

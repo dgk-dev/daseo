@@ -29,7 +29,11 @@ import { MarkdownParagraphView, MarkdownTextSpan } from "@/components/markdown-t
 import { MarkdownTableCellText } from "@/components/markdown-text-selection";
 import { getMarkdownListMarker, getMarkdownListSpacing } from "@/utils/markdown-list";
 import { markdownNodeContainsType } from "@/utils/markdown-ast";
-import { createCompactMarkdownStyles, createMarkdownStyles } from "@/styles/markdown-styles";
+import {
+  createAssistantMarkdownStyles,
+  createCompactMarkdownStyles,
+  createMarkdownStyles,
+} from "@/styles/markdown-styles";
 import type { Theme } from "@/styles/theme";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { isNative } from "@/constants/platform";
@@ -48,7 +52,10 @@ export type MarkdownStyles = Record<string, TextStyle & ViewStyle & { [key: stri
 
 interface MarkdownWithStableRendererProps {
   children: ReactNode;
-  style: ReturnType<typeof createMarkdownStyles> | ReturnType<typeof createCompactMarkdownStyles>;
+  style:
+    | ReturnType<typeof createMarkdownStyles>
+    | ReturnType<typeof createCompactMarkdownStyles>
+    | ReturnType<typeof createAssistantMarkdownStyles>;
   rules?: RenderRules;
   markdownit?: ReturnType<typeof MarkdownIt>;
   onLinkPress?: (url: string) => boolean;
@@ -67,12 +74,18 @@ function compactMarkdownStyleMapping(theme: Theme): Partial<MarkdownWithStableRe
   return { style: createCompactMarkdownStyles(theme) };
 }
 
+function assistantMarkdownStyleMapping(theme: Theme): Partial<MarkdownWithStableRendererProps> {
+  return { style: createAssistantMarkdownStyles(theme) };
+}
+
 const defaultMarkdownParser = MarkdownIt({ typographer: true, linkify: true });
 const EMPTY_TEXT_STYLE: TextStyle = {};
 const MARKDOWN_LIST_ITEM_CONTENT_FLEX: ViewStyle = { flex: 1, flexShrink: 1, minWidth: 0 };
 export interface MarkdownRendererProps {
   text: string;
   compact?: boolean;
+  /** The assistant's transcript prose (Daseo delta 115); ignored when `compact`. */
+  assistantProse?: boolean;
   rules?: RenderRules;
   markdownit?: ReturnType<typeof MarkdownIt>;
   onLinkPress?: (url: string) => boolean;
@@ -84,6 +97,7 @@ export interface MarkdownRendererProps {
 export function MarkdownRenderer({
   text,
   compact = false,
+  assistantProse = false,
   rules,
   markdownit = defaultMarkdownParser,
   onLinkPress,
@@ -99,6 +113,7 @@ export function MarkdownRenderer({
   const rendererProps = useMemo(
     () => ({
       compact,
+      assistantProse,
       rules: markdownRules,
       markdownit,
       onLinkPress,
@@ -107,6 +122,7 @@ export function MarkdownRenderer({
     }),
     [
       allowedImageHandlers,
+      assistantProse,
       compact,
       markdownRules,
       markdownit,
@@ -190,16 +206,26 @@ function MarkdownPart({
   return <MarkdownFragment text={part.text} {...rendererProps} />;
 }
 
+function resolveMarkdownStyleMapping(input: {
+  compact: boolean | undefined;
+  assistantProse: boolean | undefined;
+}): (theme: Theme) => Partial<MarkdownWithStableRendererProps> {
+  if (input.compact) return compactMarkdownStyleMapping;
+  if (input.assistantProse) return assistantMarkdownStyleMapping;
+  return markdownStyleMapping;
+}
+
 function MarkdownFragment({
   text,
   compact,
+  assistantProse,
   rules,
   markdownit,
   onLinkPress,
   allowedImageHandlers,
   topLevelMaxExceededItem,
 }: MarkdownRendererProps & { rules: RenderRules }) {
-  const uniProps = compact ? compactMarkdownStyleMapping : markdownStyleMapping;
+  const uniProps = resolveMarkdownStyleMapping({ compact, assistantProse });
   return (
     <ThemedMarkdown
       uniProps={uniProps}

@@ -64,12 +64,14 @@ import {
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
 import { useIosHardwareKeyboardSubmit } from "@/hooks/use-ios-hardware-keyboard-submit";
 import { type ShortcutKey } from "@/utils/format-shortcut";
-import { MOTION_DURATION_MS, MOTION_EASING_CSS } from "@/styles/motion";
 import type { MessageInputKeyboardActionKind } from "@/keyboard/actions";
 import { isImeComposingKeyboardEvent } from "@/utils/keyboard-ime";
 import { isNative, isWeb } from "@/constants/platform";
 import { useComposerQuickAsk } from "@/composer/quick-ask/use-quick-ask-voice";
 import { useIsCompactFormFactor } from "@/constants/layout";
+import { useHostRouteServerId } from "@/navigation/host-route-context";
+import { ShellPromptSpans } from "./shell-prompt-view";
+import { useShellPromptParts } from "./use-shell-prompt-parts";
 import { useComposerHeightMirror } from "./height-mirror";
 import { resolveComposerInputMode, type ComposerInputMode } from "@/composer/input-mode";
 import type { NativePastedFile } from "@/composer/native-pasted-image";
@@ -1247,6 +1249,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const mode = resolveComposerInputMode(inputMode);
     const { t } = useTranslation();
     const isCompact = useIsCompactFormFactor();
+    const hostRouteServerId = useHostRouteServerId();
+    const shellPromptParts = useShellPromptParts(voiceServerId ?? hostRouteServerId, cwd);
     const { height: windowHeight } = useWindowDimensions();
     const keyboardHeight = useKeyboardHeight();
     const maxInputHeight = resolveMaxInputHeight(windowHeight, keyboardHeight);
@@ -1870,11 +1874,10 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const inputWrapperCombinedStyle = useMemo(
       () => [
         styles.inputWrapper,
-        readOnly && styles.inputWrapperReadOnly,
         inputWrapperStyle,
         { opacity: surfacePresentation.input.opacity },
       ],
-      [inputWrapperStyle, readOnly, surfacePresentation.input.opacity],
+      [inputWrapperStyle, surfacePresentation.input.opacity],
     );
     // `withUnistyles` maps this component's `style` into a `.hash > *` child
     // rule, which ties on specificity with react-native-web's own
@@ -1983,10 +1986,10 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           pointerEvents={surfacePresentation.input.pointerEvents}
         >
           {attachmentSlot}
-          {/* Daseo delta 89: the prompt line — an accent `>` and the text input. */}
+          {/* Daseo delta 115: the prompt line — Ubuntu's bash prompt and the text input. */}
           <View style={styles.promptLine}>
-            <Text style={styles.promptMarker} aria-hidden selectable={false}>
-              {">"}
+            <Text style={styles.promptMarker} numberOfLines={1} testID="composer-shell-prompt">
+              <ShellPromptSpans parts={shellPromptParts} compact={isCompact} />
             </Text>
             <View style={styles.promptInput}>
               <ComposerTextSurface
@@ -2091,12 +2094,11 @@ const styles = StyleSheet.create((theme: Theme) => ({
   inputWrapper: {
     flexDirection: "column",
     gap: theme.spacing[3],
-    // Daseo delta 53 (2026-10-23): a terminal prompt line, not a box. Only the top rule
-    // stays, and the field sits on the page background so no filled rectangle remains.
+    // Daseo delta 53 (2026-10-23): a terminal prompt line, not a box. Delta 115: no rule above
+    // it either; spacing separates it from the transcript and the bash prompt marks the input.
+    // The field sits on the page background so no filled rectangle remains.
     backgroundColor: "transparent",
     borderWidth: 0,
-    borderTopWidth: theme.borderWidth[1],
-    borderColor: theme.colors.borderAccent,
     borderRadius: theme.borderRadius.none,
     paddingVertical: {
       xs: theme.spacing[2],
@@ -2107,19 +2109,9 @@ const styles = StyleSheet.create((theme: Theme) => ({
       xs: theme.spacing[3],
       md: theme.spacing[2],
     },
-    ...(isWeb
-      ? {
-          transitionProperty: "border-color",
-          transitionDuration: `${MOTION_DURATION_MS.base}ms`,
-          transitionTimingFunction: MOTION_EASING_CSS,
-        }
-      : {}),
   },
   // Dotted says "this surface is the same box, but there is nothing to type
   // into it" without swapping the border colour, which reads as an error state.
-  inputWrapperReadOnly: {
-    borderStyle: "dotted",
-  },
   textInputScrollWrapper: {
     position: "relative",
   },
@@ -2128,11 +2120,14 @@ const styles = StyleSheet.create((theme: Theme) => ({
     alignItems: "flex-start",
     gap: theme.spacing[2],
   },
-  // Same size and line height as the input, so the marker sits on its first line.
+  // Same size and line height as the input, so the prompt sits on its first line. A deep
+  // working directory gives way to the input rather than pushing it off the line.
   promptMarker: {
-    color: theme.colors.accent,
+    flexShrink: 1,
+    maxWidth: "60%",
+    color: theme.colors.foreground,
     fontFamily: theme.fontFamily.mono,
-    fontWeight: theme.fontWeight.bold,
+    fontWeight: theme.fontWeight.normal,
     fontSize: theme.fontSize.base * theme.chatTextScale,
     lineHeight: Math.round(theme.fontSize.base * 1.4 * theme.chatTextScale),
   },

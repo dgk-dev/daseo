@@ -7,7 +7,7 @@ import { within } from "@testing-library/dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentCapabilityFlags } from "@getpaseo/protocol/agent-types";
 import { i18n as testI18n } from "@/i18n/i18next";
-import { formatMessageTimestamp } from "@/utils/time";
+import { formatTranscriptTimestamp } from "@/utils/time";
 import { AssistantResponseBlock, AssistantTurnFooter, UserMessage } from "./message";
 
 vi.hoisted(() => {
@@ -187,7 +187,7 @@ describe("user prompt trailing row", () => {
     const message = view.getByTestId("user-message");
 
     expect(view.getByTestId("user-message-timestamp").textContent).toBe(
-      formatMessageTimestamp(sentAt),
+      formatTranscriptTimestamp(sentAt),
     );
     expectShownWithin(view.getByTestId("user-message-timestamp"), message);
     expectShownWithin(view.getByTestId("rewind-menu-trigger"), message);
@@ -238,7 +238,7 @@ describe("assistant completion row", () => {
     const turn = view.getByTestId("turn");
     const label = view.getByTestId("assistant-turn-footer-label");
 
-    expect(label.textContent).toBe(`Worked for 12s · ${formatMessageTimestamp(completedAt)}`);
+    expect(label.textContent).toBe(`Worked for 12s · ${formatTranscriptTimestamp(completedAt)}`);
     expectShownWithin(label, turn);
     expectShownWithin(view.getByRole("button", { name: "Copy turn" }), turn);
     expectShownWithin(view.getByTestId("assistant-fork-menu-trigger"), turn);
@@ -250,7 +250,7 @@ describe("assistant completion row", () => {
     );
 
     expect(view.getByTestId("assistant-turn-footer-label").textContent).toBe(
-      formatMessageTimestamp(completedAt),
+      formatTranscriptTimestamp(completedAt),
     );
   });
 
@@ -268,7 +268,7 @@ describe("assistant completion row", () => {
     const response = view.getByTestId("response");
 
     expect(view.getByTestId("assistant-response-timestamp").textContent).toBe(
-      formatMessageTimestamp(arrivedAt),
+      formatTranscriptTimestamp(arrivedAt),
     );
     expectShownWithin(view.getByTestId("assistant-response-timestamp"), response);
     expectShownWithin(view.getByRole("button", { name: "Copy message" }), response);

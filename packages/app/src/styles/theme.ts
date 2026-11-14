@@ -222,6 +222,13 @@ const lightSemanticColors = {
   foregroundMuted: "#71717a",
   foregroundExtraMuted: "#a1a1aa",
 
+  // Transcript (Daseo delta 115): a sent prompt sits on a band one step off the chat background,
+  // in bold; the prompt's path is the terminal blue; assistant prose stays on the foreground.
+  userPromptBackground: "#ececee", // midway between surface2 and surface3
+  userPromptForeground: "#1a1a1e",
+  assistantText: "#1a1a1e",
+  promptPath: "#1d4ed8", // blue-700: 5.7:1 on the band; the terminal blues fall under 4.5:1 there
+
   // Controls
   scrollbarHandle: "#3f3f46", // zinc-700
 
@@ -329,6 +336,18 @@ const darkTerminalAnsi = {
   brightWhite: "#f0f0f2",
 };
 
+/** The sRGB midpoint of two `#rrggbb` colours. */
+function mixHex(a: string, b: string): string {
+  const channel = (hex: string, index: number) =>
+    Number.parseInt(hex.slice(1 + index * 2, 3 + index * 2), 16);
+  const mixed = [0, 1, 2].map((index) =>
+    Math.round((channel(a, index) + channel(b, index)) / 2)
+      .toString(16)
+      .padStart(2, "0"),
+  );
+  return `#${mixed.join("")}`;
+}
+
 function buildDarkSemanticColors(tint: DarkThemeConfig) {
   return {
     surface0: tint.surface0,
@@ -344,6 +363,13 @@ function buildDarkSemanticColors(tint: DarkThemeConfig) {
     foreground: "#fafafa",
     foregroundMuted: tint.foregroundMuted,
     foregroundExtraMuted: tint.foregroundExtraMuted,
+
+    // Daseo delta 115: the sent-prompt band sits midway between surface2 and surface3 (the Daseo
+    // and Tokyo Night themes override it with the same derivation, rounded to a palette value).
+    userPromptBackground: mixHex(tint.surface2, tint.surface3),
+    userPromptForeground: "#fafafa",
+    assistantText: "#fafafa",
+    promptPath: darkTerminalAnsi.brightBlue,
 
     scrollbarHandle: tint.scrollbarHandle,
 
@@ -728,6 +754,13 @@ const tokyoNightDarkColors = {
   secondaryForeground: TOKYO_NIGHT_FOREGROUND,
   ring: TOKYO_NIGHT_ACCENT,
   statusDotRunning: TOKYO_NIGHT_ACCENT,
+  // Delta 115, derived as in the Daseo theme: the band is Tokyo Night Storm's background (midway
+  // between surface2 and surface3), his prompt the brightest foreground, prose the palette's normal
+  // white (fg_dark), the prompt path the terminal bright blue.
+  userPromptBackground: "#24283b",
+  userPromptForeground: TOKYO_NIGHT_FOREGROUND,
+  assistantText: "#a9b1d6",
+  promptPath: "#8db0ff",
   terminal: {
     ...tokyoNightBaseColors.terminal,
     background: "#1a1b26",
@@ -792,6 +825,14 @@ const daseoDarkColors = {
   secondaryForeground: DASEO_FOREGROUND,
   ring: DASEO_ACCENT,
   statusDotRunning: DASEO_ACCENT,
+  // Delta 115 (the owner's option B): his prompt is bold bright white on a band one step lighter
+  // than the chat; assistant prose is Tango's normal white, one step under the foreground; the
+  // prompt path is Tango bright blue, as in Ubuntu's PS1. On #300A24: prose 12.1:1, path 6.3:1;
+  // on the band #45173A: prompt text 14.6:1, accent 9.1:1, path 5.3:1, muted 5.7:1.
+  userPromptBackground: "#45173A",
+  userPromptForeground: "#FFFFFF",
+  assistantText: "#D3D7CF",
+  promptPath: "#729FCF",
   // The integrated terminal is the Ubuntu terminal: its Tango ANSI palette on #300A24.
   terminal: {
     ...daseoBaseColors.terminal,

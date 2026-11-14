@@ -5,7 +5,7 @@ describe("getMarkdownListMarker", () => {
   it("returns a bullet marker for unordered list items", () => {
     expect(getMarkdownListMarker({ index: 0 }, [{ type: "bullet_list" }])).toEqual({
       isOrdered: false,
-      marker: "•",
+      marker: "-",
     });
   });
 
