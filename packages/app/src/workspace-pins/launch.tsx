@@ -1,11 +1,8 @@
 import { useMemo, type ReactElement } from "react";
 import { useTranslation } from "react-i18next";
-import { Globe, SquarePen, SquareTerminal } from "lucide-react-native";
+import { SquareTerminal } from "lucide-react-native";
 import { withUnistyles } from "react-native-unistyles";
-import {
-  getTerminalProfileIcon,
-  resolveTerminalProfiles,
-} from "@getpaseo/protocol/terminal-profiles";
+import { resolveTerminalProfiles } from "@getpaseo/protocol/terminal-profiles";
 import { getProviderIcon } from "@/components/provider-icons";
 import { getIsElectron } from "@/constants/platform";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
@@ -21,7 +18,6 @@ import { useSessionStore } from "@/stores/session-store";
 export interface ResolvedPin {
   key: string;
   label: string;
-  icon: ReactElement;
   onPress: () => void;
 }
 
@@ -32,9 +28,7 @@ interface UsePinnedLaunchersInput {
 
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
-const ThemedSquarePen = withUnistyles(SquarePen);
 const ThemedSquareTerminal = withUnistyles(SquareTerminal);
-const ThemedGlobe = withUnistyles(Globe);
 
 function ProviderPinIcon({
   iconKey,
@@ -82,7 +76,6 @@ export function usePinnedLaunchers({ serverId, onLaunch }: UsePinnedLaunchersInp
         resolved.push({
           key: pinnedTargetKey(target),
           label: t("workspace.tabs.actions.newAgent"),
-          icon: <ThemedSquarePen size={14} uniProps={mutedColorMapping} />,
           onPress: () => onLaunch(target),
         });
         continue;
@@ -91,7 +84,6 @@ export function usePinnedLaunchers({ serverId, onLaunch }: UsePinnedLaunchersInp
         resolved.push({
           key: pinnedTargetKey(target),
           label: t("workspace.tabs.actions.newTerminal"),
-          icon: <ThemedSquareTerminal size={14} uniProps={mutedColorMapping} />,
           onPress: () => onLaunch(target),
         });
         continue;
@@ -100,7 +92,6 @@ export function usePinnedLaunchers({ serverId, onLaunch }: UsePinnedLaunchersInp
         resolved.push({
           key: pinnedTargetKey(target),
           label: t("workspace.tabs.actions.newBrowser"),
-          icon: <ThemedGlobe size={14} uniProps={mutedColorMapping} />,
           onPress: () => onLaunch(target),
         });
         continue;
@@ -112,7 +103,6 @@ export function usePinnedLaunchers({ serverId, onLaunch }: UsePinnedLaunchersInp
       resolved.push({
         key: pinnedTargetKey(target),
         label: profile.name,
-        icon: <ProfileIcon iconKey={getTerminalProfileIcon(profile)} />,
         onPress: () => onLaunch(target),
       });
     }

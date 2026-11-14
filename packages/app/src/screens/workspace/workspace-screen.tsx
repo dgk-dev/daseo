@@ -20,7 +20,6 @@ import { useRouter, type Href } from "expo-router";
 import * as Clipboard from "expo-clipboard";
 import { useTranslation } from "react-i18next";
 import {
-  ChevronDown,
   Copy,
   Ellipsis,
   Globe,
@@ -120,10 +119,12 @@ import { resolveWorkspaceRouteId } from "@/utils/workspace-identity";
 import { useOpenAgentTabLabels } from "@/subagents/use-open-agent-tab-labels";
 import {
   WorkspaceTabPresentationResolver,
-  WorkspaceTabIcon,
   WorkspaceTabOptionRow,
+  WorkspaceTabStatusMark,
+  formatWorkspaceTabIndex,
   type WorkspaceTabPresentation,
 } from "@/screens/workspace/workspace-tab-presentation";
+import { HINT_LINE_CARET } from "@/composer/hint-line";
 import {
   useWorkspaceTabRename,
   WorkspaceTabRenameModal,
@@ -179,9 +180,13 @@ import {
   useModifiedPanelTabIds,
 } from "@/panels/panel-instance-attributes";
 import { findAdjacentPane } from "@/utils/split-navigation";
-import { useIsCompactFormFactor, supportsDesktopPaneSplits } from "@/constants/layout";
+import {
+  useIsCompactFormFactor,
+  supportsDesktopPaneSplits,
+  WORKSPACE_SECONDARY_HEADER_HEIGHT,
+} from "@/constants/layout";
 import { getIsElectron, isNative, isWeb } from "@/constants/platform";
-import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
+import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
 import { useContainerWidthBelow } from "@/hooks/use-container-width";
 import {
   buildHostRootRoute,
@@ -223,7 +228,6 @@ function getWorkspaceScripts(
 
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 const ThemedEllipsis = withUnistyles(Ellipsis);
-const ThemedChevronDown = withUnistyles(ChevronDown);
 const ThemedCopy = withUnistyles(Copy);
 const ThemedSquarePen = withUnistyles(SquarePen);
 const ThemedSquareTerminal = withUnistyles(SquareTerminal);
@@ -428,14 +432,14 @@ interface MobileWorkspaceTabSwitcherProps {
 
 function MobileActiveTabTrigger({
   activeTab,
+  position,
   normalizedServerId,
   normalizedWorkspaceId,
-  backdrop,
 }: {
   activeTab: WorkspaceTabDescriptor | null;
+  position: number;
   normalizedServerId: string;
   normalizedWorkspaceId: string;
-  backdrop: SurfaceBackdrop;
 }) {
   if (!activeTab) {
     return null;
@@ -444,23 +448,25 @@ function MobileActiveTabTrigger({
   return (
     <ResolvedMobileActiveTabTrigger
       activeTab={activeTab}
+      position={position}
       normalizedServerId={normalizedServerId}
       normalizedWorkspaceId={normalizedWorkspaceId}
-      backdrop={backdrop}
     />
   );
 }
 
+// Daseo delta 112: the compact switcher shows the active tab the way the wide tab row draws it,
+// `N:title` in reverse video, with the running mark knocked out of the accent fill.
 function ResolvedMobileActiveTabTrigger({
   activeTab,
+  position,
   normalizedServerId,
   normalizedWorkspaceId,
-  backdrop,
 }: {
   activeTab: WorkspaceTabDescriptor;
+  position: number;
   normalizedServerId: string;
   normalizedWorkspaceId: string;
-  backdrop: SurfaceBackdrop;
 }) {
   const { t } = useTranslation();
   return (
@@ -470,17 +476,21 @@ function ResolvedMobileActiveTabTrigger({
       workspaceId={normalizedWorkspaceId}
     >
       {(presentation) => (
-        <>
-          <View style={styles.switcherTriggerIcon} testID="workspace-active-tab-icon">
-            <WorkspaceTabIcon presentation={presentation} active backdrop={backdrop} />
-          </View>
-
-          <Text style={styles.switcherTriggerText} numberOfLines={1}>
+        <View style={styles.switcherActiveTab} testID="workspace-active-tab">
+          <Text
+            style={styles.switcherActiveTabIndex}
+            selectable={false}
+            dataSet={CODE_SURFACE_DATASET}
+          >
+            {formatWorkspaceTabIndex(position)}
+          </Text>
+          <WorkspaceTabStatusMark presentation={presentation} backdrop="surface0" />
+          <Text style={styles.switcherActiveTabText} numberOfLines={1}>
             {presentation.titleState === "loading"
               ? t("workspace.tabs.loading")
               : presentation.label}
           </Text>
-        </>
+        </View>
       )}
     </WorkspaceTabPresentationResolver>
   );
@@ -619,13 +629,14 @@ function MobileWorkspaceTabOption({
     (presentation: WorkspaceTabPresentation) => (
       <WorkspaceTabOptionRow
         presentation={presentation}
+        position={tabIndex + 1}
         selected={selected}
         active={active}
         onPress={onPress}
         trailingAccessory={trailingAccessory}
       />
     ),
-    [selected, active, onPress, trailingAccessory],
+    [selected, active, onPress, tabIndex, trailingAccessory],
   );
 
   return (
@@ -747,19 +758,15 @@ const MobileWorkspaceTabSwitcher = memo(function MobileWorkspaceTabSwitcher({
         style={switcherTriggerStyle}
         onPress={handleOpenSwitcher}
       >
-        {({ pressed }) => (
-          <>
-            <View style={styles.switcherTriggerLeft}>
-              <MobileActiveTabTrigger
-                activeTab={activeTab}
-                normalizedServerId={normalizedServerId}
-                normalizedWorkspaceId={normalizedWorkspaceId}
-                backdrop={pressed ? "surface1" : "surface0"}
-              />
-            </View>
-            <ThemedChevronDown size={14} uniProps={mutedColorMapping} />
-          </>
-        )}
+        <MobileActiveTabTrigger
+          activeTab={activeTab}
+          position={(tabIndexByKey.get(activeTabKey) ?? 0) + 1}
+          normalizedServerId={normalizedServerId}
+          normalizedWorkspaceId={normalizedWorkspaceId}
+        />
+        <Text style={styles.switcherCaret} selectable={false} dataSet={CODE_SURFACE_DATASET}>
+          {HINT_LINE_CARET}
+        </Text>
       </Pressable>
 
       <Combobox
@@ -4126,31 +4133,47 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomWidth: theme.borderWidth[1],
     borderBottomColor: theme.colors.border,
   },
+  // The active tab's text sits on the content rail (spacing[2] + spacing[3]); its reversed fill
+  // reaches one tab padding further left.
   switcherTrigger: {
+    minHeight: WORKSPACE_SECONDARY_HEADER_HEIGHT,
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "stretch",
     gap: theme.spacing[2],
-    paddingHorizontal: theme.spacing[2] + theme.spacing[3],
-    paddingVertical: theme.spacing[2],
+    paddingLeft: theme.spacing[3],
+    paddingRight: theme.spacing[2] + theme.spacing[3],
   },
   switcherTriggerPressed: {
     backgroundColor: theme.colors.surface1,
   },
-  switcherTriggerLeft: {
+  switcherActiveTab: {
+    flexShrink: 1,
+    minWidth: 0,
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[1],
-    flex: 1,
-    minWidth: 0,
+    paddingHorizontal: theme.spacing[2],
+    backgroundColor: theme.colors.accent,
   },
-  switcherTriggerIcon: {
+  switcherActiveTabIndex: {
     flexShrink: 0,
-  },
-  switcherTriggerText: {
-    minWidth: 0,
-    flex: 1,
-    color: theme.colors.foreground,
+    fontFamily: theme.fontFamily.mono,
     fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.bold,
+    color: theme.colors.accentForeground,
+  },
+  switcherActiveTabText: {
+    minWidth: 0,
+    flexShrink: 1,
+    color: theme.colors.accentForeground,
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.bold,
+  },
+  switcherCaret: {
+    alignSelf: "center",
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foregroundMuted,
   },
   headerMenuProfileIconWrapper: {
     width: 16,

@@ -67,7 +67,7 @@ import {
 import type { TerminalProfileInput } from "@/screens/workspace/terminals/use-workspace-terminals";
 import {
   WorkspaceTabPresentationResolver,
-  WorkspaceTabIcon,
+  WorkspaceTabStatusMark,
 } from "@/screens/workspace/workspace-tab-presentation";
 import type { WorkspaceTabDescriptor } from "@/screens/workspace/workspace-tabs-types";
 import {
@@ -710,7 +710,7 @@ function DragOverlayTabChipInner({
 
         return (
           <View style={chipStyle}>
-            <WorkspaceTabIcon presentation={presentation} active size={14} backdrop="surface1" />
+            <WorkspaceTabStatusMark presentation={presentation} backdrop={null} />
             <Text numberOfLines={1} style={chipLabelStyle}>
               {label}
             </Text>

@@ -11,7 +11,8 @@ import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
 import { getStatusDotColor } from "@/utils/status-dot-color";
 import { StatusRing } from "@/components/status-ring";
-import { getStatusRingOffset } from "@/components/status-ring/geometry";
+import { STATUS_RING_FRAME_SIZE, getStatusRingOffset } from "@/components/status-ring/geometry";
+import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
 import {
   STATUS_INDICATOR_ALERT_SIZE,
   STATUS_INDICATOR_DOT_SIZE,
@@ -184,8 +185,78 @@ export function WorkspaceTabIcon({
   );
 }
 
+/**
+ * A tab's place in its pane, printed in front of its title the way tmux numbers its windows:
+ * `1:`, `2:`. One-based. Machine information, so it is set in the mono face.
+ */
+export function formatWorkspaceTabIndex(position: number): string {
+  return `${position}:`;
+}
+
+interface WorkspaceTabStatusMarkProps {
+  presentation: WorkspaceTabPresentation;
+  /**
+   * The surface the mark knocks out of. Null where it sits on its own flat background (an idle
+   * tab, a switcher row). A tab drawn in reverse video passes the bar's surface so the mark stays
+   * a dark hole in the accent fill: the running ring is the accent colour in the Daseo theme and
+   * would vanish on the accent otherwise.
+   */
+  backdrop: SurfaceBackdrop | null;
+}
+
+/**
+ * The agent's state in front of a tab title (Daseo delta 112): the running ring, the failed or
+ * attention dot, or the needs-input alert. Renders nothing for an idle or finished tab, so the
+ * title starts right after the index. Tabs carry no per-kind icon any more; the subagents track
+ * still draws `WorkspaceTabIcon`.
+ */
+export function WorkspaceTabStatusMark({
+  presentation,
+  backdrop,
+}: WorkspaceTabStatusMarkProps): ReactElement | null {
+  const bucket = presentation.statusBucket;
+  const dotStyle = useMemo(() => {
+    const knockout = backdrop ? styles.statusMarkDotKnockout : null;
+    if (bucket === "failed") return [styles.statusMarkDot, styles.statusMarkDotFailed, knockout];
+    if (bucket === "attention") {
+      return [styles.statusMarkDot, styles.statusMarkDotAttention, knockout];
+    }
+    return null;
+  }, [backdrop, bucket]);
+
+  if (bucket === "running") {
+    return (
+      <View
+        style={styles.statusMark}
+        accessibilityRole="progressbar"
+        accessibilityLabel="Agent running"
+        testID="workspace-tab-status-running"
+      >
+        <StatusRing backdrop={backdrop} />
+      </View>
+    );
+  }
+  if (bucket === "needs_input") {
+    return (
+      <View style={styles.statusMark} testID="workspace-tab-status-needs-input">
+        <ThemedCircleAlert size={STATUS_INDICATOR_ALERT_SIZE} uniProps={needsInputAlertMapping} />
+      </View>
+    );
+  }
+  if (dotStyle) {
+    return (
+      <View style={styles.statusMark} testID={`workspace-tab-status-${bucket}`}>
+        <View style={dotStyle} />
+      </View>
+    );
+  }
+  return null;
+}
+
 interface WorkspaceTabOptionRowProps {
   presentation: WorkspaceTabPresentation;
+  /** One-based place of the tab in the switcher list. */
+  position: number;
   selected: boolean;
   active: boolean;
   onPress: () => void;
@@ -194,6 +265,7 @@ interface WorkspaceTabOptionRowProps {
 
 export function WorkspaceTabOptionRow({
   presentation,
+  position,
   selected,
   active,
   onPress,
@@ -219,27 +291,17 @@ export function WorkspaceTabOptionRow({
   return (
     <View style={optionRowStyle}>
       <Pressable onPress={onPress} style={pressableStyle}>
-        {(state) => {
-          const optionActive = isOptionActive(state);
-          return (
-            <>
-              <View style={styles.optionLeadingSlot}>
-                <WorkspaceTabIcon
-                  presentation={presentation}
-                  active={selected || active}
-                  backdrop={optionActive ? "surface1" : "surface0"}
-                />
-              </View>
-              <View style={styles.optionContent}>
-                <Text numberOfLines={1} style={styles.optionLabel}>
-                  {presentation.titleState === "loading"
-                    ? t("workspace.tabs.loading")
-                    : presentation.label}
-                </Text>
-              </View>
-            </>
-          );
-        }}
+        <Text style={styles.optionIndex} selectable={false} dataSet={CODE_SURFACE_DATASET}>
+          {formatWorkspaceTabIndex(position)}
+        </Text>
+        <WorkspaceTabStatusMark presentation={presentation} backdrop={null} />
+        <View style={styles.optionContent}>
+          <Text numberOfLines={1} style={styles.optionLabel}>
+            {presentation.titleState === "loading"
+              ? t("workspace.tabs.loading")
+              : presentation.label}
+          </Text>
+        </View>
       </Pressable>
       {presentation.modified ? (
         <View style={styles.optionModifiedDot} accessibilityLabel={t("workspace.tabs.modified")} />
@@ -322,10 +384,33 @@ const styles = StyleSheet.create((theme) => ({
   optionRowActive: {
     backgroundColor: theme.colors.surface1,
   },
-  optionLeadingSlot: {
-    width: 16,
+  optionIndex: {
+    flexShrink: 0,
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foregroundExtraMuted,
+  },
+  statusMark: {
+    width: STATUS_RING_FRAME_SIZE,
+    height: STATUS_RING_FRAME_SIZE,
+    flexShrink: 0,
     alignItems: "center",
     justifyContent: "center",
+  },
+  statusMarkDot: {
+    width: STATUS_INDICATOR_DOT_SIZE,
+    height: STATUS_INDICATOR_DOT_SIZE,
+    borderRadius: theme.borderRadius.full,
+  },
+  statusMarkDotKnockout: {
+    borderWidth: 1,
+    borderColor: theme.colors.surface0,
+  },
+  statusMarkDotFailed: {
+    backgroundColor: getStatusDotColor({ theme, bucket: "failed" }) ?? undefined,
+  },
+  statusMarkDotAttention: {
+    backgroundColor: getStatusDotColor({ theme, bucket: "attention" }) ?? undefined,
   },
   optionContent: {
     flex: 1,

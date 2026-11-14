@@ -1,5 +1,3 @@
-export type WorkspaceTabCloseButtonPolicy = "all";
-
 export interface WorkspaceTabLayoutInput {
   viewportWidth: number;
   tabLabelLengths: number[];
@@ -9,7 +7,7 @@ export interface WorkspaceTabLayoutInput {
     rowPaddingHorizontal: number;
     tabGap: number;
     maxTabWidth: number;
-    tabIconWidth: number;
+    tabLeadingWidth: number;
     tabHorizontalPadding: number;
     estimatedCharWidth: number;
     closeButtonWidth: number;
@@ -24,7 +22,6 @@ export interface WorkspaceTabLayoutItem {
 
 export interface WorkspaceTabLayoutResult {
   items: WorkspaceTabLayoutItem[];
-  closeButtonPolicy: WorkspaceTabCloseButtonPolicy;
   requiresHorizontalScrollFallback: boolean;
 }
 
@@ -45,7 +42,6 @@ export function computeWorkspaceTabLayout(
   if (tabCount === 0) {
     return {
       items: [],
-      closeButtonPolicy: "all",
       requiresHorizontalScrollFallback: false,
     };
   }
@@ -57,24 +53,26 @@ export function computeWorkspaceTabLayout(
   const rowOverhead =
     input.metrics.rowPaddingHorizontal * 2 + Math.max(tabCount - 1, 0) * input.metrics.tabGap;
   const availableTabsWidth = Math.max(0, availableWidth - rowOverhead);
-  const iconOnlyTabWidth =
-    input.metrics.tabIconWidth +
+  const leadingOnlyTabWidth =
+    input.metrics.tabLeadingWidth +
     input.metrics.tabHorizontalPadding * 2 +
     input.metrics.closeButtonWidth;
-  const iconOnlyTotalTabsWidth = iconOnlyTabWidth * tabCount;
-  const requiresHorizontalScrollFallback = availableTabsWidth < iconOnlyTotalTabsWidth;
+  const leadingOnlyTotalTabsWidth = leadingOnlyTabWidth * tabCount;
+  const requiresHorizontalScrollFallback = availableTabsWidth < leadingOnlyTotalTabsWidth;
   const resolvedWidth = requiresHorizontalScrollFallback
-    ? iconOnlyTabWidth
-    : clamp(availableTabsWidth / tabCount, iconOnlyTabWidth, input.metrics.maxTabWidth);
+    ? leadingOnlyTabWidth
+    : clamp(availableTabsWidth / tabCount, leadingOnlyTabWidth, input.metrics.maxTabWidth);
   const resolvedWidths = Array.from({ length: tabCount }, () => resolvedWidth);
 
   const roundedWidths = resolvedWidths.map((width) =>
-    Math.round(clamp(width, iconOnlyTabWidth, input.metrics.maxTabWidth)),
+    Math.round(clamp(width, leadingOnlyTabWidth, input.metrics.maxTabWidth)),
   );
 
   return {
     items: roundedWidths.map((width) => {
-      const rawCharCap = Math.floor((width - iconOnlyTabWidth) / input.metrics.estimatedCharWidth);
+      const rawCharCap = Math.floor(
+        (width - leadingOnlyTabWidth) / input.metrics.estimatedCharWidth,
+      );
       const labelCharCap = Math.max(0, rawCharCap);
       return {
         width,
@@ -82,7 +80,6 @@ export function computeWorkspaceTabLayout(
         labelCharCap,
       };
     }),
-    closeButtonPolicy: "all",
     requiresHorizontalScrollFallback,
   };
 }

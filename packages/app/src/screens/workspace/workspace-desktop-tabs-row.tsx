@@ -20,14 +20,10 @@ import {
   CopyX,
   ArrowLeftToLine,
   ArrowRightToLine,
-  ChevronDown,
-  Columns2,
   Copy,
   Pencil,
   RotateCw,
-  Rows2,
   Globe,
-  Plus,
   SquarePen,
   SquareTerminal,
   X,
@@ -64,9 +60,12 @@ import type { ShortcutKey } from "@/utils/format-shortcut";
 import { useWorkspaceTabLayout } from "@/screens/workspace/use-workspace-tab-layout";
 import {
   WorkspaceTabPresentationResolver,
-  WorkspaceTabIcon,
+  WorkspaceTabStatusMark,
+  formatWorkspaceTabIndex,
   type WorkspaceTabPresentation,
 } from "@/screens/workspace/workspace-tab-presentation";
+import { HINT_LINE_CARET, HintWord } from "@/composer/hint-line";
+import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
 import { buildDeterministicWorkspaceTabId } from "@/workspace-tabs/identity";
 import {
   buildWorkspaceDesktopTabActions,
@@ -84,10 +83,9 @@ import {
 } from "@getpaseo/protocol/terminal-profiles";
 import { buildSettingsHostSectionRoute } from "@/utils/host-routes";
 import type { TerminalProfileInput } from "@/screens/workspace/terminals/use-workspace-terminals";
-import { ProfileIcon, usePinnedLaunchers } from "@/workspace-pins/launch";
+import { ProfileIcon, usePinnedLaunchers, type ResolvedPin } from "@/workspace-pins/launch";
 import { runPinnedTabTarget, type TabTargetHandlers } from "@/workspace-pins/run";
-import type { PinnedTabTarget } from "@/workspace-pins/target";
-import { PinnedTargetsRow } from "@/workspace-pins/pinned-targets-row";
+import { pinnedTargetKey, type PinnedTabTarget } from "@/workspace-pins/target";
 import { PinnableMenuItem } from "@/workspace-pins/pinnable-menu-item";
 import { getIsElectron } from "@/constants/platform";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
@@ -99,7 +97,13 @@ import { reopenRecentlyClosedBrowser } from "@/desktop/browser/provenance/reopen
 
 const DROPDOWN_WIDTH = 220;
 const LOADING_TAB_LABEL_SKELETON_WIDTH = 80;
-const DEFAULT_INLINE_ADD_BUTTON_RESERVED_WIDTH = 36;
+const DEFAULT_INLINE_ADD_BUTTON_RESERVED_WIDTH = 28;
+// Tab geometry, shared by the styles and the width budget in `useWorkspaceTabLayout`. The
+// leading width is the `N:` index plus the gap after it.
+const TAB_HORIZONTAL_PADDING = 8;
+const TAB_LEADING_WIDTH = 22;
+const TAB_CLOSE_SLOT_SIZE = 14;
+const TAB_CLOSE_SLOT_GAP = 6;
 
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 const ThemedX = withUnistyles(X);
@@ -111,13 +115,11 @@ const ThemedCopyX = withUnistyles(CopyX);
 const ThemedPencil = withUnistyles(Pencil);
 const ThemedSquarePen = withUnistyles(SquarePen);
 const ThemedSquareTerminal = withUnistyles(SquareTerminal);
-const ThemedChevronDown = withUnistyles(ChevronDown);
 const ThemedGlobe = withUnistyles(Globe);
-const ThemedColumns2 = withUnistyles(Columns2);
-const ThemedRows2 = withUnistyles(Rows2);
-const ThemedPlus = withUnistyles(Plus);
-const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+const accentForegroundColorMapping = (theme: Theme) => ({
+  color: theme.colors.accentForeground,
+});
 
 const AGENT_ICON = <ThemedSquarePen size={14} uniProps={mutedColorMapping} />;
 const TERMINAL_ICON = <ThemedSquareTerminal size={14} uniProps={mutedColorMapping} />;
@@ -127,12 +129,76 @@ const DRAFT_TARGET: PinnedTabTarget = { kind: "draft" };
 const TERMINAL_TARGET: PinnedTabTarget = { kind: "terminal" };
 const BROWSER_TARGET: PinnedTabTarget = { kind: "browser" };
 
-function newTabActionButtonStyle({ hovered, pressed }: PressableStateCallbackType) {
-  return [styles.newTabActionButton, (hovered || pressed) && styles.newTabActionButtonHovered];
+// Daseo delta 112: the tab row reads like a tmux status line. Tabs are `N:title` text, the active
+// one in reverse video, and the controls on the right are words in the composer hint line's type
+// (`▾ web term vsplit hsplit`, vim's names for the splits). The words are command vocabulary and
+// stay English in every locale; accessibility labels and tooltips stay translated.
+const TAB_ROW_WORDS = {
+  newTab: "+",
+  close: "×",
+  menu: HINT_LINE_CARET,
+  agent: "agent",
+  term: "term",
+  web: "web",
+  vsplit: "vsplit",
+  hsplit: "hsplit",
+} as const;
+
+/** The word for a pinned launcher; a pinned terminal profile is its name. */
+function pinnedLauncherWord(launcher: ResolvedPin): string {
+  switch (launcher.key) {
+    case pinnedTargetKey(TERMINAL_TARGET):
+      return TAB_ROW_WORDS.term;
+    case pinnedTargetKey(BROWSER_TARGET):
+      return TAB_ROW_WORDS.web;
+    case pinnedTargetKey(DRAFT_TARGET):
+      return TAB_ROW_WORDS.agent;
+    default:
+      return launcher.label.toLowerCase();
+  }
 }
 
-function inlineAddActionButtonStyle({ hovered, pressed }: PressableStateCallbackType) {
-  return [styles.inlineAddActionButton, (hovered || pressed) && styles.newTabActionButtonHovered];
+function inlineAddButtonStyle({ hovered, pressed }: PressableStateCallbackType) {
+  return [styles.inlineAddActionButton, (hovered || pressed) && styles.tabHovered];
+}
+
+function exitFocusModeButtonStyle({ hovered, pressed }: PressableStateCallbackType) {
+  return [styles.exitFocusModeButton, (hovered || pressed) && styles.tabHovered];
+}
+
+interface TabRowWordButtonProps {
+  word: string;
+  label: string;
+  onPress: () => void;
+  shortcutKeys?: ShortcutKey[][] | null;
+  testID?: string;
+}
+
+/** A right-side control: one word, muted until hovered or pressed, with its tooltip. */
+function TabRowWordButton({ word, label, onPress, shortcutKeys, testID }: TabRowWordButtonProps) {
+  return (
+    <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
+      <TooltipTrigger
+        testID={testID}
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityLabel={label}
+        style={styles.wordButton}
+      >
+        {({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => (
+          <HintWord active={Boolean(hovered) || pressed}>{word}</HintWord>
+        )}
+      </TooltipTrigger>
+      <TooltipContent side="bottom" align="center" offset={8}>
+        <View style={styles.newTabTooltipRow}>
+          <Text style={styles.newTabTooltipText}>{label}</Text>
+          {shortcutKeys ? (
+            <Shortcut chord={shortcutKeys} style={styles.newTabTooltipShortcut} />
+          ) : null}
+        </View>
+      </TooltipContent>
+    </Tooltip>
+  );
 }
 
 function updateMeasuredWidth(setWidth: Dispatch<SetStateAction<number>>, event: LayoutChangeEvent) {
@@ -198,9 +264,17 @@ function WorkspaceInlineAddTabButton({
           onPress={onCreateAgentTab}
           accessibilityRole="button"
           accessibilityLabel={tooltipText}
-          style={inlineAddActionButtonStyle}
+          style={inlineAddButtonStyle}
         >
-          <ThemedPlus size={14} uniProps={mutedColorMapping} />
+          {({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => (
+            <Text
+              style={Boolean(hovered) || pressed ? styles.newTabGlyphActive : styles.newTabGlyph}
+              selectable={false}
+              dataSet={CODE_SURFACE_DATASET}
+            >
+              {TAB_ROW_WORDS.newTab}
+            </Text>
+          )}
         </TooltipTrigger>
         <TooltipContent side="bottom" align="center" offset={8}>
           <View style={styles.newTabTooltipRow}>
@@ -314,9 +388,11 @@ function WorkspaceTabRowExtras({
               testID="workspace-new-tab-menu-trigger"
               accessibilityRole="button"
               accessibilityLabel={t("workspace.tabs.actions.moreActions")}
-              style={newTabActionButtonStyle}
+              style={styles.wordButton}
             >
-              <ThemedChevronDown size={14} uniProps={mutedColorMapping} />
+              {({ hovered, pressed, open }) => (
+                <HintWord active={hovered || pressed || open}>{TAB_ROW_WORDS.menu}</HintWord>
+              )}
             </DropdownMenuTrigger>
           </TooltipTrigger>
           <TooltipContent side="bottom" align="center" offset={8}>
@@ -379,7 +455,15 @@ function WorkspaceTabRowExtras({
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-      <PinnedTargetsRow launchers={launchers} testIdPrefix="workspace-pinned-target" />
+      {launchers.map((launcher) => (
+        <TabRowWordButton
+          key={launcher.key}
+          testID={`workspace-pinned-target-${launcher.key}`}
+          word={pinnedLauncherWord(launcher)}
+          label={launcher.label}
+          onPress={launcher.onPress}
+        />
+      ))}
     </>
   );
 }
@@ -437,40 +521,6 @@ export interface WorkspaceDesktopTabRowItem {
   isActive: boolean;
   isCloseHovered: boolean;
   isClosingTab: boolean;
-}
-
-interface SplitActionButtonProps {
-  onPress: () => void;
-  label: string;
-  shortcutKeys: ShortcutKey[][] | null;
-  icon: "split-right" | "split-down";
-}
-
-function SplitActionButton({ onPress, label, shortcutKeys, icon }: SplitActionButtonProps) {
-  return (
-    <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
-      <TooltipTrigger
-        onPress={onPress}
-        accessibilityRole="button"
-        accessibilityLabel={label}
-        style={newTabActionButtonStyle}
-      >
-        {icon === "split-right" ? (
-          <ThemedColumns2 size={14} uniProps={mutedColorMapping} />
-        ) : (
-          <ThemedRows2 size={14} uniProps={mutedColorMapping} />
-        )}
-      </TooltipTrigger>
-      <TooltipContent side="bottom" align="center" offset={8}>
-        <View style={styles.newTabTooltipRow}>
-          <Text style={styles.newTabTooltipText}>{label}</Text>
-          {shortcutKeys ? (
-            <Shortcut chord={shortcutKeys} style={styles.newTabTooltipShortcut} />
-          ) : null}
-        </View>
-      </TooltipContent>
-    </Tooltip>
-  );
 }
 
 interface WorkspaceDesktopTabsRowProps {
@@ -552,34 +602,57 @@ function useMiddleClickClose(onClose: () => void) {
   return ref;
 }
 
+/**
+ * How a tab is drawn (Daseo delta 112). The active tab of the focused pane is reverse video in the
+ * accent; the active tab of a pane that is not focused is reversed in the muted foreground, so
+ * the focused pane stays obvious; every other tab is muted text on the bar.
+ */
+type TabTone = "active" | "activeUnfocused" | "idle";
+
+function resolveTabTone({ isActive, isFocused }: { isActive: boolean; isFocused: boolean }) {
+  if (!isActive) return "idle";
+  return isFocused ? "active" : "activeUnfocused";
+}
+
 function TabHandleContent({
+  position,
   presentation,
-  isHighlighted,
+  tone,
   showLabel,
   tabLabelSkeletonStyle,
-  tabLabelStyle,
 }: {
+  position: number;
   presentation: WorkspaceTabPresentation;
-  isHighlighted: boolean;
+  tone: TabTone;
   showLabel: boolean;
   tabLabelSkeletonStyle: React.ComponentProps<typeof View>["style"];
-  tabLabelStyle: React.ComponentProps<typeof Text>["style"];
 }) {
   const tabHandleDataSet = useMemo(
     () => ({ statusBucket: presentation.statusBucket ?? "none" }),
     [presentation.statusBucket],
   );
+  const reversed = tone !== "idle";
 
   return (
     <View style={styles.tabHandle} dataSet={tabHandleDataSet}>
-      <View style={styles.tabIcon}>
-        <WorkspaceTabIcon presentation={presentation} active={isHighlighted} backdrop="surface0" />
-      </View>
+      <Text
+        style={reversed ? styles.tabIndexReversed : styles.tabIndex}
+        selectable={false}
+        dataSet={CODE_SURFACE_DATASET}
+      >
+        {formatWorkspaceTabIndex(position)}
+      </Text>
+      <WorkspaceTabStatusMark presentation={presentation} backdrop={reversed ? "surface0" : null} />
       {showLabel && presentation.titleState === "loading" ? (
         <View style={tabLabelSkeletonStyle} />
       ) : null}
       {showLabel && presentation.titleState !== "loading" ? (
-        <Text style={tabLabelStyle} selectable={false} numberOfLines={1} ellipsizeMode="tail">
+        <Text
+          style={reversed ? styles.tabLabelReversed : styles.tabLabel}
+          selectable={false}
+          numberOfLines={1}
+          ellipsizeMode="tail"
+        >
           {presentation.label}
         </Text>
       ) : null}
@@ -587,14 +660,62 @@ function TabHandleContent({
   );
 }
 
+function TabCloseSlotContent({
+  tabTarget,
+  tone,
+  isClosingTab,
+  isModified,
+  isCloseVisible,
+  closeHovered,
+}: {
+  tabTarget: WorkspaceTabDescriptor["target"];
+  tone: TabTone;
+  isClosingTab: boolean;
+  isModified: boolean;
+  isCloseVisible: boolean;
+  closeHovered: boolean;
+}) {
+  const { t } = useTranslation();
+  const reversed = tone !== "idle";
+  if (isClosingTab) {
+    return (
+      <ThemedLoadingSpinner
+        size={12}
+        uniProps={reversed ? accentForegroundColorMapping : mutedColorMapping}
+      />
+    );
+  }
+  if (isModified && !closeHovered) {
+    return (
+      <View
+        style={reversed ? styles.tabModifiedDotReversed : styles.tabModifiedDot}
+        accessibilityLabel={t("workspace.tabs.modified")}
+        testID={`workspace-tab-modified-${buildDeterministicWorkspaceTabId(tabTarget)}`}
+      />
+    );
+  }
+  let glyphStyle = styles.tabCloseGlyph;
+  if (reversed) glyphStyle = styles.tabCloseGlyphReversed;
+  else if (closeHovered) glyphStyle = styles.tabCloseGlyphHovered;
+  return (
+    <Text
+      style={[glyphStyle, !isCloseVisible && styles.tabCloseGlyphHidden]}
+      selectable={false}
+      dataSet={CODE_SURFACE_DATASET}
+    >
+      {TAB_ROW_WORDS.close}
+    </Text>
+  );
+}
+
 function TabChip({
   tab,
+  position,
   isActive,
   isDragging,
   isFocused,
   resolvedTabWidth,
   showLabel,
-  showCloseButton,
   isCloseHovered,
   isClosingTab,
   presentation,
@@ -606,12 +727,12 @@ function TabChip({
   dragHandleProps,
 }: {
   tab: WorkspaceTabDescriptor;
+  position: number;
   isActive: boolean;
   isDragging: boolean;
   isFocused: boolean;
   resolvedTabWidth: number;
   showLabel: boolean;
-  showCloseButton: boolean;
   isCloseHovered: boolean;
   isClosingTab: boolean;
   presentation: WorkspaceTabPresentation;
@@ -622,14 +743,18 @@ function TabChip({
   onCloseTab: (tabId: string) => Promise<void> | void;
   dragHandleProps: DraggableListDragHandleProps | undefined;
 }) {
-  const { t } = useTranslation();
   const { closeButtonTestId, contextMenuTestId, menuEntries } = resolvedTab;
   const middleClickRef = useMiddleClickClose(
     useCallback(() => void onCloseTab(tab.tabId), [onCloseTab, tab.tabId]),
   );
   const [hovered, setHovered] = useState(false);
-  const isHighlighted = isActive || hovered || isCloseHovered;
-  const showTrailingAffordance = showCloseButton || presentation.modified;
+  const tone = resolveTabTone({ isActive, isFocused });
+  const isHovered = hovered || isCloseHovered;
+  // The close slot is always laid out, so hovering never shifts the row; the × only shows on the
+  // active tab and on a hovered one. A hidden × takes no presses, so a tap on that spot of an
+  // inactive tab on a touch screen selects the tab instead of closing it.
+  const isCloseVisible = isActive || isHovered || isClosingTab;
+  const isCloseInteractive = isCloseVisible || presentation.modified;
   const closeButtonDragBlockers = isWeb
     ? ({
         onPointerDown: (event: { stopPropagation?: () => void }) => {
@@ -644,14 +769,13 @@ function TabChip({
   const tabChipStyle = useCallback(
     () => [
       styles.tab,
+      tone === "active" && styles.tabActive,
+      tone === "activeUnfocused" && styles.tabActiveUnfocused,
+      tone === "idle" && isHovered && styles.tabHovered,
       isWeb && isDragging && ({ cursor: "grabbing" } as object),
-      {
-        minWidth: resolvedTabWidth,
-        width: resolvedTabWidth,
-        maxWidth: resolvedTabWidth,
-      },
+      { maxWidth: resolvedTabWidth },
     ],
-    [isDragging, resolvedTabWidth],
+    [isDragging, isHovered, resolvedTabWidth, tone],
   );
 
   const handleTabHoverIn = useCallback(() => {
@@ -686,35 +810,10 @@ function TabChip({
     [onCloseTab, tab.tabId],
   );
 
-  const closeButtonStyle = useCallback(
-    ({ hovered: isButtonHovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
-      styles.tabCloseButton,
-      styles.tabCloseButtonShown,
-      (Boolean(isButtonHovered) || pressed) && styles.tabCloseButtonActive,
-    ],
-    [],
-  );
-
   const tabAccessibilityState = useMemo(() => ({ selected: isActive }), [isActive]);
-  const tabFocusIndicatorStyle = useMemo(
-    () => [styles.tabFocusIndicator, !isFocused && styles.tabFocusIndicatorUnfocused],
-    [isFocused],
-  );
   const tabLabelSkeletonStyle = useMemo(
-    () => [
-      styles.tabLabelSkeleton,
-      showTrailingAffordance && styles.tabLabelSkeletonWithCloseButton,
-    ],
-    [showTrailingAffordance],
-  );
-  const tabLabelStyle = useMemo(
-    () => [
-      styles.tabLabel,
-      isHighlighted && styles.tabLabelHovered,
-      isActive && styles.tabLabelActive,
-      showTrailingAffordance && styles.tabLabelWithCloseButton,
-    ],
-    [isHighlighted, isActive, showTrailingAffordance],
+    () => [styles.tabLabelSkeleton, styles.tabLabelSkeletonWithCloseButton],
+    [],
   );
 
   return (
@@ -738,54 +837,35 @@ function TabChip({
               accessibilityState={tabAccessibilityState}
               aria-selected={isActive}
             >
-              {isActive && <View style={tabFocusIndicatorStyle} />}
               <TabHandleContent
+                position={position}
                 presentation={presentation}
-                isHighlighted={isHighlighted}
+                tone={tone}
                 showLabel={showLabel}
                 tabLabelSkeletonStyle={tabLabelSkeletonStyle}
-                tabLabelStyle={tabLabelStyle}
               />
 
-              {showTrailingAffordance ? (
-                <Pressable
-                  {...(closeButtonDragBlockers as object | undefined)}
-                  testID={closeButtonTestId}
-                  disabled={isClosingTab}
-                  onPressIn={handleCloseButtonPressIn}
-                  onHoverIn={handleCloseButtonHoverIn}
-                  onHoverOut={handleCloseButtonHoverOut}
-                  onPress={handleCloseButtonPress}
-                  style={closeButtonStyle}
-                >
-                  {({ hovered: closeHovered, pressed }) => {
-                    const highlighted = closeHovered || pressed;
-                    if (isClosingTab) {
-                      return (
-                        <ThemedLoadingSpinner
-                          size={12}
-                          uniProps={highlighted ? foregroundColorMapping : mutedColorMapping}
-                        />
-                      );
-                    }
-                    if (highlighted || !presentation.modified) {
-                      return (
-                        <ThemedX
-                          size={12}
-                          uniProps={highlighted ? foregroundColorMapping : mutedColorMapping}
-                        />
-                      );
-                    }
-                    return (
-                      <View
-                        style={styles.tabModifiedDot}
-                        accessibilityLabel={t("workspace.tabs.modified")}
-                        testID={`workspace-tab-modified-${buildDeterministicWorkspaceTabId(tab.target)}`}
-                      />
-                    );
-                  }}
-                </Pressable>
-              ) : null}
+              <Pressable
+                {...(closeButtonDragBlockers as object | undefined)}
+                testID={closeButtonTestId}
+                disabled={isClosingTab || !isCloseInteractive}
+                onPressIn={handleCloseButtonPressIn}
+                onHoverIn={handleCloseButtonHoverIn}
+                onHoverOut={handleCloseButtonHoverOut}
+                onPress={handleCloseButtonPress}
+                style={isCloseInteractive ? styles.tabCloseButton : styles.tabCloseButtonInert}
+              >
+                {({ hovered: closeHovered, pressed }) => (
+                  <TabCloseSlotContent
+                    tabTarget={tab.target}
+                    tone={tone}
+                    isClosingTab={isClosingTab}
+                    isModified={presentation.modified}
+                    isCloseVisible={isCloseVisible}
+                    closeHovered={Boolean(closeHovered) || pressed}
+                  />
+                )}
+              </Pressable>
             </ContextMenuTrigger>
           </TooltipTrigger>
           <TooltipContent
@@ -893,10 +973,10 @@ export function WorkspaceDesktopTabsRow({
       rowPaddingHorizontal: 0,
       tabGap: 0,
       maxTabWidth: 200,
-      tabIconWidth: 14,
-      tabHorizontalPadding: 12,
+      tabLeadingWidth: TAB_LEADING_WIDTH,
+      tabHorizontalPadding: TAB_HORIZONTAL_PADDING,
       estimatedCharWidth: 7,
-      closeButtonWidth: 22,
+      closeButtonWidth: TAB_CLOSE_SLOT_SIZE + TAB_CLOSE_SLOT_GAP,
     }),
     [exitFocusModeWidth, focusModeEnabled, inlineAddButtonWidth, tabsActionsWidth],
   );
@@ -992,7 +1072,6 @@ export function WorkspaceDesktopTabsRow({
       dragHandleProps,
       isActive,
     }: DraggableRenderItemInfo<WorkspaceDesktopTabRowItem>) => {
-      const shouldShowCloseButton = layout.closeButtonPolicy === "all";
       const layoutItem = layout.items[index] ?? null;
       const resolvedTabWidth = layoutItem?.width ?? 150;
       const showLabel = layoutItem?.showLabel ?? true;
@@ -1023,7 +1102,7 @@ export function WorkspaceDesktopTabsRow({
           onCloseOtherTabs={onCloseOtherTabs}
           resolvedTabWidth={resolvedTabWidth}
           showLabel={showLabel}
-          showCloseButton={shouldShowCloseButton}
+          position={index + 1}
           setHoveredCloseTabKey={setHoveredCloseTabKey}
           onNavigateTab={onNavigateTab}
           onCloseTab={onCloseTab}
@@ -1037,7 +1116,6 @@ export function WorkspaceDesktopTabsRow({
     [
       activeDragTabId,
       isFocused,
-      layout.closeButtonPolicy,
       layout.items,
       normalizedServerId,
       normalizedWorkspaceId,
@@ -1083,7 +1161,7 @@ export function WorkspaceDesktopTabsRow({
               onPress={onExitFocusMode}
               accessibilityRole="button"
               accessibilityLabel={t("workspace.tabs.actions.exitFocusMode")}
-              style={inlineAddActionButtonStyle}
+              style={exitFocusModeButtonStyle}
             >
               <ThemedX size={14} uniProps={mutedColorMapping} />
             </TooltipTrigger>
@@ -1139,14 +1217,16 @@ export function WorkspaceDesktopTabsRow({
         />
         {showPaneSplitActions ? (
           <>
-            <SplitActionButton
-              icon="split-right"
+            <TabRowWordButton
+              testID="workspace-tabs-split-right"
+              word={TAB_ROW_WORDS.vsplit}
               onPress={onSplitRight}
               label={t("workspace.tabs.actions.splitRight")}
               shortcutKeys={splitRightKeys}
             />
-            <SplitActionButton
-              icon="split-down"
+            <TabRowWordButton
+              testID="workspace-tabs-split-down"
+              word={TAB_ROW_WORDS.hsplit}
               onPress={onSplitDown}
               label={t("workspace.tabs.actions.splitDown")}
               shortcutKeys={splitDownKeys}
@@ -1178,7 +1258,7 @@ function ResolvedDesktopTabChip({
   onCloseOtherTabs,
   resolvedTabWidth,
   showLabel,
-  showCloseButton,
+  position,
   setHoveredCloseTabKey,
   onNavigateTab,
   onCloseTab,
@@ -1205,7 +1285,7 @@ function ResolvedDesktopTabChip({
   onCloseOtherTabs: (tabId: string) => Promise<void> | void;
   resolvedTabWidth: number;
   showLabel: boolean;
-  showCloseButton: boolean;
+  position: number;
   setHoveredCloseTabKey: Dispatch<SetStateAction<string | null>>;
   onNavigateTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => Promise<void> | void;
@@ -1275,7 +1355,7 @@ function ResolvedDesktopTabChip({
               isFocused={isFocused}
               resolvedTabWidth={resolvedTabWidth}
               showLabel={showLabel}
-              showCloseButton={showCloseButton}
+              position={position}
               isCloseHovered={item.isCloseHovered}
               isClosingTab={item.isClosingTab}
               presentation={presentation}
@@ -1332,17 +1412,25 @@ const styles = StyleSheet.create((theme) => ({
   inlineAddButton: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: theme.spacing[1],
   },
-  // Daseo delta 55: tabs read like a tmux window list — no boxes or separators; the active
-  // tab is the accent label with an accent underline.
+  // Daseo delta 112: a tab is a line of text the full height of the bar. Reverse video marks the
+  // active tab; corners stay square (delta 55).
   tab: {
-    paddingHorizontal: theme.spacing[3],
-    paddingVertical: theme.spacing[2],
+    height: WORKSPACE_SECONDARY_HEADER_HEIGHT,
+    paddingHorizontal: TAB_HORIZONTAL_PADDING,
     flexDirection: "row",
     alignItems: "center",
-    gap: theme.spacing[1],
+    gap: TAB_CLOSE_SLOT_GAP,
     userSelect: "none",
+  },
+  tabActive: {
+    backgroundColor: theme.colors.accent,
+  },
+  tabActiveUnfocused: {
+    backgroundColor: theme.colors.foregroundMuted,
+  },
+  tabHovered: {
+    backgroundColor: theme.colors.surface2,
   },
   tabSlot: {
     position: "relative",
@@ -1352,23 +1440,22 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[1],
-    flex: 1,
+    flexShrink: 1,
     minWidth: 0,
     userSelect: "none",
   },
-  tabIcon: {
+  tabIndex: {
     flexShrink: 0,
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foregroundExtraMuted,
   },
-  tabFocusIndicator: {
-    position: "absolute",
-    bottom: 0,
-    left: theme.spacing[3],
-    right: theme.spacing[3],
-    height: 1,
-    backgroundColor: theme.colors.accent,
-  },
-  tabFocusIndicatorUnfocused: {
-    backgroundColor: theme.colors.foregroundMuted,
+  tabIndexReversed: {
+    flexShrink: 0,
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.bold,
+    color: theme.colors.accentForeground,
   },
   tabDropIndicator: {
     position: "absolute",
@@ -1394,6 +1481,14 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: theme.fontWeight.normal,
     userSelect: "none",
   },
+  tabLabelReversed: {
+    flexShrink: 1,
+    minWidth: 0,
+    color: theme.colors.accentForeground,
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.bold,
+    userSelect: "none",
+  },
   tabLabelSkeleton: {
     width: 96,
     maxWidth: "100%",
@@ -1407,29 +1502,42 @@ const styles = StyleSheet.create((theme) => ({
   tabLabelSkeletonWithCloseButton: {
     width: LOADING_TAB_LABEL_SKELETON_WIDTH,
   },
-  tabLabelWithCloseButton: {
-    paddingRight: 0,
-  },
-  tabLabelHovered: {
-    color: theme.colors.foreground,
-  },
-  tabLabelActive: {
-    color: theme.colors.accent,
-    fontWeight: theme.fontWeight.semibold,
-  },
   tabCloseButton: {
-    width: 18,
-    height: 18,
-    marginLeft: 0,
-    borderRadius: theme.borderRadius.sm,
+    width: TAB_CLOSE_SLOT_SIZE,
+    height: TAB_CLOSE_SLOT_SIZE,
+    flexShrink: 0,
     alignItems: "center",
     justifyContent: "center",
   },
-  tabCloseButtonShown: {
-    opacity: 1,
+  tabCloseButtonInert: {
+    width: TAB_CLOSE_SLOT_SIZE,
+    height: TAB_CLOSE_SLOT_SIZE,
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    pointerEvents: "none",
   },
-  tabCloseButtonActive: {
-    backgroundColor: theme.colors.surface3,
+  tabCloseGlyph: {
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.sm,
+    lineHeight: TAB_CLOSE_SLOT_SIZE,
+    color: theme.colors.foregroundMuted,
+  },
+  tabCloseGlyphHovered: {
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.sm,
+    lineHeight: TAB_CLOSE_SLOT_SIZE,
+    color: theme.colors.foreground,
+  },
+  tabCloseGlyphReversed: {
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.sm,
+    lineHeight: TAB_CLOSE_SLOT_SIZE,
+    fontWeight: theme.fontWeight.bold,
+    color: theme.colors.accentForeground,
+  },
+  tabCloseGlyphHidden: {
+    opacity: 0,
   },
   tabModifiedDot: {
     width: 8,
@@ -1437,25 +1545,41 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.full,
     backgroundColor: theme.colors.foregroundMuted,
   },
-  newTabActionButton: {
-    width: 22,
-    height: 22,
-    borderRadius: theme.borderRadius.md,
+  tabModifiedDotReversed: {
+    width: 8,
+    height: 8,
+    borderRadius: theme.borderRadius.full,
+    backgroundColor: theme.colors.accentForeground,
+  },
+  // The right-side words share the composer hint line's type (HintWord); this is only their box.
+  wordButton: {
+    height: WORKSPACE_SECONDARY_HEADER_HEIGHT,
+    justifyContent: "center",
+    paddingHorizontal: theme.spacing[1],
+  },
+  inlineAddActionButton: {
+    height: WORKSPACE_SECONDARY_HEADER_HEIGHT,
+    minWidth: DEFAULT_INLINE_ADD_BUTTON_RESERVED_WIDTH,
+    paddingHorizontal: TAB_HORIZONTAL_PADDING,
     alignItems: "center",
     justifyContent: "center",
   },
-  inlineAddActionButton: {
+  newTabGlyph: {
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foregroundMuted,
+  },
+  newTabGlyphActive: {
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foreground,
+  },
+  exitFocusModeButton: {
     width: 28,
     height: 28,
     borderRadius: theme.borderRadius.md,
     alignItems: "center",
     justifyContent: "center",
-  },
-  newTabActionButtonDisabled: {
-    opacity: 0.5,
-  },
-  newTabActionButtonHovered: {
-    backgroundColor: theme.colors.surface2,
   },
   newTabTooltipText: {
     color: theme.colors.foreground,
