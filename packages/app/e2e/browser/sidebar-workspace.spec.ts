@@ -56,6 +56,25 @@ async function openWorkspaceHoverCard(page: import("@playwright/test").Page, wor
   return hoverCard;
 }
 
+/**
+ * The left edge of the first element under `root` that holds visible text matching the filter.
+ * Runs in the page (passed to `evaluate`), so it closes over nothing.
+ */
+function leftOfFirstText(
+  root: Element,
+  filter: { startsWith?: string; exclude?: string },
+): number | null {
+  for (const element of root.querySelectorAll("*")) {
+    for (const node of element.childNodes) {
+      const text = node.nodeType === Node.TEXT_NODE ? (node.textContent?.trim() ?? "") : "";
+      if (!text || text === filter.exclude) continue;
+      if (filter.startsWith && !text.startsWith(filter.startsWith)) continue;
+      return element.getBoundingClientRect().left;
+    }
+  }
+  return null;
+}
+
 interface PaseoOwnedWorktree {
   projectName: string;
   workspaceId: string;
@@ -125,6 +144,34 @@ test.describe("Sidebar workspace list", () => {
 
       await waitForSidebarProject(page, path.basename(workspace.repoPath));
       await waitForSidebarWorkspace(page, workspace.workspaceId);
+    } finally {
+      await workspace.cleanup();
+    }
+  });
+
+  // Daseo delta 113: a session's status icon starts where its project's `~/name` starts, and its
+  // title sits one icon step further right, so no child sticks out left of its parent.
+  test("workspace rows step in one icon column under their project header", async ({ page }) => {
+    const workspace = await seedWorkspace({ repoPrefix: "sidebar-workspace-hierarchy-" });
+
+    try {
+      await gotoAppShell(page);
+      const projectRow = await waitForSidebarProject(page, path.basename(workspace.repoPath));
+      const workspaceRow = await waitForSidebarWorkspace(page, workspace.workspaceId);
+
+      const headerTextX = await projectRow.evaluate(leftOfFirstText, { startsWith: "~/" });
+      const iconBox = await workspaceRow
+        .locator('[data-testid^="workspace-status-indicator"]')
+        .first()
+        .boundingBox();
+      // The title is the row's first text that is not the selection pointer.
+      const titleX = await workspaceRow.evaluate(leftOfFirstText, { exclude: ">" });
+
+      expect(headerTextX).not.toBeNull();
+      expect(iconBox).not.toBeNull();
+      expect(titleX).not.toBeNull();
+      expect(Math.abs((iconBox?.x ?? 0) - (headerTextX ?? 0))).toBeLessThanOrEqual(2);
+      expect(titleX ?? 0).toBeGreaterThan(headerTextX ?? 0);
     } finally {
       await workspace.cleanup();
     }
@@ -345,29 +392,12 @@ test.describe("Half-screen desktop layout", () => {
         page.getByTestId("task-sidebar-empty").filter({ visible: true }).first(),
       ).toBeVisible();
       await expect(page.getByTestId("workspace-explorer-toggle").first()).toBeVisible();
-      await expect(page.getByTestId("explorer-close")).toBeVisible();
+      // Daseo delta 113: the header toggle is the panel's only control on wide layouts; no X.
+      await expect(page.getByTestId("explorer-close")).toHaveCount(0);
       await expect(page.getByTestId("sidebar-global-new-workspace")).not.toBeVisible();
 
-      const centerBounds = await page.getByTestId("workspace-tabs-row").first().boundingBox();
-      const headerGlyphBounds = await page
-        .getByTestId("menu-button")
-        .locator("svg")
-        .first()
-        .boundingBox();
-      const tabGlyphBounds = await page
-        .locator('[data-testid^="workspace-tab-"]')
-        .first()
-        .locator("svg")
-        .first()
-        .boundingBox();
-      expect(centerBounds).not.toBeNull();
-      expect(headerGlyphBounds).not.toBeNull();
-      expect(tabGlyphBounds).not.toBeNull();
-      expect((headerGlyphBounds?.x ?? 0) - (centerBounds?.x ?? 0)).toBeCloseTo(
-        (tabGlyphBounds?.x ?? 0) - (centerBounds?.x ?? 0),
-        0,
-      );
-
+      // The header-glyph-to-tab-glyph alignment check that sat here moved out with the tab kind
+      // icons (Daseo delta 112: tabs are text only); the tab row's own specs own its alignment.
       await expect
         .poll(
           async () =>
@@ -375,7 +405,7 @@ test.describe("Half-screen desktop layout", () => {
         )
         .toBeGreaterThanOrEqual(400);
 
-      await page.getByTestId("explorer-close").click();
+      await page.getByTestId("workspace-explorer-toggle").first().click();
       await expect(page.getByTestId("task-sidebar-empty")).not.toBeVisible();
       await expect(page.getByTestId("workspace-explorer-toggle").first()).toBeVisible();
     } finally {

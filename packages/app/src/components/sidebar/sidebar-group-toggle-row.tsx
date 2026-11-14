@@ -22,19 +22,20 @@ const ThemedChevronUp = withUnistyles(ChevronUp);
  * set of its own. Sitting under a column of rows, anything it does differently reads as a mistake
  * rather than as a distinction.
  *
- * `indented` because the two groupings disagree: status rows sit on their header's label rail and
- * project rows sit flush, so the caller says which list this row is ending. The indent itself is
- * the workspace row's, imported rather than re-derived.
+ * `indent` because the groupings disagree: status rows sit on their header's label rail, a
+ * project's rows step in one icon column under its header (Daseo delta 113), and pinned rows sit
+ * flush, so the caller says which list this row is ending. The indent itself is the workspace
+ * row's, imported rather than re-derived.
  */
 export function SidebarGroupToggleRow({
   expanded,
   onPress,
-  indented = false,
+  indent = "none",
   testID,
 }: {
   expanded: boolean;
   onPress: () => void;
-  indented?: boolean;
+  indent?: "none" | "status" | "project";
   testID: string;
 }) {
   const { t } = useTranslation();
@@ -44,11 +45,12 @@ export function SidebarGroupToggleRow({
   const rowStyle = useCallback(
     ({ hovered = false, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
       styles.row,
-      indented && sidebarWorkspaceRowStyles.rowIndented,
+      indent === "status" && sidebarWorkspaceRowStyles.rowIndented,
+      indent === "project" && sidebarWorkspaceRowStyles.pointerlessRowInProject,
       hovered && !pressed && styles.rowHovered,
       pressed && styles.rowPressed,
     ],
-    [indented],
+    [indent],
   );
 
   return (

@@ -116,11 +116,16 @@ export async function waitForConnectedHost(
   page: Page,
   input: { serverId: string; endpoint: string },
 ): Promise<void> {
-  await page.getByTestId("sidebar-hosts-trigger").click();
-  const host = page.getByTestId(`sidebar-host-row-${input.serverId}`);
+  // Daseo delta 113: the sidebar footer has no host picker; the Settings host picker lists the
+  // hosts with their active connection. Return to the page the caller was on.
+  const returnUrl = page.url();
+  await page.getByTestId("sidebar-settings").click();
+  await page.getByTestId("settings-host-picker").click();
+  const host = page.getByTestId(`settings-host-picker-item-${input.serverId}`);
   await expect(host).toContainText(input.endpoint, { timeout: 30_000 });
   await page.keyboard.press("Escape");
   await expect(host).not.toBeVisible();
+  await page.goto(returnUrl);
 }
 
 export async function openSidebarDisplayPreferences(page: Page): Promise<void> {

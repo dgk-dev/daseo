@@ -115,6 +115,7 @@ import {
   SidebarWorkspaceTrailingActionBase,
   SidebarWorkspaceTrailingActionOverlay,
   SidebarWorkspaceTrailingActionSlot,
+  sidebarWorkspaceRowStyles,
 } from "@/components/sidebar/sidebar-workspace-row-content";
 import { useOpenKebabMenuVisibility } from "@/components/sidebar/use-open-kebab-menu-visibility";
 import { selectWorkspaceServiceSummary } from "@/components/sidebar/workspace-meta-row";
@@ -383,14 +384,17 @@ function getProjectWorkspaceRowStyle({
   isPressed,
   selected,
   isHovered,
+  inProject,
 }: {
   isDragging: boolean;
   isPressed: boolean;
   selected: boolean;
   isHovered: boolean;
+  inProject: boolean;
 }) {
   return [
     styles.workspaceRow,
+    inProject && sidebarWorkspaceRowStyles.rowInProject,
     selected && styles.sidebarRowSelected,
     isHovered && styles.workspaceRowHovered,
     isDragging && styles.workspaceRowDragging,
@@ -821,6 +825,7 @@ function NewWorkspaceGhostRow({
   const rowStyle = useCallback(
     ({ hovered = false, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
       styles.newWorkspaceGhostRow,
+      sidebarWorkspaceRowStyles.pointerlessRowInProject,
       hovered && !pressed && styles.newWorkspaceGhostRowHovered,
       pressed && styles.newWorkspaceGhostRowPressed,
     ],
@@ -1144,6 +1149,9 @@ function WorkspaceRowInner({
           isPressed,
           selected,
           isHovered,
+          // Hoisted (pinned) rows lead with their project name because no project row contains
+          // them; every other row here sits under its project header.
+          inProject: !leadingProjectName,
         });
         const backdrop = getSidebarRowBackdrop({ isDragging, isPressed, selected, isHovered });
         return (
@@ -1820,6 +1828,7 @@ function ProjectBlock({
             <SidebarGroupToggleRow
               expanded={workspacesExpanded}
               onPress={toggleWorkspacesExpanded}
+              indent="project"
               testID={`sidebar-project-show-more-${project.viewKey}`}
             />
           ) : null}
@@ -2527,16 +2536,12 @@ const styles = StyleSheet.create((theme) => ({
   },
   workspaceListContainer: {},
   // Kept in step with `workspaceRow` above. It stands in a project's list where a workspace row
-  // would be, so it takes that row's geometry and both of its fills.
-  //
-  // The one departure is the extra left padding: it only ever renders under its project header, so
-  // the step in reads as belonging to that project. Padding rather than margin, so the hover and
-  // pressed fills stay the same box as every other row in the sidebar.
+  // would be, so it takes that row's geometry and both of its fills; its left padding comes from
+  // `pointerlessRowInProject`, which puts the `+` in the session rows' icon column.
   newWorkspaceGhostRow: {
     minHeight: 36,
     marginBottom: theme.spacing[0.5],
     paddingVertical: theme.spacing[2],
-    paddingLeft: theme.spacing[4],
     paddingRight: theme.spacing[3],
     borderRadius: theme.borderRadius.lg,
     flexDirection: "row",

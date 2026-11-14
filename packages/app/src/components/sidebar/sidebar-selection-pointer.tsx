@@ -1,6 +1,9 @@
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 
+/** The pointer slot's width; rows without a pointer reserve it to stay on the same rail. */
+export const SIDEBAR_SELECTION_POINTER_WIDTH = 8;
+
 // Daseo delta 55: a terminal list marks its selected row with a pointer, the way fzf and
 // lazygit do, instead of a filled row with a rail. The slot is always reserved so selecting a
 // row never moves its text; the pointer and the selected title share the one accent color.
@@ -14,7 +17,7 @@ export function SidebarSelectionPointer({ selected }: { selected: boolean }) {
 
 const styles = StyleSheet.create((theme) => ({
   slot: {
-    width: 8,
+    width: SIDEBAR_SELECTION_POINTER_WIDTH,
     height: 20,
     flexShrink: 0,
     justifyContent: "center",

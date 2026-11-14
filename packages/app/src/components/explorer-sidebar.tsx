@@ -11,8 +11,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, { useAnimatedStyle, useSharedValue, runOnJS } from "react-native-reanimated";
 import { scheduleOnRN } from "react-native-worklets";
 import { Gesture } from "react-native-gesture-handler";
-import { StyleSheet, useUnistyles } from "react-native-unistyles";
-import { X } from "lucide-react-native";
+import { StyleSheet, useUnistyles, withUnistyles } from "react-native-unistyles";
+import { PanelRight } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import { usePanelStore, selectIsFileExplorerOpen } from "@/stores/panel-store";
 import { useCloseFileExplorerGesture } from "@/mobile-panels/gestures";
@@ -30,6 +30,10 @@ import {
 } from "@/components/sidebar-resize-handle-layout";
 import { TaskSectionsBody, useAgentTasks, useTaskBoard } from "@/composer/task-list/body";
 import type { TodoEntry } from "@/types/stream";
+import type { Theme } from "@/styles/theme";
+
+const ThemedPanelRight = withUnistyles(PanelRight);
+const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 
 function logExplorerSidebar(_event: string, _details: Record<string, unknown>): void {}
 
@@ -97,7 +101,6 @@ export function ExplorerSidebar({ serverId, agentId }: TaskPanelProps) {
   const explorerWidth = usePanelStore((state) => state.explorerWidth);
   const setExplorerWidth = usePanelStore((state) => state.setExplorerWidth);
   const isOpen = usePanelStore((state) => selectIsFileExplorerOpen(state, { isCompact: false }));
-  const closeDesktopFileExplorer = usePanelStore((state) => state.closeDesktopFileExplorer);
   const { width: viewportWidth } = useWindowDimensions();
   const visibleExplorerWidth = resolveDesktopExplorerWidth({
     requestedWidth: explorerWidth,
@@ -112,14 +115,6 @@ export function ExplorerSidebar({ serverId, agentId }: TaskPanelProps) {
   useEffect(() => {
     resizeWidth.value = visibleExplorerWidth;
   }, [resizeWidth, visibleExplorerWidth]);
-
-  const handleDesktopClose = useCallback(() => {
-    logExplorerSidebar("handleClose", {
-      reason: "desktop-close-button",
-      isOpen,
-    });
-    closeDesktopFileExplorer();
-  }, [closeDesktopFileExplorer, isOpen]);
 
   const resizeGesture = useMemo(
     () =>
@@ -182,7 +177,8 @@ export function ExplorerSidebar({ serverId, agentId }: TaskPanelProps) {
           testID="explorer-sidebar-resize-handle"
         />
 
-        <TaskSidebarContent serverId={serverId} agentId={agentId} onClose={handleDesktopClose} />
+        {/* Daseo delta 113: no close control here; the workspace header's panel toggle closes it. */}
+        <TaskSidebarContent serverId={serverId} agentId={agentId} />
       </View>
     </Animated.View>
   );
@@ -190,14 +186,19 @@ export function ExplorerSidebar({ serverId, agentId }: TaskPanelProps) {
 
 interface SidebarHeaderProps {
   children: ReactNode;
-  closeLabel: string;
-  onClose: () => void;
+  /** Compact overlay only: it covers the workspace header, so it carries its own panel toggle. */
+  onClose?: () => void;
 }
 
-/** The sidebar's header row: the content's title slot on the left, the close button on the right. */
-function SidebarHeader({ children, closeLabel, onClose }: SidebarHeaderProps) {
+/**
+ * The sidebar's header row: the content's title slot on the left. Daseo delta 113: no `X` (it sat
+ * in the window's top-right corner and read as quitting the app). On wide layouts the right slot is
+ * empty and the workspace header's `PanelRight` toggle, which stays visible while the panel is
+ * open, is the one control. The compact overlay covers that header, so it repeats the same
+ * `PanelRight` button here, which closes the overlay.
+ */
+function SidebarHeader({ children, onClose }: SidebarHeaderProps) {
   const { theme } = useUnistyles();
-  const hasRightWindowControls = useHasOwnedWindowChromeObstruction("top-right");
   return (
     <WindowChromeSafeArea
       placement="inline"
@@ -207,47 +208,47 @@ function SidebarHeader({ children, closeLabel, onClose }: SidebarHeaderProps) {
     >
       <TitlebarDragRegion />
       {children}
-      <View style={styles.headerRightSection}>
-        {!hasRightWindowControls && (
-          <Pressable
-            onPress={onClose}
-            style={styles.closeButton}
-            testID="explorer-close"
-            nativeID="explorer-close"
-            accessible
-            accessibilityRole="button"
-            accessibilityLabel={closeLabel}
-            hitSlop={8}
-          >
-            {({ hovered, pressed }) => (
-              <X
-                size={18}
-                color={hovered || pressed ? theme.colors.foreground : theme.colors.foregroundMuted}
-              />
-            )}
-          </Pressable>
-        )}
-      </View>
+      {onClose ? <SidebarHeaderPanelToggle onClose={onClose} /> : null}
     </WindowChromeSafeArea>
+  );
+}
+
+function SidebarHeaderPanelToggle({ onClose }: { onClose: () => void }) {
+  const { t } = useTranslation();
+  const hasRightWindowControls = useHasOwnedWindowChromeObstruction("top-right");
+  if (hasRightWindowControls) return null;
+  return (
+    <Pressable
+      onPress={onClose}
+      style={styles.panelToggleButton}
+      testID="explorer-close"
+      nativeID="explorer-close"
+      accessible
+      accessibilityRole="button"
+      accessibilityLabel={t("workspace.tabs.tasks.close")}
+      hitSlop={8}
+    >
+      {/* Open panel: the toggle is in its open (foreground) colour, as in the workspace header. */}
+      <ThemedPanelRight size={20} uniProps={foregroundColorMapping} />
+    </Pressable>
   );
 }
 
 interface TaskSidebarContentProps {
   serverId: string;
   agentId: string | null;
-  onClose: () => void;
+  onClose?: () => void;
 }
 
 // Daseo delta 101: the viewed session's task list, read-only, grouped by state.
 function TaskSidebarContent({ serverId, agentId, onClose }: TaskSidebarContentProps) {
   const { t } = useTranslation();
   const tasks = useAgentTasks(serverId, agentId);
-  const closeLabel = t("workspace.tabs.tasks.close");
 
   if (!tasks?.length) {
     return (
       <View style={styles.sidebarContent} pointerEvents="auto">
-        <SidebarHeader closeLabel={closeLabel} onClose={onClose}>
+        <SidebarHeader onClose={onClose}>
           <View style={styles.taskSummarySlot} />
         </SidebarHeader>
         <View style={styles.emptyContainer} testID="task-sidebar-empty">
@@ -256,23 +257,15 @@ function TaskSidebarContent({ serverId, agentId, onClose }: TaskSidebarContentPr
       </View>
     );
   }
-  return <TaskSidebarBoard tasks={tasks} closeLabel={closeLabel} onClose={onClose} />;
+  return <TaskSidebarBoard tasks={tasks} onClose={onClose} />;
 }
 
-function TaskSidebarBoard({
-  tasks,
-  closeLabel,
-  onClose,
-}: {
-  tasks: TodoEntry[];
-  closeLabel: string;
-  onClose: () => void;
-}) {
+function TaskSidebarBoard({ tasks, onClose }: { tasks: TodoEntry[]; onClose?: () => void }) {
   // The sections below show the task in progress and count what waits and what is held.
   const { label } = useTaskBoard(tasks, { withCurrent: false, withStateCounts: false });
   return (
     <View style={styles.sidebarContent} pointerEvents="auto">
-      <SidebarHeader closeLabel={closeLabel} onClose={onClose}>
+      <SidebarHeader onClose={onClose}>
         <View style={styles.taskSummarySlot}>
           <Text
             style={styles.taskSummary}
@@ -320,12 +313,7 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
   },
-  headerRightSection: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[2],
-  },
-  closeButton: {
+  panelToggleButton: {
     padding: theme.spacing[2],
     borderRadius: theme.borderRadius.md,
   },

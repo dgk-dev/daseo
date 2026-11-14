@@ -1,7 +1,7 @@
 import { router, usePathname } from "expo-router";
 import { GitBranch, Search, X } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Pressable,
   StyleSheet as RNStyleSheet,
@@ -21,10 +21,8 @@ import {
   SIDEBAR_RESIZE_ACTIVATION_OFFSET,
   SIDEBAR_RESIZE_FAIL_OFFSET,
 } from "@/components/sidebar-resize-handle-layout";
-import { HostPicker } from "@/components/hosts/host-picker";
 import { SidebarHeaderRow } from "@/components/sidebar/sidebar-header-row";
 import { SidebarDisplayPreferencesMenu } from "@/components/sidebar/display-preferences/menu";
-import { SidebarHelpMenu } from "@/components/sidebar/sidebar-help-menu";
 import { SIDEBAR_FOOTER_WORDS } from "@/components/sidebar/footer-words";
 import { SidebarSectionRule } from "@/components/sidebar/sidebar-section-rule";
 import { SidebarResizeHandle } from "@/components/sidebar-resize-handle";
@@ -45,7 +43,6 @@ import { RetainedPanelActivity } from "@/components/retained-panel";
 import type { StatusGroup } from "@/hooks/sidebar-status-view-model";
 import { type SidebarGroupMode, useSidebarViewStore } from "@/stores/sidebar-view-store";
 import { useKeyboardShortcutsStore } from "@/stores/keyboard-shortcuts-store";
-import { useHosts } from "@/runtime/host-runtime";
 import { useActiveWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
 import { useWorkspace } from "@/stores/session-store-hooks";
 import { usePanelStore } from "@/stores/panel-store";
@@ -54,12 +51,9 @@ import { useCloseAgentListGesture } from "@/mobile-panels/gestures";
 import { MobilePanelOverlay } from "@/mobile-panels/presentation";
 import { useIsMobilePanelPresented } from "@/mobile-panels/provider";
 import {
-  buildOpenProjectRoute,
   buildNewWorkspaceRoute,
   buildSchedulesRoute,
   buildSessionsRoute,
-  buildSettingsAddHostRoute,
-  buildSettingsHostSectionRoute,
   buildSettingsRoute,
 } from "@/utils/host-routes";
 import type { ShortcutKey } from "@/utils/format-shortcut";
@@ -87,21 +81,15 @@ interface SidebarSharedProps {
   toggleProjectCollapsed: (projectViewKey: string) => void;
   handleRefresh: () => void;
   handleOpenProject: () => void;
-  handleHome: () => void;
   handleSettings: () => void;
   labels: SidebarLabels;
   newWorkspaceKeys: ShortcutKey[][] | null;
-  handleAddHost: () => void;
-  handleOpenHostSettings: (serverId: string) => void;
 }
 
 interface SidebarLabels {
   addProject: string;
   newWorkspace: string;
-  hosts: string;
-  home: string;
   settings: string;
-  searchHosts: string;
   sessions: string;
   schedules: string;
   closeSidebar: string;
@@ -178,36 +166,6 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
     router.push(buildSettingsRoute());
   }, []);
 
-  const handleAddHostMobile = useCallback(() => {
-    showMobileAgent();
-    router.push(buildSettingsAddHostRoute(Date.now()));
-  }, [showMobileAgent]);
-
-  const handleAddHostDesktop = useCallback(() => {
-    router.push(buildSettingsAddHostRoute(Date.now()));
-  }, []);
-
-  const handleOpenHostSettingsMobile = useCallback(
-    (serverId: string) => {
-      showMobileAgent();
-      router.push(buildSettingsHostSectionRoute(serverId, "connections"));
-    },
-    [showMobileAgent],
-  );
-
-  const handleOpenHostSettingsDesktop = useCallback((serverId: string) => {
-    router.push(buildSettingsHostSectionRoute(serverId, "connections"));
-  }, []);
-
-  const handleHomeMobile = useCallback(() => {
-    showMobileAgent();
-    router.push(buildOpenProjectRoute());
-  }, [showMobileAgent]);
-
-  const handleHomeDesktop = useCallback(() => {
-    router.push(buildOpenProjectRoute());
-  }, []);
-
   const handleViewMoreNavigate = useCallback(() => {
     router.push(buildSessionsRoute());
   }, []);
@@ -221,10 +179,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
     (): SidebarLabels => ({
       addProject: t("sidebar.actions.addProject"),
       newWorkspace: t("sidebar.actions.newWorkspace"),
-      hosts: t("sidebar.actions.hosts"),
-      home: t("sidebar.actions.home"),
       settings: t("sidebar.actions.settings"),
-      searchHosts: t("sidebar.host.searchPlaceholder"),
       sessions: t("sidebar.sections.sessions"),
       schedules: t("sidebar.sections.schedules"),
       closeSidebar: t("sidebar.actions.closeSidebar"),
@@ -259,10 +214,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
           insetsBottom={insets.bottom}
           closeSidebar={showMobileAgent}
           handleOpenProject={handleOpenProjectMobile}
-          handleHome={handleHomeMobile}
           handleSettings={handleSettingsMobile}
-          handleAddHost={handleAddHostMobile}
-          handleOpenHostSettings={handleOpenHostSettingsMobile}
           handleViewMoreNavigate={handleViewMoreNavigate}
           handleViewSchedulesNavigate={handleViewSchedulesNavigate}
         />
@@ -278,10 +230,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
         insetsBottom={insets.bottom}
         active={active}
         handleOpenProject={handleOpenProjectDesktop}
-        handleHome={handleHomeDesktop}
         handleSettings={handleSettingsDesktop}
-        handleAddHost={handleAddHostDesktop}
-        handleOpenHostSettings={handleOpenHostSettingsDesktop}
         handleViewMore={handleViewMoreNavigate}
         handleViewSchedules={handleViewSchedulesNavigate}
       />
@@ -289,13 +238,9 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
   );
 });
 
-function sidebarHostOptionTestID(serverId: string): string {
-  return `sidebar-host-row-${serverId}`;
-}
-
-// Daseo delta 89: a footer action is a word (`home`, `settings`); hover brightens it.
+// Daseo delta 89: a footer action is a word (`settings`); hover brightens it. Delta 113: the footer
+// keeps only `add project` and `settings`; hosts stay reachable in Settings.
 function FooterTextButton({
-  buttonRef,
   onPress,
   testID,
   label,
@@ -307,13 +252,11 @@ function FooterTextButton({
   label: string;
   word: string;
   shortcutKeys?: ReturnType<typeof useShortcutKeys>;
-  buttonRef?: RefObject<View | null>;
 }) {
   return (
     <Tooltip delayDuration={300}>
       <TooltipTrigger asChild>
         <Pressable
-          ref={buttonRef}
           style={styles.footerTextButton}
           testID={testID}
           nativeID={testID}
@@ -380,57 +323,6 @@ function FooterAddProjectButton({
         <IconTooltipContent label={label} shortcutKeys={shortcutKeys} />
       </TooltipContent>
     </Tooltip>
-  );
-}
-
-function SidebarHostPicker({
-  label,
-  onAddHost,
-  onOpenHostSettings,
-}: {
-  label: string;
-  onAddHost: () => void;
-  onOpenHostSettings: (serverId: string) => void;
-}) {
-  const hosts = useHosts();
-  const triggerRef = useRef<View | null>(null);
-  const [isOpen, setIsOpen] = useState(false);
-
-  const handleSelect = useCallback(
-    (id: string) => {
-      onOpenHostSettings(id);
-    },
-    [onOpenHostSettings],
-  );
-
-  const handleOpen = useCallback(() => setIsOpen(true), []);
-
-  return (
-    <HostPicker
-      hosts={hosts}
-      value=""
-      onSelect={handleSelect}
-      open={isOpen}
-      onOpenChange={setIsOpen}
-      anchorRef={triggerRef}
-      includeAddHost
-      onAddHost={onAddHost}
-      showActiveConnection
-      onOpenHostSettings={onOpenHostSettings}
-      searchable
-      desktopPlacement="top-start"
-      desktopMinWidth={240}
-      addHostTestID="sidebar-host-add"
-      hostOptionTestID={sidebarHostOptionTestID}
-    >
-      <FooterTextButton
-        buttonRef={triggerRef}
-        onPress={handleOpen}
-        testID="sidebar-hosts-trigger"
-        label={label}
-        word={SIDEBAR_FOOTER_WORDS.host}
-      />
-    </HostPicker>
   );
 }
 
@@ -506,24 +398,15 @@ const SidebarNewWorkspaceHeaderRow = memo(function SidebarNewWorkspaceHeaderRow(
 
 function SidebarFooter({
   handleOpenProject,
-  handleHome,
   handleSettings,
   labels,
-  handleAddHost,
-  handleOpenHostSettings,
 }: {
   handleOpenProject: () => void;
-  handleHome: () => void;
   handleSettings: () => void;
   labels: {
     addProject: string;
-    hosts: string;
-    home: string;
     settings: string;
-    searchHosts: string;
   };
-  handleAddHost: () => void;
-  handleOpenHostSettings: (serverId: string) => void;
 }) {
   const newAgentKeys = useShortcutKeys("new-agent");
   const settingsKeys = useShortcutKeys("toggle-settings");
@@ -535,27 +418,13 @@ function SidebarFooter({
         label={labels.addProject}
         shortcutKeys={newAgentKeys}
       />
-      <View style={styles.footerIconRow}>
-        <SidebarHostPicker
-          label={labels.hosts}
-          onAddHost={handleAddHost}
-          onOpenHostSettings={handleOpenHostSettings}
-        />
-        <FooterTextButton
-          onPress={handleHome}
-          testID="sidebar-home"
-          label={labels.home}
-          word={SIDEBAR_FOOTER_WORDS.home}
-        />
-        <SidebarHelpMenu />
-        <FooterTextButton
-          onPress={handleSettings}
-          testID="sidebar-settings"
-          label={labels.settings}
-          word={SIDEBAR_FOOTER_WORDS.settings}
-          shortcutKeys={settingsKeys}
-        />
-      </View>
+      <FooterTextButton
+        onPress={handleSettings}
+        testID="sidebar-settings"
+        label={labels.settings}
+        word={SIDEBAR_FOOTER_WORDS.settings}
+        shortcutKeys={settingsKeys}
+      />
     </View>
   );
 }
@@ -576,11 +445,8 @@ function MobileSidebar({
   handleRefresh,
   newWorkspaceKeys,
   handleOpenProject,
-  handleHome,
   handleSettings,
   labels,
-  handleAddHost,
-  handleOpenHostSettings,
   insetsTop,
   insetsBottom,
   closeSidebar,
@@ -693,11 +559,8 @@ function MobileSidebar({
 
         <SidebarFooter
           handleOpenProject={handleOpenProject}
-          handleHome={handleHome}
           handleSettings={handleSettings}
           labels={labels}
-          handleAddHost={handleAddHost}
-          handleOpenHostSettings={handleOpenHostSettings}
         />
       </View>
     </MobilePanelOverlay>
@@ -720,11 +583,8 @@ function DesktopSidebar({
   handleRefresh,
   newWorkspaceKeys,
   handleOpenProject,
-  handleHome,
   handleSettings,
   labels,
-  handleAddHost,
-  handleOpenHostSettings,
   insetsTop,
   insetsBottom,
   active,
@@ -897,11 +757,8 @@ function DesktopSidebar({
 
         <SidebarFooter
           handleOpenProject={handleOpenProject}
-          handleHome={handleHome}
           handleSettings={handleSettings}
           labels={labels}
-          handleAddHost={handleAddHost}
-          handleOpenHostSettings={handleOpenHostSettings}
         />
 
         <SidebarResizeHandle
@@ -1091,12 +948,6 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing[3],
     borderTopWidth: 1,
     borderTopColor: theme.colors.border,
-  },
-  footerIconRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[2],
-    flexShrink: 0,
   },
   footerAddProjectButton: {
     minWidth: 0,

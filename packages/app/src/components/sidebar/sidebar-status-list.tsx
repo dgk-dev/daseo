@@ -361,7 +361,7 @@ function StatusGroupRows({
             <SidebarGroupToggleRow
               expanded={workspacesExpanded}
               onPress={toggleWorkspacesExpanded}
-              indented
+              indent="status"
               testID={`sidebar-status-show-more-${group.bucket}`}
             />
           ) : null}

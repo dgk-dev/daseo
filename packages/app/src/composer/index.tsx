@@ -2539,7 +2539,14 @@ const styles = StyleSheet.create((theme: Theme) => ({
     width: "100%",
     overflow: "visible",
     paddingHorizontal: theme.spacing[4],
-    paddingBottom: theme.spacing[4],
+    // Daseo delta 113: on wide layouts the prompt line's own vertical padding (delta 53) is the
+    // composer's bottom inset, so its hint line ends one spacing step above the window edge with
+    // the status line gone. A second step here, left from the boxed input, read as an empty band.
+    // Phones keep theirs: their prompt line is tighter and the status line never showed there.
+    paddingBottom: {
+      xs: theme.spacing[4],
+      md: 0,
+    },
   },
   inputAreaLocked: {
     opacity: 0.6,

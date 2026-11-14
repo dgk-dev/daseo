@@ -4,8 +4,5 @@
 // tooltip.
 export const SIDEBAR_FOOTER_WORDS = {
   addProject: "add project",
-  host: "host",
-  home: "home",
-  help: "help",
   settings: "settings",
 } as const;
