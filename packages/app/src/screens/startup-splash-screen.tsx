@@ -305,7 +305,6 @@ const styles = StyleSheet.create((theme) => ({
 
 export function StartupSplashScreen({ bootstrapState }: StartupSplashScreenProps) {
   const { t } = useTranslation();
-  const { theme } = useUnistyles();
   const [daemonLogs, setDaemonLogs] = useState<DesktopDaemonLogs | null>(null);
   const [logsError, setLogsError] = useState<string | null>(null);
   const [isLoadingLogs, setIsLoadingLogs] = useState(false);
@@ -371,19 +370,6 @@ export function StartupSplashScreen({ bootstrapState }: StartupSplashScreenProps
     void Clipboard.setStringAsync(payload);
   }, [daemonLogs?.logPath, daemonLogs?.contents, logsText]);
 
-  const copyIcon = useMemo(
-    () => <Copy size={16} color={theme.colors.foreground} />,
-    [theme.colors.foreground],
-  );
-  const warningIcon = useMemo(
-    () => <TriangleAlert size={16} color={theme.colors.foreground} />,
-    [theme.colors.foreground],
-  );
-  const bookIcon = useMemo(
-    () => <BookOpen size={16} color={theme.colors.foreground} />,
-    [theme.colors.foreground],
-  );
-
   if (!isError) {
     return (
       <View testID="startup-splash" style={styles.container}>
@@ -428,13 +414,13 @@ export function StartupSplashScreen({ bootstrapState }: StartupSplashScreenProps
           </View>
 
           <View style={styles.actionRow}>
-            <Button variant="secondary" leftIcon={copyIcon} onPress={handleCopyLogs}>
+            <Button variant="secondary" leftIcon={Copy} onPress={handleCopyLogs}>
               Copy logs
             </Button>
-            <Button variant="outline" leftIcon={warningIcon} onPress={openGithubIssue}>
+            <Button variant="outline" leftIcon={TriangleAlert} onPress={openGithubIssue}>
               Open GitHub issue
             </Button>
-            <Button variant="outline" leftIcon={bookIcon} onPress={openDocs}>
+            <Button variant="outline" leftIcon={BookOpen} onPress={openDocs}>
               Docs
             </Button>
             <Button variant="default" leftIcon={RotateCw} onPress={bootstrapState.retry}>

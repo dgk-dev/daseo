@@ -1,5 +1,5 @@
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
-import React, { type ReactElement, useCallback, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import { Alert, Text, View } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import { useTranslation } from "react-i18next";
@@ -199,9 +199,6 @@ interface DaemonInfoCardProps {
   daemonStatusStateText: string;
   daemonStatusDetailText: string;
   isDaemonManagementPaused: boolean;
-  copyIcon: ReactElement;
-  fileTextIcon: ReactElement;
-  activityIcon: ReactElement;
   handleToggleDaemonManagement: () => void;
   isUpdatingDaemonManagement: boolean;
   keepRunningAfterQuit: boolean;
@@ -220,9 +217,6 @@ function DaemonInfoCard(props: DaemonInfoCardProps) {
     daemonStatusStateText,
     daemonStatusDetailText,
     isDaemonManagementPaused,
-    copyIcon,
-    fileTextIcon,
-    activityIcon,
     handleToggleDaemonManagement,
     isUpdatingDaemonManagement,
     keepRunningAfterQuit,
@@ -280,14 +274,14 @@ function DaemonInfoCard(props: DaemonInfoCardProps) {
         </View>
         <View style={styles.actionGroup}>
           {daemonLogs?.logPath ? (
-            <Button variant="outline" size="sm" leftIcon={copyIcon} onPress={handleCopyLogPath}>
+            <Button variant="outline" size="sm" leftIcon={Copy} onPress={handleCopyLogPath}>
               {t("desktop.daemon.logs.copyPath")}
             </Button>
           ) : null}
           <Button
             variant="outline"
             size="sm"
-            leftIcon={fileTextIcon}
+            leftIcon={FileText}
             onPress={handleOpenLogs}
             disabled={!daemonLogs}
           >
@@ -303,7 +297,7 @@ function DaemonInfoCard(props: DaemonInfoCardProps) {
         <Button
           variant="outline"
           size="sm"
-          leftIcon={activityIcon}
+          leftIcon={Activity}
           onPress={handleRunCliStatus}
           disabled={isLoadingCliStatus}
         >
@@ -380,18 +374,6 @@ export function LocalDaemonSection() {
     () => <ArrowUpRight size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />,
     [theme.iconSize.sm, theme.colors.foregroundMuted],
   );
-  const copyIcon = useMemo(
-    () => <Copy size={theme.iconSize.sm} color={theme.colors.foreground} />,
-    [theme.iconSize.sm, theme.colors.foreground],
-  );
-  const fileTextIcon = useMemo(
-    () => <FileText size={theme.iconSize.sm} color={theme.colors.foreground} />,
-    [theme.iconSize.sm, theme.colors.foreground],
-  );
-  const activityIcon = useMemo(
-    () => <Activity size={theme.iconSize.sm} color={theme.colors.foreground} />,
-    [theme.iconSize.sm, theme.colors.foreground],
-  );
 
   const advancedSettingsButton = useMemo(
     () => (
@@ -430,9 +412,6 @@ export function LocalDaemonSection() {
             daemonStatusStateText={daemonStatusStateText}
             daemonStatusDetailText={daemonStatusDetailText}
             isDaemonManagementPaused={isDaemonManagementPaused}
-            copyIcon={copyIcon}
-            fileTextIcon={fileTextIcon}
-            activityIcon={activityIcon}
             handleToggleDaemonManagement={handleToggleDaemonManagement}
             isUpdatingDaemonManagement={isUpdatingDaemonManagement}
             keepRunningAfterQuit={daemonSettings.keepRunningAfterQuit}

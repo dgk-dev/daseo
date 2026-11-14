@@ -566,7 +566,6 @@ const delay = (ms: number) =>
 
 function RestartDaemonCard({ host }: { host: HostProfile }) {
   const { t } = useTranslation();
-  const { theme } = useUnistyles();
   const daemonClient = useHostRuntimeClient(host.serverId);
   const isConnected = useHostRuntimeIsConnected(host.serverId);
   const runtime = getHostRuntimeStore();
@@ -697,11 +696,6 @@ function RestartDaemonCard({ host }: { host: HostProfile }) {
       });
   }, [daemonClient, host.label, host.serverId, isHostConnected, t, waitForDaemonRestart]);
 
-  const restartIcon = useMemo(
-    () => <RotateCw size={theme.iconSize.sm} color={theme.colors.foreground} />,
-    [theme.iconSize.sm, theme.colors.foreground],
-  );
-
   return (
     <View style={settingsStyles.card} testID="host-page-restart-card">
       <View style={settingsStyles.row}>
@@ -712,7 +706,7 @@ function RestartDaemonCard({ host }: { host: HostProfile }) {
         <Button
           variant="outline"
           size="sm"
-          leftIcon={restartIcon}
+          leftIcon={RotateCw}
           onPress={handleRestart}
           disabled={isRestarting || !daemonClient || !isConnected}
           testID="host-page-restart-button"
@@ -733,7 +727,6 @@ type DaemonUpdateState =
 
 function UpdateDaemonCard({ host }: { host: HostProfile }) {
   const { t } = useTranslation();
-  const { theme } = useUnistyles();
   const daemonClient = useHostRuntimeClient(host.serverId);
   const isConnected = useHostRuntimeIsConnected(host.serverId);
   const runtime = getHostRuntimeStore();
@@ -927,11 +920,6 @@ function UpdateDaemonCard({ host }: { host: HostProfile }) {
       });
   }, [daemonClient, host.label, host.serverId, isHostConnected, runtime, t, waitForDaemonRestart]);
 
-  const updateIcon = useMemo(
-    () => <ArrowUpToLine size={theme.iconSize.sm} color={theme.colors.foreground} />,
-    [theme.iconSize.sm, theme.colors.foreground],
-  );
-
   const shouldShowUpdate = hasVersionMismatch && (supportsSelfUpdate || desktopManaged);
   if (!shouldShowUpdate) {
     return null;
@@ -954,7 +942,7 @@ function UpdateDaemonCard({ host }: { host: HostProfile }) {
         <Button
           variant="outline"
           size="sm"
-          leftIcon={updateIcon}
+          leftIcon={ArrowUpToLine}
           onPress={handleUpdate}
           disabled={desktopManaged || isUpdating || !daemonClient || !isConnected}
           testID="host-page-update-button"
