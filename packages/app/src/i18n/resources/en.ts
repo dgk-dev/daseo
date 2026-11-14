@@ -710,6 +710,7 @@ export const en = {
         newBrowser: "New browser",
         recentlyClosedTabs: "Recently closed tabs",
         exitFocusMode: "Exit focus mode",
+        moreActions: "More actions",
         splitRight: "Split pane right",
         splitDown: "Split pane down",
         terminalProfilesMenu: "Terminal profiles",

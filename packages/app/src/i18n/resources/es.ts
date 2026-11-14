@@ -719,6 +719,7 @@ export const es: TranslationResources = {
         newBrowser: "Nuevo navegador",
         recentlyClosedTabs: "Pestañas cerradas recientemente",
         exitFocusMode: "Salir del modo de concentración",
+        moreActions: "Más acciones",
         splitRight: "Panel dividido a la derecha",
         splitDown: "Dividir panel hacia abajo",
         terminalProfilesMenu: "Terminal profiles",

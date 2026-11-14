@@ -716,6 +716,7 @@ export const ja: TranslationResources = {
         newBrowser: "新しいブラウザ",
         recentlyClosedTabs: "最近閉じたタブ",
         exitFocusMode: "フォーカスモードを終了",
+        moreActions: "その他のアクション",
         splitRight: "右にペインを分割",
         splitDown: "下にペインを分割",
         terminalProfilesMenu: "ターミナルプロファイル",

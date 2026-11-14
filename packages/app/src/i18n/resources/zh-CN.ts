@@ -710,6 +710,7 @@ export const zhCN: TranslationResources = {
         newBrowser: "新建浏览器",
         recentlyClosedTabs: "最近关闭的标签页",
         exitFocusMode: "退出专注模式",
+        moreActions: "更多操作",
         splitRight: "向右拆分窗格",
         splitDown: "向下拆分窗格",
         terminalProfilesMenu: "Terminal profiles",

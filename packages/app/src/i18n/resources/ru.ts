@@ -717,6 +717,7 @@ export const ru: TranslationResources = {
         newBrowser: "Новый браузер",
         recentlyClosedTabs: "Недавно закрытые вкладки",
         exitFocusMode: "Выйти из режима фокусировки",
+        moreActions: "Дополнительные действия",
         splitRight: "Разделить панель справа",
         splitDown: "Разделить панель вниз",
         terminalProfilesMenu: "Terminal profiles",

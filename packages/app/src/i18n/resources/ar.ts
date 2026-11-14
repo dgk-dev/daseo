@@ -711,6 +711,7 @@ export const ar: TranslationResources = {
         newBrowser: "متصفح جديد",
         recentlyClosedTabs: "علامات التبويب المغلقة مؤخرًا",
         exitFocusMode: "إنهاء وضع التركيز",
+        moreActions: "المزيد من الإجراءات",
         splitRight: "تقسيم الجزء الأيمن",
         splitDown: "تقسيم الجزء لأسفل",
         terminalProfilesMenu: "Terminal profiles",
