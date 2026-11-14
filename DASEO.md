@@ -3003,6 +3003,21 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        `ipc.ts` (`listFrames`, `sendFrameInput`), `trusted-input.ts` (`planCdpKeySteps`).
        Already-open tabs need no reload.
 
+111. **One panel icon for the task list; no Finder button** — the owner's ask on 2026-11-15
+     ("맨 오른쪽 상단에 … task list로 바뀐거 아이콘이 와리가리하지 … 그 사이드 패널 아이콘? 그걸로
+     해줘 어떨 땐 + - 그 코드 변화 보여주는 아이콘 되고", "finder 아이콘도 안떠도됨. 필요 없음").
+     - **Toggle.** On wide layouts the workspace header's task-list toggle (delta 101) drew the
+       source-control `+ -` glyph in a git checkout and the `PanelRight` glyph elsewhere, so it
+       changed shape between workspaces. It is now one `HeaderToggleButton` with `PanelRight` for
+       every workspace, in the foreground color while the panel is open. Compact layouts already
+       drew `PanelRight`. The testID `workspace-explorer-toggle`, `Cmd+E`, and the tooltip stay.
+     - **Open in editor.** The header's open-in-editor split button (Finder, VS Code, and the other
+       desktop open targets) is not drawn. `workspace-open-in-editor-button.tsx` and
+       `components/icons/source-control-panel-icon.tsx` have no caller left and stay in the tree
+       for upstream cherry-picks. File links in answers and the file menu's reveal action are
+       unchanged.
+     - **Key file:** `packages/app/src/screens/workspace/workspace-screen.tsx` (`headerRight`).
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

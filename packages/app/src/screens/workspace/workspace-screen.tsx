@@ -42,7 +42,6 @@ import { ScreenTitle } from "@/components/headers/screen-title";
 import { HostBadge } from "@/hosts/host-badge";
 import { useHostBadges } from "@/hosts/use-host-badges";
 import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
-import { Shortcut } from "@/components/ui/shortcut";
 import type { ShortcutKey } from "@/utils/format-shortcut";
 import {
   DropdownMenu,
@@ -52,7 +51,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   FloatingPanelPortalHost,
   FloatingPanelPortalHostNameProvider,
@@ -64,9 +62,7 @@ import { resolveViewedAgentId } from "@/task-sidebar/viewed-agent";
 import { SplitContainer } from "@/components/split-container";
 import { RetainedPanel } from "@/components/retained-panel";
 import { WindowChromeRegion } from "@/utils/desktop-window";
-import { SourceControlPanelIcon } from "@/components/icons/source-control-panel-icon";
 import { WorkspaceActions } from "@/git/workspace-actions";
-import { WorkspaceOpenInEditorButton } from "@/screens/workspace/workspace-open-in-editor-button";
 import { WorkspaceScriptsButton } from "@/screens/workspace/workspace-scripts-button";
 import { ImportSessionSheet } from "@/components/import-session-sheet";
 import { useToast } from "@/contexts/toast-context";
@@ -226,31 +222,6 @@ function getWorkspaceScripts(
   return workspaceDescriptor?.scripts ?? EMPTY_WORKSPACE_SCRIPTS;
 }
 
-interface WorkspaceFileLocationFields {
-  path: string | null;
-  lineStart?: number;
-  lineEnd?: number;
-}
-
-function getWorkspaceFileLocationFields(
-  tab: WorkspaceTabDescriptor | null,
-): WorkspaceFileLocationFields {
-  const target = tab?.target;
-  if (target?.kind !== "file") {
-    return { path: null };
-  }
-  return { path: target.path, lineStart: target.lineStart, lineEnd: target.lineEnd };
-}
-
-function buildWorkspaceFileLocation(
-  fields: WorkspaceFileLocationFields,
-): WorkspaceFileLocation | null {
-  if (fields.path === null) {
-    return null;
-  }
-  return { path: fields.path, lineStart: fields.lineStart, lineEnd: fields.lineEnd };
-}
-
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 const ThemedEllipsis = withUnistyles(Ellipsis);
 const ThemedChevronDown = withUnistyles(ChevronDown);
@@ -261,7 +232,6 @@ const ThemedGlobe = withUnistyles(Globe);
 const ThemedImport = withUnistyles(ImportIcon);
 const ThemedSettings = withUnistyles(Settings);
 const ThemedPanelRight = withUnistyles(PanelRight);
-const ThemedSourceControlPanelIcon = withUnistyles(SourceControlPanelIcon);
 
 interface DynamicProviderIconProps {
   iconKey: string;
@@ -1991,7 +1961,6 @@ function WorkspaceScreenContent({
     workspaceHeaderTitle,
     workspaceHeaderSubtitle,
     isWorkspaceHeaderSubtitleDistinct,
-    isGitCheckout,
     currentBranchName,
   } = deriveWorkspaceHeaderFields({
     workspace: workspaceDescriptor,
@@ -2009,14 +1978,6 @@ function WorkspaceScreenContent({
     toggleFileExplorerForLayout({ isCompact: isMobile });
   }, [isMobile, toggleFileExplorerForLayout]);
 
-  // Daseo delta 101: the toggle opens the task list, so it carries no changes count.
-  const explorerToggleStyle = useCallback(
-    ({ hovered, pressed }: { hovered?: boolean; pressed?: boolean }) => [
-      styles.sourceControlButton,
-      (Boolean(hovered) || Boolean(pressed) || isExplorerOpen) && styles.sourceControlButtonHovered,
-    ],
-    [isExplorerOpen],
-  );
   const explorerToggleAccessibilityState = useMemo(
     () => ({ expanded: isExplorerOpen }),
     [isExplorerOpen],
@@ -3415,19 +3376,6 @@ function WorkspaceScreenContent({
   });
 
   const activeTabDescriptor = useMemo(() => activeTab?.descriptor ?? null, [activeTab]);
-  const activeFileFields = getWorkspaceFileLocationFields(activeTabDescriptor);
-  const activeFilePath = activeFileFields.path;
-  const activeFileLineStart = activeFileFields.lineStart;
-  const activeFileLineEnd = activeFileFields.lineEnd;
-  const activeFileLocation = useMemo<WorkspaceFileLocation | null>(
-    () =>
-      buildWorkspaceFileLocation({
-        path: activeFilePath,
-        lineStart: activeFileLineStart,
-        lineEnd: activeFileLineEnd,
-      }),
-    [activeFileLineEnd, activeFileLineStart, activeFilePath],
-  );
   const canRenderDesktopPaneSplits = supportsDesktopPaneSplits();
   const shouldRenderDesktopPaneFallback = useMemo(
     () => !isMobile && !canRenderDesktopPaneSplits,
@@ -3673,57 +3621,16 @@ function WorkspaceScreenContent({
             hideLabels
           />
         ) : null}
+        {/* Daseo delta 111: no open-in-editor (Finder) button; the owner never uses it. */}
         {!isMobile && workspaceDirectory ? (
-          <WorkspaceOpenInEditorButton
+          <WorkspaceActions
             serverId={normalizedServerId}
             cwd={workspaceDirectory}
-            activeFile={activeFileLocation}
-            hideLabels
+            hideLabels={showCompactButtonLabels}
           />
         ) : null}
-        {!isMobile && workspaceDirectory ? (
-          <>
-            <WorkspaceActions
-              serverId={normalizedServerId}
-              cwd={workspaceDirectory}
-              hideLabels={showCompactButtonLabels}
-            />
-            {isGitCheckout ? (
-              <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
-                <TooltipTrigger asChild>
-                  <Pressable
-                    testID="workspace-explorer-toggle"
-                    onPress={handleToggleExplorer}
-                    accessibilityRole="button"
-                    accessibilityLabel={explorerToggleLabel}
-                    accessibilityState={explorerToggleAccessibilityState}
-                    style={explorerToggleStyle}
-                  >
-                    {({ hovered, pressed }) => {
-                      const active = hovered || pressed;
-                      const colorMapping = active ? foregroundColorMapping : extraMutedColorMapping;
-                      return <ThemedSourceControlPanelIcon size={16} uniProps={colorMapping} />;
-                    }}
-                  </Pressable>
-                </TooltipTrigger>
-                <TooltipContent
-                  testID="workspace-explorer-toggle-tooltip"
-                  side="left"
-                  align="center"
-                  offset={8}
-                >
-                  <View style={styles.explorerTooltipRow}>
-                    <Text style={styles.explorerTooltipText}>
-                      {t("workspace.tabs.tasks.toggle")}
-                    </Text>
-                    <Shortcut keys={EXPLORER_TOGGLE_KEYS} style={styles.explorerTooltipShortcut} />
-                  </View>
-                </TooltipContent>
-              </Tooltip>
-            ) : null}
-          </>
-        ) : null}
-        {!isMobile && !isGitCheckout ? (
+        {/* Daseo delta 111: one task-list toggle with the panel icon, git checkout or not. */}
+        {!isMobile ? (
           <HeaderToggleButton
             testID="workspace-explorer-toggle"
             onPress={handleToggleExplorer}
@@ -3738,7 +3645,9 @@ function WorkspaceScreenContent({
           >
             {({ hovered, pressed }) => {
               const colorMapping =
-                hovered || pressed ? foregroundColorMapping : extraMutedColorMapping;
+                isExplorerOpen || hovered || pressed
+                  ? foregroundColorMapping
+                  : extraMutedColorMapping;
               return <ThemedPanelRight size={16} uniProps={colorMapping} />;
             }}
           </HeaderToggleButton>
@@ -3772,17 +3681,14 @@ function WorkspaceScreenContent({
       normalizedServerId,
       normalizedWorkspaceId,
       workspaceDirectory,
-      activeFileLocation,
       liveTerminalIds,
       handleScriptTerminalStarted,
       handleViewScriptTerminal,
       handleOpenUrlInBrowserTab,
       showCompactButtonLabels,
-      isGitCheckout,
       handleToggleExplorer,
       explorerToggleLabel,
       explorerToggleAccessibilityState,
-      explorerToggleStyle,
       isExplorerOpen,
       t,
     ],
@@ -4196,23 +4102,6 @@ const styles = StyleSheet.create((theme) => ({
       md: theme.spacing[2],
     },
   },
-  sourceControlButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: theme.spacing[2],
-    paddingHorizontal: theme.spacing[1],
-    paddingVertical: theme.spacing[1],
-    minHeight: Math.ceil(theme.fontSize.sm * 1.5) + theme.spacing[1] * 2,
-    minWidth: Math.ceil(theme.fontSize.sm * 1.5) + theme.spacing[1] * 2,
-    borderRadius: theme.borderRadius.md,
-    // Match the painted right edge of the trailing split-pane glyph below. The
-    // two header rows intentionally use different control sizes and padding.
-    marginRight: -7,
-  },
-  sourceControlButtonHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
   newTabActions: {
     flexDirection: "row",
     alignItems: "center",
@@ -4241,16 +4130,6 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[2],
   },
   newTabTooltipShortcut: {},
-  explorerTooltipRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[2],
-  },
-  explorerTooltipText: {
-    fontSize: theme.fontSize.sm,
-    color: theme.colors.popoverForeground,
-  },
-  explorerTooltipShortcut: {},
   mobileTabsRow: {
     backgroundColor: theme.colors.surface0,
     borderBottomWidth: theme.borderWidth[1],
