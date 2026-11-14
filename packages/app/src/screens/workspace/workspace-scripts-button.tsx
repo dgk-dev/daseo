@@ -36,6 +36,11 @@ import {
 } from "@/utils/workspace-script-links";
 import type { Theme } from "@/styles/theme";
 import { useWorkspaceServiceRoutePreferencesStore } from "@/workspace-service-routes/store";
+import { HEADER_WORDS, HeaderWord, type HeaderWordTone } from "@/screens/workspace/header-word";
+
+// The 32pt header row is under the 44pt touch minimum; grow the target vertically only, as the
+// other compact header buttons do.
+const TRIGGER_HIT_SLOP = { top: 6, bottom: 6 } as const;
 
 type RowActionIcon = "copy" | "open" | "restart" | "start" | "stop" | "terminal";
 
@@ -47,8 +52,6 @@ interface WorkspaceScriptsButtonProps {
   onScriptTerminalStarted?: (terminalId: string) => void;
   onViewTerminal?: (terminalId: string) => void;
   onOpenUrlInBrowserTab?: (url: string) => void;
-  hideLabels?: boolean;
-  presentation?: "split" | "ghost";
 }
 
 const ThemedPlay = withUnistyles(Play);
@@ -59,8 +62,6 @@ const ThemedEye = withUnistyles(Eye);
 const ThemedCopy = withUnistyles(Copy);
 const ThemedRotateCw = withUnistyles(RotateCw);
 const ThemedSquare = withUnistyles(Square);
-
-const GHOST_TRIGGER_ICON_SIZE = 16;
 
 const foregroundColorMapping = (theme: Theme) => ({
   color: theme.colors.foreground,
@@ -78,7 +79,32 @@ const redColorMapping = (theme: Theme) => ({
   color: theme.colors.palette.red[500],
 });
 const playFillTransparent = { fill: "transparent" };
-const ghostPlayStroke = { strokeWidth: 1.5 };
+
+/**
+ * The header's `run ▾` (Daseo delta 116, was a boxed ▷ ▾). The word turns the accent while a
+ * script runs, the colour the ▷ icon took for it, and brightens on hover or while the menu is open.
+ */
+function RunTriggerWords({
+  hovered,
+  pressed,
+  open,
+  hasAnyRunning,
+}: {
+  hovered: boolean;
+  pressed: boolean;
+  open: boolean;
+  hasAnyRunning: boolean;
+}) {
+  const active = hovered || pressed || open;
+  let runTone: HeaderWordTone = active ? "active" : "muted";
+  if (hasAnyRunning) runTone = "accent";
+  return (
+    <View style={styles.triggerWords}>
+      <HeaderWord tone={runTone}>{HEADER_WORDS.run}</HeaderWord>
+      <HeaderWord tone={active ? "active" : "muted"}>{HEADER_WORDS.caret}</HeaderWord>
+    </View>
+  );
+}
 
 interface ScriptRowActionButtonProps {
   accessibilityLabel: string;
@@ -541,8 +567,6 @@ export function WorkspaceScriptsButton({
   onScriptTerminalStarted,
   onViewTerminal,
   onOpenUrlInBrowserTab,
-  hideLabels,
-  presentation = "split",
 }: WorkspaceScriptsButtonProps): ReactElement | null {
   const { t } = useTranslation();
   const toast = useToast();
@@ -625,15 +649,6 @@ export function WorkspaceScriptsButton({
     }
   }, [scripts, startScript]);
 
-  const triggerStyle = useCallback(
-    ({ hovered, pressed, open }: { hovered: boolean; pressed: boolean; open: boolean }) => [
-      presentation === "ghost" ? styles.ghostButton : styles.splitButtonPrimary,
-      (hovered || pressed || open) &&
-        (presentation === "ghost" ? styles.ghostButtonHovered : styles.splitButtonPrimaryHovered),
-    ],
-    [presentation],
-  );
-
   const handleStartScript = useCallback(
     (scriptName: string) => startScriptMutation.mutate(scriptName),
     [startScriptMutation],
@@ -670,34 +685,34 @@ export function WorkspaceScriptsButton({
   }
 
   const hasAnyRunning = scripts.some((s) => s.lifecycle === "running");
-  const triggerPlayMapping = hasAnyRunning ? blueColorMapping : mutedColorMapping;
-  const triggerIconSize = presentation === "ghost" ? GHOST_TRIGGER_ICON_SIZE : 14;
-  const triggerPlayProps =
-    presentation === "ghost" ? { ...playFillTransparent, ...ghostPlayStroke } : playFillTransparent;
 
   return (
     <View style={styles.row}>
-      <View style={presentation === "ghost" ? styles.ghostButtonFrame : styles.splitButton}>
+      <View style={styles.triggerFrame}>
         <DropdownMenu>
           <DropdownMenuTrigger
             testID="workspace-scripts-button"
-            style={triggerStyle}
+            style={styles.trigger}
+            hitSlop={TRIGGER_HIT_SLOP}
             accessibilityRole="button"
             accessibilityLabel={t("workspace.scripts.accessibility.trigger")}
           >
-            <View style={styles.splitButtonContent}>
-              <ThemedPlay
-                size={triggerIconSize}
-                uniProps={triggerPlayMapping}
-                {...triggerPlayProps}
+            {({
+              hovered,
+              pressed,
+              open,
+            }: {
+              hovered: boolean;
+              pressed: boolean;
+              open: boolean;
+            }) => (
+              <RunTriggerWords
+                hovered={hovered}
+                pressed={pressed}
+                open={open}
+                hasAnyRunning={hasAnyRunning}
               />
-              {!hideLabels && (
-                <Text style={styles.splitButtonText}>{t("workspace.scripts.title")}</Text>
-              )}
-              {presentation === "split" ? (
-                <ThemedChevronDown size={14} uniProps={mutedColorMapping} />
-              ) : null}
-            </View>
+            )}
           </DropdownMenuTrigger>
           <DropdownMenuContent
             align="end"
@@ -741,49 +756,20 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[1],
     flexShrink: 0,
   },
-  splitButton: {
-    flexDirection: "row",
-    alignItems: "stretch",
-    borderRadius: theme.borderRadius.md,
-    borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.borderAccent,
-    overflow: "hidden",
-  },
-  ghostButtonFrame: {
+  triggerFrame: {
     flexDirection: "row",
     alignItems: "stretch",
   },
-  ghostButton: {
-    width: theme.spacing[8],
-    height: theme.spacing[8],
-    padding: 0,
-    borderRadius: theme.borderRadius.lg,
-    alignItems: "center",
+  // The words are the button: no box or fill; the header's 32pt row height stays the target.
+  trigger: {
+    minHeight: theme.spacing[8],
+    paddingHorizontal: theme.spacing[1],
     justifyContent: "center",
   },
-  ghostButtonHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
-  splitButtonPrimary: {
-    paddingHorizontal: theme.spacing[3],
-    paddingVertical: theme.spacing[1],
-    justifyContent: "center",
-  },
-  splitButtonPrimaryHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
-  splitButtonText: {
-    fontSize: theme.fontSize.sm,
-    lineHeight: theme.fontSize.sm * 1.5,
-    color: theme.colors.foreground,
-    fontWeight: theme.fontWeight.normal,
-  },
-  splitButtonContent: {
+  triggerWords: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    gap: theme.spacing[1.5],
-    minHeight: theme.fontSize.sm * 1.5,
+    gap: theme.spacing[1],
   },
   scriptList: {
     paddingVertical: theme.spacing[1],

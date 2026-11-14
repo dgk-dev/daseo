@@ -1,48 +1,53 @@
-import {
-  Circle,
-  CircleCheck,
-  CircleDot,
-  CirclePause,
-  CircleQuestionMark,
-  CircleX,
-} from "lucide-react-native";
 import type { TFunction } from "i18next";
 import { memo } from "react";
 import { useTranslation } from "react-i18next";
 import { Text, View } from "react-native";
-import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { StyleSheet } from "react-native-unistyles";
 import { resolveTaskRowState, type TaskRowState } from "@/composer/task-list/summary";
-import type { Theme } from "@/styles/theme";
 import type { TodoEntry } from "@/types/stream";
 
-const ThemedCircle = withUnistyles(Circle);
-const ThemedCircleCheck = withUnistyles(CircleCheck);
-const ThemedCircleDot = withUnistyles(CircleDot);
-const ThemedCirclePause = withUnistyles(CirclePause);
-const ThemedCircleQuestionMark = withUnistyles(CircleQuestionMark);
-const ThemedCircleX = withUnistyles(CircleX);
+// Daseo delta 116: a task's state is a checkbox the way a terminal checklist prints one, in
+// place of the circle icons. The colours keep their meaning: the task in progress in the
+// running colour, a decision in the warning colour, closed tasks faint, the rest muted.
+export const TASK_STATE_MARKERS: Record<TaskRowState, string> = {
+  running: "[>]",
+  decision: "[?]",
+  pending: "[ ]",
+  hold: "[=]",
+  completed: "[x]",
+  deleted: "[-]",
+};
 
-const extraMutedIcon = (theme: Theme) => ({ color: theme.colors.foregroundExtraMuted });
-const mutedIcon = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
-const runningIcon = (theme: Theme) => ({ color: theme.colors.statusDotRunning });
-// A decision waits for the user, the same signal as an agent that needs them.
-const decisionIcon = (theme: Theme) => ({ color: theme.colors.statusDotWarning });
-
-function TaskStatusIcon({ state }: { state: TaskRowState }) {
+function resolveMarkerColorStyle(state: TaskRowState) {
   switch (state) {
-    case "completed":
-      return <ThemedCircleCheck size={16} uniProps={extraMutedIcon} />;
     case "running":
-      return <ThemedCircleDot size={16} uniProps={runningIcon} />;
+      return styles.markerRunning;
     case "decision":
-      return <ThemedCircleQuestionMark size={16} uniProps={decisionIcon} />;
-    case "hold":
-      return <ThemedCirclePause size={16} uniProps={mutedIcon} />;
+      return styles.markerDecision;
+    case "completed":
     case "deleted":
-      return <ThemedCircleX size={16} uniProps={extraMutedIcon} />;
+      return styles.markerClosed;
+    case "hold":
     case "pending":
-      return <ThemedCircle size={16} uniProps={mutedIcon} />;
+      return styles.markerOpen;
   }
+}
+
+function TaskStateMarker({ state, variant }: { state: TaskRowState; variant: TaskListRowVariant }) {
+  return (
+    <Text
+      style={[
+        variant === "sidebar" ? styles.sidebarMarker : styles.marker,
+        resolveMarkerColorStyle(state),
+      ]}
+      testID="task-state-marker"
+      accessible={false}
+      aria-hidden
+      selectable={false}
+    >
+      {TASK_STATE_MARKERS[state]}
+    </Text>
+  );
 }
 
 // Daseo delta 95: a held or waiting task says so, and the agent's one-line note follows.
@@ -80,7 +85,7 @@ export const TaskListRow = memo(function TaskListRow({
 
   return (
     <View style={styles.row} accessibilityLabel={suffix ? `${text}, ${suffix}` : text}>
-      <TaskStatusIcon state={state} />
+      <TaskStateMarker state={state} variant="board" />
       <Text
         numberOfLines={suffix ? 2 : 1}
         style={[
@@ -121,9 +126,7 @@ function SidebarTaskRow({
   // header already says the state.
   return (
     <View style={styles.sidebarRow} accessibilityLabel={accessibilityLabel}>
-      <View style={styles.sidebarIconSlot}>
-        <TaskStatusIcon state={state} />
-      </View>
+      <TaskStateMarker state={state} variant="sidebar" />
       <View style={styles.sidebarContent}>
         <Text
           numberOfLines={3}
@@ -170,13 +173,34 @@ const styles = StyleSheet.create((theme) => ({
   sidebarRow: {
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: theme.spacing[3],
+    gap: theme.spacing[2],
     paddingVertical: theme.spacing[2],
   },
-  // As tall as the subject's first line, so the icon centers on it however far the subject wraps.
-  sidebarIconSlot: {
-    height: Math.round(theme.fontSize.base * 1.4),
-    justifyContent: "center",
+  // The marker sets in the mono face at its row's text size and line height, so it sits on the
+  // subject's first line however far the subject wraps.
+  marker: {
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.sm,
+    flexShrink: 0,
+  },
+  sidebarMarker: {
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.base,
+    lineHeight: Math.round(theme.fontSize.base * 1.4),
+    flexShrink: 0,
+  },
+  markerRunning: {
+    color: theme.colors.statusDotRunning,
+  },
+  // A decision waits for the user, the same signal as an agent that needs them.
+  markerDecision: {
+    color: theme.colors.statusDotWarning,
+  },
+  markerOpen: {
+    color: theme.colors.foregroundMuted,
+  },
+  markerClosed: {
+    color: theme.colors.foregroundExtraMuted,
   },
   sidebarContent: {
     flex: 1,

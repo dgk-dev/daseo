@@ -65,7 +65,7 @@ function TaskListScroll({ children }: { children: ReactNode }) {
   const { height: windowHeight } = useWindowDimensions();
   const keyboardHeight = useKeyboardHeight();
   const scrollStyle = useMemo(
-    () => [styles.scroll, { maxHeight: resolveMaxTaskListHeight(windowHeight, keyboardHeight) }],
+    () => ({ maxHeight: resolveMaxTaskListHeight(windowHeight, keyboardHeight) }),
     [windowHeight, keyboardHeight],
   );
   return (
@@ -84,9 +84,8 @@ const styles = StyleSheet.create((theme) => ({
     width: "100%",
   },
   // Daseo delta 57: a status line over the prompt line (delta 53), like the subagents track.
+  // Delta 116: no rule above it or between its line and its list; spacing separates them.
   card: {
-    borderTopWidth: theme.borderWidth[1],
-    borderTopColor: theme.colors.border,
     overflow: "hidden",
   },
   header: {
@@ -97,9 +96,5 @@ const styles = StyleSheet.create((theme) => ({
   },
   headerText: {
     color: theme.colors.foregroundMuted,
-  },
-  scroll: {
-    borderTopWidth: theme.borderWidth[1],
-    borderTopColor: theme.colors.border,
   },
 }));

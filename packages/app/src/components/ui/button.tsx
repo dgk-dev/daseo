@@ -84,6 +84,38 @@ const accentForegroundIconMapping = (theme: Theme) => ({
 const destructiveForegroundIconMapping = (theme: Theme) => ({
   iconColor: theme.colors.destructiveForeground,
 });
+const accentIconMapping = (theme: Theme) => ({ iconColor: theme.colors.accent });
+const destructiveIconMapping = (theme: Theme) => ({ iconColor: theme.colors.destructive });
+
+/**
+ * Daseo delta 116: a labelled button that was a filled or outlined box is bracket text,
+ * `[ Label ]`, the way a terminal UI prints a button: no fill, no border; the label in the
+ * variant's colour (default in the accent, secondary and outline muted, destructive in the
+ * destructive colour), the light hover fill on hover and press. Size, hit area, loading and the
+ * icon beside the label are unchanged. Ghost buttons were already text and stay as they are;
+ * a button without a label (icon only) keeps its box.
+ */
+type BracketTone = "accent" | "muted" | "destructive";
+
+function resolveBracketTone(variant: ButtonVariant, hasLabel: boolean): BracketTone | null {
+  if (!hasLabel) return null;
+  if (variant === "default") return "accent";
+  if (variant === "destructive") return "destructive";
+  if (variant === "secondary" || variant === "outline") return "muted";
+  return null;
+}
+
+function resolveBracketIconMapping(tone: BracketTone, active: boolean) {
+  if (tone === "accent") return accentIconMapping;
+  if (tone === "destructive") return destructiveIconMapping;
+  return active ? foregroundIconMapping : foregroundMutedIconMapping;
+}
+
+function resolveBracketTextStyle(tone: BracketTone, active: boolean) {
+  if (tone === "accent") return styles.bracketTextAccent;
+  if (tone === "destructive") return styles.bracketTextDestructive;
+  return active ? styles.bracketTextMutedActive : styles.bracketTextMuted;
+}
 
 const styles = StyleSheet.create((theme) => {
   const geometry = createControlGeometry(theme);
@@ -156,6 +188,25 @@ const styles = StyleSheet.create((theme) => {
     textGhostHovered: {
       color: theme.colors.foreground,
     },
+    bracket: {
+      backgroundColor: "transparent",
+      borderColor: "transparent",
+    },
+    bracketActive: {
+      backgroundColor: theme.colors.surfaceSidebarHover,
+    },
+    bracketTextAccent: {
+      color: theme.colors.accent,
+    },
+    bracketTextDestructive: {
+      color: theme.colors.destructive,
+    },
+    bracketTextMuted: {
+      color: theme.colors.foregroundMuted,
+    },
+    bracketTextMutedActive: {
+      color: theme.colors.foreground,
+    },
   };
 });
 
@@ -184,7 +235,10 @@ export function Button({
   }
 >) {
   const [hovered, setHovered] = useState(false);
+  const [pressedIn, setPressedIn] = useState(false);
   const isDisabled = disabled || loading;
+  const bracketTone = resolveBracketTone(variant, children != null);
+  const bracketActive = bracketTone !== null && (hovered || pressedIn) && !isDisabled;
 
   let variantStyle: ViewStyle;
   if (variant === "default") {
@@ -213,17 +267,34 @@ export function Button({
 
   const handleHoverIn = useCallback(() => setHovered(true), []);
   const handleHoverOut = useCallback(() => setHovered(false), []);
+  const { onPressIn, onPressOut } = props;
+  const handlePressIn = useCallback<NonNullable<PressableProps["onPressIn"]>>(
+    (event) => {
+      setPressedIn(true);
+      onPressIn?.(event);
+    },
+    [onPressIn],
+  );
+  const handlePressOut = useCallback<NonNullable<PressableProps["onPressOut"]>>(
+    (event) => {
+      setPressedIn(false);
+      onPressOut?.(event);
+    },
+    [onPressOut],
+  );
 
   const pressableStyle = useCallback(
     ({ pressed }: PressableStateCallbackType): StyleProp<ViewStyle> => [
       styles.base,
       sizeStyle,
       variantStyle,
-      pressed ? styles.pressed : null,
+      bracketTone ? styles.bracket : null,
+      bracketTone && (pressed || hovered) && !isDisabled ? styles.bracketActive : null,
+      pressed && !bracketTone ? styles.pressed : null,
       isDisabled ? styles.disabled : null,
       style,
     ],
-    [sizeStyle, variantStyle, isDisabled, style],
+    [sizeStyle, variantStyle, bracketTone, hovered, isDisabled, style],
   );
 
   const resolvedTextStyle = useMemo(
@@ -233,10 +304,11 @@ export function Button({
       variant === "default" ? styles.textDefault : null,
       variant === "destructive" ? styles.textDestructive : null,
       variant === "ghost" ? styles.textGhost : null,
+      bracketTone ? resolveBracketTextStyle(bracketTone, bracketActive) : null,
       textStyle,
       isGhostHovered ? styles.textGhostHovered : null,
     ],
-    [size, variant, textStyle, isGhostHovered],
+    [size, variant, bracketTone, bracketActive, textStyle, isGhostHovered],
   );
 
   const accessibilityState = useMemo(
@@ -245,6 +317,9 @@ export function Button({
   );
 
   function resolveIconMapping() {
+    if (bracketTone) {
+      return resolveBracketIconMapping(bracketTone, bracketActive);
+    }
     if (variant === "default") {
       return accentForegroundIconMapping;
     }
@@ -265,8 +340,15 @@ export function Button({
       disabled={isDisabled}
       onHoverIn={handleHoverIn}
       onHoverOut={handleHoverOut}
+      onPressIn={handlePressIn}
+      onPressOut={handlePressOut}
       style={pressableStyle}
     >
+      {bracketTone ? (
+        <Text style={resolvedTextStyle} aria-hidden selectable={false}>
+          [
+        </Text>
+      ) : null}
       <ThemedButtonIcon
         loading={loading}
         leftIcon={leftIcon}
@@ -275,6 +357,11 @@ export function Button({
       />
       {children != null ? <Text style={resolvedTextStyle}>{children}</Text> : null}
       {trailing}
+      {bracketTone ? (
+        <Text style={resolvedTextStyle} aria-hidden selectable={false}>
+          ]
+        </Text>
+      ) : null}
     </Pressable>
   );
 }

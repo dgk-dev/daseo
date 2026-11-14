@@ -2527,10 +2527,6 @@ const animatedStaticStyles = RNStyleSheet.create({
 });
 
 const styles = StyleSheet.create((theme: Theme) => ({
-  borderSeparator: {
-    height: theme.borderWidth[1],
-    backgroundColor: theme.colors.border,
-  },
   inputAreaContainer: {
     position: "relative",
     minHeight: FOOTER_HEIGHT,

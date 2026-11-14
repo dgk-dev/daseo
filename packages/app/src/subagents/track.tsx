@@ -344,11 +344,10 @@ const styles = StyleSheet.create((theme) => ({
     width: "100%",
   },
   // Daseo delta 57: a status line over the prompt line (delta 53), not a tab tucked under a
-  // composer box. Only the top rule stays; no fill, sides, corners, or overlap with the composer.
+  // composer box; no fill, sides, corners, or overlap with the composer. Delta 116: no top rule
+  // either; the transcript, the track and the composer separate by spacing alone.
   surface: {
     alignSelf: "stretch",
-    borderTopWidth: theme.borderWidth[1],
-    borderTopColor: theme.colors.border,
     overflow: "hidden",
   },
   surfaceExpanded: {

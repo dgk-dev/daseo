@@ -1,8 +1,8 @@
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { useCallback, useMemo } from "react";
-import { View, Text, Pressable, type PressableStateCallbackType } from "react-native";
+import { View, Pressable, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
-import { ChevronDown, MoreVertical } from "lucide-react-native";
+import { MoreVertical } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import {
   DropdownMenu,
@@ -13,14 +13,40 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Shortcut } from "@/components/ui/shortcut";
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
-import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 import type { ShortcutKey } from "@/utils/format-shortcut";
-import type { GitAction, GitActions } from "@/git/policy";
+import type { GitAction, GitActionId, GitActions } from "@/git/policy";
+import { HEADER_WORDS, HeaderWord } from "@/screens/workspace/header-word";
 import { useGitActionRunner } from "@/git/use-actions";
 
 interface GitActionsSplitButtonProps {
   gitActions: GitActions;
-  hideLabels?: boolean;
+}
+
+// Daseo delta 116: the primary git action reads as a word, `commit ▾`, in the header word style.
+// The word names the action in command vocabulary (English in every locale, like the hint line);
+// the menu items, accessibility label and tooltips keep their translated labels.
+const GIT_ACTION_WORDS: Record<GitActionId, string> = {
+  commit: "commit",
+  pull: "pull",
+  push: "push",
+  "pull-and-push": "sync",
+  pr: "pr",
+  "merge-pr-squash": "merge",
+  "merge-pr-merge": "merge",
+  "merge-pr-rebase": "merge",
+  "enable-pr-auto-merge-squash": "auto-merge",
+  "enable-pr-auto-merge-merge": "auto-merge",
+  "enable-pr-auto-merge-rebase": "auto-merge",
+  "disable-pr-auto-merge": "auto-merge off",
+  "merge-branch": "merge",
+  "merge-from-base": "update",
+  "archive-workspace": "archive",
+};
+
+/** The word for the primary action; a finished action keeps its word and gains a check. */
+export function resolveGitActionWord(action: GitAction): string {
+  const word = GIT_ACTION_WORDS[action.id];
+  return action.status === "success" ? `${word} ✓` : word;
 }
 
 interface GitActionMenuItemProps {
@@ -73,7 +99,7 @@ function GitActionMenuItem({
   );
 }
 
-export function GitActionsSplitButton({ gitActions, hideLabels }: GitActionsSplitButtonProps) {
+export function GitActionsSplitButton({ gitActions }: GitActionsSplitButtonProps) {
   const { theme } = useUnistyles();
   const { t } = useTranslation();
   const runGitAction = useGitActionRunner();
@@ -95,23 +121,9 @@ export function GitActionsSplitButton({ gitActions, hideLabels }: GitActionsSpli
   const overflowMenuButtonStyle = useMemo(() => [styles.iconButton, styles.overflowMenuButton], []);
 
   const primaryDisabled = gitActions.primary?.disabled;
-  const primaryPressableStyle = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
-      styles.splitButtonPrimary,
-      (Boolean(hovered) || pressed) &&
-        inlineUnistylesStyle({ backgroundColor: theme.colors.surface2 }),
-      primaryDisabled && styles.splitButtonPrimaryDisabled,
-    ],
-    [primaryDisabled, theme.colors.surface2],
-  );
-
-  const caretTriggerStyle = useCallback(
-    ({ hovered, pressed, open }: { hovered: boolean; pressed: boolean; open: boolean }) => [
-      styles.splitButtonCaret,
-      (hovered || pressed || open) &&
-        inlineUnistylesStyle({ backgroundColor: theme.colors.surface2 }),
-    ],
-    [theme.colors.surface2],
+  const primaryPressableStyle = useMemo(
+    () => [styles.splitButtonPrimary, primaryDisabled && styles.splitButtonPrimaryDisabled],
+    [primaryDisabled],
   );
 
   return (
@@ -124,34 +136,35 @@ export function GitActionsSplitButton({ gitActions, hideLabels }: GitActionsSpli
             onPress={handlePrimaryPress}
             disabled={gitActions.primary.disabled}
             accessibilityRole="button"
-            accessibilityLabel={gitActions.primary.label}
+            accessibilityLabel={getActionDisplayLabel(gitActions.primary)}
           >
-            {gitActions.primary.status === "pending" ? (
-              <LoadingSpinner
-                size="small"
-                color={theme.colors.foreground}
-                style={styles.splitButtonSpinnerOnly}
-              />
-            ) : (
-              <View style={styles.splitButtonContent}>
-                {gitActions.primary.icon}
-                {!hideLabels && (
-                  <Text style={styles.splitButtonText}>
-                    {getActionDisplayLabel(gitActions.primary)}
-                  </Text>
-                )}
-              </View>
-            )}
+            {({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) =>
+              gitActions.primary?.status === "pending" ? (
+                <LoadingSpinner
+                  size="small"
+                  color={theme.colors.foreground}
+                  style={styles.splitButtonSpinnerOnly}
+                />
+              ) : (
+                <HeaderWord tone={hovered || pressed ? "active" : "muted"}>
+                  {gitActions.primary ? resolveGitActionWord(gitActions.primary) : ""}
+                </HeaderWord>
+              )
+            }
           </Pressable>
           {gitActions.secondary.length > 0 ? (
             <DropdownMenu>
               <DropdownMenuTrigger
                 testID="changes-primary-cta-caret"
-                style={caretTriggerStyle}
+                style={styles.splitButtonCaret}
                 accessibilityRole="button"
                 accessibilityLabel={t("workspace.git.actions.moreOptions")}
               >
-                <ChevronDown size={16} color={theme.colors.foregroundMuted} />
+                {({ hovered, pressed, open }) => (
+                  <HeaderWord tone={hovered || pressed || open ? "active" : "muted"}>
+                    {HEADER_WORDS.caret}
+                  </HeaderWord>
+                )}
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" testID="changes-primary-cta-menu">
                 {gitActions.secondary.map((action, index) => (
@@ -209,44 +222,29 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[1],
     flexShrink: 0,
   },
+  // Two words, `commit` and `▾`, each its own target; no box, border or fill (delta 116).
   splitButton: {
     flexDirection: "row",
     alignItems: "stretch",
-    borderRadius: theme.borderRadius.md,
-    borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.borderAccent,
-    overflow: "hidden",
   },
   splitButtonPrimary: {
-    paddingHorizontal: theme.spacing[3],
-    paddingVertical: theme.spacing[1],
+    minHeight: theme.spacing[8],
+    paddingLeft: theme.spacing[1],
+    paddingRight: theme.spacing[0.5],
     justifyContent: "center",
     position: "relative",
   },
   splitButtonPrimaryDisabled: {
     opacity: 0.6,
   },
-  splitButtonText: {
-    fontSize: theme.fontSize.sm,
-    lineHeight: theme.fontSize.sm * 1.5,
-    color: theme.colors.foreground,
-    fontWeight: theme.fontWeight.normal,
-  },
-  splitButtonContent: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: theme.spacing[2],
-  },
   splitButtonSpinnerOnly: {
     transform: [{ scale: 0.8 }],
   },
   splitButtonCaret: {
-    width: 28,
-    alignItems: "center",
+    minHeight: theme.spacing[8],
+    paddingLeft: theme.spacing[0.5],
+    paddingRight: theme.spacing[1],
     justifyContent: "center",
-    borderLeftWidth: theme.borderWidth[1],
-    borderLeftColor: theme.colors.borderAccent,
   },
   iconButton: {
     width: 32,

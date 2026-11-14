@@ -23,12 +23,14 @@ const {
   setPreferredRouteMock,
 } = vi.hoisted(() => {
   const hoistedTheme = {
-    spacing: { 1: 4, 1.5: 6, 2: 8, 3: 12 },
+    spacing: { 0.5: 2, 1: 4, 1.5: 6, 2: 8, 3: 12, 8: 32 },
     borderWidth: { 1: 1 },
     borderRadius: { md: 6, lg: 8 },
     fontSize: { xs: 11, sm: 13 },
     fontWeight: { normal: "400", medium: "500" },
+    fontFamily: { mono: "mono" },
     colors: {
+      accent: "#8ae234",
       foreground: "#fff",
       foregroundMuted: "#aaa",
       surface2: "#222",
@@ -233,15 +235,7 @@ function script(
 
 const LIVE_TERMINAL_IDS: string[] = ["terminal-script-1"];
 
-interface RenderScriptsOptions {
-  hideLabels?: boolean;
-  presentation?: "split" | "ghost";
-}
-
-function renderScripts(
-  scripts: WorkspaceScriptPayload[],
-  options: RenderScriptsOptions = {},
-): {
+function renderScripts(scripts: WorkspaceScriptPayload[]): {
   rerender: (nextScripts: WorkspaceScriptPayload[]) => Promise<void>;
   unmount: () => void;
 } {
@@ -263,8 +257,6 @@ function renderScripts(
           workspaceId="workspace-1"
           scripts={nextScripts}
           liveTerminalIds={LIVE_TERMINAL_IDS}
-          hideLabels={options.hideLabels}
-          presentation={options.presentation}
         />
       </QueryClientProvider>
     );
@@ -431,22 +423,14 @@ describe("WorkspaceScriptsButton", () => {
     );
   });
 
-  it("removes the trigger caret in ghost presentation", () => {
-    current = renderScripts([script({ scriptName: "dev" })], {
-      hideLabels: true,
-      presentation: "ghost",
-    });
-
-    const trigger = document.querySelector('[data-testid="workspace-scripts-button"]');
-    expect(trigger?.querySelector('[data-icon="Play"]')?.getAttribute("data-size")).toBe("16");
-    expect(trigger?.querySelector('[data-icon="ChevronDown"]')).toBeNull();
-  });
-
-  it("keeps the trigger caret in split presentation", () => {
+  // Daseo delta 116: the trigger is the words `run ▾`, without the ▷ icon or a box.
+  it("prints the trigger as the words run and its caret", () => {
     current = renderScripts([script({ scriptName: "dev" })]);
 
     const trigger = document.querySelector('[data-testid="workspace-scripts-button"]');
-    expect(trigger?.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+    expect(trigger?.textContent).toBe("run▾");
+    expect(trigger?.querySelector('[data-icon="Play"]')).toBeNull();
+    expect(trigger?.querySelector('[data-icon="ChevronDown"]')).toBeNull();
   });
 
   it("persists the selected route for the host", () => {

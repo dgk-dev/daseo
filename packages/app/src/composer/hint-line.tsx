@@ -1,15 +1,16 @@
 import { createContext, type ReactNode } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
-import { Shortcut } from "@/components/ui/shortcut";
+import { normalizeDisplayChord } from "@/components/ui/normalize-display-chord";
 import { useKeyboardShortcutsAvailable } from "@/keyboard/availability";
-import type { ShortcutKey } from "@/utils/format-shortcut";
+import { formatShortcut, type ShortcutKey, type ShortcutOs } from "@/utils/format-shortcut";
+import { getShortcutOs } from "@/utils/shortcut-platform";
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
 
 // Daseo delta 89: under the prompt line the composer prints one line of text controls, the way a
 // terminal tool prints its key hints: `model opus ▾  effort high ▾  ⏎ send  ⇧⏎ newline …`. Each
 // word is the existing control restyled (same handler, menu, accessibility label, testID); a
-// keycap appears only for a shortcut the keyboard registry actually binds, and Shortcut renders
+// keycap appears only for a shortcut the keyboard registry actually binds, and HintKeycap renders
 // nothing where shortcuts are unavailable (phones), so compact layouts get the words alone.
 //
 // The words are command vocabulary and stay English in every locale, like shortcut key names
@@ -123,9 +124,55 @@ export function HintKey({
   );
 }
 
+// macOS menu order for modifier glyphs: ⌃ ⌥ ⇧ ⌘.
+const MAC_MODIFIER_GLYPHS: ReadonlyArray<readonly [ShortcutKey, string]> = [
+  ["ctrl", "⌃"],
+  ["alt", "⌥"],
+  ["shift", "⇧"],
+  ["mod", "⌘"],
+  ["meta", "⌘"],
+];
+const MAC_MODIFIERS = new Set(MAC_MODIFIER_GLYPHS.map(([key]) => key));
+
+/**
+ * One key combo as the hint line prints it. On macOS every modifier is its glyph, Shift
+ * included (`⇧⏎`, `⌘L`), the way the menu bar and nano's bottom line print keys; the shared
+ * `formatShortcut` spells Shift out (`Shift+⏎`) for tooltips and menus, which stay as they are.
+ * Elsewhere the platform's own spelling is kept (`Shift+⏎`, `Ctrl+L`).
+ */
+export function formatHintCombo(combo: ShortcutKey[], os: ShortcutOs): string {
+  if (os !== "mac") return formatShortcut(combo, os);
+  const present = new Set(combo);
+  const glyphs = MAC_MODIFIER_GLYPHS.filter(([key]) => present.has(key)).map(([, glyph]) => glyph);
+  const main = combo.filter((key) => !MAC_MODIFIERS.has(key));
+  return [...new Set(glyphs)].join("") + (main.length > 0 ? formatShortcut(main, os) : "");
+}
+
+/**
+ * Daseo delta 116: a hint-line keycap is reverse video, the way nano and htop print their key
+ * hints on the bottom line: the key in bold dark text on a light muted block, no border, then
+ * the word. Only here; tooltips and menus keep the bordered `Shortcut` keycap. Like `Shortcut`
+ * it renders nothing where shortcuts are unavailable (phones) or for an empty binding.
+ */
 export function HintKeycap({ chord }: { chord: ShortcutKey[][] | null | undefined }) {
-  if (!chord || chord.length === 0) return null;
-  return <Shortcut chord={chord} />;
+  const shortcutsAvailable = useKeyboardShortcutsAvailable();
+  const combos = normalizeDisplayChord(chord ?? undefined);
+  if (!shortcutsAvailable || !combos) return null;
+  const os = getShortcutOs();
+  return (
+    <View style={hintLineStyles.keycapSequence}>
+      {combos.map((combo) => (
+        <Text
+          key={combo.join("+")}
+          style={hintLineStyles.keycap}
+          dataSet={CODE_SURFACE_DATASET}
+          selectable={false}
+        >
+          {formatHintCombo(combo, os)}
+        </Text>
+      ))}
+    </View>
+  );
 }
 
 export const hintLineStyles = StyleSheet.create((theme) => ({
@@ -185,6 +232,22 @@ export const hintLineStyles = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontFamily: theme.fontFamily.mono,
     fontSize: HINT_LINE_FONT_SIZE,
+    flexShrink: 0,
+  },
+  keycapSequence: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+    flexShrink: 0,
+  },
+  // Reverse video: the muted text colour becomes the block, the darkest surface the letters.
+  keycap: {
+    backgroundColor: theme.colors.foregroundMuted,
+    color: theme.colors.surface0,
+    fontFamily: theme.fontFamily.mono,
+    fontSize: HINT_LINE_FONT_SIZE,
+    fontWeight: theme.fontWeight.bold,
+    paddingHorizontal: 3,
     flexShrink: 0,
   },
 }));

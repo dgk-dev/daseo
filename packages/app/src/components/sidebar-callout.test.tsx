@@ -42,6 +42,26 @@ vi.mock("react-native-unistyles", () => ({
   useUnistyles: () => ({ theme }),
 }));
 
+// The callout's actions are the app Button (Daseo delta 116); a plain button stands in for it.
+vi.mock("@/components/ui/button", () => ({
+  Button: ({
+    children,
+    onPress,
+    disabled,
+    testID,
+  }: {
+    children?: React.ReactNode;
+    onPress?: () => void;
+    disabled?: boolean;
+    testID?: string;
+  }) =>
+    React.createElement(
+      "button",
+      { type: "button", "data-testid": testID, disabled, onClick: onPress },
+      children,
+    ),
+}));
+
 vi.mock("lucide-react-native", () => {
   const createIcon = (name: string) => (props: Record<string, unknown>) =>
     React.createElement("span", { ...props, "data-icon": name });

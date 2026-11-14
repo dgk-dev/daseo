@@ -77,11 +77,6 @@ export function PairLinkModal({ visible, onClose, onCancel, onSaved }: PairLinkM
     inputRef.current?.replaceText("");
   }, []);
 
-  const pairIcon = useMemo(
-    () => <Link size={16} color={theme.colors.accentForeground} />,
-    [theme.colors.accentForeground],
-  );
-
   const handleClose = useCallback(() => {
     if (isSaving) return;
     clearInput();
@@ -232,7 +227,7 @@ export function PairLinkModal({ visible, onClose, onCancel, onSaved }: PairLinkM
           testID="pair-link-submit"
           accessibilityRole="button"
           accessibilityLabel={t("pairing.link.actions.pair")}
-          leftIcon={pairIcon}
+          leftIcon={Link}
         >
           {isSaving ? t("pairing.link.actions.pairing") : t("pairing.link.actions.pair")}
         </Button>

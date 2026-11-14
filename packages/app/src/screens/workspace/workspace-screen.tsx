@@ -21,7 +21,6 @@ import * as Clipboard from "expo-clipboard";
 import { useTranslation } from "react-i18next";
 import {
   Copy,
-  Ellipsis,
   Globe,
   Import as ImportIcon,
   PanelRight,
@@ -62,6 +61,7 @@ import { RetainedPanel } from "@/components/retained-panel";
 import { WindowChromeRegion } from "@/utils/desktop-window";
 import { WorkspaceActions } from "@/git/workspace-actions";
 import { WorkspaceScriptsButton } from "@/screens/workspace/workspace-scripts-button";
+import { HEADER_WORDS, HeaderWord } from "@/screens/workspace/header-word";
 import { ImportSessionSheet } from "@/components/import-session-sheet";
 import { useToast } from "@/contexts/toast-context";
 import { getOrCreateClientId } from "@/utils/client-id";
@@ -188,7 +188,6 @@ import {
 } from "@/constants/layout";
 import { getIsElectron, isNative, isWeb } from "@/constants/platform";
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
-import { useContainerWidthBelow } from "@/hooks/use-container-width";
 import {
   buildHostRootRoute,
   buildSettingsHostRoute,
@@ -228,7 +227,6 @@ function getWorkspaceScripts(
 }
 
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
-const ThemedEllipsis = withUnistyles(Ellipsis);
 const ThemedCopy = withUnistyles(Copy);
 const ThemedSquarePen = withUnistyles(SquarePen);
 const ThemedSquareTerminal = withUnistyles(SquareTerminal);
@@ -976,9 +974,9 @@ function HeaderMenuProfileItem({
  */
 const COMPACT_HEADER_BUTTON_HIT_SLOP = { top: 8, bottom: 8 } as const;
 
-function WorkspaceHeaderMenuTriggerIcon({ hovered, open }: { hovered: boolean; open: boolean }) {
-  const colorMapping = hovered || open ? foregroundColorMapping : mutedColorMapping;
-  return <ThemedEllipsis size={16} uniProps={colorMapping} />;
+// Daseo delta 116: the workspace menu is the word `menu` (it was `···`).
+function WorkspaceHeaderMenuTriggerWord({ hovered, open }: { hovered: boolean; open: boolean }) {
+  return <HeaderWord tone={hovered || open ? "active" : "muted"}>{HEADER_WORDS.menu}</HeaderWord>;
 }
 
 function WorkspaceHeaderMenu({
@@ -1017,9 +1015,9 @@ function WorkspaceHeaderMenu({
     router.push(buildSettingsHostSectionRoute(normalizedServerId, "terminals") as Href);
   }, [normalizedServerId, router]);
 
-  const renderTriggerIcon = useCallback(
+  const renderTriggerWord = useCallback(
     ({ hovered, open }: { hovered: boolean; open: boolean }) => (
-      <WorkspaceHeaderMenuTriggerIcon hovered={hovered} open={open} />
+      <WorkspaceHeaderMenuTriggerWord hovered={hovered} open={open} />
     ),
     [],
   );
@@ -1028,12 +1026,12 @@ function WorkspaceHeaderMenu({
     <DropdownMenu compactMode="sheet">
       <DropdownMenuTrigger
         testID="workspace-header-menu-trigger"
-        style={isMobile ? styles.compactHeaderActionButton : styles.headerActionButton}
+        style={styles.headerWordButton}
         hitSlop={isMobile ? COMPACT_HEADER_BUTTON_HIT_SLOP : undefined}
         accessibilityRole="button"
         accessibilityLabel={t("workspace.header.actions.workspaceActions")}
       >
-        {renderTriggerIcon}
+        {renderTriggerWord}
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="start"
@@ -1286,8 +1284,6 @@ function WorkspaceHeaderTitleBar({
             onScriptTerminalStarted={onScriptTerminalStarted}
             onViewTerminal={onViewScriptTerminal}
             onOpenUrlInBrowserTab={onOpenUrlInBrowserTab}
-            hideLabels
-            presentation="ghost"
           />
         ) : null}
       </View>
@@ -2108,8 +2104,6 @@ function WorkspaceScreenContent({
   );
   const pendingByDraftId = useCreateFlowStore((state) => state.pendingByDraftId);
   const { closingTabIds, closeTab } = useCloseTabs();
-  const { onLayout: onHeaderLayout, isBelow: showCompactButtonLabels } =
-    useContainerWidthBelow(700);
   const closeWorkspaceTabWithCleanup = useCallback(
     function closeWorkspaceTabWithCleanup(input: {
       tabId: string;
@@ -3625,16 +3619,11 @@ function WorkspaceScreenContent({
             onScriptTerminalStarted={handleScriptTerminalStarted}
             onViewTerminal={handleViewScriptTerminal}
             onOpenUrlInBrowserTab={handleOpenUrlInBrowserTab}
-            hideLabels
           />
         ) : null}
         {/* Daseo delta 111: no open-in-editor (Finder) button; the owner never uses it. */}
         {!isMobile && workspaceDirectory ? (
-          <WorkspaceActions
-            serverId={normalizedServerId}
-            cwd={workspaceDirectory}
-            hideLabels={showCompactButtonLabels}
-          />
+          <WorkspaceActions serverId={normalizedServerId} cwd={workspaceDirectory} />
         ) : null}
         {/* Daseo delta 111: one task-list toggle with the panel icon, git checkout or not. */}
         {!isMobile ? (
@@ -3692,7 +3681,6 @@ function WorkspaceScreenContent({
       handleScriptTerminalStarted,
       handleViewScriptTerminal,
       handleOpenUrlInBrowserTab,
-      showCompactButtonLabels,
       handleToggleExplorer,
       explorerToggleLabel,
       explorerToggleAccessibilityState,
@@ -3822,7 +3810,6 @@ function WorkspaceScreenContent({
     <View style={styles.centerColumn}>
       {showScreenHeader && (
         <ScreenHeader
-          onRowLayout={onHeaderLayout}
           left={
             <>
               <SidebarMenuToggle />
@@ -4079,6 +4066,12 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing[2],
     paddingHorizontal: theme.spacing[2],
     borderRadius: theme.borderRadius.lg,
+  },
+  // Daseo delta 116: a header word is the button; the 32pt row height stays its target.
+  headerWordButton: {
+    minHeight: theme.spacing[8],
+    paddingHorizontal: theme.spacing[1],
+    justifyContent: "center",
   },
   compactHeaderActionButton: {
     width: theme.spacing[8],

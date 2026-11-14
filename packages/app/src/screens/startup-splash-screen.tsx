@@ -383,10 +383,6 @@ export function StartupSplashScreen({ bootstrapState }: StartupSplashScreenProps
     () => <BookOpen size={16} color={theme.colors.foreground} />,
     [theme.colors.foreground],
   );
-  const retryIcon = useMemo(
-    () => <RotateCw size={16} color={theme.colors.palette.white} />,
-    [theme.colors.palette.white],
-  );
 
   if (!isError) {
     return (
@@ -441,7 +437,7 @@ export function StartupSplashScreen({ bootstrapState }: StartupSplashScreenProps
             <Button variant="outline" leftIcon={bookIcon} onPress={openDocs}>
               Docs
             </Button>
-            <Button variant="default" leftIcon={retryIcon} onPress={bootstrapState.retry}>
+            <Button variant="default" leftIcon={RotateCw} onPress={bootstrapState.retry}>
               Retry
             </Button>
           </View>

@@ -1,6 +1,7 @@
 import { X } from "lucide-react-native";
-import { useCallback, useMemo, type ReactNode } from "react";
-import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
+import { useMemo, type ReactNode } from "react";
+import { Pressable, Text, View } from "react-native";
+import { Button } from "@/components/ui/button";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
 
@@ -108,6 +109,8 @@ export function SidebarCallout({
   );
 }
 
+// Daseo delta 116: the callout's actions are the app Button, so they read as bracket text,
+// `[ Open project settings ]`, the primary in the accent and the secondary muted.
 function SidebarCalloutActionButton({
   action,
   testID,
@@ -115,32 +118,17 @@ function SidebarCalloutActionButton({
   action: SidebarCalloutAction;
   testID?: string;
 }) {
-  const isPrimary = action.variant === "primary";
-  const labelStyle = useMemo(
-    () => [styles.actionLabel, isPrimary ? styles.actionLabelPrimary : styles.actionLabelSecondary],
-    [isPrimary],
-  );
-  const pressableStyle = useCallback(
-    ({ pressed }: PressableStateCallbackType) => [
-      styles.actionButton,
-      isPrimary ? styles.actionButtonPrimary : styles.actionButtonSecondary,
-      pressed ? styles.actionButtonPressed : null,
-      action.disabled ? styles.actionButtonDisabled : null,
-    ],
-    [action.disabled, isPrimary],
-  );
   return (
-    <Pressable
+    <Button
+      variant={action.variant === "primary" ? "default" : "outline"}
+      size="sm"
       onPress={action.onPress}
       disabled={action.disabled}
       testID={testID}
-      accessibilityRole="button"
-      style={pressableStyle}
+      style={styles.actionButton}
     >
-      <Text style={labelStyle} numberOfLines={1}>
-        {action.label}
-      </Text>
-    </Pressable>
+      {action.label}
+    </Button>
   );
 }
 
@@ -202,35 +190,5 @@ const styles = StyleSheet.create((theme) => ({
   },
   actionButton: {
     flex: 1,
-    paddingVertical: theme.spacing[2],
-    paddingHorizontal: theme.spacing[3],
-    borderRadius: theme.borderRadius.md,
-    borderWidth: theme.borderWidth[1],
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  actionButtonPrimary: {
-    backgroundColor: theme.colors.foreground,
-    borderColor: theme.colors.foreground,
-  },
-  actionButtonSecondary: {
-    backgroundColor: "transparent",
-    borderColor: theme.colors.border,
-  },
-  actionButtonPressed: {
-    opacity: 0.8,
-  },
-  actionButtonDisabled: {
-    opacity: 0.5,
-  },
-  actionLabel: {
-    fontSize: theme.fontSize.xs,
-    fontWeight: theme.fontWeight.medium,
-  },
-  actionLabelPrimary: {
-    color: theme.colors.surface0,
-  },
-  actionLabelSecondary: {
-    color: theme.colors.foreground,
   },
 }));

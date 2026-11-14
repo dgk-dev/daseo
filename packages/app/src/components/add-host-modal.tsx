@@ -318,10 +318,6 @@ export function AddHostModal({ visible, onClose, onCancel, onSaved }: AddHostMod
     bumpInputResetKey();
   }, []);
 
-  const connectIcon = useMemo(
-    () => <Link2 size={16} color={theme.colors.accentForeground} />,
-    [theme.colors.accentForeground],
-  );
   const hostFieldStyle = useMemo(() => [styles.field, styles.hostField], []);
   const portFieldStyle = useMemo(() => [styles.field, styles.portField], []);
   const checkboxStyle = useMemo(
@@ -641,7 +637,7 @@ export function AddHostModal({ visible, onClose, onCancel, onSaved }: AddHostMod
           variant="default"
           onPress={handleSavePress}
           disabled={isSaving}
-          leftIcon={connectIcon}
+          leftIcon={Link2}
           testID="direct-host-submit"
         >
           {isSaving ? t("pairing.direct.actions.connecting") : t("pairing.direct.actions.connect")}
