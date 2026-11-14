@@ -3014,7 +3014,7 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
      - **Open in editor.** The header's open-in-editor split button (Finder, VS Code, and the other
        desktop open targets) is not drawn. `workspace-open-in-editor-button.tsx` and
        `components/icons/source-control-panel-icon.tsx` have no caller left and stay in the tree
-       for upstream cherry-picks (delta 116's follow-up may delete the former). File links in answers and the file menu's reveal action are
+       for upstream cherry-picks; the former was deleted with delta 116. File links in answers and the file menu's reveal action are
        unchanged.
      - **Key file:** `packages/app/src/screens/workspace/workspace-screen.tsx` (`headerRight`).
 
