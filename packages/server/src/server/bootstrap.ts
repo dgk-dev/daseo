@@ -1109,6 +1109,19 @@ export async function createPaseoDaemon(
     await emitWorkspaceUpdatesExternal([workspaceId]);
     return workspaceId;
   };
+  // Local fork (DASEO.md delta 109): Pi `/name` renames the workspace like a sidebar rename, so
+  // the title is locked as manual and auto-naming leaves it alone.
+  agentManager.setWorkspaceTitleSetter(async (workspaceId, title) => {
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    const updated = await workspaceRegistry.update(workspaceId, (existing) => ({
+      ...existing,
+      title: trimmed,
+      titleSource: "manual",
+      updatedAt: new Date().toISOString(),
+    }));
+    if (updated) await emitWorkspaceUpdatesExternal([workspaceId]);
+  });
   const emitWorkspaceUpdateForCwdExternal = async (cwd: string) => {
     const workspaceIds = workspaceIdsOnCheckout(await workspaceRegistry.list(), cwd);
     await emitWorkspaceUpdatesExternal(workspaceIds);

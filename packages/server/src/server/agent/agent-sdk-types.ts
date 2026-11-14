@@ -733,8 +733,28 @@ export interface AgentSession {
    * (e.g. /goal pause) reach the provider without canceling the running turn.
    */
   tryHandleOutOfBand?(prompt: AgentPromptInput): {
-    run(ctx: { emit: (event: AgentStreamEvent) => void }): Promise<void>;
+    run(ctx: AgentOutOfBandContext): Promise<void>;
   } | null;
+}
+
+/**
+ * Local fork (DASEO.md delta 109): agent-level actions an out-of-band command can take, supplied
+ * by the agent manager so the client sees the same state as after the matching UI action.
+ */
+export interface AgentOutOfBandHost {
+  /** A foreground run is in flight for this agent. */
+  hasActiveRun(): boolean;
+  setModel(modelId: string): Promise<void>;
+  setThinkingOption(thinkingOptionId: string): Promise<void>;
+  /** Rename the tab, and the workspace (locked as a manual title) for a top-level agent. */
+  rename(title: string): Promise<void>;
+  /** Replace the provider process on the same session, like the "Reload agent" action. */
+  reload(): Promise<void>;
+}
+
+export interface AgentOutOfBandContext {
+  emit: (event: AgentStreamEvent) => void;
+  host?: AgentOutOfBandHost;
 }
 
 export type FetchCatalogOptions =

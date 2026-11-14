@@ -7813,7 +7813,10 @@ export class Session {
           }
         }
 
-        this.scheduleWorkspaceTitleForUserPrompt(agentId, msg.text);
+        // A slash command answered out of band (delta 109) says nothing about the task.
+        if (!dispatchResult.outOfBand) {
+          this.scheduleWorkspaceTitleForUserPrompt(agentId, msg.text);
+        }
 
         if (commandId) {
           await this.agentCommandReceiptStore.settle({ commandId, status: "accepted" });

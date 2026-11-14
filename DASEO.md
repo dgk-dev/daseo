@@ -2870,6 +2870,48 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
      `2d` give the same result). Checks in `agent/mcp-shared.test.ts`. Key file:
      `packages/server/src/server/agent/mcp-shared.ts` (`parseDurationString`).
 
+109. **Every Pi slash command answers in Daseo** — the owner's ask on 2026-11-14 ("걍 다
+     통일되게, 다 통하게"): `/reload` typed in Daseo reached the model as prompt text and cost a turn.
+     Pi's interactive mode handles its 24 built-ins (Pi 1.5.2 `BUILTIN_SLASH_COMMANDS`) itself;
+     RPC `get_commands` lists only extension, prompt-template, and skill commands, and the daemon
+     handled only `/compact` and `/autocompact`. - **Table.** `PI_BUILTIN_COMMANDS` gives each built-in one handling, and autocomplete lists
+     all of them. Run through the agent manager, so the client sees the same state as after the
+     matching UI action: `/reload` (the "Reload agent" path: a new Pi process on the same
+     session file, so extensions, skills, prompts, and context files are read again; refused
+     while a turn runs; background waits are reported as with any reload), `/model [x]`
+     (provider/id, bare id, display name, or a unique part; several matches are listed, never
+     guessed), `/thinking [level]` (checked against Pi's levels for the model), `/name <x>` (Pi
+     session name, tab title, and for a top-level agent the workspace title, locked as manual
+     like a sidebar rename). Run in Pi: `/compact`, `/autocompact`, `/export [path]` (HTML
+     through RPC; a `.jsonl` path copies the session file and never overwrites). Shown in the
+     timeline: `/session` (state and stats), `/changelog` (newest section of the CHANGELOG.md
+     next to the `pi` on PATH), `/hotkeys` (where Daseo lists shortcuts). Answered with where
+     Daseo does it: `/tree` and `/fork` ("이 메시지로 되감기"; RPC `fork` and `clone` swap
+     the session file under Daseo's record and timeline, so they never run), `/clone`,
+     `/resume` and `/import` (세션 가져오기), `/copy` (the server cannot reach the device
+     clipboard), `/share` (publishes outside; no confirmation route, so `/export` instead),
+     `/settings`, `/scoped-models`, `/login` and `/logout` (`pi auth login`, plus the extension
+     commands whose names hold auth, login, logout, or account), `/trust`, `/bug`. `/new` and
+     `/quit` stay the client's aliases of `/clear` and `/exit`; the server answers only their
+     argument forms. - **Unknown commands.** A prompt is a command candidate only when it starts with `/name`,
+     the name an ASCII letter then letters, digits, `_`, `:`, `.`, or `-`, followed by
+     whitespace or the end; `/Users/me/a.txt`, `/tmp/x 봐줘`, and `/폴더` stay text. A
+     candidate that is neither a built-in nor in the RPC list is answered "/x 명령은 없습니다"
+     with up to three near names and never reaches the model. The RPC names are cached at
+     session start, on every autocomplete listing, and after a relaunch; before the first
+     answer arrives the prompt goes to Pi as before. An extension, template, or skill whose
+     name equals a built-in keeps running in Pi. - **Also.** An out-of-band prompt no longer feeds workspace auto-naming (delta 37). Replies
+     are Korean timeline messages. No protocol or client change: the out-of-band context gained
+     an optional `host` inside the daemon only, so Mac, web, and phone behave alike. - **Upgrade check.** `~/ws/pi-local` `npm run doctor` imports this table and the installed
+     Pi's `BUILTIN_SLASH_COMMANDS` and warns with the names Daseo lacks (2026-11-14: 24 of 24).
+     A doctor check, not a Daseo test: it reads the Pi that Daseo launches, which CI does not
+     have, and doctor is what runs after a Pi upgrade. - **Tests.** `builtin-commands.test.ts` (table, parsing, suggestions), `builtin-command-
+runner.test.ts` (per-command behavior), Pi `agent.test.ts` (routing, pass-through,
+     paths), and one `agent-manager.test.ts` case for the host rename. - **Key files:** `packages/server/src/server/agent/providers/pi/builtin-commands.ts`,
+     `builtin-command-runner.ts`, Pi `agent.ts` (`tryHandleOutOfBand`), `agent-manager.ts`
+     (`createOutOfBandHost`, `setWorkspaceTitleSetter`), `bootstrap.ts`. Takes effect with the
+     next release and daemon restart.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

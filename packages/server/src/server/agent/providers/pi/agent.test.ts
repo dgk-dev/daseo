@@ -17,7 +17,13 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, onTestFinished, test, vi } from "vitest";
 
 import type { AgentProviderSelectionPolicy } from "@getpaseo/protocol/agent-types";
-import type { AgentSession, AgentSessionConfig, AgentStreamEvent } from "../../agent-sdk-types.js";
+import type {
+  AgentOutOfBandHost,
+  AgentSession,
+  AgentSessionConfig,
+  AgentStreamEvent,
+} from "../../agent-sdk-types.js";
+import { PI_BUILTIN_COMMANDS } from "./builtin-commands.js";
 import {
   PiProviderParamsSchema,
   PiRpcAgentClient,
@@ -2840,23 +2846,24 @@ describe("PiRpcAgentClient", () => {
       { name: "skill:docs", description: "Read docs", source: "skill" },
     ];
 
-    await expect(session.listCommands()).resolves.toEqual([
-      {
-        name: "compact",
-        description: "Manually compact the session context",
-        argumentHint: "[instructions]",
-        kind: "command",
-      },
-      {
-        name: "autocompact",
-        description: "Toggle automatic context compaction",
-        argumentHint: "[on|off|toggle]",
-        kind: "command",
-      },
+    const commands = await session.listCommands();
+    expect(commands.map((command) => command.name)).toEqual([
+      ...PI_BUILTIN_COMMANDS.map((command) => command.name),
+      "review",
+      "fix-tests",
+      "skill:docs",
+    ]);
+    expect(commands.slice(-3)).toEqual([
       { name: "review", description: "Review changes", argumentHint: "", kind: "command" },
       { name: "fix-tests", description: "Fix tests", argumentHint: "", kind: "command" },
       { name: "skill:docs", description: "Read docs", argumentHint: "", kind: "skill" },
     ]);
+    expect(commands).toContainEqual({
+      name: "reload",
+      description: "Restart Pi to reload extensions, skills, prompts, and context files",
+      argumentHint: "",
+      kind: "command",
+    });
   });
 
   test("lists Pi compact even when RPC get_commands omits built-in slash commands", async () => {
@@ -2886,7 +2893,8 @@ describe("PiRpcAgentClient", () => {
       { name: "autocompact", description: "Auto compact from RPC", source: "extension" },
     ];
 
-    await expect(session.listCommands()).resolves.toEqual([
+    const commands = await session.listCommands();
+    expect(commands.filter((command) => command.name.endsWith("compact"))).toEqual([
       {
         name: "compact",
         description: "Compact from RPC",
@@ -3047,6 +3055,135 @@ describe("PiRpcAgentClient", () => {
         },
       },
     ]);
+  });
+
+  describe("Pi built-in and unknown slash commands (delta 109)", () => {
+    async function runOutOfBand(
+      session: AgentSession,
+      prompt: string,
+      host?: AgentOutOfBandHost,
+    ): Promise<{ handled: boolean; texts: string[] }> {
+      const handler = session.tryHandleOutOfBand?.(prompt) ?? null;
+      const events: AgentStreamEvent[] = [];
+      await handler?.run({ emit: (event) => events.push(event), ...(host ? { host } : {}) });
+      const texts = events.flatMap((event) =>
+        event.type === "timeline" && event.item.type === "assistant_message"
+          ? [event.item.text]
+          : [],
+      );
+      return { handled: handler !== null, texts };
+    }
+
+    function createHost(overrides: Partial<AgentOutOfBandHost> = {}): {
+      host: AgentOutOfBandHost;
+      calls: string[];
+    } {
+      const calls: string[] = [];
+      const host: AgentOutOfBandHost = {
+        hasActiveRun: () => false,
+        setModel: async (modelId) => {
+          calls.push(`model:${modelId}`);
+        },
+        setThinkingOption: async (level) => {
+          calls.push(`thinking:${level}`);
+        },
+        rename: async (title) => {
+          calls.push(`rename:${title}`);
+        },
+        reload: async () => {
+          calls.push("reload");
+        },
+        ...overrides,
+      };
+      return { host, calls };
+    }
+
+    test("reload goes through the host instead of reaching the model", async () => {
+      const { pi, session } = await createSession();
+      const { host, calls } = createHost();
+
+      const result = await runOutOfBand(session, "/reload", host);
+
+      expect(result.handled).toBe(true);
+      expect(calls).toEqual(["reload"]);
+      expect(pi.latestSession().prompts).toEqual([]);
+      expect(result.texts.at(-1)).toBe("다시 읽었습니다.");
+    });
+
+    test("reload refuses while a turn is running", async () => {
+      const { session } = await createSession();
+      const { host, calls } = createHost({ hasActiveRun: () => true });
+
+      const result = await runOutOfBand(session, "/reload", host);
+
+      expect(calls).toEqual([]);
+      expect(result.texts[0]).toContain("턴이 진행 중이라");
+    });
+
+    test("an unknown command is answered with suggestions, not sent to Pi", async () => {
+      const { pi, session } = await createSession();
+      pi.latestSession().commands = [
+        { name: "review", description: "Review changes", source: "extension" },
+      ];
+      await session.listCommands();
+
+      const result = await runOutOfBand(session, "/relaod now");
+
+      expect(result.handled).toBe(true);
+      expect(pi.latestSession().prompts).toEqual([]);
+      expect(result.texts[0]).toContain("/relaod 명령은 없습니다");
+      expect(result.texts[0]).toContain("/reload");
+    });
+
+    test("extension, prompt, and skill commands still go to Pi", async () => {
+      const { pi, session } = await createSession();
+      pi.latestSession().commands = [
+        { name: "review", description: "Review changes", source: "extension" },
+        { name: "fix-tests", description: "Fix tests", source: "prompt" },
+        { name: "skill:docs", description: "Read docs", source: "skill" },
+        { name: "session", description: "An extension that shadows /session", source: "extension" },
+      ];
+      await session.listCommands();
+
+      for (const prompt of ["/review", "/fix-tests a.ts", "/skill:docs", "/session"]) {
+        expect(session.tryHandleOutOfBand?.(prompt) ?? null).toBeNull();
+      }
+    });
+
+    test("paths and ordinary text are not commands", async () => {
+      const { session } = await createSession();
+      await session.listCommands();
+
+      for (const prompt of ["/Users/ddgk/a.txt", "/tmp/x 봐줘", "/폴더 봐줘", "hello /reload"]) {
+        expect(session.tryHandleOutOfBand?.(prompt) ?? null).toBeNull();
+      }
+    });
+
+    test("guide-only built-ins answer with where Daseo does it", async () => {
+      const { pi, session } = await createSession();
+      pi.latestSession().commands = [
+        { name: "claude-auth", description: "Route Claude accounts", source: "extension" },
+      ];
+      await session.listCommands();
+
+      const login = await runOutOfBand(session, "/login anthropic");
+      const fork = await runOutOfBand(session, "/fork");
+
+      expect(login.texts[0]).toContain("/claude-auth");
+      expect(fork.texts[0]).toContain("이 메시지로 되감기");
+      expect(pi.latestSession().prompts).toEqual([]);
+    });
+
+    test("name sets the Pi session name and renames through the host", async () => {
+      const { pi, session } = await createSession();
+      const { host, calls } = createHost();
+
+      const result = await runOutOfBand(session, "/name 재고 동기화", host);
+
+      expect(pi.latestSession().sessionNameRequests).toEqual(["재고 동기화"]);
+      expect(calls).toEqual(["rename:재고 동기화"]);
+      expect(result.texts[0]).toContain("재고 동기화");
+    });
   });
 
   test("rewinds conversation through the Pi tree navigation bridge", async () => {

@@ -27,6 +27,7 @@ import type {
   AgentCreateSessionOptions,
   AgentFeature,
   AgentLaunchContext,
+  AgentOutOfBandContext,
   AgentPromptInput,
   AgentProvider,
   AgentPersistenceHandle,
@@ -9561,6 +9562,58 @@ test("authoritative timeline records a daemon-handled submitted prompt before it
       },
       { type: "assistant_message", text: "Handled by the daemon" },
     ]);
+  } finally {
+    await manager.flush().catch(() => undefined);
+    await storage.flush().catch(() => undefined);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("an out-of-band command renames the agent and its workspace through the host (delta 109)", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-oob-host-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const commandCompleted = deferred<void>();
+
+  class RenamingSession extends TestAgentSession {
+    override tryHandleOutOfBand(prompt: AgentPromptInput) {
+      if (prompt !== "/name 재고") return null;
+      return {
+        run: async ({ host }: AgentOutOfBandContext) => {
+          expect(host?.hasActiveRun()).toBe(false);
+          await host?.rename("재고");
+          commandCompleted.resolve();
+        },
+      };
+    }
+  }
+
+  class RenamingClient extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      return new RenamingSession(config);
+    }
+  }
+
+  const manager = new AgentManager({
+    clients: { codex: new RenamingClient() },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000409",
+  });
+  const workspaceRenames: Array<[string, string]> = [];
+  manager.setWorkspaceTitleSetter(async (workspaceId, title) => {
+    workspaceRenames.push([workspaceId, title]);
+  });
+
+  try {
+    const snapshot = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: "workspace-1",
+    });
+
+    await startAgentRun(manager, snapshot.id, "/name 재고", logger);
+    await commandCompleted.promise;
+
+    expect((await storage.get(snapshot.id))?.title).toBe("재고");
+    expect(workspaceRenames).toEqual([["workspace-1", "재고"]]);
   } finally {
     await manager.flush().catch(() => undefined);
     await storage.flush().catch(() => undefined);

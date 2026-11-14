@@ -29,6 +29,7 @@ import {
   type AgentLaunchContext,
   type AgentSlashCommand,
   type AgentMode,
+  type AgentOutOfBandHost,
   type AgentPermissionRequest,
   type AgentPermissionResponse,
   type AgentPermissionResult,
@@ -741,6 +742,9 @@ export class AgentManager {
   private acceptingAgentRegistrations = true;
   /** Local fork (delta 44): told when an agent loses its background waits without a wake. */
   private recoveryNoticeHandler: ((notice: RecoveryNotice) => void) | null = null;
+  /** Local fork (delta 109): renames a workspace as the user would, for `/name`. */
+  private workspaceTitleSetter: ((workspaceId: string, title: string) => Promise<void>) | null =
+    null;
 
   constructor(options: AgentManagerOptions) {
     this.idFactory = options?.idFactory ?? (() => randomUUID());
@@ -825,6 +829,43 @@ export class AgentManager {
 
   setRecoveryNoticeHandler(handler: ((notice: RecoveryNotice) => void) | null): void {
     this.recoveryNoticeHandler = handler;
+  }
+
+  setWorkspaceTitleSetter(
+    setter: ((workspaceId: string, title: string) => Promise<void>) | null,
+  ): void {
+    this.workspaceTitleSetter = setter;
+  }
+
+  /**
+   * Local fork (delta 109): what a provider's out-of-band command may do to its agent. Each
+   * action goes through the same manager path as the matching UI action, so clients see the
+   * model, thinking level, title, and reload the same way.
+   */
+  private createOutOfBandHost(agentId: string): AgentOutOfBandHost {
+    return {
+      hasActiveRun: () => this.hasInFlightRun(agentId),
+      setModel: (modelId) => this.setAgentModel(agentId, modelId),
+      setThinkingOption: async (thinkingOptionId) => {
+        await this.setAgentThinkingOption(agentId, thinkingOptionId);
+      },
+      rename: async (title) => {
+        await this.updateAgentMetadata(agentId, { title });
+        const agent = this.getAgent(agentId);
+        // Same rule as auto-naming: only a top-level agent names its workspace.
+        if (
+          agent?.workspaceId &&
+          !agent.internal &&
+          !getParentAgentIdFromLabels(agent.labels) &&
+          this.workspaceTitleSetter
+        ) {
+          await this.workspaceTitleSetter(agent.workspaceId, title);
+        }
+      },
+      reload: async () => {
+        await this.reloadAgentSession(agentId);
+      },
+    };
   }
 
   private reportLostBackgroundWaits(
@@ -2255,7 +2296,7 @@ export class AgentManager {
     };
     void (async () => {
       try {
-        await handler.run({ emit: dispatch });
+        await handler.run({ emit: dispatch, host: this.createOutOfBandHost(agentId) });
       } catch (error) {
         const text = error instanceof Error ? error.message : "Out-of-band command failed";
         dispatch({

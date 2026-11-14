@@ -29,6 +29,7 @@ import {
   type AgentSession,
   type AgentSessionConfig,
   type AgentSideQuestionAnswer,
+  type AgentOutOfBandContext,
   type AgentSlashCommand,
   type AgentSlashCommandKind,
   type AgentStreamEvent,
@@ -75,6 +76,14 @@ import {
 import { materializeProviderImage } from "../provider-image-output.js";
 import { PiCliRuntime } from "./cli-runtime.js";
 import { revertPiConversation } from "./rewind.js";
+import { runPiBuiltinCommand } from "./builtin-command-runner.js";
+import {
+  PI_BUILTIN_COMMANDS,
+  findPiBuiltinCommand,
+  formatUnknownSlashCommand,
+  parseSlashCommandToken,
+  suggestSlashCommands,
+} from "./builtin-commands.js";
 import { listPiImportableSessions, readPiImportSessionConfig } from "./session-descriptor.js";
 import type { PiRuntime, PiRuntimeSession, PiStartSessionInput } from "./runtime.js";
 import type {
@@ -192,20 +201,15 @@ const PI_INTERNAL_EXTENSION_COMMANDS = new Set([
   PASEO_PI_SIDE_QUESTION_EXTENSION_COMMAND,
 ]);
 
-const PI_HANDLED_BUILTIN_SLASH_COMMANDS: AgentSlashCommand[] = [
-  {
-    name: "compact",
-    description: "Manually compact the session context",
-    argumentHint: "[instructions]",
+// Local fork (delta 109): every Pi built-in is listed and answered in Daseo.
+const PI_HANDLED_BUILTIN_SLASH_COMMANDS: AgentSlashCommand[] = PI_BUILTIN_COMMANDS.map(
+  (command) => ({
+    name: command.name,
+    description: command.description,
+    argumentHint: command.argumentHint,
     kind: "command",
-  },
-  {
-    name: "autocompact",
-    description: "Toggle automatic context compaction",
-    argumentHint: "[on|off|toggle]",
-    kind: "command",
-  },
-];
+  }),
+);
 
 function mapPiCommandKind(source: PiRpcSlashCommand["source"]): AgentSlashCommandKind {
   if (source === "skill") {
@@ -1785,7 +1789,7 @@ export class PiRpcAgentSession implements AgentSession {
   private outOfBandCompactionEmit: ((event: AgentStreamEvent) => void) | null = null;
   private outOfBandCompactionStarted = false;
   private outOfBandCompactionCompleted = false;
-  private commandCache: AgentSlashCommand[] | null = null;
+  private rpcCommandNames: Set<string> | null = null;
   private featureState: AgentFeature[] = [];
   private backgroundWaitState: AgentBackgroundWaits = { pending: 0, raisedAt: null, labels: [] };
   /** Descriptions of the waits still pending, by wait id, in registration order. */
@@ -1823,6 +1827,7 @@ export class PiRpcAgentSession implements AgentSession {
     this.extensionTimeoutMs = options.extensionTimeoutMs ?? DEFAULT_PI_EXTENSION_RESULT_TIMEOUT_MS;
 
     this.attachRuntime(options.runtimeSession);
+    this.refreshRpcCommandNames();
   }
 
   private runtimeSession: PiRuntimeSession;
@@ -2288,40 +2293,100 @@ export class PiRpcAgentSession implements AgentSession {
   }
 
   async listCommands(): Promise<AgentSlashCommand[]> {
-    if (this.commandCache) {
-      return this.commandCache;
-    }
     const commands = await this.runtimeSession.getCommands();
-    const mappedCommands = mapPiSlashCommands(commands);
-    return mappedCommands;
+    this.rpcCommandNames = new Set(commands.map((command) => command.name));
+    return mapPiSlashCommands(commands);
+  }
+
+  /**
+   * Local fork (delta 109): the names Pi's RPC lists, so an unknown `/word` can be answered
+   * without a round trip. Refreshed at start, on every autocomplete listing, and per process.
+   */
+  private refreshRpcCommandNames(): void {
+    void (async () => {
+      try {
+        const commands = await this.runtimeSession.getCommands();
+        this.rpcCommandNames = new Set(commands.map((command) => command.name));
+      } catch (error) {
+        this.logger?.debug({ err: error, agentId: this.agentId }, "Pi get_commands failed");
+      }
+    })();
   }
 
   tryHandleOutOfBand(
     prompt: AgentPromptInput,
-  ): { run(ctx: { emit: (event: AgentStreamEvent) => void }): Promise<void> } | null {
+  ): { run(ctx: AgentOutOfBandContext): Promise<void> } | null {
     if (typeof prompt !== "string") {
       return null;
     }
-    const parsed = this.parseSlashCommandInput(prompt);
-    if (!parsed) {
+    const token = parseSlashCommandToken(prompt);
+    if (!token) {
       return null;
     }
-    const commandName = parsed.commandName.toLowerCase();
+    const commandName = token.name.toLowerCase();
     if (commandName === "compact") {
       return {
         run: async ({ emit }) => {
-          await this.executeCompactCommand(parsed.args, emit);
+          await this.executeCompactCommand(token.args, emit);
         },
       };
     }
     if (commandName === "autocompact") {
       return {
         run: async ({ emit }) => {
-          await this.executeAutoCompactCommand(parsed.args, emit);
+          await this.executeAutoCompactCommand(token.args, emit);
         },
       };
     }
-    return null;
+    const rpcCommandNames = this.rpcCommandNames;
+    // An extension, prompt template, or skill of that name runs in Pi as before, even when it
+    // shadows a built-in name.
+    if (rpcCommandNames?.has(token.name)) {
+      return null;
+    }
+    const builtin = findPiBuiltinCommand(commandName);
+    if (builtin) {
+      return {
+        run: async ({ emit, host }) => {
+          // A Pi that died between turns is replaced first, as the next prompt would (delta 38).
+          if (builtin.name !== "reload") await this.relaunchExitedRuntime();
+          await runPiBuiltinCommand({
+            name: builtin.name,
+            ...(token.args ? { args: token.args } : {}),
+            runtime: this.runtimeSession,
+            host,
+            cwd: this.config.cwd,
+            rpcCommandNames: [...(this.rpcCommandNames ?? [])],
+            say: (text) => this.emitCommandReply(emit, text),
+          });
+        },
+      };
+    }
+    if (!rpcCommandNames) {
+      // Not loaded yet: keep the old behavior for this prompt rather than guess.
+      this.refreshRpcCommandNames();
+      return null;
+    }
+    return {
+      run: async ({ emit }) => {
+        const known = [
+          ...PI_BUILTIN_COMMANDS.map((command) => command.name),
+          ...[...rpcCommandNames].filter((name) => !PI_INTERNAL_EXTENSION_COMMANDS.has(name)),
+        ];
+        this.emitCommandReply(
+          emit,
+          formatUnknownSlashCommand(token.name, suggestSlashCommands(token.name, known)),
+        );
+      },
+    };
+  }
+
+  private emitCommandReply(emit: (event: AgentStreamEvent) => void, text: string): void {
+    emit({
+      type: "timeline",
+      provider: this.provider,
+      item: { type: "assistant_message", text },
+    });
   }
 
   async setModel(modelId: string | null): Promise<void> {
@@ -3130,6 +3195,7 @@ export class PiRpcAgentSession implements AgentSession {
     const exited = this.runtimeSession;
     this.attachRuntime(runtime);
     this.runtimeExited = false;
+    this.refreshRpcCommandNames();
     void exited.close().catch(() => undefined);
     this.state = await runtime.getState();
     // Feature toggles such as fast mode live in the Pi process; reapply the configured values.
