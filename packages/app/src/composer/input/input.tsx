@@ -1989,7 +1989,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           {/* Daseo delta 115: the prompt line — Ubuntu's bash prompt and the text input. */}
           <View style={styles.promptLine}>
             <Text style={styles.promptMarker} numberOfLines={1} testID="composer-shell-prompt">
-              <ShellPromptSpans parts={shellPromptParts} compact={isCompact} />
+              <ShellPromptSpans parts={shellPromptParts} compact />
             </Text>
             <View style={styles.promptInput}>
               <ComposerTextSurface
@@ -2130,6 +2130,9 @@ const styles = StyleSheet.create((theme: Theme) => ({
     fontWeight: theme.fontWeight.normal,
     fontSize: theme.fontSize.base * theme.chatTextScale,
     lineHeight: Math.round(theme.fontSize.base * 1.4 * theme.chatTextScale),
+    // Native: the input is at least MIN_INPUT_HEIGHT tall and centres its line in that box, so a
+    // marker laid out at the top sat above the typed text. Centre it in the same box.
+    ...(isNative ? { minHeight: MIN_INPUT_HEIGHT, textAlignVertical: "center" as const } : {}),
   },
   promptInput: {
     flex: 1,

@@ -46,8 +46,12 @@ describe("formatShellPrompt", () => {
     expect(formatShellPrompt(parts, { compact: false })).toBe("ddgk@mac:~/hym$");
   });
 
-  it("keeps only the path on compact layouts", () => {
-    expect(formatShellPrompt(parts, { compact: true })).toBe("~/hym$");
+  it("keeps only the last folder in the compact form", () => {
+    expect(formatShellPrompt(parts, { compact: true })).toBe("hym$");
+    expect(
+      formatShellPrompt({ user: "a", host: "b", path: "~/ws/hym/apps/office" }, { compact: true }),
+    ).toBe("office$");
+    expect(formatShellPrompt({ user: "a", host: "b", path: "~" }, { compact: true })).toBe("~$");
   });
 
   it("drops what it does not know", () => {

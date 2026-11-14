@@ -63,11 +63,22 @@ function resolveHost(input: {
   return input.hostLabel?.trim() || null;
 }
 
+/**
+ * bash's `\W`: the last folder of the path (`~/ws/hym/apps/office` → `office`), `~` and `/` as
+ * they are. The compact prompt uses it (owner, 2026-11-15: the full path was too long).
+ */
+export function shortPromptPath(path: string): string {
+  if (path === "~" || path === "/") return path;
+  const segments = path.split(/[\\/]/).filter(Boolean);
+  return segments[segments.length - 1] ?? path;
+}
+
 /** The prompt as plain text, e.g. for an accessibility label or a test. */
 export function formatShellPrompt(parts: ShellPromptParts, options: { compact: boolean }): string {
   const identity = options.compact ? "" : formatIdentity(parts);
   if (!parts.path) return `${identity}$`;
-  return identity ? `${identity}:${parts.path}$` : `${parts.path}$`;
+  const path = options.compact ? shortPromptPath(parts.path) : parts.path;
+  return identity ? `${identity}:${path}$` : `${path}$`;
 }
 
 /** `user@host`, `host`, or "" when neither is known. */

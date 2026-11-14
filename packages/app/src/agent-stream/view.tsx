@@ -395,7 +395,8 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const userPrompt = useMemo(
       () => ({
         parts: shellPromptParts,
-        compact: isMobile,
+        // Owner 2026-11-15: `user@host` was too long and useless; every layout shows `path$`.
+        compact: true,
         bandBleed: getStreamEdgeBleed({ isNative, isCompact: isMobile }),
       }),
       [isMobile, shellPromptParts],
