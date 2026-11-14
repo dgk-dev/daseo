@@ -7,6 +7,13 @@ import type { TabContents, BrowserRegistry } from "./service.js";
 import type { IsolatedKeyboardInputEvent } from "./trusted-input.js";
 import { collectElementStyles } from "./css-styles.js";
 import {
+  findWebFrame,
+  listTabFrames,
+  planFrameInputSteps,
+  sendFrameInputThroughTarget,
+  type WebFrameLike,
+} from "./frame-input.js";
+import {
   clearPaseoBrowserClientHintOverride,
   setPaseoBrowserClientHintOverride,
   userAgentDataPlatform,
@@ -149,7 +156,11 @@ const hostSnapshotEngines = new HostSnapshotEngineRegistry();
 interface WebContentsDebugger {
   isAttached(): boolean;
   attach(protocolVersion?: string): void;
-  sendCommand(command: string, params?: Record<string, unknown>): Promise<unknown>;
+  sendCommand(
+    command: string,
+    params?: Record<string, unknown>,
+    sessionId?: string,
+  ): Promise<unknown>;
   on?(
     event: "message",
     listener: (event: unknown, method: string, params?: Record<string, unknown>) => void,
@@ -196,7 +207,7 @@ interface BrowserAutomationWebContents extends ConsoleMessageEmitter {
   isLoading(): boolean;
   isDestroyed(): boolean;
   /** Re-read at every use: a cross-origin navigation replaces the main frame. */
-  readonly mainFrame: { executeJavaScript(code: string, userGesture?: boolean): Promise<unknown> };
+  readonly mainFrame: WebFrameLike;
   insertText(text: string): Promise<void>;
   loadURL(url: string): Promise<void>;
   goBack(): void;
@@ -480,6 +491,36 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
         clearPaseoBrowserClientHintOverride(contentsId);
       }
       return emulation;
+    },
+    // Daseo delta 110: frames for cross-origin iframe content (frames.ts).
+    listFrames: () =>
+      listTabFrames(() => contents.mainFrame, {
+        beforeScript: (userGesture) => {
+          markPaseoBrowserAutomationActivity(contentsId);
+          if (userGesture) markPaseoBrowserUserGesture(contentsId);
+        },
+      }),
+    sendFrameInput: (frameId, input) => {
+      markPaseoBrowserAutomationActivity(contentsId);
+      const steps = planFrameInputSteps(input);
+      return cdpQueue.run(
+        async () => {
+          const frame = findWebFrame(contents.mainFrame, frameId);
+          if (!frame) {
+            throw new Error("The iframe is gone.");
+          }
+          if (!contents.debugger.isAttached()) {
+            contents.debugger.attach("1.3");
+          }
+          await sendFrameInputThroughTarget({
+            frame,
+            steps,
+            send: (command, params, sessionId) =>
+              contents.debugger.sendCommand(command, params ?? {}, sessionId),
+          });
+        },
+        { label: "frame input" },
+      );
     },
     collectElementStyles: (elementExpression) => {
       markPaseoBrowserAutomationActivity(contentsId);

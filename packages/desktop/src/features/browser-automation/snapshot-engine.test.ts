@@ -247,9 +247,8 @@ describe("BrowserSnapshotEngine", () => {
 
     page.currentUrl = "https://example.com/form?panel=advanced";
 
-    expect(engine.runtimeElementExpression({ browserId: "browser-1", ref: "@e1" })).toContain(
-      '"name":"Save changes"',
-    );
+    const target = engine.resolveRefTarget({ browserId: "browser-1", ref: "@e1", page });
+    expect("ok" in target ? target : target.elementExpression).toContain('"name":"Save changes"');
   });
 
   it("treats missing host-side ref metadata as a stale ref", async () => {
@@ -257,7 +256,7 @@ describe("BrowserSnapshotEngine", () => {
     const engine = new BrowserSnapshotEngine();
     await engine.snapshot({ browserId: "browser-1", page });
 
-    expect(engine.runtimeElementExpression({ browserId: "browser-1", ref: "@e2" })).toEqual({
+    expect(engine.resolveRefTarget({ browserId: "browser-1", ref: "@e2", page })).toEqual({
       ok: false,
       reason: "missing_ref",
     });
@@ -313,5 +312,203 @@ describe("BrowserSnapshotEngine", () => {
         '- text: "Snapshot truncated."',
       ].join("\n"),
     );
+  });
+});
+
+// Daseo delta 110: cross-origin frames are walked with their own copy of the script.
+describe("BrowserSnapshotEngine with cross-origin frames", () => {
+  const payFingerprint = {
+    role: "textbox",
+    name: "Card number",
+    tagName: "input",
+    type: "",
+    ariaLabel: "Card number",
+  };
+
+  function rawSnapshot(children: unknown[], refs: unknown[], extra: Record<string, unknown> = {}) {
+    return JSON.stringify({
+      marker: "__PASEO_ARIA_SNAPSHOT__",
+      root: {
+        kind: "role",
+        role: "document",
+        name: "Doc",
+        tagName: "document",
+        attributes: [],
+        children,
+      },
+      refs,
+      truncated: false,
+      stats: {
+        nodeCount: children.length + 1,
+        refCount: refs.length,
+        textLength: 0,
+        iframeCount: 0,
+        maxDepth: 1,
+      },
+      remaining: { nodes: 1400, refs: 499, text: 79_000 },
+      ...extra,
+    });
+  }
+
+  function framedPage(options: { mainTruncated?: boolean; frameGone?: boolean } = {}) {
+    const frameScripts: string[] = [];
+    const frame = {
+      id: 42,
+      parentId: null,
+      outOfProcess: true,
+      url: "https://js.pay.test/inner",
+      async executeJavaScript(code: string) {
+        frameScripts.push(code);
+        if (code.includes("return windowPath(window)")) return [0];
+        if (code.includes("__PASEO_ARIA_SNAPSHOT__")) {
+          return rawSnapshot(
+            [
+              {
+                kind: "role",
+                role: "textbox",
+                name: "Card number",
+                tagName: "input",
+                attributes: [],
+                ref: "@e1",
+                fingerprint: payFingerprint,
+                children: [],
+              },
+            ],
+            [{ ref: "@e1", fingerprint: payFingerprint }],
+          );
+        }
+        if (code.includes("__PASEO_ARIA_FIND__")) {
+          return JSON.stringify({
+            marker: "__PASEO_ARIA_FIND__",
+            matches: [
+              {
+                role: "textbox",
+                name: "Card number",
+                states: [],
+                ref: "@e1",
+                fingerprint: payFingerprint,
+              },
+            ],
+            total: 1,
+            frames: [],
+          });
+        }
+        return { ok: true };
+      },
+    };
+    const mainScripts: string[] = [];
+    const page: SnapshotPage = {
+      getURL: () => "https://shop.test/checkout",
+      async executeJavaScript(code: string) {
+        mainScripts.push(code);
+        if (code.includes("__PASEO_ARIA_SNAPSHOT__")) {
+          return rawSnapshot(
+            [
+              {
+                kind: "role",
+                role: "iframe",
+                name: "Secure card form",
+                tagName: "iframe",
+                attributes: ["cross-origin=true", "src=https://js.pay.test/inner"],
+                frame: { path: [0], depth: 1 },
+                children: [],
+              },
+            ],
+            [],
+            options.mainTruncated ? { truncated: true } : {},
+          );
+        }
+        if (code.includes("__PASEO_ARIA_FIND__")) {
+          return JSON.stringify({
+            marker: "__PASEO_ARIA_FIND__",
+            matches: [],
+            total: 0,
+            frames: [{ path: [0] }],
+          });
+        }
+        return { ok: true };
+      },
+      listFrames: () => (options.frameGone ? [] : [frame]),
+    };
+    return { page, frame, frameScripts, mainScripts };
+  }
+
+  it("puts the frame's content under its iframe with frame refs", async () => {
+    const { page, frameScripts } = framedPage();
+    const engine = new BrowserSnapshotEngine();
+
+    const result = await engine.snapshot({ browserId: "browser-1", page });
+
+    expect(result.snapshot).toBe(
+      [
+        '- document "Doc"',
+        '  - iframe "Secure card form" [cross-origin=true src=https://js.pay.test/inner]',
+        '    - textbox "Card number" [ref=@f1e1]',
+      ].join("\n"),
+    );
+    expect(result.stats.refCount).toBe(1);
+    // The frame gets what the page left of the limits.
+    expect(frameScripts.find((code) => code.includes("__PASEO_ARIA_SNAPSHOT__"))).toContain(
+      "const MAX_NODES = 1400;",
+    );
+  });
+
+  it("runs a frame ref's scripts in its frame with the frame's own ref", async () => {
+    const { page, frame, frameScripts, mainScripts } = framedPage();
+    const engine = new BrowserSnapshotEngine();
+    await engine.snapshot({ browserId: "browser-1", page });
+    mainScripts.length = 0;
+
+    const target = engine.resolveRefTarget({ browserId: "browser-1", ref: "@f1e1", page });
+    const filled = await engine.fill({ browserId: "browser-1", page, ref: "@f1e1", value: "4242" });
+
+    expect("ok" in target ? null : target.frame?.id).toBe(frame.id);
+    expect("ok" in target ? "" : target.elementExpression).toContain('resolve("@e1"');
+    expect(filled).toEqual({ ok: true });
+    expect(frameScripts.at(-1)).toContain('"4242"');
+    expect(mainScripts).toEqual([]);
+  });
+
+  it("finds inside the frame and keeps the snapshot's refs", async () => {
+    const { page } = framedPage();
+    const engine = new BrowserSnapshotEngine();
+    await engine.snapshot({ browserId: "browser-1", page });
+
+    const found = await engine.find({
+      browserId: "browser-1",
+      page,
+      query: { role: "textbox", name: null, exact: false, pattern: null, limit: 10 },
+    });
+
+    expect(found).toEqual({
+      matches: [{ role: "textbox", name: "Card number", states: [], ref: "@f1e1" }],
+      total: 1,
+    });
+    expect("ok" in engine.resolveRefTarget({ browserId: "browser-1", ref: "@f1e1", page })).toBe(
+      false,
+    );
+  });
+
+  it("calls a frame ref stale once its frame is gone", async () => {
+    const engine = new BrowserSnapshotEngine();
+    await engine.snapshot({ browserId: "browser-1", page: framedPage().page });
+
+    expect(
+      engine.resolveRefTarget({
+        browserId: "browser-1",
+        ref: "@f1e1",
+        page: framedPage({ frameGone: true }).page,
+      }),
+    ).toEqual({ ok: false, reason: "stale_ref" });
+  });
+
+  it("leaves frames alone once the page used up the limits", async () => {
+    const { page, frameScripts } = framedPage({ mainTruncated: true });
+
+    const result = await new BrowserSnapshotEngine().snapshot({ browserId: "browser-1", page });
+
+    expect(frameScripts).toEqual([]);
+    expect(result.snapshot).not.toContain("Card number");
+    expect(result.truncated).toBe(true);
   });
 });

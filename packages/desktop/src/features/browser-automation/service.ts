@@ -29,7 +29,11 @@ import {
   BROWSER_AUTOMATION_SNAPSHOT_AFTER_TIMEOUT_MS,
   BROWSER_AUTOMATION_SNAPSHOT_SETTLE_TIMEOUT_MS,
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
-import { waitForActionableTarget, type ActionabilityResult } from "./actionability.js";
+import {
+  waitForActionableRefTarget,
+  waitForActionableTarget,
+  type ActionabilityResult,
+} from "./actionability.js";
 import { summarizeElementStyles, type RawElementStyles } from "./css-styles.js";
 import type { DeviceEmulation } from "./device-emulation.js";
 import { dispatchFocusIsolatedClick, dispatchFocusIsolatedDrag } from "./focus-isolated-input.js";
@@ -63,7 +67,18 @@ import {
   type InputEffectHostSignals,
 } from "./input-effect.js";
 import { watchPageSettle, type PageSettleWatch } from "./page-settle.js";
-import { BrowserSnapshotEngine } from "./snapshot-engine.js";
+import {
+  BrowserSnapshotEngine,
+  type BrowserRefTarget,
+  type ScriptPage,
+} from "./snapshot-engine.js";
+import {
+  FOCUSED_FRAME_SCRIPT,
+  FrameLocator,
+  runFrameScript,
+  type FrameInput,
+  type TabFrame,
+} from "./frames.js";
 import {
   dispatchTrustedClick,
   dispatchTrustedDrag,
@@ -135,6 +150,13 @@ export interface TabContents {
   }): Promise<DeviceEmulation | null>;
   /** Matched CSS rules and computed style of the element the expression returns. */
   collectElementStyles?(elementExpression: string): Promise<RawElementStyles | "stale_ref">;
+  /** Daseo delta 110: every frame below the main frame, as it is at the call. */
+  listFrames?(): TabFrame[];
+  /**
+   * Daseo delta 110: text or one key into an out-of-process frame (see TabFrame.outOfProcess),
+   * through that frame's own DevTools target.
+   */
+  sendFrameInput?(frameId: number, input: FrameInput): Promise<void>;
 }
 
 export type TabPageDialogs = Pick<
@@ -1438,14 +1460,14 @@ async function executeStyles(
   if (!target.contents.collectElementStyles) {
     return fail(requestId, "browser_unsupported", "browser_styles requires CDP");
   }
-  const elementExpression = snapshotEngine.runtimeElementExpression({
-    browserId: target.browserId,
-    ref: args.ref,
-  });
-  if (typeof elementExpression !== "string") {
+  const refTarget = resolveRef(target, args.ref, snapshotEngine);
+  if (!refTarget) {
     return staleRefFailure(requestId, args.ref);
   }
-  const raw = await target.contents.collectElementStyles(elementExpression);
+  if (refTarget.frame) {
+    return frameRefUnsupported(requestId, "browser_styles", args.ref);
+  }
+  const raw = await target.contents.collectElementStyles(refTarget.elementExpression);
   if (raw === "stale_ref") {
     return staleRefFailure(requestId, args.ref);
   }
@@ -1473,15 +1495,14 @@ async function executeRead(
     return target;
   }
   let elementExpression: string | undefined;
+  let scriptPage: ScriptPage = target.contents;
   if (args.ref) {
-    const expression = snapshotEngine.runtimeElementExpression({
-      browserId: target.browserId,
-      ref: args.ref,
-    });
-    if (typeof expression !== "string") {
+    const refTarget = resolveRef(target, args.ref, snapshotEngine);
+    if (!refTarget) {
       return staleRefFailure(requestId, args.ref);
     }
-    elementExpression = expression;
+    elementExpression = refTarget.elementExpression;
+    scriptPage = refTarget.page;
   }
 
   let settled: EvaluateSettlement;
@@ -1491,7 +1512,7 @@ async function executeRead(
       links: args.links,
       ...(elementExpression ? { elementExpression } : {}),
     });
-    settled = await settleEvaluate(target.contents, target.contents.executeJavaScript(script));
+    settled = await settleEvaluate(target.contents, scriptPage.executeJavaScript(script));
   } catch (error) {
     if (error instanceof PageNotRespondingError) {
       return fail(requestId, "browser_timeout", error.message, true);
@@ -1858,13 +1879,11 @@ async function executeStreamInput(
   };
 
   try {
-    if (input.kind === "text") {
-      await contents.insertText(input.text);
-      return withFocus();
-    }
-    if (input.kind === "key") {
-      dispatchTrustedKey((event) => contents.sendInputEvent(event), input.key);
-      return withFocus();
+    // Daseo delta 110: text and keys follow the page's focus into an out-of-process frame (a card
+    // field the phone tapped), where the tab's own text input crashed the renderer.
+    if (input.kind === "text" || input.kind === "key") {
+      const delivered = await deliverStreamKeyboardInput(contents, input);
+      return delivered ? withFocus() : unreachableFocusFailure(requestId, "Remote input");
     }
     // A phone tap is trusted Chromium input unless the owner is at the Mac with focus on
     // something other than this browser (the Composer, say): only then does a synthetic click
@@ -1910,6 +1929,18 @@ async function executeStreamInput(
   }
 }
 
+// False when focus is inside a cross-origin iframe that could not be reached.
+async function deliverStreamKeyboardInput(
+  contents: TabContents,
+  input: { kind: "text"; text: string } | { kind: "key"; key: string },
+): Promise<boolean> {
+  const route = await keyboardRoute(contents, undefined);
+  if (route.kind === "unreachable") return false;
+  if (input.kind === "text") await sendTextAlong(contents, route, input.text);
+  else await sendKeyAlong(contents, route, input.key);
+  return true;
+}
+
 // Daseo delta 60. A synthetic click only while the owner is at the Mac with focus elsewhere.
 function shouldIsolateRemoteTap(registry: BrowserRegistry, browserId: string): boolean {
   const ownerAtMac = registry.isHostWindowFocused?.() ?? true;
@@ -1947,7 +1978,15 @@ async function readStreamFocus(
   contents: TabContents,
 ): Promise<{ editable: boolean; multiline?: boolean; inputType?: string } | null> {
   try {
-    const raw = await contents.executeJavaScript(STREAM_FOCUS_SCRIPT);
+    // Daseo delta 110: a field focused inside a cross-origin iframe (a card form the phone tapped)
+    // answers for itself, so the phone keeps its keyboard up.
+    const frames = contents.listFrames?.() ?? [];
+    const focusFrame =
+      frames.length > 0 ? await findFocusedFrame(contents, new FrameLocator(frames)) : null;
+    const raw =
+      focusFrame && focusFrame !== "unreachable"
+        ? await runFrameScript(focusFrame, STREAM_FOCUS_SCRIPT)
+        : await contents.executeJavaScript(STREAM_FOCUS_SCRIPT);
     if (typeof raw !== "object" || raw === null) {
       return null;
     }
@@ -2082,17 +2121,15 @@ async function executeClick(
   if ("ok" in target) {
     return target;
   }
-  const elementExpression = snapshotEngine.runtimeElementExpression({
-    browserId: target.browserId,
-    ref,
-  });
-  if (typeof elementExpression !== "string") {
+  const refTarget = resolveRef(target, ref, snapshotEngine);
+  if (!refTarget) {
     return staleRefFailure(requestId, ref);
   }
+  const { elementExpression } = refTarget;
   const trustedInput = registry.isBrowserInputFocused(target.browserId);
-  const actionable = await waitForActionableTarget({
-    page: target.contents,
-    elementExpression,
+  const actionable = await waitForActionableRefTarget({
+    tab: target.contents,
+    refTarget,
     pointerDelivered: trustedInput,
   });
   if (!actionable.ok) {
@@ -2104,7 +2141,7 @@ async function executeClick(
   }
   // Daseo delta 100: the result names what the click caused.
   const observed = await observeInputEffect({
-    page: target.contents,
+    page: refTarget.page,
     elementExpression,
     signals: inputEffectSignals(target.contents),
     dispatch: async () => {
@@ -2113,7 +2150,7 @@ async function executeClick(
         return true;
       }
       return dispatchFocusIsolatedClick(
-        target.contents,
+        refTarget.page,
         elementExpression,
         actionable.target.framePoint,
         options,
@@ -2203,12 +2240,12 @@ async function isContentEditableRef(
   ref: string,
   snapshotEngine: BrowserSnapshotEngine,
 ): Promise<boolean> {
-  const expression = snapshotEngine.runtimeElementExpression({ browserId: target.browserId, ref });
-  if (typeof expression !== "string") {
+  const refTarget = resolveRef(target, ref, snapshotEngine);
+  if (!refTarget) {
     return false;
   }
-  const result = await target.contents.executeJavaScript(String.raw`(() => {
-    const element = ${expression};
+  const result = await refTarget.page.executeJavaScript(String.raw`(() => {
+    const element = ${refTarget.elementExpression};
     return Boolean(element && element.isContentEditable && !('value' in element));
   })()`);
   return result === true;
@@ -2258,16 +2295,13 @@ async function executeHover(
   if (!target.contents.sendDebugCommand) {
     return fail(requestId, "browser_unsupported", "browser_hover requires trusted browser input");
   }
-  const elementExpression = snapshotEngine.runtimeElementExpression({
-    browserId: target.browserId,
-    ref,
-  });
-  if (typeof elementExpression !== "string") {
+  const refTarget = resolveRef(target, ref, snapshotEngine);
+  if (!refTarget) {
     return staleRefFailure(requestId, ref);
   }
-  const actionable = await waitForActionableTarget({
-    page: target.contents,
-    elementExpression,
+  const actionable = await waitForActionableRefTarget({
+    tab: target.contents,
+    refTarget,
     pointerDelivered: true,
   });
   if (!actionable.ok) {
@@ -2300,17 +2334,20 @@ async function executeDrag(
   if ("ok" in target) {
     return target;
   }
-  const sourceExpression = snapshotEngine.runtimeElementExpression({
-    browserId: target.browserId,
-    ref: sourceRef,
-  });
-  const targetExpression = snapshotEngine.runtimeElementExpression({
-    browserId: target.browserId,
-    ref: targetRef,
-  });
-  if (typeof sourceExpression !== "string" || typeof targetExpression !== "string") {
+  const sourceTarget = resolveRef(target, sourceRef, snapshotEngine);
+  const dropRefTarget = resolveRef(target, targetRef, snapshotEngine);
+  if (!sourceTarget || !dropRefTarget) {
     return staleRefFailure(requestId, `${sourceRef}/${targetRef}`);
   }
+  if (sourceTarget.frame || dropRefTarget.frame) {
+    return frameRefUnsupported(
+      requestId,
+      "browser_drag",
+      sourceTarget.frame ? sourceRef : targetRef,
+    );
+  }
+  const sourceExpression = sourceTarget.elementExpression;
+  const targetExpression = dropRefTarget.elementExpression;
   const trustedInput = registry.isBrowserInputFocused(target.browserId);
   const source = await waitForActionableTarget({
     page: target.contents,
@@ -2429,16 +2466,17 @@ async function executeEvaluate(
   if ("ok" in target) {
     return target;
   }
+  // Daseo delta 110: with a ref inside a cross-origin frame the function runs in that frame;
+  // without a ref it runs in the main frame, as before.
   let elementExpression: string | undefined;
+  let page: ScriptPage = target.contents;
   if (ref) {
-    const expression = snapshotEngine.runtimeElementExpression({
-      browserId: target.browserId,
-      ref,
-    });
-    if (typeof expression !== "string") {
+    const refTarget = resolveRef(target, ref, snapshotEngine);
+    if (!refTarget) {
       return staleRefFailure(requestId, ref);
     }
-    elementExpression = expression;
+    elementExpression = refTarget.elementExpression;
+    page = refTarget.page;
   }
 
   const syntaxError = evaluateFunctionSyntaxError(functionSource);
@@ -2450,7 +2488,7 @@ async function executeEvaluate(
   try {
     settled = await settleEvaluate(
       target.contents,
-      target.contents.executeJavaScript(buildEvaluateScript(functionSource, elementExpression)),
+      page.executeJavaScript(buildEvaluateScript(functionSource, elementExpression)),
     );
   } catch (error) {
     if (error instanceof PageNotRespondingError) {
@@ -2516,17 +2554,11 @@ async function executeScroll(
 
   let point: { x: number; y: number };
   if (ref) {
-    const elementExpression = snapshotEngine.runtimeElementExpression({
-      browserId: target.browserId,
-      ref,
-    });
-    if (typeof elementExpression !== "string") {
+    const refTarget = resolveRef(target, ref, snapshotEngine);
+    if (!refTarget) {
       return staleRefFailure(requestId, ref);
     }
-    const actionable = await waitForActionableTarget({
-      page: target.contents,
-      elementExpression,
-    });
+    const actionable = await waitForActionableRefTarget({ tab: target.contents, refTarget });
     if (!actionable.ok) {
       return actionabilityFailure(requestId, ref, actionable);
     }
@@ -2674,6 +2706,7 @@ async function executeWait(
     );
   }
 
+  let polls = 0;
   do {
     if (condition.url && target.contents.getURL().includes(condition.url)) {
       return {
@@ -2683,8 +2716,13 @@ async function executeWait(
       };
     }
     if (condition.text) {
-      const found = await target.contents.executeJavaScript(pageTextIncludesScript(condition.text));
-      if (found === true) {
+      const found =
+        (await target.contents.executeJavaScript(pageTextIncludesScript(condition.text))) ===
+          true ||
+        (polls % FRAME_TEXT_POLL_EVERY === 0 &&
+          (await framesIncludeText(target.contents, condition.text)));
+      polls += 1;
+      if (found) {
         return {
           requestId,
           ok: true,
@@ -2978,6 +3016,18 @@ async function waitForNetworkIdle(
 // the cheap light-DOM check misses, keeping ordinary pages as fast as before.
 // Cross-origin frames stay out of reach (contentDocument is null), as they do
 // for the snapshot.
+// Daseo delta 110: text inside cross-origin iframes counts too. Each frame runs its own copy of the
+// script, so frames are asked every eighth poll (about 200 ms), not every 25 ms.
+const FRAME_TEXT_POLL_EVERY = 8;
+
+async function framesIncludeText(contents: TabContents, text: string): Promise<boolean> {
+  const frames = contents.listFrames?.() ?? [];
+  if (frames.length === 0) return false;
+  const script = pageTextIncludesScript(text);
+  const answers = await Promise.all(frames.map((frame) => runFrameScript(frame, script)));
+  return answers.some((answer) => answer === true);
+}
+
 function pageTextIncludesScript(text: string): string {
   return String.raw`(() => {
     const needle = ${JSON.stringify(text)};
@@ -3054,26 +3104,22 @@ async function typeIntoTarget(input: {
 }): Promise<{ failure: FailurePayload } | { point?: { x: number; y: number } }> {
   const { requestId, target, ref, text, registry, snapshotEngine } = input;
   let actionable: ActionabilityResult | null = null;
-  let elementExpression: string | null = null;
+  let refTarget: BrowserRefTarget | null = null;
   if (ref) {
-    const expression = snapshotEngine.runtimeElementExpression({
-      browserId: target.browserId,
-      ref,
-    });
-    if (typeof expression !== "string") {
+    refTarget = resolveRef(target, ref, snapshotEngine);
+    if (!refTarget) {
       return { failure: staleRefFailure(requestId, ref) };
     }
-    elementExpression = expression;
-    actionable = await waitForActionableTarget({
-      page: target.contents,
-      elementExpression,
+    actionable = await waitForActionableRefTarget({
+      tab: target.contents,
+      refTarget,
       editable: true,
       pointerDelivered: registry.isBrowserInputFocused(target.browserId),
     });
     if (!actionable.ok) {
       return { failure: actionabilityFailure(requestId, ref, actionable) };
     }
-    const focused = await focusAutomationTarget(target.contents, elementExpression);
+    const focused = await focusAutomationTarget(refTarget.page, refTarget.elementExpression);
     if (focused === "stale_ref") {
       return { failure: staleRefFailure(requestId, ref) };
     }
@@ -3090,10 +3136,10 @@ async function typeIntoTarget(input: {
       await dispatchTrustedClick(cdpSender(target.contents), actionable.target.point);
     }
   }
-  if (input.replaceContents && elementExpression) {
+  if (input.replaceContents && refTarget) {
     // Select after focusing and any trusted click, both of which move the caret.
-    await target.contents.executeJavaScript(String.raw`(() => {
-      const element = ${elementExpression};
+    await refTarget.page.executeJavaScript(String.raw`(() => {
+      const element = ${refTarget.elementExpression};
       if (!element) return false;
       const doc = element.ownerDocument;
       const range = doc.createRange();
@@ -3104,7 +3150,11 @@ async function typeIntoTarget(input: {
       return true;
     })()`);
   }
-  await target.contents.insertText(text);
+  const route = await keyboardRoute(target.contents, refTarget ? refTarget.frame : undefined);
+  if (route.kind === "unreachable") {
+    return { failure: unreachableFocusFailure(requestId, "browser_type") };
+  }
+  await sendTextAlong(target.contents, route, text);
   return actionable?.ok ? { point: actionable.target.point } : {};
 }
 
@@ -3122,22 +3172,18 @@ async function executeKeypress(
     return target;
   }
   let actionable: ActionabilityResult | null = null;
+  let refTarget: BrowserRefTarget | null = null;
   if (ref) {
-    const elementExpression = snapshotEngine.runtimeElementExpression({
-      browserId: target.browserId,
-      ref,
-    });
-    if (typeof elementExpression !== "string") {
+    refTarget = resolveRef(target, ref, snapshotEngine);
+    if (!refTarget) {
       return staleRefFailure(requestId, ref);
     }
-    actionable = await waitForActionableTarget({
-      page: target.contents,
-      elementExpression,
-    });
+    const { elementExpression } = refTarget;
+    actionable = await waitForActionableRefTarget({ tab: target.contents, refTarget });
     if (!actionable.ok) {
       return actionabilityFailure(requestId, ref, actionable);
     }
-    const focused = await focusAutomationTarget(target.contents, elementExpression);
+    const focused = await focusAutomationTarget(refTarget.page, elementExpression);
     if (focused === "stale_ref") {
       return staleRefFailure(requestId, ref);
     }
@@ -3151,14 +3197,18 @@ async function executeKeypress(
       }
       await dispatchTrustedClick(cdpSender(target.contents), actionable.target.point);
     }
+    const route = await keyboardRoute(target.contents, refTarget.frame);
+    if (route.kind === "unreachable") {
+      return unreachableFocusFailure(requestId, "browser_keypress");
+    }
     if (ACTIVATION_KEYS.has(key)) {
       // Armed after focusing, so moving focus to the element is not counted as the key's effect.
       const observed = await observeInputEffect({
-        page: target.contents,
+        page: refTarget.page,
         elementExpression,
         signals: inputEffectSignals(target.contents),
         dispatch: async () => {
-          dispatchTrustedKey((event) => target.contents.sendInputEvent(event), key);
+          await sendKeyAlong(target.contents, route, key);
           return true;
         },
       });
@@ -3175,8 +3225,14 @@ async function executeKeypress(
         },
       };
     }
+    await sendKeyAlong(target.contents, route, key);
+  } else {
+    const route = await keyboardRoute(target.contents, undefined);
+    if (route.kind === "unreachable") {
+      return unreachableFocusFailure(requestId, "browser_keypress");
+    }
+    await sendKeyAlong(target.contents, route, key);
   }
-  dispatchTrustedKey((event) => target.contents.sendInputEvent(event), key);
   return {
     requestId,
     ok: true,
@@ -3450,13 +3506,14 @@ async function executeElementScreenshot(
   if ("ok" in target) {
     return target;
   }
-  const elementExpression = snapshotEngine.runtimeElementExpression({
-    browserId: target.browserId,
-    ref,
-  });
-  if (typeof elementExpression !== "string") {
+  const refTarget = resolveRef(target, ref, snapshotEngine);
+  if (!refTarget) {
     return staleRefFailure(requestId, ref);
   }
+  if (refTarget.frame) {
+    return frameRefUnsupported(requestId, "browser_screenshot with ref", ref);
+  }
+  const { elementExpression } = refTarget;
   const rect = readElementViewportRect(
     await target.contents.executeJavaScript(elementViewportRectScript(elementExpression)),
   );
@@ -3588,13 +3645,14 @@ async function executeUpload(
   if (!target.contents.sendDebugCommand) {
     return fail(requestId, "browser_unsupported", "browser_upload requires CDP");
   }
-  const expression = snapshotEngine.runtimeElementExpression({
-    browserId: target.browserId,
-    ref: input.ref,
-  });
-  if (typeof expression !== "string") {
+  const refTarget = resolveRef(target, input.ref, snapshotEngine);
+  if (!refTarget) {
     return staleRefFailure(requestId, input.ref);
   }
+  if (refTarget.frame) {
+    return frameRefUnsupported(requestId, "browser_upload", input.ref);
+  }
+  const expression = refTarget.elementExpression;
   const evaluated = (await target.contents.sendDebugCommand("Runtime.evaluate", {
     expression: fileInputTargetExpression(expression),
     objectGroup: "paseo-browser-automation",
@@ -3923,10 +3981,10 @@ function buildEvaluateScript(
 }
 
 async function focusAutomationTarget(
-  contents: TabContents,
+  page: ScriptPage,
   elementExpression: string,
 ): Promise<"editable" | "focused" | "stale_ref"> {
-  const result = await contents.executeJavaScript(String.raw`(() => {
+  const result = await page.executeJavaScript(String.raw`(() => {
     const element = ${elementExpression};
     if (!element) return { staleRef: true };
     const tagName = element.tagName ? element.tagName.toLowerCase() : '';
@@ -3996,4 +4054,111 @@ function resolveTabTarget(input: {
   }
 
   return { browserId, contents };
+}
+
+function resolveRef(
+  target: ResolvedTabTarget,
+  ref: string,
+  snapshotEngine: BrowserSnapshotEngine,
+): BrowserRefTarget | null {
+  const resolved = snapshotEngine.resolveRefTarget({
+    browserId: target.browserId,
+    ref,
+    page: target.contents,
+  });
+  return "ok" in resolved ? null : resolved;
+}
+
+function frameRefUnsupported(requestId: string, tool: string, ref: string): FailurePayload {
+  return fail(
+    requestId,
+    "browser_unsupported",
+    `${tool} does not reach elements inside a cross-origin iframe (${ref}). Click, fill, type, select, hover, keypress, scroll, evaluate, and read do; or open the iframe's src in its own tab.`,
+  );
+}
+
+// Daseo delta 110. Where typed text and keys go. The tab's own input (insertText,
+// sendInputEvent) reaches the main frame and every frame in its renderer; a frame in another
+// renderer process gets nothing from it, and Electron's insertText while such a frame has focus
+// crashed the tab's renderer (measured with Electron 44.10.2: exit code 11). Such a frame gets its
+// input through its own DevTools target.
+type KeyboardRoute = { kind: "tab" } | { kind: "frame"; frameId: number } | { kind: "unreachable" };
+
+const MAX_FOCUSED_FRAME_DEPTH = 8;
+
+/**
+ * `frame` is the ref's frame (null for a main-document ref); undefined follows the page's focus.
+ */
+async function keyboardRoute(
+  contents: TabContents,
+  frame: TabFrame | null | undefined,
+): Promise<KeyboardRoute> {
+  const frames = contents.listFrames?.() ?? [];
+  if (!contents.sendFrameInput || !frames.some((candidate) => candidate.outOfProcess)) {
+    return { kind: "tab" };
+  }
+  const locator = new FrameLocator(frames);
+  const focusFrame = frame === undefined ? await findFocusedFrame(contents, locator) : frame;
+  if (focusFrame === "unreachable") {
+    return { kind: "unreachable" };
+  }
+  const known = focusFrame ? locator.get(focusFrame.id) : null;
+  if (focusFrame && !known) {
+    return { kind: "unreachable" };
+  }
+  const root = known ? locator.inputRootOf(known) : null;
+  return root ? { kind: "frame", frameId: root.id } : { kind: "tab" };
+}
+
+/**
+ * The cross-origin frame that holds keyboard focus, innermost first found by following focus
+ * down from the main frame; null when focus is in reach of the main frame's script.
+ */
+async function findFocusedFrame(
+  contents: TabContents,
+  locator: FrameLocator,
+): Promise<TabFrame | null | "unreachable"> {
+  let focusFrame: TabFrame | null = null;
+  for (let depth = 0; depth < MAX_FOCUSED_FRAME_DEPTH; depth += 1) {
+    const raw = focusFrame
+      ? await runFrameScript(focusFrame, FOCUSED_FRAME_SCRIPT)
+      : await contents.executeJavaScript(FOCUSED_FRAME_SCRIPT);
+    if (!Array.isArray(raw)) break;
+    const next = await locator.byPath(raw as number[]);
+    if (!next) return "unreachable";
+    focusFrame = next;
+  }
+  return focusFrame;
+}
+
+async function sendTextAlong(
+  contents: TabContents,
+  route: Exclude<KeyboardRoute, { kind: "unreachable" }>,
+  text: string,
+): Promise<void> {
+  if (route.kind === "frame" && contents.sendFrameInput) {
+    await contents.sendFrameInput(route.frameId, { kind: "text", text });
+    return;
+  }
+  await contents.insertText(text);
+}
+
+async function sendKeyAlong(
+  contents: TabContents,
+  route: Exclude<KeyboardRoute, { kind: "unreachable" }>,
+  key: string,
+): Promise<void> {
+  if (route.kind === "frame" && contents.sendFrameInput) {
+    await contents.sendFrameInput(route.frameId, { kind: "key", key });
+    return;
+  }
+  dispatchTrustedKey((event) => contents.sendInputEvent(event), key);
+}
+
+function unreachableFocusFailure(requestId: string, tool: string): FailurePayload {
+  return fail(
+    requestId,
+    "browser_unsupported",
+    `${tool}: keyboard focus is inside a cross-origin iframe Daseo could not reach. Take a snapshot and pass the field's ref.`,
+  );
 }

@@ -72,7 +72,8 @@ const BrowserAutomationTabTargetSchema = z
   })
   .strict();
 
-const BrowserAutomationRefSchema = z.string().regex(/^@e\d+$/);
+// `@f1e3`: a ref inside a cross-origin iframe (Daseo delta 110).
+const BrowserAutomationRefSchema = z.string().regex(/^@(?:f\d+)?e\d+$/);
 /**
  * Daseo delta 93: how a confirm or prompt this command raises is answered at once. Without it
  * the dialog is held open for browser_handle_dialog.

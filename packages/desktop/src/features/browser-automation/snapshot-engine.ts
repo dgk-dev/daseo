@@ -1,16 +1,35 @@
 import type { BrowserAutomationFindMatch } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import {
   ARIA_FIND_SCRIPT_MARKER,
-  ARIA_SNAPSHOT_SCRIPT,
+  ARIA_SNAPSHOT_LIMITS,
   ARIA_SNAPSHOT_SCRIPT_MARKER,
   BROWSER_AUTOMATION_RUNTIME,
   buildAriaFindScript,
+  buildAriaSnapshotScript,
   type AriaFindQuery,
+  type AriaSnapshotLimits,
 } from "./aria-snapshot-script.js";
+import { FrameLocator, frameRef, runFrameScript, type TabFrame } from "./frames.js";
 
-export interface SnapshotPage {
+/** Runs page scripts in one document: the tab's main frame or one of its frames. */
+export interface ScriptPage {
+  executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>;
+}
+
+export interface SnapshotPage extends ScriptPage {
   getURL(): string;
-  executeJavaScript(code: string): Promise<unknown>;
+  /** Daseo delta 110: the tab's frames below its main frame, for cross-origin frame content. */
+  listFrames?(): TabFrame[];
+}
+
+/**
+ * Where a ref's element lives: the document that runs its scripts, an expression that resolves the
+ * element there, and the frame (null for the main frame's document and its same-origin frames).
+ */
+export interface BrowserRefTarget {
+  page: ScriptPage;
+  elementExpression: string;
+  frame: TabFrame | null;
 }
 
 export interface BrowserAriaSnapshot {
@@ -30,6 +49,8 @@ export interface BrowserAriaSnapshotStats {
 
 interface SnapshotNode {
   kind: "role" | "text" | "group";
+  /** A cross-origin iframe the host can walk with the frame's own script (delta 110). */
+  frame?: { path: number[]; depth: number };
   role?: string;
   name?: string;
   text?: string;
@@ -60,16 +81,24 @@ interface RawAriaSnapshot {
   refs: BrowserRefMetadata[];
   truncated: boolean;
   stats: BrowserAriaSnapshotStats;
+  /** What the snapshot's limits left for frames below it; null from an older script. */
+  remaining: AriaSnapshotLimits | null;
 }
 
 interface BrowserRefMetadata {
   ref: string;
   fingerprint: BrowserRefFingerprint;
+  /** A ref inside a cross-origin frame: the frame and the ref its own script gave the element. */
+  frame?: { id: number; innerRef: string };
 }
 
 interface BrowserRefState {
   refs: Map<string, BrowserRefMetadata>;
 }
+
+// A frame inside a frame inside a frame is as deep as pages go in practice (a payment form's
+// 3-D Secure challenge inside the form); deeper frames stay one line.
+const MAX_FRAME_DEPTH = 4;
 
 export interface BrowserFindResult {
   matches: BrowserAutomationFindMatch[];
@@ -83,11 +112,22 @@ type BrowserRefFailure = Extract<BrowserRefActionResult, { ok: false }>;
 
 type BrowserRefResolveResult = { ok: true; metadata: BrowserRefMetadata } | BrowserRefFailure;
 
+interface FrameSnapshotState {
+  browserId: string;
+  locator: FrameLocator;
+  refs: Map<string, BrowserRefMetadata>;
+  remaining: AriaSnapshotLimits;
+  stats: BrowserAriaSnapshotStats;
+  truncated: boolean;
+}
+
 const TRUNCATION_MARKER = '- text: "Snapshot truncated."';
 const MAX_RENDERED_TEXT_LENGTH = 80_000;
 
 export class BrowserSnapshotEngine {
   private readonly statesByBrowserId = new Map<string, BrowserRefState>();
+  /** Frame numbers in refs (`@f2e5`), kept per tab for the frame's life like element refs. */
+  private readonly frameNumbersByBrowserId = new Map<string, Map<number, number>>();
 
   async snapshot(input: { browserId: string; page: SnapshotPage }): Promise<BrowserAriaSnapshot> {
     const result = await this.snapshotScoped(input);
@@ -108,10 +148,27 @@ export class BrowserSnapshotEngine {
     scopeRef?: string;
     interactiveOnly?: boolean;
   }): Promise<BrowserAriaSnapshot | BrowserRefFailure> {
-    const rawSnapshot = parseAriaSnapshot(await input.page.executeJavaScript(ARIA_SNAPSHOT_SCRIPT));
-    this.statesByBrowserId.set(input.browserId, {
-      refs: new Map(rawSnapshot.refs.map((ref) => [ref.ref, ref])),
-    });
+    const rawSnapshot = parseAriaSnapshot(
+      await input.page.executeJavaScript(buildAriaSnapshotScript()),
+    );
+    const refs = new Map(rawSnapshot.refs.map((ref) => [ref.ref, ref]));
+    let stats = rawSnapshot.stats;
+    let truncated = rawSnapshot.truncated;
+    const frameNodes = truncated ? [] : collectFrameNodes(rawSnapshot.root);
+    if (frameNodes.length > 0 && input.page.listFrames) {
+      const state: FrameSnapshotState = {
+        browserId: input.browserId,
+        locator: new FrameLocator(input.page.listFrames()),
+        refs,
+        remaining: rawSnapshot.remaining ?? ARIA_SNAPSHOT_LIMITS,
+        stats: { ...stats },
+        truncated: false,
+      };
+      await this.expandFrames(state, frameNodes);
+      stats = state.stats;
+      truncated = state.truncated;
+    }
+    this.statesByBrowserId.set(input.browserId, { refs });
     let root: SnapshotNode | null = rawSnapshot.root;
     if (input.scopeRef) {
       root = findNodeByRef(rawSnapshot.root, input.scopeRef);
@@ -123,17 +180,72 @@ export class BrowserSnapshotEngine {
       root = keepInteractive(root) ?? { kind: "group", children: [] };
     }
     const rendered = renderSnapshot(root);
-    const capped = capRenderedSnapshot(rendered, rawSnapshot.truncated);
+    const capped = capRenderedSnapshot(rendered, truncated);
     return {
       format: "aria-yaml",
       snapshot: capped.snapshot,
       truncated: capped.truncated,
       stats: {
-        ...rawSnapshot.stats,
-        refCount: rawSnapshot.refs.length,
+        ...stats,
+        refCount: refs.size,
         textLength: capped.snapshot.length,
       },
     };
+  }
+
+  /**
+   * Daseo delta 110: walks each cross-origin frame with the frame's own copy of the snapshot
+   * script, in document order, and puts its content under the iframe's line. The frames share the
+   * page's node, ref, and text limits. A frame the host cannot match or reach stays one line.
+   */
+  private async expandFrames(state: FrameSnapshotState, frameNodes: SnapshotNode[]): Promise<void> {
+    for (const node of frameNodes) {
+      if (state.truncated) return;
+      const target = node.frame;
+      delete node.frame;
+      if (!target) continue;
+      const frame = await state.locator.byPath(target.path);
+      if (!frame) continue;
+      const raw = parseAriaSnapshot(
+        await runFrameScript(frame, buildAriaSnapshotScript(state.remaining)),
+      );
+      if (raw.root.kind !== "role" || raw.root.role !== "document" || !raw.remaining) continue;
+      const frameNumber = this.frameNumber(state.browserId, frame.id);
+      renameFrameRefs(raw.root, frameNumber);
+      for (const ref of raw.refs) {
+        const outer = frameRef(frameNumber, ref.ref);
+        state.refs.set(outer, { ...ref, ref: outer, frame: { id: frame.id, innerRef: ref.ref } });
+      }
+      node.children = raw.root.children ?? [];
+      state.remaining = raw.remaining;
+      state.stats.nodeCount += raw.stats.nodeCount;
+      state.stats.iframeCount = (state.stats.iframeCount ?? 0) + (raw.stats.iframeCount ?? 0);
+      state.stats.maxDepth = Math.max(
+        state.stats.maxDepth ?? 0,
+        target.depth + (raw.stats.maxDepth ?? 0),
+      );
+      if (raw.truncated) {
+        state.truncated = true;
+        return;
+      }
+      if (state.locator.depthOf(frame) < MAX_FRAME_DEPTH) {
+        await this.expandFrames(state, collectFrameNodes(node));
+      }
+    }
+  }
+
+  private frameNumber(browserId: string, frameId: number): number {
+    let numbers = this.frameNumbersByBrowserId.get(browserId);
+    if (!numbers) {
+      numbers = new Map();
+      this.frameNumbersByBrowserId.set(browserId, numbers);
+    }
+    let frameNumber = numbers.get(frameId);
+    if (frameNumber === undefined) {
+      frameNumber = numbers.size + 1;
+      numbers.set(frameId, frameNumber);
+    }
+    return frameNumber;
   }
 
   /**
@@ -154,10 +266,43 @@ export class BrowserSnapshotEngine {
         state.refs.set(match.ref, { ref: match.ref, fingerprint: match.fingerprint });
       }
     }
+    const matches = [...raw.matches];
+    let total = raw.total;
+    // Daseo delta 110: cross-origin frames are searched with their own copy of the script.
+    if (raw.frames.length > 0 && input.page.listFrames) {
+      const locator = new FrameLocator(input.page.listFrames());
+      let pending = raw.frames;
+      for (let depth = 0; depth < MAX_FRAME_DEPTH && pending.length > 0; depth += 1) {
+        const next: number[][] = [];
+        for (const path of pending) {
+          const frame = await locator.byPath(path);
+          if (!frame) continue;
+          const limit = Math.max(0, input.query.limit - matches.length);
+          const found = parseFindResult(
+            await runFrameScript(frame, buildAriaFindScript({ ...input.query, limit })),
+          );
+          const frameNumber = this.frameNumber(input.browserId, frame.id);
+          const renamed = found.matches.map((match) => {
+            if (!match.ref || !match.fingerprint) return match;
+            const outer = frameRef(frameNumber, match.ref);
+            state.refs.set(outer, {
+              ref: outer,
+              fingerprint: match.fingerprint,
+              frame: { id: frame.id, innerRef: match.ref },
+            });
+            return { ...match, ref: outer };
+          });
+          matches.push(...renamed);
+          total += found.total;
+          next.push(...found.frames);
+        }
+        pending = next;
+      }
+    }
     this.statesByBrowserId.set(input.browserId, state);
     return {
-      matches: raw.matches.map(({ fingerprint: _fingerprint, ...match }) => match),
-      total: raw.total,
+      matches: matches.map(({ fingerprint: _fingerprint, ...match }) => match),
+      total,
     };
   }
 
@@ -181,14 +326,43 @@ export class BrowserSnapshotEngine {
 
   clearBrowser(browserId: string): void {
     this.statesByBrowserId.delete(browserId);
+    this.frameNumbersByBrowserId.delete(browserId);
   }
 
-  runtimeElementExpression(input: { browserId: string; ref: string }): string | BrowserRefFailure {
+  /**
+   * The document a ref's element lives in and an expression that resolves it there. A ref inside a
+   * cross-origin frame runs in that frame; it is stale once the frame is gone.
+   */
+  resolveRefTarget(input: {
+    browserId: string;
+    ref: string;
+    page: SnapshotPage;
+  }): BrowserRefTarget | BrowserRefFailure {
     const resolved = this.resolveRef(input);
     if (!resolved.ok) {
       return resolved;
     }
-    return buildRuntimeElementExpression(resolved.metadata);
+    const { metadata } = resolved;
+    if (!metadata.frame) {
+      return {
+        page: input.page,
+        elementExpression: buildRuntimeElementExpression(metadata),
+        frame: null,
+      };
+    }
+    const frameId = metadata.frame.id;
+    const frame = input.page.listFrames?.().find((candidate) => candidate.id === frameId);
+    if (!frame) {
+      return { ok: false, reason: "stale_ref" };
+    }
+    return {
+      page: frame,
+      elementExpression: buildRuntimeElementExpression({
+        ref: metadata.frame.innerRef,
+        fingerprint: metadata.fingerprint,
+      }),
+      frame,
+    };
   }
 
   private async runRefScript(
@@ -199,8 +373,16 @@ export class BrowserSnapshotEngine {
     if (!resolved.ok) {
       return resolved;
     }
-    const result = await input.page.executeJavaScript(buildScript(resolved.metadata));
-    return readActionResult(result, true);
+    const { metadata } = resolved;
+    if (!metadata.frame) {
+      return readActionResult(await input.page.executeJavaScript(buildScript(metadata)), true);
+    }
+    const target = this.resolveRefTarget(input);
+    if ("ok" in target) {
+      return target;
+    }
+    const inner = { ref: metadata.frame.innerRef, fingerprint: metadata.fingerprint };
+    return readActionResult(await runFrameScript(target.page, buildScript(inner)), true);
   }
 
   private resolveRef(input: { browserId: string; ref: string }): BrowserRefResolveResult {
@@ -234,6 +416,25 @@ function isActionFailure(value: unknown): value is BrowserRefFailure {
   return reason === "stale_ref" || reason === "missing_ref";
 }
 
+// The cross-origin frame nodes under `node`, in document order, not inside one another.
+function collectFrameNodes(node: SnapshotNode): SnapshotNode[] {
+  const found: SnapshotNode[] = [];
+  const visit = (current: SnapshotNode) => {
+    if (current.frame) {
+      found.push(current);
+      return;
+    }
+    for (const child of current.children ?? []) visit(child);
+  };
+  for (const child of node.children ?? []) visit(child);
+  return found;
+}
+
+function renameFrameRefs(node: SnapshotNode, frameNumber: number): void {
+  if (node.ref) node.ref = frameRef(frameNumber, node.ref);
+  for (const child of node.children ?? []) renameFrameRefs(child, frameNumber);
+}
+
 function parseAriaSnapshot(value: unknown): RawAriaSnapshot {
   const parsed = typeof value === "string" ? JSON.parse(value) : value;
   if (!parsed || typeof parsed !== "object") {
@@ -250,22 +451,54 @@ function parseAriaSnapshot(value: unknown): RawAriaSnapshot {
     refs: parseRefs(record.refs),
     truncated: record.truncated === true,
     stats: parseStats(record.stats),
+    remaining: parseLimits(record.remaining),
   };
+}
+
+function parseLimits(value: unknown): AriaSnapshotLimits | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const nodes = readNumber(record.nodes);
+  const refs = readNumber(record.refs);
+  const text = readNumber(record.text);
+  return nodes === null || refs === null || text === null ? null : { nodes, refs, text };
+}
+
+function parseFramePath(value: unknown): number[] | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const path = (value as Record<string, unknown>).path;
+  return Array.isArray(path) && path.every((item) => Number.isInteger(item) && item >= 0)
+    ? (path as number[])
+    : null;
 }
 
 interface RawFindMatch extends BrowserAutomationFindMatch {
   fingerprint?: BrowserRefFingerprint;
 }
 
-function parseFindResult(value: unknown): { matches: RawFindMatch[]; total: number } {
+function parseFindResult(value: unknown): {
+  matches: RawFindMatch[];
+  total: number;
+  frames: number[][];
+} {
   const parsed = typeof value === "string" ? JSON.parse(value) : value;
   if (!parsed || typeof parsed !== "object") {
-    return { matches: [], total: 0 };
+    return { matches: [], total: 0, frames: [] };
   }
   const record = parsed as Record<string, unknown>;
   if (record.marker !== ARIA_FIND_SCRIPT_MARKER || !Array.isArray(record.matches)) {
-    return { matches: [], total: 0 };
+    return { matches: [], total: 0, frames: [] };
   }
+  const frames = Array.isArray(record.frames)
+    ? record.frames.flatMap((frame): number[][] => {
+        const path = parseFramePath(frame);
+        return path ? [path] : [];
+      })
+    : [];
   const matches = record.matches.flatMap((item): RawFindMatch[] => {
     if (!item || typeof item !== "object") {
       return [];
@@ -290,7 +523,7 @@ function parseFindResult(value: unknown): { matches: RawFindMatch[]; total: numb
       },
     ];
   });
-  return { matches, total: readNumber(record.total) ?? matches.length };
+  return { matches, total: readNumber(record.total) ?? matches.length, frames };
 }
 
 function emptySnapshot(): RawAriaSnapshot {
@@ -300,6 +533,7 @@ function emptySnapshot(): RawAriaSnapshot {
     refs: [],
     truncated: false,
     stats: { nodeCount: 0, refCount: 0, textLength: 0, iframeCount: 0, maxDepth: 0 },
+    remaining: null,
   };
 }
 
@@ -324,6 +558,7 @@ function parseSnapshotNode(value: unknown): SnapshotNode | null {
       : {}),
     attributes: readStringArray(record.attributes),
     ...readLayoutFlags(record),
+    ...readFrameTarget(record.frame),
     children: Array.isArray(record.children)
       ? record.children.flatMap((child): SnapshotNode[] => {
           const parsed = parseSnapshotNode(child);
@@ -331,6 +566,15 @@ function parseSnapshotNode(value: unknown): SnapshotNode | null {
         })
       : [],
   };
+}
+
+function readFrameTarget(value: unknown): Pick<SnapshotNode, "frame"> {
+  const path = parseFramePath(value);
+  const depth =
+    value && typeof value === "object"
+      ? readNumber((value as Record<string, unknown>).depth)
+      : null;
+  return path && depth !== null ? { frame: { path, depth } } : {};
 }
 
 function readLayoutFlags(
@@ -593,7 +837,9 @@ function buildSelectScript(metadata: BrowserRefMetadata, value: string): string 
   })()`;
 }
 
-function buildRuntimeElementExpression(metadata: BrowserRefMetadata): string {
+function buildRuntimeElementExpression(
+  metadata: Pick<BrowserRefMetadata, "ref" | "fingerprint">,
+): string {
   return String.raw`(() => {
     const resolved = ${buildResolveExpression(metadata)};
     if (!resolved.ok) return null;
@@ -601,7 +847,7 @@ function buildRuntimeElementExpression(metadata: BrowserRefMetadata): string {
   })()`;
 }
 
-function buildResolveExpression(metadata: BrowserRefMetadata): string {
+function buildResolveExpression(metadata: Pick<BrowserRefMetadata, "ref" | "fingerprint">): string {
   return `${BROWSER_AUTOMATION_RUNTIME}?.resolve(${JSON.stringify(metadata.ref)}, ${JSON.stringify(metadata.fingerprint)}) ?? { ok: false, reason: 'stale_ref' }`;
 }
 

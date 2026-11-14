@@ -2938,6 +2938,71 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        (`OUT_OF_BAND_GUIDANCE`), `tools/paseo-tools.ts`, `create-agent/create.ts`,
        `bootstrap.ts`. Takes effect with the next release and daemon restart.
 
+110. **Agents reach elements inside cross-origin iframes** — the lead's report on 2026-11-14: on
+     Fly.io's Stripe Checkout the whole card form sits in one cross-origin iframe, the snapshot
+     showed it as one line with no refs, `browser_find` found nothing, and keys sent after focusing
+     the iframe never entered it, so no tool (and so no `browser_fill_secret`) could fill it.
+     Payment forms, embedded sign-in widgets, and embedded editors all use this pattern.
+     - **Snapshot and find.** A cross-origin iframe's content now appears under its iframe line,
+       and its refs carry the frame: `@f1e3` (Playwright MCP's convention). The page's script marks
+       each cross-origin iframe with its window path (its index in `parent.frames` at each level
+       from the top, all readable across origins); the host matches the path to an Electron
+       `WebFrameMain` by running the same path script in the frame, then runs the frame's own copy
+       of the snapshot or find script there. Frames share the page's 1,500-node, 500-ref, and
+       80,000-character limits in document order; frames under 2 px on a side or placed above or
+       left of the page (Stripe's controller, invisible captchas) stay one line; at most four frame
+       levels; a frame that does not answer in 3 s stays one line. A page without cross-origin
+       iframes runs the same single script as before. Frame numbers stay with the frame
+       (`frameTreeNodeId`) for the tab's life, like element refs.
+     - **Actions.** click, fill, type, select, hover, keypress, scroll, evaluate and read with a
+       ref, and `browser_find` work on frame refs; the element check runs in the frame, and each
+       iframe boundary above it is crossed by the parent's script (finds the iframe element showing
+       that window, checks it is visible, still, on screen, and not covered, and moves the point by
+       its border and padding), so trusted input lands at tab coordinates. Background clicks and
+       fill run in the frame with its own event classes. `browser_evaluate` without a ref stays in
+       the main frame; no "run in any frame by URL" escape was added. drag, upload, styles, and an
+       element screenshot refuse a frame ref with `browser_unsupported` (each needs DevTools
+       access inside the frame that the main session does not have). `browser_wait text` also
+       looks inside the tab's frames, every eighth poll (about 200 ms).
+     - **Text and keys.** The tab's own input reaches every frame in the page's renderer, so a
+       cross-origin but same-site iframe (js.stripe.com inside checkout.stripe.com) takes typed
+       text as before. A frame in another renderer process (another site, so Stripe's form on a
+       shop's page) gets nothing from `sendInputEvent`, and `webContents.insertText` while such a
+       frame has focus crashed the tab's renderer (Electron 44.10.2, exit code 11, measured). Its
+       text (`Input.insertText`) and keys (`Input.dispatchKeyEvent`) now go through its own DevTools
+       target: attached with `Target.attachToTarget` for the one input and detached after, chosen
+       among the browser-wide iframe targets by a random key the frame's own script set a moment
+       before (a URL can be open in two tabs). No `Runtime.enable`. `browser_type` and
+       `browser_keypress` without a ref, and the phone's streamed text and keys, follow the page's
+       focus into such a frame the same way; before, the phone typing into a tapped card field hit
+       the same renderer crash, and the phone's focus probe now asks the focused frame itself, so a
+       tapped card field keeps the phone keyboard up. Focus in an iframe that cannot be matched
+       fails with a message instead of risking the crash.
+     - **Values.** A filled field inside a frame prints in a snapshot exactly as in the main
+       document: the value is its name only when it has no label, aria-label, or placeholder
+       (Stripe's fields have aria-labels). No special casing.
+     - **Protocol.** The ref pattern widens from `@e\d+` to `@(?:f\d+)?e\d+` in
+       `packages/protocol` and the server's tool schema; only a desktop with this delta hands out
+       `@f` refs. `browser_snapshot`'s description says which tools take them; `browser_wait`'s says
+       text includes iframes.
+     - **Checks.** Capture harness group `cross-origin-frames`, 8 of 8 on 2026-11-14 (fixture, see
+       `docs/browser-capture-harness.md`). The `frames-network` group now expects the cross-origin
+       frame's content with frame refs. Stripe's public test-mode payments demo
+       (`stripe-payments-demo.appspot.com`, card frame from js.stripe.com in its own process) in the
+       compiled build: refs `@f1e1`-`@f1e3` for card number, expiry, CVC; typing 4242424242424242,
+       1234, 123 by ref gave `4242 4242 4242 4242`, `12 / 34`, `123`, each `is-complete` with
+       `aria-invalid="false"`. Unit tests: `frame-input.test.ts`, frame cases in
+       `snapshot-engine.test.ts`, `aria-snapshot-script.test.ts`, `service.test.ts`,
+       `trusted-input.test.ts`. Snapshot of pages without cross-origin iframes is unchanged:
+       example.com, Wikipedia "Electron (software framework)", and Python's `json` docs gave the
+       same node, ref, and character counts in 0.5.120 and this build (18/1/1,032,
+       1,500/111/18,926, 1,500/23/6,300).
+     - **Key files:** `packages/desktop/src/features/browser-automation/{frames,frame-input}.ts`
+       (new), `snapshot-engine.ts`, `aria-snapshot-script.ts`, `actionability.ts`
+       (`waitForActionableRefTarget`, frame carry), `service.ts` (`resolveRef`, `keyboardRoute`),
+       `ipc.ts` (`listFrames`, `sendFrameInput`), `trusted-input.ts` (`planCdpKeySteps`).
+       Already-open tabs need no reload.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

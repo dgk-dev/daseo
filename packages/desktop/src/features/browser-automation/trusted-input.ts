@@ -194,3 +194,83 @@ function mouseButtonMask(button: MouseButton): number {
   }
   return 1;
 }
+
+// Daseo delta 110. Keys for an out-of-process frame go through its DevTools target as
+// Input.dispatchKeyEvent, which needs the DOM key, code, and Windows key code that Electron's
+// sendInputEvent derives by itself from its key name.
+interface CdpKeyDefinition {
+  key: string;
+  code: string;
+  keyCode: number;
+  text?: string;
+}
+
+const CDP_NAMED_KEYS: Record<string, CdpKeyDefinition> = {
+  Enter: { key: "Enter", code: "Enter", keyCode: 13, text: "\r" },
+  Return: { key: "Enter", code: "Enter", keyCode: 13, text: "\r" },
+  Tab: { key: "Tab", code: "Tab", keyCode: 9 },
+  Backspace: { key: "Backspace", code: "Backspace", keyCode: 8 },
+  Escape: { key: "Escape", code: "Escape", keyCode: 27 },
+  Esc: { key: "Escape", code: "Escape", keyCode: 27 },
+  Delete: { key: "Delete", code: "Delete", keyCode: 46 },
+  Insert: { key: "Insert", code: "Insert", keyCode: 45 },
+  Space: { key: " ", code: "Space", keyCode: 32, text: " " },
+  ArrowUp: { key: "ArrowUp", code: "ArrowUp", keyCode: 38 },
+  ArrowDown: { key: "ArrowDown", code: "ArrowDown", keyCode: 40 },
+  ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", keyCode: 37 },
+  ArrowRight: { key: "ArrowRight", code: "ArrowRight", keyCode: 39 },
+  Up: { key: "ArrowUp", code: "ArrowUp", keyCode: 38 },
+  Down: { key: "ArrowDown", code: "ArrowDown", keyCode: 40 },
+  Left: { key: "ArrowLeft", code: "ArrowLeft", keyCode: 37 },
+  Right: { key: "ArrowRight", code: "ArrowRight", keyCode: 39 },
+  Home: { key: "Home", code: "Home", keyCode: 36 },
+  End: { key: "End", code: "End", keyCode: 35 },
+  PageUp: { key: "PageUp", code: "PageUp", keyCode: 33 },
+  PageDown: { key: "PageDown", code: "PageDown", keyCode: 34 },
+};
+
+function cdpKeyDefinition(key: string): CdpKeyDefinition | null {
+  const named = CDP_NAMED_KEYS[key];
+  if (named) return named;
+  const functionKey = /^F([1-9]|1[0-2])$/.exec(key);
+  if (functionKey) {
+    return { key, code: key, keyCode: 111 + Number(functionKey[1]) };
+  }
+  if ([...key].length !== 1) return null;
+  if (/^[a-z]$/i.test(key)) {
+    return {
+      key,
+      code: `Key${key.toUpperCase()}`,
+      keyCode: key.toUpperCase().charCodeAt(0),
+      text: key,
+    };
+  }
+  if (/^\d$/.test(key)) {
+    return { key, code: `Digit${key}`, keyCode: key.charCodeAt(0), text: key };
+  }
+  return { key, code: "", keyCode: 0, text: key };
+}
+
+export interface CdpInputStep {
+  command: string;
+  params: Record<string, unknown>;
+}
+
+/** The DevTools commands that put one key into a frame; null for a key name it does not know. */
+export function planCdpKeySteps(key: string): CdpInputStep[] | null {
+  const definition = cdpKeyDefinition(key);
+  if (!definition) return null;
+  const base = {
+    key: definition.key,
+    code: definition.code,
+    windowsVirtualKeyCode: definition.keyCode,
+    nativeVirtualKeyCode: definition.keyCode,
+  };
+  const down = definition.text
+    ? { type: "keyDown", ...base, text: definition.text, unmodifiedText: definition.text }
+    : { type: "rawKeyDown", ...base };
+  return [
+    { command: "Input.dispatchKeyEvent", params: down },
+    { command: "Input.dispatchKeyEvent", params: { type: "keyUp", ...base } },
+  ];
+}

@@ -72,6 +72,7 @@ class FakeTab implements TabContents {
     ref?: string;
     attributes?: string[];
     children?: unknown[];
+    frame?: { path: number[]; depth: number };
   }> = [];
   public actionScriptResult: unknown = true;
   public inputProbeEffect: unknown = null;
@@ -608,6 +609,7 @@ function snapshotResult(nodes: FakeTab["snapshotNodes"]) {
           ? { ref: node.ref, fingerprint: refs.find((ref) => ref.ref === node.ref)?.fingerprint }
           : {}),
         children: node.children ?? [],
+        ...(node.frame ? { frame: node.frame } : {}),
       })),
     },
     refs,
@@ -3651,5 +3653,157 @@ describe("passkey_use (delta 102)", () => {
     expect(
       await browser.execute({ command: "passkey_use", args: { browserId: BROWSER_B } }),
     ).toMatchObject({ ok: false, error: { code: "browser_tab_not_found" } });
+  });
+});
+
+// Daseo delta 110: a ref inside an out-of-process iframe gets its text and keys through the
+// frame's own DevTools target; the tab's insertText while such a frame has focus crashed the
+// renderer.
+describe("refs inside an out-of-process iframe", () => {
+  const cardFingerprint = {
+    role: "textbox",
+    name: "Card number",
+    tagName: "input",
+    type: "",
+    ariaLabel: "",
+  };
+
+  function framedHarness() {
+    const browser = new BrowserAutomationHarness();
+    browser.tab.focused = false;
+    browser.tab.snapshotNodes = [
+      {
+        role: "iframe",
+        name: "Secure card form",
+        tagName: "iframe",
+        attributes: ["cross-origin=true"],
+        frame: { path: [0], depth: 1 },
+      },
+    ];
+    const frameScripts: string[] = [];
+    let frameFocused = false;
+    const frame = {
+      id: 9,
+      parentId: null,
+      outOfProcess: true,
+      url: "https://js.pay.test/inner",
+      async executeJavaScript(code: string) {
+        frameScripts.push(code);
+        if (code.includes("return windowPath(window)")) return [0];
+        if (code.includes("__PASEO_ARIA_SNAPSHOT__")) {
+          return JSON.stringify({
+            marker: "__PASEO_ARIA_SNAPSHOT__",
+            root: {
+              kind: "role",
+              role: "document",
+              name: "Card",
+              tagName: "document",
+              attributes: [],
+              children: [
+                {
+                  kind: "role",
+                  role: "textbox",
+                  name: "Card number",
+                  tagName: "input",
+                  attributes: [],
+                  ref: "@e3",
+                  fingerprint: cardFingerprint,
+                  children: [],
+                },
+              ],
+            },
+            refs: [{ ref: "@e3", fingerprint: cardFingerprint }],
+            truncated: false,
+            stats: { nodeCount: 2, refCount: 1, textLength: 0 },
+            remaining: { nodes: 1490, refs: 499, text: 79_000 },
+          });
+        }
+        if (code.includes("const requiresEditable")) {
+          return {
+            ok: true,
+            target: {
+              point: { x: 12, y: 8 },
+              framePoint: { x: 12, y: 8 },
+              rect: { x: 2, y: 2, width: 20, height: 12 },
+              windowIndex: 0,
+            },
+          };
+        }
+        if (code.includes("element.focus({ preventScroll: true })")) {
+          frameFocused = true;
+          return { editable: true };
+        }
+        return true;
+      },
+    };
+    const frameInputs: Array<{ frameId: number; input: unknown }> = [];
+    const tabScript = browser.tab.executeJavaScript.bind(browser.tab);
+    Object.assign(browser.tab, {
+      listFrames: () => [frame],
+      sendFrameInput: async (frameId: number, input: unknown) => {
+        frameInputs.push({ frameId, input });
+      },
+      executeJavaScript: async (code: string, userGesture?: boolean) => {
+        // The main frame carries the frame's point out through its iframe element.
+        if (code.includes("const child = window.frames[0]")) {
+          return { ok: true, point: { x: 112, y: 208 } };
+        }
+        // Keyboard focus sits in the iframe once its field was focused.
+        if (code.includes("return win ? windowPath(win) : null;")) return frameFocused ? [0] : null;
+        return tabScript(code, userGesture);
+      },
+    });
+    return { browser, frameScripts, frameInputs };
+  }
+
+  test("type sends the text through the frame's target at the carried point", async () => {
+    const { browser, frameInputs } = framedHarness();
+    const snapshot = await browser.snapshot();
+    expect(JSON.stringify(snapshot)).toContain('textbox \\"Card number\\" [ref=@f1e3]');
+
+    const action = await browser.execute({
+      command: "type",
+      args: { browserId: BROWSER_A, ref: "@f1e3", text: "4242424242424242" },
+    });
+
+    expect(action).toEqual({
+      requestId: "req-type",
+      ok: true,
+      result: { command: "type", browserId: BROWSER_A, ref: "@f1e3", x: 112, y: 208 },
+    });
+    expect(frameInputs).toEqual([
+      { frameId: 9, input: { kind: "text", text: "4242424242424242" } },
+    ]);
+    expect(browser.tab.insertedTexts).toEqual([]);
+  });
+
+  test("keypress without a ref follows focus into the frame", async () => {
+    const { browser, frameInputs } = framedHarness();
+    await browser.snapshot();
+    await browser.execute({
+      command: "type",
+      args: { browserId: BROWSER_A, ref: "@f1e3", text: "4" },
+    });
+
+    const action = await browser.execute({
+      command: "keypress",
+      args: { browserId: BROWSER_A, key: "Tab" },
+    });
+
+    expect(action.ok).toBe(true);
+    expect(frameInputs.at(-1)).toEqual({ frameId: 9, input: { kind: "key", key: "Tab" } });
+    expect(browser.tab.inputEvents).toEqual([]);
+  });
+
+  test("drag and upload refuse a frame ref", async () => {
+    const { browser } = framedHarness();
+    await browser.snapshot();
+
+    const upload = await browser.execute({
+      command: "upload",
+      args: { browserId: BROWSER_A, ref: "@f1e3", filePaths: ["a.txt"] },
+    });
+
+    expect(upload).toMatchObject({ ok: false, error: { code: "browser_unsupported" } });
   });
 });

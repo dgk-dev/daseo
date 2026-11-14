@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BrowserSnapshotEngine, type SnapshotPage } from "./snapshot-engine.js";
-import type { AriaFindQuery } from "./aria-snapshot-script.js";
+import { ARIA_SNAPSHOT_SCRIPT, type AriaFindQuery } from "./aria-snapshot-script.js";
 import { dispatchFocusIsolatedClick } from "./focus-isolated-input.js";
 import { observeInputEffect } from "./input-effect.js";
 
@@ -18,6 +18,12 @@ function page(): SnapshotPage {
     // Indirect eval runs the script in the global scope, where jsdom's window lives.
     executeJavaScript: async (code: string) => (0, eval)(code),
   };
+}
+
+// The expression that resolves a main-document ref, or the failure.
+function elementExpressionOf(engine: BrowserSnapshotEngine, ref: string) {
+  const target = engine.resolveRefTarget({ browserId: "browser-1", ref, page: page() });
+  return "ok" in target ? target : target.elementExpression;
 }
 
 async function snapshotOf(html: string, afterRender?: () => void): Promise<string> {
@@ -165,10 +171,7 @@ describe("ARIA snapshot script with iframes", () => {
       ref: refFor(snapshot, 'textbox "Coupon"'),
       value: "SAVE10",
     });
-    const expression = engine.runtimeElementExpression({
-      browserId: "browser-1",
-      ref: refFor(snapshot, 'button "Checkout"'),
-    });
+    const expression = elementExpressionOf(engine, refFor(snapshot, 'button "Checkout"'));
     if (typeof expression !== "string") throw new Error("checkout ref did not resolve");
     const clicked = await dispatchFocusIsolatedClick(page(), expression, { x: 5, y: 5 });
 
@@ -210,6 +213,22 @@ describe("ARIA snapshot script with iframes", () => {
     expect(await snapshotWithEngine(new BrowserSnapshotEngine())).toMatch(
       /^- document "Shop"\n {2}- iframe "Payment" \[cross-origin=true src=https:\/\/pay\.example\/checkout\]\n {2}- button "Back" \[ref=@e\d+\]$/,
     );
+  });
+
+  it("gives a cross-origin frame its window path for the host (delta 110)", async () => {
+    document.head.innerHTML = `<title>Shop</title><style>${INLINE_STYLE}</style>`;
+    document.body.innerHTML =
+      '<iframe title="Spacer"></iframe><iframe title="Payment" src="https://pay.example/checkout"></iframe>';
+    const payment = document.querySelectorAll("iframe")[1] as HTMLIFrameElement;
+    Object.defineProperty(payment, "contentDocument", { get: () => null });
+
+    const raw = JSON.parse(String((0, eval)(ARIA_SNAPSHOT_SCRIPT)));
+    const paymentNode = raw.root.children.find(
+      (node: { name?: string }) => node.name === "Payment",
+    );
+
+    expect(paymentNode.frame).toEqual({ path: [1], depth: 1 });
+    expect(raw.remaining.nodes).toBe(1500 - raw.stats.nodeCount);
   });
 
   it("counts frame nodes against the global node cap", async () => {
@@ -279,7 +298,7 @@ describe("browser_find script", () => {
       ],
     });
     const ref = found.matches[0]?.ref ?? "";
-    const expression = engine.runtimeElementExpression({ browserId: "browser-1", ref });
+    const expression = elementExpressionOf(engine, ref);
     if (typeof expression !== "string") throw new Error("find ref did not resolve");
     expect(await dispatchFocusIsolatedClick(page(), expression, { x: 5, y: 5 })).toBe(true);
     expect(clicks).toEqual(["add"]);
@@ -316,10 +335,7 @@ describe("browser_find script", () => {
     });
 
     expect(found.matches[0]?.ref).toBe(snapshotRef);
-    const linkExpression = engine.runtimeElementExpression({
-      browserId: "browser-1",
-      ref: linkRef,
-    });
+    const linkExpression = elementExpressionOf(engine, linkRef);
     if (typeof linkExpression !== "string") throw new Error("snapshot ref stopped resolving");
     expect((0, eval)(linkExpression)).toBe(document.querySelector("a"));
   });
@@ -495,7 +511,7 @@ describe("appearing elements, background click order, and the input probe", () =
     const engine = new BrowserSnapshotEngine();
     const { snapshot } = await engine.snapshot({ browserId: "browser-1", page: page() });
     const ref = /button "Go" \[ref=(@e\d+)\]/.exec(snapshot)?.[1] ?? "";
-    const expression = engine.runtimeElementExpression({ browserId: "browser-1", ref });
+    const expression = elementExpressionOf(engine, ref);
     if (typeof expression !== "string") throw new Error("ref did not resolve");
 
     expect(await dispatchFocusIsolatedClick(page(), expression, { x: 5, y: 5 })).toBe(true);
@@ -512,7 +528,7 @@ describe("appearing elements, background click order, and the input probe", () =
     const engine = new BrowserSnapshotEngine();
     const { snapshot } = await engine.snapshot({ browserId: "browser-1", page: page() });
     const ref = /button "Go" \[ref=(@e\d+)\]/.exec(snapshot)?.[1] ?? "";
-    const expression = engine.runtimeElementExpression({ browserId: "browser-1", ref });
+    const expression = elementExpressionOf(engine, ref);
     if (typeof expression !== "string") throw new Error("ref did not resolve");
 
     await dispatchFocusIsolatedClick(page(), expression, { x: 5, y: 5 });
@@ -552,7 +568,7 @@ describe("appearing elements, background click order, and the input probe", () =
     const engine = new BrowserSnapshotEngine();
     const { snapshot } = await engine.snapshot({ browserId: "browser-1", page: page() });
     const ref = /button "Go" \[ref=(@e\d+)\]/.exec(snapshot)?.[1] ?? "";
-    const expression = engine.runtimeElementExpression({ browserId: "browser-1", ref });
+    const expression = elementExpressionOf(engine, ref);
     if (typeof expression !== "string") throw new Error("ref did not resolve");
     return observeInputEffect({
       page: page(),

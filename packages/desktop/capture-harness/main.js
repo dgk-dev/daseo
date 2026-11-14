@@ -3172,11 +3172,13 @@ async function verifyFrameSnapshot(harness, servers) {
     !/- textbox "Coupon" \[ref=@e\d+\]/.test(cartBlock) ||
     !/- button "Checkout" \[ref=@e\d+\]/.test(cartBlock) ||
     !paymentLine.test(snapshot) ||
-    snapshot.includes("Pay now")
+    !/^ {4}- button "Pay now" \[ref=@f\d+e\d+\]$/m.test(snapshot)
   ) {
     fail(`frames snapshot shape wrong:\n${snapshot}`);
   }
-  pass("snapshot lists same-origin iframe content with refs; cross-origin frame stays one node");
+  pass(
+    "snapshot lists same-origin iframe content with refs and cross-origin content with frame refs",
+  );
   return {
     checkout: refOf('button "Checkout"'),
     coupon: refOf('textbox "Coupon"'),
@@ -4110,6 +4112,425 @@ async function verifyPasskeyTool({
       [afterDelete.name, "NotAllowedError"],
     ]),
     { deleted, listed, afterDelete },
+  );
+}
+
+// Daseo delta 110: a card form in a cross-origin iframe. The page is served from 127.0.0.1 and the
+// form from localhost, another site, so Chromium runs the form in its own renderer process (an
+// out-of-process iframe, as Stripe's form is on a shop's page); a second form on 127.0.0.1 with
+// another port is cross-origin but same-site and stays in the page's process.
+async function startCrossOriginFramesServers() {
+  const listen = async (handler) => {
+    const server = http.createServer(handler);
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    return { server, port: server.address().port };
+  };
+  const html = (response, body) => {
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(body);
+  };
+  const form = await listen((request, response) => {
+    if (request.url === "/tiny") {
+      html(response, "<!doctype html><title>Controller</title><button>Hidden control</button>");
+      return;
+    }
+    if (request.url === "/promo") {
+      html(
+        response,
+        `<!doctype html><title>Promo</title>
+        <input id="promo" aria-label="Promo code">
+        <script>
+          window.__log = [];
+          document.getElementById('promo').addEventListener('keydown', (event) => {
+            window.__log.push({ type: 'keydown', key: event.key, trusted: event.isTrusted });
+          });
+        </script>`,
+      );
+      return;
+    }
+    html(
+      response,
+      `<!doctype html><title>Card form</title>
+      <style>body { margin: 0; font: 14px sans-serif; } input, select, button { display: block; margin: 8px; }</style>
+      <input id="card" aria-label="Card number" autocomplete="off">
+      <input id="exp" aria-label="Expiration" placeholder="MM / YY">
+      <select id="country" aria-label="Country"><option value="">Choose</option><option value="KR">Korea</option><option value="JP">Japan</option></select>
+      <button id="save">Save</button>
+      <p id="status">Not saved</p>
+      <script>
+        window.__log = [];
+        const log = (entry) => window.__log.push(entry);
+        const card = document.getElementById('card');
+        const exp = document.getElementById('exp');
+        // Formats on every input as a payment form does: groups of four, MM / YY.
+        card.addEventListener('input', (event) => {
+          log({ type: 'input', field: 'card', trusted: event.isTrusted });
+          const digits = card.value.replace(/\\D/g, '').slice(0, 16);
+          card.value = digits.replace(/(\\d{4})(?=\\d)/g, '$1 ');
+        });
+        exp.addEventListener('input', () => {
+          const digits = exp.value.replace(/\\D/g, '').slice(0, 4);
+          exp.value = digits.length > 2 ? digits.slice(0, 2) + ' / ' + digits.slice(2) : digits;
+        });
+        for (const field of [card, exp]) {
+          field.addEventListener('keydown', (event) => {
+            log({ type: 'keydown', field: field.id, key: event.key, trusted: event.isTrusted });
+            if (event.key === 'Enter') document.getElementById('status').textContent = 'Submitted ' + card.value;
+          });
+        }
+        const save = document.getElementById('save');
+        save.addEventListener('mouseover', (event) => log({ type: 'mouseover', trusted: event.isTrusted }));
+        save.addEventListener('click', (event) => {
+          log({ type: 'click', trusted: event.isTrusted, x: event.clientX, y: event.clientY });
+          document.getElementById('status').textContent = 'Saved ' + card.value;
+        });
+      </script>`,
+    );
+  });
+  const promo = await listen((_request, response) => {
+    response.writeHead(302, { location: `http://127.0.0.1:${form.port}/promo` });
+    response.end();
+  });
+  const formOrigin = `http://localhost:${form.port}`;
+  const sameSiteOrigin = `http://127.0.0.1:${form.port}`;
+  const page = await listen((_request, response) =>
+    html(
+      response,
+      `<!doctype html><title>Checkout</title>
+      <style>
+        body { margin: 0; }
+        iframe { display: block; margin: 20px 0 0 120px; border: 3px solid #888; padding: 5px; }
+        #card-frame { width: 480px; height: 260px; }
+        #promo-frame { width: 320px; height: 60px; }
+        #tiny { width: 1px; height: 1px; border: 0; padding: 0; margin: 0; }
+      </style>
+      <h1>Checkout</h1>
+      <input id="name" aria-label="Name on order">
+      <iframe id="card-frame" title="Secure card form" src="${formOrigin}/card"></iframe>
+      <iframe id="promo-frame" title="Promo" src="${sameSiteOrigin}/promo"></iframe>
+      <iframe id="tiny" title="Controller" src="${formOrigin}/tiny"></iframe>`,
+    ),
+  );
+  return {
+    servers: [form.server, promo.server, page.server],
+    pageUrl: `http://127.0.0.1:${page.port}/`,
+    formOrigin,
+  };
+}
+
+async function runCrossOriginFramesGroup() {
+  const fixture = await startCrossOriginFramesServers();
+  const handle = createInactiveHarnessWindow({
+    width: 1000,
+    height: 700,
+    backgroundColor: "#202020",
+    webPreferences: { webviewTag: true, contextIsolation: true, nodeIntegration: false },
+  });
+  const { win } = handle;
+  installHarnessWebviewGuards(win);
+  const tracker = trackAttachedGuests(win, { disableGuestBackgroundThrottlingAtAttach: true });
+  try {
+    await withTimeout(
+      win.loadFile(path.join(ROOT, "index.html"), {
+        query: { webviewCount: "0", permanentParkingState: "p1-overflow-1x1" },
+      }),
+      "cross-origin frames harness window loadFile",
+    );
+    await waitForInactiveReveal(handle, "cross-origin frames harness window");
+    const { guest } = await appendPermanentWebview({
+      win,
+      tracker,
+      state: { id: "p1-overflow-1x1" },
+      sourceUrl: fixture.pageUrl,
+    });
+    await waitForGuestLoad(guest);
+    await delay(500);
+    const context = createCrossOriginFramesContext({ win, guest, fixture });
+    verifyCrossOriginProcesses(context);
+    const refs = await verifyCrossOriginSnapshot(context);
+    await verifyCrossOriginFind(context, refs);
+    await verifyCrossOriginBackground(context, refs);
+    await verifyCrossOriginTrustedPointer(context, refs);
+    await verifyCrossOriginReads(context, refs);
+    await verifyCrossOriginSameSite(context, refs);
+    await verifyCrossOriginRefusals(context, refs);
+    return context.results;
+  } finally {
+    if (!win.isDestroyed()) win.close();
+    for (const server of fixture.servers) await closeServer(server);
+  }
+}
+
+function createCrossOriginFramesContext({ win, guest, fixture }) {
+  const context = {
+    win,
+    guest,
+    fixture,
+    harness: createFramesAutomation(guest),
+    results: [],
+    crashed: null,
+    frameOf: (urlPart) =>
+      guest.mainFrame.framesInSubtree.find((frame) => frame.url.includes(urlPart)),
+    inCard: (expression) => context.frameOf("/card").executeJavaScript(expression),
+    check(name, problems, detail = {}) {
+      if (context.crashed) problems.push(`renderer crashed ${JSON.stringify(context.crashed)}`);
+      if (problems.length > 0) fail(`cross-origin-frames ${name}: ${problems.join("; ")}`);
+      pass(`cross-origin-frames ${name}`);
+      context.results.push({ group: "cross-origin-frames", check: name, pass: true, ...detail });
+    },
+  };
+  guest.on("render-process-gone", (_event, details) => {
+    context.crashed = details;
+  });
+  return context;
+}
+
+// The problems among [condition, message] pairs.
+function unmet(pairs) {
+  return pairs.filter(([condition]) => !condition).map(([, message]) => message);
+}
+
+function verifyCrossOriginProcesses({ guest, frameOf, check }) {
+  const cardFrame = frameOf("/card");
+  const promoFrame = frameOf("/promo");
+  const mainProcess = guest.mainFrame.processId;
+  check(
+    "fixture-processes",
+    unmet([
+      [cardFrame?.processId !== mainProcess, "the card form is not an out-of-process frame"],
+      [promoFrame?.processId === mainProcess, "the promo form is not in the page's process"],
+    ]),
+  );
+}
+
+async function verifyCrossOriginSnapshot({ harness, check }) {
+  const { snapshot, stats } = await harness.run("snapshot", {
+    command: "snapshot",
+    args: { browserId: harness.browserId },
+  });
+  const refOf = (line) => {
+    const escaped = line.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`${escaped} \\[ref=(@(?:f\\d+)?e\\d+)\\]`).exec(snapshot)?.[1] ?? null;
+  };
+  const refs = {
+    name: refOf('textbox "Name on order"'),
+    card: refOf('textbox "Card number"'),
+    exp: refOf('textbox "Expiration"'),
+    country: refOf('combobox "Country"'),
+    save: refOf('button "Save"'),
+    promo: refOf('textbox "Promo code"'),
+  };
+  const cardBlock =
+    /- iframe "Secure card form" \[cross-origin=true src=[^\]]+\]\n((?: {4}- .*\n?)+)/.exec(
+      snapshot,
+    )?.[1] ?? "";
+  const frameRefs = Object.entries(refs).filter(([key]) => key !== "name");
+  check(
+    "snapshot",
+    unmet([
+      [/^@e\d+$/.test(refs.name ?? ""), `main ref ${refs.name}`],
+      ...frameRefs.map(([key, ref]) => [/^@f\d+e\d+$/.test(ref ?? ""), `${key} ref ${ref}`]),
+      [cardBlock.includes('textbox "Card number"'), "card content not under its iframe"],
+      [
+        /- iframe "Controller" \[cross-origin=true src=[^\]]+\]\n(?! {4})/.test(`${snapshot}\n`),
+        "the 1px frame was walked",
+      ],
+      [!snapshot.includes("Hidden control"), "the 1px frame's content is listed"],
+    ]),
+    { refs, nodeCount: stats.nodeCount, textLength: stats.textLength },
+  );
+  return refs;
+}
+
+async function verifyCrossOriginFind({ harness, check }, refs) {
+  const found = await harness.run("find", {
+    command: "find",
+    args: { browserId: harness.browserId, role: "textbox", exact: false, limit: 20 },
+  });
+  const foundRefs = new Set(found.matches.map((match) => match.ref));
+  check(
+    "find",
+    unmet(
+      [refs.name, refs.card, refs.exp, refs.promo].map((ref) => [
+        foundRefs.has(ref),
+        `find has no ${ref}: ${JSON.stringify(found.matches)}`,
+      ]),
+    ),
+  );
+}
+
+// Background (the browser does not hold input focus): events are sent to the element.
+async function verifyCrossOriginBackground({ harness, inCard, check }, refs) {
+  const { browserId } = harness;
+  const run = (label, command, args) =>
+    harness.run(label, { command, args: { browserId, ...args } });
+  await run("background click", "click", { ref: refs.save });
+  const status1 = await inCard("document.getElementById('status').textContent");
+  await run("fill", "fill", { ref: refs.card, value: "4111111111111111" });
+  const filled = await inCard("document.getElementById('card').value");
+  await run("fill clear", "fill", { ref: refs.card, value: "" });
+  await run("type card", "type", { ref: refs.card, text: "4242424242424242" });
+  const typed = await inCard("document.getElementById('card').value");
+  const cardInput = await inCard(
+    "window.__log.filter((entry) => entry.type === 'input' && entry.field === 'card').at(-1)",
+  );
+  await run("keypress Tab", "keypress", { key: "Tab" });
+  const afterTab = await inCard("document.activeElement && document.activeElement.id");
+  await run("type expiry without ref", "type", { text: "1234" });
+  const expiry = await inCard("document.getElementById('exp').value");
+  await run("select", "select", { ref: refs.country, value: "KR" });
+  const country = await inCard("document.getElementById('country').value");
+  await run("keypress Enter", "keypress", { ref: refs.exp, key: "Enter" });
+  const status2 = await inCard("document.getElementById('status').textContent");
+  const enterKey = await inCard("window.__log.filter((entry) => entry.key === 'Enter').at(-1)");
+  check(
+    "background-actions",
+    unmet([
+      [status1 === "Saved ", `click status ${JSON.stringify(status1)}`],
+      [filled === "4111 1111 1111 1111", `fill ${JSON.stringify(filled)}`],
+      [typed === "4242 4242 4242 4242", `type ${JSON.stringify(typed)}`],
+      [cardInput?.trusted === true, `typed input not trusted ${JSON.stringify(cardInput)}`],
+      [afterTab === "exp", `Tab left focus on ${JSON.stringify(afterTab)}`],
+      [expiry === "12 / 34", `expiry ${JSON.stringify(expiry)}`],
+      [country === "KR", `select ${JSON.stringify(country)}`],
+      [status2 === "Submitted 4242 4242 4242 4242", `Enter status ${JSON.stringify(status2)}`],
+      [enterKey?.trusted === true, `Enter key ${JSON.stringify(enterKey)}`],
+    ]),
+    { typed, expiry, country },
+  );
+}
+
+// Trusted input (the browser holds input focus): pointer input lands at tab coordinates. That
+// happens only while a person has the pane open, so the surface is shown at full size: Chromium
+// routes a mouse event into an out-of-process frame by compositor hit testing, which the parked
+// 1x1 surface cannot answer.
+async function verifyCrossOriginTrustedPointer({ win, guest, harness, inCard, check }, refs) {
+  const { browserId } = harness;
+  const setSurface = (width, height) =>
+    win.webContents.executeJavaScript(`(() => {
+      const host = document.getElementById('paseo-browser-resident-webviews');
+      host.style.width = '${width}px';
+      host.style.height = '${height}px';
+      host.style.pointerEvents = '${width > 1 ? "auto" : "none"}';
+      return true;
+    })()`);
+  await setSurface(1000, 700);
+  await delay(400);
+  harness.state.inputFocused = true;
+  await harness.run("trusted hover", { command: "hover", args: { browserId, ref: refs.save } });
+  const trusted = await harness.run("trusted click", {
+    command: "click",
+    args: { browserId, ref: refs.save },
+  });
+  harness.state.inputFocused = false;
+  await setSurface(1, 1);
+  const frameBox = await guest.executeJavaScript(`(() => {
+    const frame = document.getElementById('card-frame');
+    const rect = frame.getBoundingClientRect();
+    return { x: rect.left + frame.clientLeft + 5, y: rect.top + frame.clientTop + 5 };
+  })()`);
+  const inner = await inCard(`(() => {
+    const rect = document.getElementById('save').getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`);
+  const [hover, click] = await inCard(
+    "window.__log.filter((entry) => entry.type === 'mouseover' || entry.type === 'click').slice(-2)",
+  );
+  const offBy = Math.max(
+    Math.abs(trusted.x - (frameBox.x + inner.x)),
+    Math.abs(trusted.y - (frameBox.y + inner.y)),
+  );
+  check(
+    "trusted-pointer",
+    unmet([
+      [offBy <= 1, `click point off by ${offBy}: ${JSON.stringify({ trusted, frameBox, inner })}`],
+      [hover?.type === "mouseover" && hover.trusted === true, `hover ${JSON.stringify(hover)}`],
+      [click?.type === "click" && click.trusted === true, `click ${JSON.stringify(click)}`],
+    ]),
+    { point: { x: trusted.x, y: trusted.y } },
+  );
+}
+
+async function verifyCrossOriginReads({ harness, check }, refs) {
+  const { browserId } = harness;
+  const evaluatedFrame = await harness.run("evaluate frame ref", {
+    command: "evaluate",
+    args: {
+      browserId,
+      ref: refs.card,
+      function: "(element) => [element.ownerDocument.title, element.value]",
+    },
+  });
+  const evaluatedMain = await harness.run("evaluate main", {
+    command: "evaluate",
+    args: { browserId, function: "() => document.title" },
+  });
+  // The trusted click above saved the form.
+  const waited = await harness.run("wait text in frame", {
+    command: "wait",
+    args: { browserId, text: "Saved 4242 4242" },
+  });
+  const read = await harness.run("read frame ref", {
+    command: "read",
+    args: { browserId, ref: refs.save },
+  });
+  check(
+    "evaluate-wait-read",
+    unmet([
+      [
+        evaluatedFrame.resultJson === '["Card form","4242 4242 4242 4242"]',
+        `frame evaluate ${evaluatedFrame.resultJson}`,
+      ],
+      [evaluatedMain.resultJson === '"Checkout"', `main evaluate ${evaluatedMain.resultJson}`],
+      [waited.matched === "text", `wait ${JSON.stringify(waited)}`],
+      [JSON.stringify(read).includes("Save"), `read ${JSON.stringify(read)}`],
+    ]),
+  );
+}
+
+// The same-site frame shares the page's renderer: the tab's own input reaches it.
+async function verifyCrossOriginSameSite({ harness, frameOf, check }, refs) {
+  const { browserId } = harness;
+  await harness.run("type promo", {
+    command: "type",
+    args: { browserId, ref: refs.promo, text: "SAVE10" },
+  });
+  await harness.run("keypress promo", {
+    command: "keypress",
+    args: { browserId, ref: refs.promo, key: "Enter" },
+  });
+  const promo = await frameOf("/promo").executeJavaScript(
+    "({ value: document.getElementById('promo').value, enter: window.__log.filter((entry) => entry.key === 'Enter').length })",
+  );
+  check(
+    "same-site-frame",
+    unmet([[promo.value === "SAVE10" && promo.enter === 1, JSON.stringify(promo)]]),
+  );
+}
+
+async function verifyCrossOriginRefusals({ guest, fixture, harness, check }, refs) {
+  const { browserId } = harness;
+  const unsupported = await harness.execute({
+    command: "styles",
+    args: { browserId, ref: refs.card, maxRules: 5 },
+  });
+  await guest.executeJavaScript(
+    `document.getElementById('card-frame').src = '${fixture.formOrigin}/tiny'`,
+  );
+  await delay(800);
+  const stale = await harness.execute({
+    command: "fill",
+    args: { browserId, ref: refs.card, value: "1" },
+  });
+  check(
+    "refusals",
+    unmet([
+      [unsupported.error?.code === "browser_unsupported", `styles ${JSON.stringify(unsupported)}`],
+      [/stale/.test(JSON.stringify(stale)) && stale.ok === false, `stale ${JSON.stringify(stale)}`],
+    ]),
   );
 }
 
@@ -6198,6 +6619,7 @@ const SINGLE_GROUPS = {
   passkeys: ["passkeysResults", runPasskeysGroup],
   debugging: ["debuggingResults", runDebuggingGroup],
   "frames-network": ["framesNetworkResults", runFramesNetworkGroup],
+  "cross-origin-frames": ["crossOriginFramesResults", runCrossOriginFramesGroup],
   "browser-profile": ["browserProfileResults", runBrowserProfileGroup],
   automation: ["automationResults", runAutomationGroup],
   "permanent-parking": ["permanentParkingResults", runPermanentParkingGroup],

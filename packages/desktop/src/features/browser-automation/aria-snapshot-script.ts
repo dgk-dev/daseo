@@ -1,3 +1,5 @@
+import { WINDOW_PATH_SOURCE } from "./frames.js";
+
 export const ARIA_SNAPSHOT_SCRIPT_MARKER = "__PASEO_ARIA_SNAPSHOT__";
 export const ARIA_FIND_SCRIPT_MARKER = "__PASEO_ARIA_FIND__";
 // The ref registry is keyed by a registered symbol, so later scripts reach it while a page listing
@@ -99,6 +101,28 @@ export const ARIA_SHARED_SOURCE = String.raw`
   function isFrameElement(element) {
     const tag = element.tagName.toLowerCase();
     return tag === 'iframe' || tag === 'frame';
+  }
+
+  ${WINDOW_PATH_SOURCE}
+
+  // Daseo delta 110. A cross-origin frame whose content the host walks with the frame's own
+  // script: its window path, matched to the Electron frame. A frame under 2 px on a side (Stripe's
+  // controller, metrics beacons) or placed above or left of the page, where no scroll reaches it
+  // (invisible captchas), stays the one line it was.
+  function crossOriginFrameTarget(element) {
+    let win = null;
+    try {
+      win = element.contentWindow;
+    } catch {
+      return null;
+    }
+    if (!win) return null;
+    const rect = element.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) return null;
+    const view = element.ownerDocument.defaultView || window;
+    if (rect.right + (view.scrollX || 0) <= 0 || rect.bottom + (view.scrollY || 0) <= 0) return null;
+    const path = windowPath(win);
+    return path ? { path } : null;
   }
 
   ${INSERTION_LOG_SOURCE}
@@ -399,11 +423,21 @@ export const ARIA_SHARED_SOURCE = String.raw`
   }
 `;
 
-export const ARIA_SNAPSHOT_SCRIPT = String.raw`(() => {
+/** What one snapshot may hold in total; a frame's snapshot gets what the page above it left. */
+export interface AriaSnapshotLimits {
+  nodes: number;
+  refs: number;
+  text: number;
+}
+
+export const ARIA_SNAPSHOT_LIMITS: AriaSnapshotLimits = { nodes: 1500, refs: 500, text: 80_000 };
+
+export function buildAriaSnapshotScript(limits: AriaSnapshotLimits = ARIA_SNAPSHOT_LIMITS): string {
+  return String.raw`(() => {
   const MARKER = ${JSON.stringify(ARIA_SNAPSHOT_SCRIPT_MARKER)};
-  const MAX_NODES = 1500;
-  const MAX_REFS = 500;
-  const MAX_TEXT_LENGTH = 80000;
+  const MAX_NODES = ${Math.max(0, Math.floor(limits.nodes))};
+  const MAX_REFS = ${Math.max(0, Math.floor(limits.refs))};
+  const MAX_TEXT_LENGTH = ${Math.max(0, Math.floor(limits.text))};
 ${ARIA_SHARED_SOURCE}
   // leadingSpace/trailingSpace record whitespace the page had at the edges of the
   // run before normalizeText trimmed it, so the renderer joins inline runs with a
@@ -500,6 +534,8 @@ ${ARIA_SHARED_SOURCE}
       } catch {}
       snapshotNode.attributes.push(reachable ? 'loading=true' : 'cross-origin=true');
       if (domNode.src) snapshotNode.attributes.push('src=' + String(domNode.src).slice(0, 200));
+      const frame = reachable ? null : crossOriginFrameTarget(domNode);
+      if (frame) snapshotNode.frame = { path: frame.path, depth };
     }
     snapshotNode.children = children;
     if (role && isActionable(domNode, role) && refCount < MAX_REFS) {
@@ -537,9 +573,13 @@ ${ARIA_SHARED_SOURCE}
       return { ref, fingerprint: fingerprintFor(element, role, name) };
     }),
     truncated,
-    stats: { nodeCount, refCount, textLength: 0, iframeCount, maxDepth }
+    stats: { nodeCount, refCount, textLength: 0, iframeCount, maxDepth },
+    remaining: { nodes: MAX_NODES - nodeCount, refs: MAX_REFS - refCount, text: textBudget }
   });
 })()`;
+}
+
+export const ARIA_SNAPSHOT_SCRIPT = buildAriaSnapshotScript();
 
 export interface AriaFindQuery {
   role: string | null;
@@ -628,6 +668,7 @@ ${ARIA_SHARED_SOURCE}
   }
 
   const matches = [];
+  const frames = [];
   let total = 0;
   const stack = renderedChildren(document.body || document.documentElement).reverse();
   while (stack.length > 0) {
@@ -635,6 +676,11 @@ ${ARIA_SHARED_SOURCE}
     if (!isElement(node)) continue;
     const visibility = visibilityFor(node);
     if (!visibility || node.getAttribute('aria-hidden') === 'true') continue;
+    // Daseo delta 110: the host searches a cross-origin frame with the frame's own copy of this script.
+    if (visibility === 'box' && isFrameElement(node) && !frameDocument(node)) {
+      const frame = crossOriginFrameTarget(node);
+      if (frame) frames.push(frame);
+    }
     const role = roleFor(node);
     if (visibility === 'box' && role && (!roleQuery || role === roleQuery)) {
       const name = nameFor(node, role);
@@ -647,6 +693,6 @@ ${ARIA_SHARED_SOURCE}
     for (let index = children.length - 1; index >= 0; index -= 1) stack.push(children[index]);
   }
 
-  return JSON.stringify({ marker: MARKER, matches, total });
+  return JSON.stringify({ marker: MARKER, matches, total, frames });
 })()`;
 }

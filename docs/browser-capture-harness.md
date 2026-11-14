@@ -107,7 +107,7 @@ content; a click without the argument has no `pageAfter`. Results go to `out/pag
 The frames-network group (`PASEO_CAPTURE_HARNESS_GROUP=frames-network`) serves a page with a
 same-origin and a cross-origin iframe from two local ports. It runs the compiled automation
 service against the guest and checks that the snapshot nests the same-origin frame's content
-with refs while the cross-origin frame stays one node; that background and trusted clicks,
+with refs and the cross-origin frame's content with frame refs (`@f1e1`); that background and trusted clicks,
 fill, type, upload, wait, and evaluate reach the inner elements (the trusted click must land at
 the frame's border and padding offset); and that `browser_network` captures a same-origin
 `fetch` with its bodies, credentials redacted. It then exports a capture (delta 99): a page that
@@ -118,6 +118,22 @@ the server echoes, a 302, a 404) and a WebSocket echo, navigates away, and the e
 150 API requests and prints the CDP body copies per request and the main-process heap the capture
 holds. The fixture reads every response body: a fetch whose body nobody reads never gets
 `loadingFinished`, and a navigation leaves it in flight.
+
+The cross-origin-frames group (`PASEO_CAPTURE_HARNESS_GROUP=cross-origin-frames`) checks
+delta 110. The page is served from `127.0.0.1` and embeds a card form from `localhost`, another
+site, so Chromium runs the form in its own renderer process, as Stripe's form runs on a shop's
+page; a second frame on `127.0.0.1` with another port is cross-origin but same-site and stays in
+the page's process, and a 1 px frame must stay one line. The form formats the card number and
+expiry on every input. The group checks snapshot, find, background click, fill, type (trusted
+input events), Tab and type without a ref following focus, select, Enter, trusted hover and click
+at tab coordinates, evaluate and read with a frame ref, wait text inside the frame, the same-site
+frame through the tab's own input, `browser_styles` refused, a stale ref after the frame
+navigates, and that the renderer never crashed. Trusted pointer input widens the parked surface to
+the window first: Chromium routes a mouse event into an out-of-process frame by compositor hit
+testing, which the 1x1 parked surface cannot answer, and a person's open pane is never parked.
+`webContents.insertText` while such a frame has focus crashes the tab's renderer (Electron
+44.10.2, exit code 11), and `sendInputEvent` keys never reach it; the frame's own DevTools target
+takes both.
 
 The debugging group (`PASEO_CAPTURE_HARNESS_GROUP=debugging`) serves a page under a
 `script-src` nonce CSP with `require-trusted-types-for 'script'` and checks the delta 35

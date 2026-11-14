@@ -85,7 +85,8 @@ const BrowserHttpUrlInputSchema = z
     }
     return normalized;
   });
-const BrowserRefInputSchema = z.string().regex(/^@e\d+$/);
+// `@f1e3`: a ref inside a cross-origin iframe (Daseo delta 110).
+const BrowserRefInputSchema = z.string().regex(/^@(?:f\d+)?e\d+$/);
 const BrowserClickButtonInputSchema = z.enum(["left", "right", "middle"]);
 const BrowserClickModifierInputSchema = z.enum(["Alt", "Control", "Meta", "Shift"]);
 const MAX_BROWSER_WAIT_MS = 30_000;
@@ -371,7 +372,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
       description:
         "Return a model-readable snapshot of a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; " +
         REF_LIFETIME +
-        " Same-origin iframe content appears under its iframe node, and its refs work with every tool; a cross-origin iframe shows only its src. ref (from an earlier snapshot or browser_find) shows only that element's subtree; interactive true keeps only elements with refs and the named containers around them. Both still refresh every ref on the page.",
+        " Iframe content appears under its iframe node. Refs inside a cross-origin iframe look like @f1e3 and work with click, fill, type, select, hover, keypress, scroll, find, evaluate, and read, not drag, upload, styles, or screenshot; an iframe under 2px or placed off the page shows only its src. ref (from an earlier snapshot or browser_find) shows only that element's subtree; interactive true keeps only elements with refs and the named containers around them. Both still refresh every ref on the page.",
       inputSchema: {
         browserId: BrowserAutomationBrowserIdSchema,
         ref: BrowserRefInputSchema.optional(),
@@ -529,7 +530,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Wait for browser condition",
       description:
-        "Wait for one condition in a Paseo browser tab: text the page contains, a URL fragment, a CSS selector that matches an element (attached, visible or not; searches same-origin iframes and open shadow roots), a JavaScript script expression or function polled until it returns a truthy value (a throw fails at once), or load: load for the load event or networkidle for no requests in flight for 500ms (long polling or streaming keeps some pages from ever going idle), or download: true for the tab's pending or next download to finish (files an agent-driven tab downloads go to ~/Downloads/Daseo without a dialog; returns the path), or settled: true (see its description). Pass only timeoutMs to pause. Use browserId from browser_new_tab or browser_list_tabs; conditions wait up to 5s by default and timeoutMs is capped at 30000.",
+        "Wait for one condition in a Paseo browser tab: text the page contains (its iframes included), a URL fragment, a CSS selector that matches an element (attached, visible or not; searches same-origin iframes and open shadow roots), a JavaScript script expression or function polled until it returns a truthy value (a throw fails at once), or load: load for the load event or networkidle for no requests in flight for 500ms (long polling or streaming keeps some pages from ever going idle), or download: true for the tab's pending or next download to finish (files an agent-driven tab downloads go to ~/Downloads/Daseo without a dialog; returns the path), or settled: true (see its description). Pass only timeoutMs to pause. Use browserId from browser_new_tab or browser_list_tabs; conditions wait up to 5s by default and timeoutMs is capped at 30000.",
       inputSchema: BrowserWaitInputSchema,
     },
     async (
