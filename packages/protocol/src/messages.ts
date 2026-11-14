@@ -4570,8 +4570,8 @@ export const WorkspaceDiscardEmptyResponseSchema = z.object({
     workspaceId: z.string(),
     discarded: z.boolean(),
     /**
-     * Why it was kept: not_found, main_checkout, pinned, renamed, has_agents, has_terminals,
-     * has_changes, or an error text.
+     * Why it was kept: not_found, pinned, renamed, has_agents, has_terminals, has_changes, or an
+     * error text. Daemons before Daseo delta 114 also send main_checkout.
      */
     reason: z.string().nullable(),
   }),
