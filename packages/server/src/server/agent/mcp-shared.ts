@@ -227,7 +227,9 @@ export function parseDurationString(input: string): number {
 
   let totalMs = 0;
   let hasMatch = false;
-  const regex = /(\d+)([smh])/g;
+  // `d` (24 hours) since Daseo delta 108: `expiresIn: "2d"` was refused four times in two weeks.
+  // The scan still accepts any string containing a match, as before; tightening it is a separate change.
+  const regex = /(\d+)([smhd])/g;
   let match: RegExpExecArray | null;
 
   while ((match = regex.exec(trimmed)) !== null) {
@@ -243,11 +245,16 @@ export function parseDurationString(input: string): number {
       case "h":
         totalMs += value * 60 * 60 * 1000;
         break;
+      case "d":
+        totalMs += value * 24 * 60 * 60 * 1000;
+        break;
     }
   }
 
   if (!hasMatch) {
-    throw new Error(`Invalid duration format: ${input}. Use formats like: 5m, 30s, 1h, 2h30m`);
+    throw new Error(
+      `Invalid duration format: ${input}. Use formats like: 5m, 30s, 1h, 2h30m, 2d, 1d12h`,
+    );
   }
 
   return totalMs;

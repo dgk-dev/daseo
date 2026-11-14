@@ -2858,6 +2858,18 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        (`createPopupPaintHold`, `preparePaseoBrowserWebContents` `popup`), and `main.ts`
        (`getBrowserPopupWindowOptions`).
 
+108. **Durations take a day unit** — the lead's tool-failure audit on 2026-11-14: agents sent
+     `expiresIn: "2d"` or `"3d"` to schedule and heartbeat tools four times in two weeks, and each
+     call failed with "Invalid duration format". `parseDurationString` adds `d` (24 hours) to its
+     units, so `2d` is 172,800,000 ms and `1d12h` is 36 hours; the error's examples list `2d` and
+     `1d12h`. Every string without a digit-plus-`d` part parses as before, including the old scan's
+     habit of accepting a string with any match and ignoring the rest (left alone on purpose:
+     tightening it is a separate change). A string that already mixed a day part with another unit
+     now counts the days too (`1d2h` was silently 2 hours, now 26); none appeared in the audited
+     calls. Bounds are the callers' as before (`every` must still map to five-field cron, `48h` and
+     `2d` give the same result). Checks in `agent/mcp-shared.test.ts`. Key file:
+     `packages/server/src/server/agent/mcp-shared.ts` (`parseDurationString`).
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including
