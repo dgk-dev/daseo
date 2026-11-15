@@ -1,5 +1,6 @@
 import { basename, resolve } from "node:path";
 import type { Logger } from "pino";
+import type { WorkspaceArchiveRestoreRequest } from "../../workspace-archive-service.js";
 import {
   generateWorkspaceId,
   initialWorkspacePlacement,
@@ -85,6 +86,7 @@ export class WorkspaceProvisioningError extends Error {
 }
 
 export function createWorkspaceProvisioningService(deps: {
+  unarchiveWorkspaceAgents: (request: WorkspaceArchiveRestoreRequest) => Promise<void>;
   serverId?: string;
   workspaceRegistry: WorkspaceRegistry;
   projectRegistry: ProjectRegistry;
@@ -389,6 +391,12 @@ export function createWorkspaceProvisioningService(deps: {
     }
     if (!next) return workspace;
     await workspaceRegistry.upsert(next);
+    if (workspace.archivedAt) {
+      await deps.unarchiveWorkspaceAgents({
+        workspaceId: workspace.workspaceId,
+        archivedAt: workspace.archivedAt,
+      });
+    }
     return next;
   }
 

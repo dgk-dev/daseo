@@ -3317,6 +3317,10 @@ dependency, and no protocol break):
 - #9753 reconciliation re-reads a workspace and skips it once archived, so an archive racing
   worktree removal stays restorable (hand-port into Daseo's older reconcile loop).
 - #8903 archiving a parent publishes the update for a closed child it detaches (hand-port).
+- #9210 unarchiving a workspace restores only agents carrying that archive's exact server-only
+  batch stamp; individual archives stay archived, even in the same millisecond. Pre-adoption
+  archives have no batch marker and keep workspace-only restoration; no timestamp-window
+  fallback, undo toast, or protocol change (hand-port of semantics only).
 - #9506 Pi: null optional tool arguments are treated as omitted, so typed tool cards stay
   (Pi-only hand-port; OMP not carried).
 - #8523 Pi imports and empty-timeline hydration read the complete active transcript ancestry
@@ -3342,8 +3346,8 @@ worker that outlives the daemon, about 100 files and one more resident process),
 #9109 (multi-host paths Daseo does not use), and the upstream advisor, committee and handoff
 skills (not substitutes for pi-local's research-fanout and delegate-implementation). Still open,
 each needing its own measurement first: #9175 + #9242 (skip the catch-up fetch for an unchanged
-chat), #8683 (background helper agents), #8904 + #9210 (workspace archive undo), #8735 (fewer
-full agent scans).
+chat), #8683 (background helper agents), #8904 (workspace archive undo UI; #9210 server restoration
+adopted separately above), #8735 (fewer full agent scans).
 
 ## Product version policy
 

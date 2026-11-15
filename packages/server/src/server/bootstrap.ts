@@ -162,7 +162,7 @@ import {
   IdleAgentUnloader,
   readMemoryPressureLevel,
 } from "./agent/idle-agent-unloader.js";
-import { setFinishWatcherJournal } from "./agent/agent-prompt.js";
+import { setFinishWatcherJournal, unarchiveAgentState } from "./agent/agent-prompt.js";
 import { RestartRecoveryJournal } from "./agent/restart-recovery.js";
 import {
   deliverRecoveryNotice,
@@ -179,6 +179,7 @@ import { WorkspaceGitServiceImpl } from "./workspace-git-service.js";
 import { resolveWorkspaceIdForPath } from "./resolve-workspace-id-for-path.js";
 import {
   archiveByScope,
+  unarchiveWorkspaceAgents,
   archivePersistedWorkspaceRecord,
   killTerminalsForWorkspace,
   type ActiveWorkspaceRef,
@@ -925,6 +926,14 @@ export async function createPaseoDaemon(
     },
   });
   const workspaceProvisioning = createWorkspaceProvisioningService({
+    unarchiveWorkspaceAgents: (request) =>
+      unarchiveWorkspaceAgents({
+        ...request,
+        agentStorage,
+        unarchiveAgent: (id, archivedAt) =>
+          unarchiveAgentState(agentStorage, agentManager, id, undefined, archivedAt),
+        sessionLogger: logger,
+      }),
     serverId,
     projectRegistry,
     workspaceRegistry,
@@ -1036,11 +1045,13 @@ export async function createPaseoDaemon(
   });
   const archiveWorkspaceRecordExternal = async (
     workspaceId: string,
+    archivedAt?: string,
     context?: WorkspaceArchiveContext,
   ) => {
     const existingWorkspace = await archivePersistedWorkspaceRecord({
       workspaceId,
       workspaceRegistry,
+      archivedAt,
       context,
     });
     if (!existingWorkspace || existingWorkspace.archivedAt) return;
@@ -1175,7 +1186,8 @@ export async function createPaseoDaemon(
     listActiveWorkspaces: listActiveWorkspacesExternal,
     getAutoArchivedChangeRequestUrl: async (workspaceId) =>
       (await workspaceRegistry.get(workspaceId))?.autoArchivedChangeRequestUrl ?? null,
-    archiveWorkspaceRecord: archiveWorkspaceRecordExternal,
+    archiveWorkspaceRecord: (workspaceId, context, archivedAt) =>
+      archiveWorkspaceRecordExternal(workspaceId, archivedAt, context),
     markWorkspaceArchiving: markWorkspaceArchivingExternal,
     clearWorkspaceArchiving: clearWorkspaceArchivingExternal,
     emitWorkspaceUpdatesForWorkspaceIds: emitWorkspaceUpdatesExternal,

@@ -2,7 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { createTestLogger } from "../../../test-utils/test-logger.js";
 import {
@@ -39,6 +39,7 @@ let restoredMergedChangeRequestUrl: string | null;
 let workspaceRegistry: FileBackedWorkspaceRegistry;
 let projectRegistry: FileBackedProjectRegistry;
 let provisioning: WorkspaceProvisioningService;
+let restoredBatches: { workspaceId: string; archivedAt: string }[];
 
 function gitService() {
   return createNoopWorkspaceGitService({
@@ -102,7 +103,12 @@ beforeEach(async () => {
   );
   await workspaceRegistry.initialize();
   await projectRegistry.initialize();
+  restoredBatches = [];
   provisioning = createWorkspaceProvisioningService({
+    unarchiveWorkspaceAgents: async (request) => {
+      expect((await workspaceRegistry.get(request.workspaceId))?.archivedAt).toBeNull();
+      restoredBatches.push(request);
+    },
     workspaceRegistry,
     projectRegistry,
     workspaceGitService: gitService(),
@@ -185,6 +191,7 @@ test("persists manual worktree ownership separately from its workspace kind", as
   const cwd = path.join(tmpDir, "manual-worktree");
   const mainRepoRoot = path.join(tmpDir, "main-repo");
   const manualWorktreeProvisioning = createWorkspaceProvisioningService({
+    unarchiveWorkspaceAgents: async () => {},
     workspaceRegistry,
     projectRegistry,
     workspaceGitService: createNoopWorkspaceGitService({
@@ -247,6 +254,7 @@ test("reopening archived exact-root records restores the fresh Git project", asy
   await workspaceRegistry.upsert(workspace);
   await projectRegistry.archive(project.projectId, ARCHIVED_AT);
   const archivedProvisioning = createWorkspaceProvisioningService({
+    unarchiveWorkspaceAgents: async () => {},
     workspaceRegistry,
     projectRegistry,
     workspaceGitService: createNoopWorkspaceGitService({
@@ -297,6 +305,7 @@ test("uses one workspace snapshot when reopening an archived workspace", async (
     remove: (workspaceId) => workspaceRegistry.remove(workspaceId),
   };
   const snapshotProvisioning = createWorkspaceProvisioningService({
+    unarchiveWorkspaceAgents: async () => {},
     workspaceRegistry: snapshotRegistry,
     projectRegistry,
     workspaceGitService: gitService(),
@@ -359,6 +368,33 @@ test("ensureWorkspaceRecordUnarchived restores the owning archived project with 
   expect(unarchived.archivedAt).toBeNull();
   expect((await workspaceRegistry.get(created.workspaceId))?.archivedAt).toBeNull();
   expect((await projectRegistry.get(created.projectId))?.archivedAt).toBeNull();
+});
+
+test("restores the exact archive batch only after the workspace record is durable", async () => {
+  const created = await provisioning.createWorkspaceForDirectory(path.join(tmpDir, "plain"));
+  await workspaceRegistry.archive(created.workspaceId, ARCHIVED_AT);
+  await provisioning.ensureWorkspaceRecordUnarchived(
+    (await workspaceRegistry.get(created.workspaceId))!,
+  );
+  expect(restoredBatches).toEqual([{ workspaceId: created.workspaceId, archivedAt: ARCHIVED_AT }]);
+});
+
+test("a failed workspace write does not restore any archive batch", async () => {
+  const created = await provisioning.createWorkspaceForDirectory(path.join(tmpDir, "plain"));
+  await workspaceRegistry.archive(created.workspaceId, ARCHIVED_AT);
+  const archived = (await workspaceRegistry.get(created.workspaceId))!;
+  const upsert = vi
+    .spyOn(workspaceRegistry, "upsert")
+    .mockRejectedValueOnce(new Error("disk full"));
+  try {
+    await expect(provisioning.ensureWorkspaceRecordUnarchived(archived)).rejects.toThrow(
+      "disk full",
+    );
+    expect(restoredBatches).toEqual([]);
+    expect((await workspaceRegistry.get(created.workspaceId))?.archivedAt).toBe(ARCHIVED_AT);
+  } finally {
+    upsert.mockRestore();
+  }
 });
 
 test("ensureWorkspaceRecordUnarchived preserves the consumed auto-archive change request", async () => {

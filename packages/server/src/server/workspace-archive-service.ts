@@ -44,7 +44,7 @@ export interface ArchiveDependencies {
   // break a same-cwd tie in favor of the worktree-kind record when archiving by
   // path (no explicit workspaceId).
   listActiveWorkspaces: () => Promise<ActiveWorkspaceRef[]>;
-  archiveWorkspaceRecord: (workspaceId: string) => Promise<void>;
+  archiveWorkspaceRecord: (workspaceId: string, archivedAt: string) => Promise<void>;
   emitWorkspaceUpdatesForWorkspaceIds: (workspaceIds: Iterable<string>) => Promise<void>;
   markWorkspaceArchiving: (workspaceIds: Iterable<string>, archivingAt: string) => void;
   clearWorkspaceArchiving: (workspaceIds: Iterable<string>) => void;
@@ -320,10 +320,11 @@ async function archiveTargetRecords(
   const archivedAgents = new Set<string>();
   const archivedWorkspaceIds: string[] = [];
 
+  const archivedAt = new Date().toISOString();
   const results = await Promise.allSettled(
     targetWorkspaceIds.map(async (workspaceId) => {
-      const agents = await archiveWorkspaceContents(dependencies, workspaceId);
-      await dependencies.archiveWorkspaceRecord(workspaceId);
+      const agents = await archiveWorkspaceContents(dependencies, workspaceId, archivedAt);
+      await dependencies.archiveWorkspaceRecord(workspaceId, archivedAt);
       return { workspaceId, agents };
     }),
   );
@@ -440,6 +441,7 @@ export type ArchiveWorkspaceContentsDependencies = Pick<
 export async function archiveWorkspaceContents(
   dependencies: ArchiveWorkspaceContentsDependencies,
   workspaceId: string,
+  archivedAt = new Date().toISOString(),
 ): Promise<Set<string>> {
   const archivedAgents = new Set<string>();
 
@@ -464,7 +466,6 @@ export async function archiveWorkspaceContents(
     archivedAgents.add(record.id);
   }
 
-  const archivedAt = new Date().toISOString();
   const agentIdsToArchive = new Set([
     ...liveAgents.map((agent) => agent.id),
     ...matchingStoredRecords.filter((record) => !record.archivedAt).map((record) => record.id),
@@ -472,8 +473,8 @@ export async function archiveWorkspaceContents(
   const archiveResults = await Promise.allSettled([
     ...[...agentIdsToArchive].map((agentId) =>
       dependencies.agentManager.getAgent(agentId)
-        ? dependencies.agentManager.archiveAgent(agentId)
-        : dependencies.agentManager.archiveSnapshot(agentId, archivedAt),
+        ? dependencies.agentManager.archiveAgent(agentId, archivedAt)
+        : dependencies.agentManager.archiveSnapshot(agentId, archivedAt, archivedAt),
     ),
     dependencies.killTerminalsForWorkspace(workspaceId),
   ]);
@@ -583,4 +584,37 @@ export async function archivePersistedWorkspaceRecord(input: {
   await input.workspaceRegistry.archive(input.workspaceId, archivedAt, input.context);
 
   return existingWorkspace;
+}
+
+export interface WorkspaceArchiveRestoreRequest {
+  workspaceId: string;
+  archivedAt: string;
+}
+
+// Exact operation stamps plus explicit server-only batch membership. Pre-adoption archives
+// keep today's workspace-only restoration, even if an old timestamp happens to match exactly.
+// Neither nearby timestamps nor individually archived agents prove batch membership.
+export async function unarchiveWorkspaceAgents(
+  input: WorkspaceArchiveRestoreRequest & {
+    agentStorage: Pick<AgentStorage, "listByWorkspace">;
+    unarchiveAgent: (agentId: string, archivedAt: string) => Promise<unknown>;
+    sessionLogger?: Logger;
+  },
+): Promise<void> {
+  const records = await input.agentStorage.listByWorkspace(input.workspaceId);
+  const matching = records.filter(
+    (record) =>
+      record.archivedAt === input.archivedAt && record.workspaceArchiveAt === input.archivedAt,
+  );
+  const results = await Promise.allSettled(
+    matching.map((record) => input.unarchiveAgent(record.id, input.archivedAt)),
+  );
+  for (const [index, result] of results.entries()) {
+    if (result.status === "rejected") {
+      input.sessionLogger?.warn(
+        { err: result.reason, workspaceId: input.workspaceId, agentId: matching[index]!.id },
+        "Failed to unarchive workspace agent",
+      );
+    }
+  }
 }

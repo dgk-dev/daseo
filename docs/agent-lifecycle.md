@@ -106,7 +106,10 @@ only the route's explicit Unarchive or Restore action changes the archived works
 
 History navigation preserves the selected agent as an explicit recovery target. If both that agent
 and its workspace are archived, the workspace recovery action restores the workspace and unarchives
-the selected agent as one user action. Other archived agents in the restored workspace remain
+the selected agent as one user action. For new workspace archives, server-only batch provenance and
+an exact archive timestamp restore the other agents archived by that action too. Individual archives
+before or after that action stay archived. Pre-adoption archives have no batch marker and keep
+workspace-only restoration; there is no timestamp-window inference. Other archived agents remain
 recoverable from History. Opening one pins its tab and renders the archived-agent callout. Authoritative
 timeline catch-up may load provider history with a runtime-only `history` resume purpose, which must
 leave both Paseo's `archivedAt` and the provider's native archive state unchanged. **Unarchive** remains

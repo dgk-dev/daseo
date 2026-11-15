@@ -1781,11 +1781,14 @@ export class AgentManager {
     }
   }
 
-  async archiveAgent(agentId: string): Promise<{ archivedAt: string }> {
-    return this.runLifecycleMutation(agentId, () => this.archiveAgentUnlocked(agentId));
+  async archiveAgent(agentId: string, archivedAt?: string): Promise<{ archivedAt: string }> {
+    return this.runLifecycleMutation(agentId, () => this.archiveAgentUnlocked(agentId, archivedAt));
   }
 
-  private async archiveAgentUnlocked(agentId: string): Promise<{ archivedAt: string }> {
+  private async archiveAgentUnlocked(
+    agentId: string,
+    requestedArchivedAt?: string,
+  ): Promise<{ archivedAt: string }> {
     const agent = this.requireAgent(agentId);
     if (!this.registry) {
       throw new Error("Agent storage is not configured");
@@ -1799,12 +1802,12 @@ export class AgentManager {
       throw new Error(`Agent ${agentId} not found in storage after snapshot`);
     }
 
-    const { archivedAt } = await this.markRecordArchived(stored);
+    const { archivedAt } = await this.markRecordArchived(stored, requestedArchivedAt);
     agent.updatedAt = new Date(archivedAt);
     await this.closeAgent(agentId);
     this.discardRetainedAgentState(agentId);
 
-    await this.cascadeArchiveChildren(agentId);
+    await this.cascadeArchiveChildren(agentId, archivedAt, requestedArchivedAt);
 
     return { archivedAt };
   }
@@ -1813,7 +1816,11 @@ export class AgentManager {
   // label pointing back at the caller. Archiving the parent cascades to those
   // children so subagent fleets don't outlive their orchestrator. Detached
   // handoff agents omit this label, so they stand outside the cascade.
-  private async cascadeArchiveChildren(parentAgentId: string): Promise<void> {
+  private async cascadeArchiveChildren(
+    parentAgentId: string,
+    archivedAt: string,
+    workspaceArchiveAt?: string,
+  ): Promise<void> {
     const registry = this.registry;
     if (!registry) {
       return;
@@ -1849,18 +1856,30 @@ export class AgentManager {
             this.dispatchStoredAgentState(detached.record);
           }
         } else if (this.agents.has(currentChild.id)) {
-          await this.archiveAgentUnlocked(currentChild.id);
+          await this.archiveAgentUnlocked(currentChild.id, workspaceArchiveAt);
         } else {
-          await this.archiveSnapshot(currentChild.id, new Date().toISOString());
+          await this.archiveSnapshotUnlocked(currentChild.id, archivedAt, workspaceArchiveAt);
         }
       });
     }
   }
 
-  private async markRecordArchived(record: StoredAgentRecord): Promise<ArchivedStoredAgentRecord> {
+  private async markRecordArchived(
+    record: StoredAgentRecord,
+    requestedArchivedAt?: string,
+  ): Promise<ArchivedStoredAgentRecord> {
     const registry = this.requireRegistry();
-    const archivedAt = new Date().toISOString();
+    // A history-loaded archive was not archived by this workspace action. Keep its original
+    // stamp; an explicit individual archive (no supplied stamp) instead records fresh intent.
+    const archivedAt = requestedArchivedAt
+      ? (record.archivedAt ?? requestedArchivedAt)
+      : new Date().toISOString();
     const archivedRecord = buildArchivedAgentRecord(record, { archivedAt, updatedAt: archivedAt });
+    let workspaceArchiveAt: string | undefined;
+    if (requestedArchivedAt) {
+      workspaceArchiveAt = record.archivedAt ? record.workspaceArchiveAt : requestedArchivedAt;
+    }
+    archivedRecord.workspaceArchiveAt = workspaceArchiveAt;
 
     await registry.upsert(archivedRecord);
 
@@ -2136,7 +2155,21 @@ export class AgentManager {
     }
   }
 
-  async archiveSnapshot(agentId: string, archivedAt: string): Promise<StoredAgentRecord> {
+  async archiveSnapshot(
+    agentId: string,
+    archivedAt: string,
+    workspaceArchiveAt?: string,
+  ): Promise<StoredAgentRecord> {
+    return this.runLifecycleMutation(agentId, () =>
+      this.archiveSnapshotUnlocked(agentId, archivedAt, workspaceArchiveAt),
+    );
+  }
+
+  private async archiveSnapshotUnlocked(
+    agentId: string,
+    archivedAt: string,
+    workspaceArchiveAt?: string,
+  ): Promise<StoredAgentRecord> {
     const registry = this.requireRegistry();
     const liveAgent = this.getAgent(agentId);
     if (liveAgent) {
@@ -2151,6 +2184,7 @@ export class AgentManager {
     }
 
     const nextRecord = buildArchivedAgentRecord(record, { archivedAt });
+    nextRecord.workspaceArchiveAt = workspaceArchiveAt;
     await registry.upsert(nextRecord);
 
     await this.archiveNativeSessionBestEffort(record.provider, record.persistence);
@@ -2165,7 +2199,7 @@ export class AgentManager {
     }
 
     await this.fireAgentArchived(agentId);
-    await this.cascadeArchiveChildren(agentId);
+    await this.cascadeArchiveChildren(agentId, archivedAt, workspaceArchiveAt);
 
     return nextRecord;
   }
@@ -2173,10 +2207,30 @@ export class AgentManager {
   async unarchiveSnapshot(
     agentId: string,
     updates?: { workspaceId?: string; labels?: AgentLabelPatch },
+    expectedWorkspaceArchiveAt?: string,
+  ): Promise<boolean> {
+    return this.runLifecycleMutation(agentId, () =>
+      this.unarchiveSnapshotUnlocked(agentId, updates, expectedWorkspaceArchiveAt),
+    );
+  }
+
+  private async unarchiveSnapshotUnlocked(
+    agentId: string,
+    updates?: { workspaceId?: string; labels?: AgentLabelPatch },
+    expectedWorkspaceArchiveAt?: string,
   ): Promise<boolean> {
     const registry = this.requireRegistry();
     const record = await registry.get(agentId);
     if (!record || !record.archivedAt) {
+      return false;
+    }
+    // Recheck inside the lifecycle lane: an individual archive may have superseded the batch
+    // since workspace recovery listed it. Native unarchive and clearing provenance stay atomic.
+    if (
+      expectedWorkspaceArchiveAt &&
+      (record.archivedAt !== expectedWorkspaceArchiveAt ||
+        record.workspaceArchiveAt !== expectedWorkspaceArchiveAt)
+    ) {
       return false;
     }
 
@@ -2187,6 +2241,7 @@ export class AgentManager {
       ...(updates?.workspaceId ? { workspaceId: updates.workspaceId } : {}),
       ...(updates?.labels ? { labels: applyLabelPatch(record.labels, updates.labels) } : {}),
       archivedAt: null,
+      workspaceArchiveAt: undefined,
       updatedAt: new Date().toISOString(),
     });
 

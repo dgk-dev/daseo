@@ -74,6 +74,8 @@ const STORED_AGENT_SCHEMA = z.object({
   attentionTimestamp: z.string().nullable().optional(),
   internal: z.boolean().optional(),
   archivedAt: z.string().nullable().optional(),
+  // Server-only provenance, not a wire field. Old archives have no batch membership.
+  workspaceArchiveAt: z.string().optional(),
   owner: AgentOwnerSchema.optional(),
 });
 
@@ -286,6 +288,7 @@ export class AgentStorage {
       // stale pre-archive record after the archive mutation.
       if (existing && existing.archivedAt !== undefined) {
         record.archivedAt = existing.archivedAt;
+        record.workspaceArchiveAt = existing.workspaceArchiveAt;
       }
       return record;
     });

@@ -1114,6 +1114,7 @@ function createDeps(options?: {
   };
   const workspaceGitService = createWorkspaceGitServiceStub();
   const workspaceProvisioning = createWorkspaceProvisioningService({
+    unarchiveWorkspaceAgents: async () => {},
     projectRegistry,
     workspaceRegistry,
     workspaceGitService,

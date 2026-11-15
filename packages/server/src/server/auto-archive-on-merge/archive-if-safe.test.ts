@@ -524,7 +524,7 @@ describe("archiveIfSafe", () => {
   test("records the consumed change request in the workspace archive mutation", async () => {
     const harness = createHarness({
       archiveByScope: async (dependencies) => {
-        await dependencies.archiveWorkspaceRecord("ws-auto-archive");
+        await dependencies.archiveWorkspaceRecord("ws-auto-archive", "2026-11-15T10:00:00.000Z");
         return {
           archivedAgentIds: [],
           archivedWorkspaceIds: ["ws-auto-archive"],
@@ -535,9 +535,11 @@ describe("archiveIfSafe", () => {
 
     await runArchiveIfSafe(harness);
 
-    expect(harness.options.archiveWorkspaceRecord).toHaveBeenCalledWith("ws-auto-archive", {
-      autoArchivedChangeRequestUrl: "https://github.com/acme/repo/pull/123",
-    });
+    expect(harness.options.archiveWorkspaceRecord).toHaveBeenCalledWith(
+      "ws-auto-archive",
+      { autoArchivedChangeRequestUrl: "https://github.com/acme/repo/pull/123" },
+      "2026-11-15T10:00:00.000Z",
+    );
   });
 
   test("resolves the merged cwd to a single workspace and does not iterate siblings", async () => {
