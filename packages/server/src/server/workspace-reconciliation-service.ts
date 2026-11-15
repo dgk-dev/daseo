@@ -353,10 +353,11 @@ export class WorkspaceReconciliationService {
   private async reconcileProject(input: ProjectReconciliationInput): Promise<void> {
     const { project, siblings, currentGit, readCheckout, changes } = input;
     const workspaceCheckouts = await Promise.all(
-      siblings.map(async (workspace) => ({
-        workspace,
-        checkout: await readCheckout(workspace.cwd),
-      })),
+      siblings.map(async (workspace) => {
+        const current = await this.workspaceRegistry.get(workspace.workspaceId);
+        if (!current || !isStillReconcilable(current, workspace)) return null;
+        return { workspace: current, checkout: await readCheckout(current.cwd) };
+      }),
     );
     const projectUpdates: Partial<Pick<PersistedProjectRecord, "kind" | "projectKey">> = {};
     const mappedKind = deriveProjectKind(currentGit);
@@ -391,26 +392,33 @@ export class WorkspaceReconciliationService {
     }
 
     await Promise.all(
-      workspaceCheckouts.map(async ({ workspace, checkout: wsGit }) => {
+      workspaceCheckouts.map(async (entry) => {
+        if (!entry) return;
+        const { workspace, checkout: wsGit } = entry;
         const timestamp = new Date().toISOString();
-        const update = reconcileWorkspacePlacement({
-          workspace,
-          checkout: wsGit,
-          updatedAt: timestamp,
-        });
-        if (!update) return;
+        if (!reconcileWorkspacePlacement({ workspace, checkout: wsGit, updatedAt: timestamp }))
+          return;
 
-        const updated = await this.workspaceRegistry.update(workspace.workspaceId, (current) => ({
-          ...current,
-          ...update.fields,
-          updatedAt: timestamp,
-        }));
-        if (!updated) return;
+        let fields: Partial<MutableWorkspacePlacement> | null = null;
+        const updated = await this.workspaceRegistry.update(workspace.workspaceId, (current) => {
+          // Archive removes a worktree only after archiving its record, so a read
+          // that raced the archive may have seen the directory mid-deletion.
+          if (!isStillReconcilable(current, workspace)) return current;
+          const update = reconcileWorkspacePlacement({
+            workspace: current,
+            checkout: wsGit,
+            updatedAt: timestamp,
+          });
+          if (!update) return current;
+          fields = update.fields;
+          return { ...current, ...fields, updatedAt: timestamp };
+        });
+        if (!updated || !fields) return;
         changes.push({
           kind: "workspace_updated",
           workspaceId: workspace.workspaceId,
           directory: workspace.cwd,
-          fields: update.fields,
+          fields,
         });
       }),
     );
@@ -554,4 +562,14 @@ export class WorkspaceReconciliationService {
 function isMissingPathError(error: unknown): boolean {
   if (typeof error !== "object" || error === null || !("code" in error)) return false;
   return error.code === "ENOENT" || error.code === "ENOTDIR";
+}
+
+/** An archived record keeps the placement its restore depends on. */
+function isStillReconcilable(
+  current: PersistedWorkspaceRecord,
+  scanned: PersistedWorkspaceRecord,
+): boolean {
+  return (
+    !current.archivedAt && current.cwd === scanned.cwd && current.projectId === scanned.projectId
+  );
 }
