@@ -137,6 +137,7 @@ import type { LocalSpeechProviderConfig } from "./speech/providers/local/config.
 import type { RequestedSpeechProviders } from "./speech/speech-types.js";
 import { createSpeechService } from "./speech/speech-runtime.js";
 import { AgentManager } from "./agent/agent-manager.js";
+import { createAssistantImageSnapshots } from "./assistant-image-snapshots/create-assistant-image-snapshots.js";
 import { AgentStorage } from "./agent/agent-storage.js";
 import { FileBackedAgentTimelineStore } from "./agent/file-backed-agent-timeline-store.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
@@ -251,6 +252,7 @@ import {
 } from "./hub/relationship-remote.js";
 import { DaemonExecutions } from "./hub/daemon-executions.js";
 import { PluginService } from "./plugins/index.js";
+import { startUploadSweeper } from "./file-upload/index.js";
 
 const MAX_MCP_DEBUG_BATCH_ITEMS = 10;
 const REDACTED_LOG_VALUE = "[redacted]";
@@ -656,6 +658,7 @@ export async function createPaseoDaemon(
     logger.warn({ err: error }, "Failed to reconcile managed helper process ledger");
   });
   let relayRuntime: RelayRuntime | null = null;
+  const stopUploadSweeper = startUploadSweeper({ paseoHome: config.paseoHome, logger });
 
   const staticDir = config.staticDir;
   const downloadTokenTtlMs = config.downloadTokenTtlMs ?? 60000;
@@ -966,11 +969,16 @@ export async function createPaseoDaemon(
   const durableTimelineStore = new FileBackedAgentTimelineStore(
     path.join(config.paseoHome, "timelines"),
   );
+  const assistantImageSnapshots = createAssistantImageSnapshots({
+    paseoHome: config.paseoHome,
+    logger,
+  });
   const agentManager = new AgentManager({
     clients: initialAgentManagerState.clients,
     providerDefinitions: initialAgentManagerState.providerDefinitions,
     registry: agentStorage,
     durableTimelineStore,
+    assistantImageSnapshots,
     appendSystemPrompt: config.appendSystemPrompt,
     onWorkspaceStateMayHaveChanged: ({ cwd }) => {
       workspaceGitService.onWorkspaceStateMayHaveChanged(cwd);
@@ -1893,6 +1901,7 @@ export async function createPaseoDaemon(
   };
 
   const stop = async () => {
+    stopUploadSweeper();
     await pluginRuntime.stopAllPlugins();
     await hubRelationships.stop();
     workspaceReconciliation.dispose();
