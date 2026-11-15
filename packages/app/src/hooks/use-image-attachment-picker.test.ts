@@ -10,7 +10,10 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/constants/platform", () => ({ isNative: true, isWeb: false }));
 vi.mock("@/desktop/host", () => ({ getDesktopHost: () => null, isElectronRuntime: () => false }));
-vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("react-i18next", () => ({
+  initReactI18next: { type: "3rdParty", init: () => undefined },
+  useTranslation: () => ({ t: (key: string) => key }),
+}));
 vi.mock("react-native", () => ({
   Alert: { alert: vi.fn() },
   AppState: { currentState: "active", addEventListener: () => ({ remove() {} }) },

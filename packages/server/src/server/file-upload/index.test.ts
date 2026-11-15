@@ -23,7 +23,27 @@ import {
   markUploadsAdmitted,
   sweepAbandonedUploads,
   UPLOAD_ADMITTED_MARKER,
+  UPLOAD_SWEEP_BASELINE,
 } from "./index.js";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function daysAgo(now: number, days: number): number {
+  return (now - days * DAY_MS) / 1000;
+}
+
+function mkdirUploads(paseoHome: string): string {
+  mkdirSync(join(paseoHome, "uploads"), { recursive: true });
+  return paseoHome;
+}
+
+function makeUpload(paseoHome: string, id: string, mtimeSeconds: number): void {
+  const dir = join(paseoHome, "uploads", id);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "file.bin"), "x");
+  utimesSync(join(dir, "file.bin"), mtimeSeconds, mtimeSeconds);
+  utimesSync(dir, mtimeSeconds, mtimeSeconds);
+}
 
 const tempDirs: string[] = [];
 
@@ -297,19 +317,28 @@ describe("stale and abandoned uploads", () => {
     await expect(uploads.receiveFrame(uploadEnds("req-stalled"))).resolves.toBeNull();
   });
 
-  it("sweeps unadmitted uploads older than the age limit and keeps admitted or recent ones", async () => {
+  it("keeps every upload that predates the first sweep, on that sweep and on later ones", async () => {
     const paseoHome = makePaseoHome();
     const now = Date.now();
-    const old = (now - 8 * 24 * 60 * 60 * 1000) / 1000;
-    for (const id of ["upload_old", "upload_old_admitted", "upload_recent"]) {
-      mkdirSync(join(paseoHome, "uploads", id), { recursive: true });
-      writeFileSync(join(paseoHome, "uploads", id, "file.bin"), "x");
-    }
+    makeUpload(paseoHome, "upload_legacy_pdf", daysAgo(now, 30));
+
+    await expect(sweepAbandonedUploads({ paseoHome, now })).resolves.toEqual({ removed: [] });
+    expect(existsSync(join(paseoHome, "uploads", UPLOAD_SWEEP_BASELINE))).toBe(true);
+    await expect(sweepAbandonedUploads({ paseoHome, now: now + 30 * DAY_MS })).resolves.toEqual({
+      removed: [],
+    });
+    expect(existsSync(join(paseoHome, "uploads", "upload_legacy_pdf", "file.bin"))).toBe(true);
+  });
+
+  it("after the baseline, sweeps unadmitted uploads older than the age limit and keeps admitted or recent ones", async () => {
+    const paseoHome = makePaseoHome();
+    const now = Date.now();
+    await sweepAbandonedUploads({ paseoHome: mkdirUploads(paseoHome), now });
+    makeUpload(paseoHome, "upload_old", daysAgo(now, 8));
+    makeUpload(paseoHome, "upload_old_admitted", daysAgo(now, 8));
+    makeUpload(paseoHome, "upload_recent", now / 1000);
     await markUploadsAdmitted({ paseoHome, uploadIds: ["upload_old_admitted", "../escape"] });
-    for (const id of ["upload_old", "upload_old_admitted"]) {
-      utimesSync(join(paseoHome, "uploads", id, "file.bin"), old, old);
-      utimesSync(join(paseoHome, "uploads", id), old, old);
-    }
+    utimesSync(join(paseoHome, "uploads", "upload_old_admitted"), daysAgo(now, 8), daysAgo(now, 8));
 
     const { removed } = await sweepAbandonedUploads({ paseoHome, now });
 

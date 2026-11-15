@@ -296,6 +296,9 @@ export async function markUploadsAdmitted(input: {
   );
 }
 
+/** Written into `uploads/` by the first sweep, after every pre-existing upload was marked kept. */
+export const UPLOAD_SWEEP_BASELINE = ".sweep-baseline";
+
 // An upload no message took within this time was abandoned (a failed send, a draft attachment
 // that was removed, a client that went away mid-transfer). A draft that holds an uploaded file
 // longer than this loses it; a week keeps ordinary drafts safe.
@@ -324,6 +327,17 @@ export async function sweepAbandonedUploads(input: {
   try {
     entries = await readdir(root);
   } catch {
+    return { removed: [] };
+  }
+  if (!entries.includes(UPLOAD_SWEEP_BASELINE)) {
+    // First sweep on this home: every upload that already exists predates the admission
+    // marker, and chats may reference those files by path. Mark them all kept, then record the
+    // baseline, so only uploads created under the marker rules can ever be swept.
+    await markUploadsAdmitted({
+      paseoHome: input.paseoHome,
+      uploadIds: entries.filter((entry) => UPLOAD_ID_PATTERN.test(entry)),
+    });
+    await writeFile(join(root, UPLOAD_SWEEP_BASELINE), new Date(now).toISOString());
     return { removed: [] };
   }
   const removed: string[] = [];

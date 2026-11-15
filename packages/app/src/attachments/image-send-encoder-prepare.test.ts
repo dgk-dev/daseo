@@ -6,6 +6,7 @@ import {
   type ImagePreparationPlatform,
 } from "./image-send-encoder-prepare";
 import { MAX_IMAGE_PIXELS } from "./image-budget";
+import { i18n } from "@/i18n/i18next";
 
 function attachment(input: Partial<AttachmentMetadata>): AttachmentMetadata {
   return {
@@ -125,5 +126,37 @@ describe("prepareImageAttachmentWith", () => {
       "scan.tiff is a TIFF image, which this device can't convert for the agent. Save it as JPEG or PNG and attach it again.",
     );
     expect(store.deleted).toEqual([]);
+  });
+
+  it("words its refusals in the app language", async () => {
+    i18n.addResource(
+      "ko",
+      "translation",
+      "attachments.imageErrors.unconvertible",
+      "{{label}}은(는) {{format}} 이미지라 변환할 수 없습니다.",
+    );
+    i18n.addResource(
+      "ko",
+      "translation",
+      "attachments.imageErrors.tooManyPixels",
+      "{{label}}은(는) {{width}}×{{height}}입니다.",
+    );
+    await i18n.changeLanguage("ko");
+    try {
+      await expect(
+        prepareImageAttachmentWith(platform({ header: null }), {
+          attachment: attachment({ mimeType: "image/tiff", fileName: "scan.tiff" }),
+          store: recordingStore(),
+        }),
+      ).rejects.toThrow("scan.tiff은(는) TIFF 이미지라 변환할 수 없습니다.");
+      await expect(
+        prepareImageAttachmentWith(platform({ header: pngHeader(10_000, 10_000) }), {
+          attachment: attachment({ fileName: "paste.png" }),
+          store: recordingStore(),
+        }),
+      ).rejects.toThrow("paste.png은(는) 10000×10000입니다.");
+    } finally {
+      await i18n.changeLanguage("en");
+    }
   });
 });

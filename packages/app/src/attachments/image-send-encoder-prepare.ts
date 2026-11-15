@@ -1,5 +1,10 @@
 import type { AttachmentMetadata, AttachmentStore } from "@/attachments/types";
-import { assertImageSourceBudget, readImageDimensions } from "@/attachments/image-budget";
+import {
+  assertImageSourceBudget,
+  imageFallbackLabel,
+  readImageDimensions,
+} from "@/attachments/image-budget";
+import { i18n } from "@/i18n/i18next";
 import { resolveAgentImageMimeType } from "@/attachments/file-types";
 
 /** Platform I/O for {@link prepareImageAttachmentWith}; the web and native encoders supply it. */
@@ -29,7 +34,12 @@ export class UnconvertibleImageError extends Error {
   constructor(label: string, mimeType: string, options?: { cause?: unknown }) {
     const format = FORMAT_LABEL_BY_MIME_TYPE[mimeType] ?? mimeType;
     super(
-      `${label} is a ${format} image, which this device can't convert for the agent. Save it as JPEG or PNG and attach it again.`,
+      i18n.t("attachments.imageErrors.unconvertible", {
+        defaultValue:
+          "{{label}} is a {{format}} image, which this device can't convert for the agent. Save it as JPEG or PNG and attach it again.",
+        label,
+        format,
+      }),
       options,
     );
     this.name = "UnconvertibleImageError";
@@ -52,7 +62,7 @@ export async function prepareImageAttachmentWith(
   input: { attachment: AttachmentMetadata; store: AttachmentStore },
 ): Promise<AttachmentMetadata> {
   const { attachment, store } = input;
-  const label = attachment.fileName?.trim() || "Image";
+  const label = attachment.fileName?.trim() || imageFallbackLabel();
   const header = await platform.readHeader(attachment).catch(() => null);
   const size = header ? readImageDimensions(header) : null;
   assertImageSourceBudget({

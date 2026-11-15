@@ -1,4 +1,5 @@
 import { assertImageSourceBudget } from "@/attachments/image-budget";
+import { i18n } from "@/i18n/i18next";
 import {
   getRasterImageMimeTypeFromPath,
   resolveAgentImageMimeType,
@@ -95,7 +96,12 @@ export async function normalizePickedImageAssets(
     });
     const format = pickedAssetFormat(asset);
     if (!format) {
-      throw new Error(`Unsupported image type for '${asset.fileName ?? asset.uri}'.`);
+      throw new Error(
+        i18n.t("attachments.imageErrors.unsupportedType", {
+          defaultValue: "Unsupported image type for '{{name}}'.",
+          name: asset.fileName ?? asset.uri,
+        }),
+      );
     }
     return {
       source: { kind: "file_uri", uri: asset.uri },

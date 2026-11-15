@@ -1,9 +1,16 @@
+import { i18n } from "@/i18n/i18next";
+
 export const MAX_IMAGE_SOURCE_BYTES = 32 * 1024 * 1024;
 // 52M covers 50MP phone photos (8160x6120 = 49.9M); 200MP shots stay out and go through
 // the file-upload path instead (delta 45).
 export const MAX_IMAGE_PIXELS = 52_000_000;
 export const IMAGE_REENCODE_THRESHOLD_BYTES = 8 * 1024 * 1024;
 export const IMAGE_REENCODE_MAX_DIMENSION = 4_096;
+
+/** Name used in image messages when the file has none. */
+export function imageFallbackLabel(): string {
+  return i18n.t("attachments.imageErrors.fallbackLabel", { defaultValue: "Image" });
+}
 
 export function exceedsImageSourceBudget(input: {
   byteSize?: number | null;
@@ -24,10 +31,15 @@ export function assertImageSourceBudget(input: {
   height?: number | null;
   label?: string | null;
 }): void {
-  const label = input.label?.trim() || "Image";
+  const label = input.label?.trim() || imageFallbackLabel();
   if (input.byteSize != null && input.byteSize > MAX_IMAGE_SOURCE_BYTES) {
     throw new Error(
-      `${label} is ${(input.byteSize / (1024 * 1024)).toFixed(1)} MB; the safety limit is ${MAX_IMAGE_SOURCE_BYTES / (1024 * 1024)} MB.`,
+      i18n.t("attachments.imageErrors.tooManyBytes", {
+        defaultValue: "{{label}} is {{size}} MB; the safety limit is {{limit}} MB.",
+        label,
+        size: (input.byteSize / (1024 * 1024)).toFixed(1),
+        limit: MAX_IMAGE_SOURCE_BYTES / (1024 * 1024),
+      }),
     );
   }
   if (
@@ -38,7 +50,14 @@ export function assertImageSourceBudget(input: {
     input.width * input.height > MAX_IMAGE_PIXELS
   ) {
     throw new Error(
-      `${label} is ${input.width}×${input.height}; the decoded-pixel safety limit is ${MAX_IMAGE_PIXELS.toLocaleString()} pixels.`,
+      i18n.t("attachments.imageErrors.tooManyPixels", {
+        defaultValue:
+          "{{label}} is {{width}}×{{height}}; the decoded-pixel safety limit is {{limit}} pixels.",
+        label,
+        width: input.width,
+        height: input.height,
+        limit: MAX_IMAGE_PIXELS.toLocaleString(),
+      }),
     );
   }
 }
