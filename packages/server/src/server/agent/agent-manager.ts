@@ -326,6 +326,14 @@ export interface WaitForAgentStartOptions {
   signal?: AbortSignal;
 }
 
+interface BuildLaunchContextInput {
+  agentId: string;
+  client: AgentClient;
+  cwd: string;
+  env?: Record<string, string>;
+  workspaceId?: string;
+}
+
 export interface ResumeAgentRegistrationOptions {
   createdAt?: Date;
   updatedAt?: Date;
@@ -1281,12 +1289,13 @@ export class AgentManager {
     const client = await this.requireAvailableClient({
       provider: storedConfig.provider,
     });
-    const launchContext = await this.buildLaunchContext(
-      resolvedAgentId,
+    const launchContext = await this.buildLaunchContext({
+      agentId: resolvedAgentId,
       client,
-      storedConfig.cwd,
-      options?.env,
-    );
+      cwd: storedConfig.cwd,
+      env: options?.env,
+      workspaceId: options.workspaceId,
+    });
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const createOptions = this.buildCreateSessionOptions(options);
     const session = await client.createSession(providerLaunchConfig, launchContext, createOptions);
@@ -1351,7 +1360,18 @@ export class AgentManager {
         `Provider '${handle.provider}' is not available. Please ensure the CLI is installed.`,
       );
     }
-    const launchContext = await this.buildLaunchContext(resolvedAgentId, client, storedConfig.cwd);
+    // The launch env and the registered agent must agree, or the next snapshot flush erases the
+    // stored workspace (upstream #8939). A daemon-restart resume passes no workspace: read it from
+    // the stored record.
+    const workspaceId =
+      options?.workspaceId ??
+      (agentId ? (await this.registry?.get(resolvedAgentId))?.workspaceId : undefined);
+    const launchContext = await this.buildLaunchContext({
+      agentId: resolvedAgentId,
+      client,
+      cwd: storedConfig.cwd,
+      workspaceId,
+    });
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const session = await client.resumeSession(
       handle,
@@ -1362,6 +1382,7 @@ export class AgentManager {
     await this.requireExternalMcpSupport(session, storedConfig);
     return this.registerSession(session, storedConfig, resolvedAgentId, {
       ...options,
+      workspaceId,
       persistence: handle,
     });
   }
@@ -1399,7 +1420,12 @@ export class AgentManager {
       },
       resolvedAgentId,
     );
-    const launchContext = await this.buildLaunchContext(resolvedAgentId, client, storedConfig.cwd);
+    const launchContext = await this.buildLaunchContext({
+      agentId: resolvedAgentId,
+      client,
+      cwd: storedConfig.cwd,
+      workspaceId: input.workspaceId,
+    });
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const imported = await client.importSession(
       {
@@ -1483,7 +1509,12 @@ export class AgentManager {
       provider,
     } as AgentSessionConfig;
     const { storedConfig, launchConfig } = await this.prepareSessionConfig(refreshConfig, agentId);
-    const launchContext = await this.buildLaunchContext(agentId, client, storedConfig.cwd);
+    const launchContext = await this.buildLaunchContext({
+      agentId,
+      client,
+      cwd: storedConfig.cwd,
+      workspaceId: existing.workspaceId,
+    });
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
 
     const session = handle
@@ -5075,18 +5106,22 @@ export class AgentManager {
       : next;
   }
 
-  private async buildLaunchContext(
-    agentId: string,
-    client: AgentClient,
-    cwd: string,
-    env?: Record<string, string>,
-  ): Promise<AgentLaunchContext> {
+  private async buildLaunchContext({
+    agentId,
+    client,
+    cwd,
+    env,
+    workspaceId,
+  }: BuildLaunchContextInput): Promise<AgentLaunchContext> {
     const context: AgentLaunchContext = {
       agentId,
       env: {
         ...env,
         PASEO_AGENT_ID: agentId,
         PASEO_AGENT_CWD: cwd,
+        // Lets an agent name its own workspace (rename, archive, create_agent) when several
+        // workspaces share its cwd, which PASEO_AGENT_CWD cannot tell apart.
+        ...(workspaceId ? { PASEO_WORKSPACE_ID: workspaceId } : {}),
       },
     };
     if (
