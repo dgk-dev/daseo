@@ -16,13 +16,21 @@ const LRU_SERVER_IDS = ["host-a", "host-b", "host-c"] as const;
 class MemoryStorage implements ReplicaCacheStorage {
   readonly values = new Map<string, string>();
   writes = 0;
+  readonly written: Array<{ key: string; bytes: number }> = [];
+  readonly reads: string[] = [];
+
+  async getAllKeys(): Promise<string[]> {
+    return Array.from(this.values.keys());
+  }
 
   async getItem(key: string): Promise<string | null> {
+    this.reads.push(key);
     return this.values.get(key) ?? null;
   }
 
   async setItem(key: string, value: string): Promise<void> {
     this.writes += 1;
+    this.written.push({ key, bytes: Buffer.byteLength(value) });
     this.values.set(key, value);
   }
 
@@ -207,6 +215,39 @@ function seedTimeline(serverId: string, text: string): void {
   store.setAgentStreamTail(serverId, new Map([[agentId, [message(`message-${serverId}`, text)]]]));
 }
 
+async function visitChats(cache: ReplicaCache, count: number, textBytes = 100_000): Promise<void> {
+  seedSession();
+  const store = useSessionStore.getState();
+  store.setAgents(
+    SERVER_ID,
+    new Map(
+      Array.from({ length: count }, (_, i) => {
+        const id = `agent-${i + 1}`;
+        return [id, agent(id)];
+      }),
+    ),
+  );
+  store.setAgentStreamTail(
+    SERVER_ID,
+    new Map(
+      Array.from({ length: count }, (_, i) => {
+        const id = `agent-${i + 1}`;
+        return [id, [message(`message-${i + 1}`, "한".repeat(Math.ceil(textBytes / 3)))]];
+      }),
+    ),
+  );
+  for (let i = 1; i <= count; i++) {
+    store.setFocusedAgentId(SERVER_ID, `agent-${i}`);
+    await cache.flush();
+  }
+}
+
+async function expectRestoredTimelines(count: number): Promise<void> {
+  await vi.waitFor(() => {
+    expect(useSessionStore.getState().sessions[SERVER_ID]?.agentStreamTail.size).toBe(count);
+  });
+}
+
 afterEach(() => {
   vi.useRealTimers();
   const store = useSessionStore.getState();
@@ -215,6 +256,335 @@ afterEach(() => {
 });
 
 describe("ReplicaCache", () => {
+  it("restores all 20 visited chats after restart, reading the focused chat first", async () => {
+    const storage = new MemoryStorage();
+    const writer = new ReplicaCache(storage);
+    writer.setHosts([SERVER_ID]);
+    await visitChats(writer, 20);
+    useSessionStore.getState().clearSession(SERVER_ID);
+    storage.reads.length = 0;
+    const reader = new ReplicaCache(storage);
+    reader.setHosts([SERVER_ID]);
+    await reader.restore();
+    expect(useSessionStore.getState().sessions[SERVER_ID]?.agentStreamTail.has("agent-20")).toBe(
+      true,
+    );
+    await expectRestoredTimelines(20);
+    expect(storage.reads[1]).toContain("agent-20");
+  });
+
+  it.each([1, 20])(
+    "writes less than twice the changed chat bytes with %i cached chats",
+    async (count) => {
+      const storage = new MemoryStorage();
+      const cache = new ReplicaCache(storage);
+      cache.setHosts([SERVER_ID]);
+      await visitChats(cache, count);
+      storage.written.length = 0;
+      const id = `agent-${count}`;
+      useSessionStore
+        .getState()
+        .setAgentStreamTail(SERVER_ID, (tails) =>
+          new Map(tails).set(id, [message("changed", "한".repeat(34_000))]),
+        );
+      await cache.flush();
+      const changedBytes = Buffer.byteLength(
+        JSON.stringify([message("changed", "한".repeat(34_000))]),
+      );
+      expect(storage.written.reduce((sum, write) => sum + write.bytes, 0)).toBeLessThan(
+        changedBytes * 2,
+      );
+      expect(storage.written.filter((write) => write.key !== "@paseo:replica-cache")).toHaveLength(
+        1,
+      );
+    },
+  );
+
+  it("does not rewrite the directory or other chats for a small streaming change", async () => {
+    const storage = new MemoryStorage();
+    const cache = new ReplicaCache(storage);
+    cache.setHosts([SERVER_ID]);
+    await visitChats(cache, 20, 1_000);
+    storage.written.length = 0;
+    useSessionStore
+      .getState()
+      .setAgentStreamTail(SERVER_ID, (tails) =>
+        new Map(tails).set("agent-20", [message("small", "한".repeat(400))]),
+      );
+    await cache.flush();
+    expect(storage.written).toHaveLength(1);
+    expect(storage.written[0]!.bytes).toBeLessThan(2_400);
+  });
+
+  it("paints the focused chat before a slow background read and never overwrites newer history", async () => {
+    const storage = new MemoryStorage();
+    const writer = new ReplicaCache(storage);
+    writer.setHosts([SERVER_ID]);
+    await visitChats(writer, 3, 100);
+    const baseRead = storage.getItem.bind(storage);
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    storage.getItem = async (key) => {
+      if (key.endsWith(":agent-2")) await gate;
+      return baseRead(key);
+    };
+    useSessionStore.getState().clearSession(SERVER_ID);
+    const reader = new ReplicaCache(storage);
+    reader.setHosts([SERVER_ID]);
+    await reader.restore();
+    expect(
+      Array.from(useSessionStore.getState().sessions[SERVER_ID]!.agentStreamTail.keys()),
+    ).toEqual(["agent-3"]);
+    useSessionStore
+      .getState()
+      .setAgentStreamTail(SERVER_ID, (tails) =>
+        new Map(tails).set("agent-2", [message("network", "Newer")]),
+      );
+    release();
+    await reader.flush();
+    expect(useSessionStore.getState().sessions[SERVER_ID]!.agentStreamTail.get("agent-2")).toEqual([
+      message("network", "Newer"),
+    ]);
+    expect(useSessionStore.getState().sessions[SERVER_ID]!.agentStreamTail.size).toBe(3);
+  });
+
+  it("cleans orphan keys and removed hosts without touching other storage", async () => {
+    const storage = new MemoryStorage();
+    const cache = new ReplicaCache(storage);
+    cache.setHosts([SERVER_ID]);
+    await visitChats(cache, 3, 100);
+    storage.values.set("@paseo:replica-cache:timeline:interrupted-write", "orphan");
+    storage.values.set("unrelated", "keep");
+    const reader = new ReplicaCache(storage);
+    reader.setHosts([SERVER_ID]);
+    await reader.restore();
+    reader.setHosts([]);
+    await reader.flush();
+    expect(Array.from(storage.values.keys()).sort()).toEqual(["@paseo:replica-cache", "unrelated"]);
+    expect(storage.values.get("unrelated")).toBe("keep");
+  });
+
+  it("restores the remaining chats when the focused disk value is corrupt", async () => {
+    const storage = new MemoryStorage();
+    const writer = new ReplicaCache(storage);
+    writer.setHosts([SERVER_ID]);
+    await visitChats(writer, 3, 100);
+    const focusedKey = Array.from(storage.values.keys()).find((key) => key.endsWith(":agent-3"))!;
+    storage.values.set(focusedKey, "{broken");
+    useSessionStore.getState().clearSession(SERVER_ID);
+    const reader = new ReplicaCache(storage);
+    reader.setHosts([SERVER_ID]);
+    await reader.restore();
+    await reader.flush();
+    expect(
+      Array.from(useSessionStore.getState().sessions[SERVER_ID]!.agentStreamTail.keys()),
+    ).toEqual(["agent-2", "agent-1"]);
+    expect(storage.values.has(focusedKey)).toBe(false);
+  });
+
+  it("stores a directory checkpoint even before the first persist", async () => {
+    const storage = new MemoryStorage();
+    seedSession();
+    const cache = new ReplicaCache(storage);
+    cache.setHosts([SERVER_ID]);
+    cache.writeDirectoryCheckpoint(SERVER_ID, { afterSeq: 7 });
+    await cache.flush();
+    const reader = new ReplicaCache(storage);
+    reader.setHosts([SERVER_ID]);
+    await reader.restore();
+    expect(reader.readDirectoryCheckpoint(SERVER_ID)).toEqual({ afterSeq: 7 });
+  });
+
+  it("leaves version 8 readable if migration fails before publishing the new index", async () => {
+    const storage = new MemoryStorage();
+    const writer = new ReplicaCache(storage);
+    writer.setHosts([SERVER_ID]);
+    await visitChats(writer, 3, 100);
+    const host = JSON.parse(storage.values.get("@paseo:replica-cache")!).hosts[0];
+    const rows = host.timelineKeys.map((entry: { key: string }) =>
+      JSON.parse(storage.values.get(entry.key)!),
+    );
+    const { timelineKeys: _keys, ...directory } = host;
+    const legacy = JSON.stringify({
+      version: 8,
+      hosts: [{ ...directory, timeline: rows[0], timelines: rows.slice(1) }],
+    });
+    storage.values.clear();
+    storage.values.set("@paseo:replica-cache", legacy);
+    const setItem = storage.setItem.bind(storage);
+    storage.setItem = async (key, value) => {
+      if (key === "@paseo:replica-cache") throw new Error("Interrupted index write");
+      await setItem(key, value);
+    };
+    useSessionStore.getState().clearSession(SERVER_ID);
+    const reader = new ReplicaCache(storage);
+    reader.setHosts([SERVER_ID]);
+    await reader.restore();
+    await reader.flush();
+    expect(storage.values.get("@paseo:replica-cache")).toBe(legacy);
+    storage.setItem = setItem;
+    useSessionStore.getState().clearSession(SERVER_ID);
+    const retry = new ReplicaCache(storage);
+    retry.setHosts([SERVER_ID]);
+    await retry.restore();
+    await retry.flush();
+    expect(useSessionStore.getState().sessions[SERVER_ID]!.agentStreamTail.size).toBe(3);
+    expect(JSON.parse(storage.values.get("@paseo:replica-cache")!).version).toBe(9);
+    expect(storage.values.size).toBe(4);
+  });
+
+  it("loads a version-8 single value and migrates it without losing canonical rows", async () => {
+    const storage = new MemoryStorage();
+    // Capture the actual v8 boundary rather than hand-writing a directory fixture.
+    seedSession();
+    const writer = new ReplicaCache(storage);
+    writer.setHosts([SERVER_ID]);
+    await writer.flush();
+    const current = JSON.parse(storage.values.get("@paseo:replica-cache") ?? "null");
+    const host = current.hosts[0];
+    const timeline =
+      host.timeline ?? JSON.parse(storage.values.get(host.timelineKeys[0].key) ?? "null");
+    storage.values.clear();
+    storage.values.set(
+      "@paseo:replica-cache",
+      JSON.stringify({
+        version: 8,
+        hosts: [
+          {
+            ...host,
+            timelineKeys: undefined,
+            timeline,
+            timelines: [],
+          },
+        ],
+      }),
+    );
+    useSessionStore.getState().clearSession(SERVER_ID);
+    const reader = new ReplicaCache(storage);
+    reader.setHosts([SERVER_ID]);
+    await reader.restore();
+    expect(useSessionStore.getState().sessions[SERVER_ID]?.agentStreamTail.get("agent-1")).toEqual([
+      message("message-1", "Cached"),
+    ]);
+    await reader.flush();
+    expect(JSON.parse(storage.values.get("@paseo:replica-cache") ?? "null").version).toBe(9);
+  });
+
+  it("deletes the evicted timeline key when a 21st chat is visited", async () => {
+    const storage = new MemoryStorage();
+    const cache = new ReplicaCache(storage);
+    cache.setHosts([SERVER_ID]);
+    await visitChats(cache, 20);
+    const firstKey = Array.from(storage.values.keys()).find((key) => key.endsWith(":agent-1"));
+    expect(firstKey).toBeTypeOf("string");
+    const store = useSessionStore.getState();
+    store.setAgents(SERVER_ID, (agents) => new Map(agents).set("agent-21", agent("agent-21")));
+    store.setAgentStreamTail(SERVER_ID, (tails) =>
+      new Map(tails).set("agent-21", [message("21", "new")]),
+    );
+    store.setFocusedAgentId(SERVER_ID, "agent-21");
+    await cache.flush();
+    expect(storage.values.has(firstKey!)).toBe(false);
+    expect(storage.values.size).toBe(21);
+  });
+
+  it.each([400_000, 32 * 1024 * 1024])(
+    "bounds stored UTF-8 bytes with 20 maximum-item timelines and a %i byte cap",
+    async (maxBytes) => {
+      const storage = new MemoryStorage();
+      const cache = new ReplicaCache(storage, { maxBytes });
+      cache.setHosts([SERVER_ID]);
+      await visitChats(cache, 20, 100);
+      for (let i = 1; i <= 20; i++) {
+        const id = `agent-${i}`;
+        useSessionStore.getState().setFocusedAgentId(SERVER_ID, id);
+        const rows = Array.from({ length: 50 }, (_, row) =>
+          message(`${i}-${row}`, "한".repeat(Math.ceil(maxBytes / (15 * 50 * 3)))),
+        );
+        useSessionStore
+          .getState()
+          .setAgentStreamTail(SERVER_ID, (tails) => new Map(tails).set(id, rows));
+        await cache.flush();
+        expect(
+          Array.from(storage.values.values()).reduce(
+            (sum, value) => sum + Buffer.byteLength(value),
+            0,
+          ),
+        ).toBeLessThanOrEqual(maxBytes);
+      }
+      expect(storage.values.size).toBeGreaterThan(1);
+    },
+  );
+
+  it("measures streaming writes and worst-case startup JSON deserialization", async () => {
+    const storage = new MemoryStorage();
+    const cache = new ReplicaCache(storage);
+    cache.setHosts([SERVER_ID]);
+    await visitChats(cache, 20, 842_000);
+    const index = storage.values.get("@paseo:replica-cache")!;
+    const host = JSON.parse(index).hosts[0];
+    const rows = host.timelineKeys.map((entry: { key: string }) =>
+      JSON.parse(storage.values.get(entry.key)!),
+    );
+    const { timelineKeys: _keys, ...directory } = host;
+    const legacy20 = {
+      version: 8,
+      hosts: [{ ...directory, timeline: rows[0], timelines: rows.slice(1) }],
+    };
+    const legacy5 = {
+      version: 8,
+      hosts: [{ ...directory, timeline: rows[0], timelines: rows.slice(1, 5) }],
+    };
+    const old20 = JSON.stringify(legacy20);
+    const focused = storage.values.get(host.timelineKeys[0].key)!;
+    const oldParse: number[] = [];
+    const focusedParse: number[] = [];
+    for (let i = 0; i < 30; i++) {
+      let start = performance.now();
+      JSON.parse(old20);
+      oldParse.push(performance.now() - start);
+      start = performance.now();
+      JSON.parse(index);
+      JSON.parse(focused);
+      focusedParse.push(performance.now() - start);
+    }
+    const before5: number[] = [];
+    const before20: number[] = [];
+    const after20: number[] = [];
+    for (let chunk = 0; chunk < 10; chunk++) {
+      const text = "한".repeat(280_667) + "x".repeat(chunk + 1);
+      rows[0].items[0].text = text;
+      before5.push(Buffer.byteLength(JSON.stringify(legacy5)));
+      before20.push(Buffer.byteLength(JSON.stringify(legacy20)));
+      storage.written.length = 0;
+      useSessionStore
+        .getState()
+        .setAgentStreamTail(SERVER_ID, (tails) =>
+          new Map(tails).set("agent-20", [message("message-20", text)]),
+        );
+      await cache.flush();
+      after20.push(storage.written.reduce((sum, write) => sum + write.bytes, 0));
+      expect(storage.written).toHaveLength(1);
+    }
+    const median = (values: number[]) =>
+      values.toSorted((a, b) => a - b)[Math.floor(values.length / 2)]!;
+    process.stdout.write(
+      "REPLICA_CACHE_MEASURED " +
+        JSON.stringify({
+          streamingBytesPerPersist: { old5: before5, old20: before20, new20: after20 },
+          startupJsonBytes: {
+            old20: Buffer.byteLength(old20),
+            indexAndFocused: Buffer.byteLength(index) + Buffer.byteLength(focused),
+          },
+          startupJsonMedianMs: { old20: median(oldParse), indexAndFocused: median(focusedParse) },
+        }) +
+        "\n",
+    );
+    expect(Math.max(...after20)).toBeLessThan(Math.min(...before5));
+  });
+
   it("persists focused replica changes without writing transient stream head updates", async () => {
     vi.useFakeTimers();
     const storage = new MemoryStorage();
@@ -237,7 +607,8 @@ describe("ReplicaCache", () => {
       .setAgentStreamTail(SERVER_ID, new Map([["agent-1", [message("saved", "Committed")]]]));
     await vi.advanceTimersByTimeAsync(1_000);
 
-    expect(storage.writes).toBe(writesBeforeStream + 1);
+    expect(storage.writes).toBeGreaterThan(writesBeforeStream);
+    expect(storage.written.filter((write) => write.key !== "@paseo:replica-cache")).toHaveLength(2);
     cache.setHosts([]);
   });
 
@@ -530,10 +901,11 @@ describe("ReplicaCache", () => {
 
     const persisted = JSON.parse(storage.values.get("@paseo:replica-cache") ?? "null") as {
       version: number;
-      hosts: Array<{ timeline: Record<string, unknown> | null }>;
+      hosts: Array<{ timelineKeys: Array<{ key: string }> }>;
     };
-    expect(persisted.version).toBe(8);
-    expect(Object.keys(persisted.hosts[0]?.timeline ?? {}).sort()).toEqual([
+    expect(persisted.version).toBe(9);
+    const timelineKey = persisted.hosts[0]!.timelineKeys[0]!.key;
+    expect(Object.keys(JSON.parse(storage.values.get(timelineKey) ?? "null")).sort()).toEqual([
       "agentId",
       "hasOlder",
       "items",
@@ -568,6 +940,7 @@ describe("ReplicaCache", () => {
     reader.setHosts([SERVER_ID]);
     await reader.restore();
 
+    await expectRestoredTimelines(2);
     const timelines = useSessionStore.getState().sessions[SERVER_ID]?.agentStreamTail;
     expect(Array.from(timelines?.keys() ?? [])).toEqual(["agent-2", "agent-1"]);
     expect(timelines?.get("agent-1")).toEqual([message("message-1", "First cached agent")]);
@@ -707,7 +1080,7 @@ describe("ReplicaCache", () => {
 
     expect(useSessionStore.getState().sessions[SERVER_ID]).toBeUndefined();
     expect(JSON.parse(storage.values.get("@paseo:replica-cache") ?? "null")).toEqual({
-      version: 8,
+      version: 9,
       hosts: [],
     });
   });

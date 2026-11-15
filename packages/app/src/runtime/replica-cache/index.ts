@@ -22,10 +22,11 @@ import { isUnreconciledLocalUserMessage, type StreamItem } from "@/types/stream"
 import { normalizeAgentSnapshot } from "@/utils/agent-snapshots";
 
 const STORAGE_KEY = "@paseo:replica-cache";
-const CACHE_VERSION = 8;
+const CACHE_VERSION = 9;
+const TIMELINE_KEY_PREFIX = `${STORAGE_KEY}:timeline:`;
 const PERSIST_DELAY_MS = 750;
 const MAX_TIMELINE_ITEMS = 50;
-const MAX_CACHED_TIMELINES_PER_HOST = 5;
+const MAX_CACHED_TIMELINES_PER_HOST = 20;
 const MAX_CACHE_BYTES = 32 * 1024 * 1024;
 const IsoDateSchema = z.iso.datetime();
 const TimelinePositionSchema = z.strictObject({
@@ -291,10 +292,33 @@ const StoredHostSchema = z.strictObject({
   directorySync: z.unknown().optional(),
 });
 
+const TimelineKeySchema = z.strictObject({
+  agentId: z.string(),
+  key: z.string().startsWith(TIMELINE_KEY_PREFIX),
+});
+const StoredIndexHostSchema = StoredHostSchema.omit({ timeline: true, timelines: true }).extend({
+  timelineKeys: z.array(TimelineKeySchema).max(MAX_CACHED_TIMELINES_PER_HOST),
+});
 const StoredCacheSchema = z.strictObject({
   version: z.literal(CACHE_VERSION),
+  hosts: z.array(StoredIndexHostSchema),
+});
+// COMPAT(replica-cache-v8): added 2026-11-15, remove after 2027-02-15.
+const LegacyCacheSchema = z.strictObject({
+  version: z.literal(8),
   hosts: z.array(StoredHostSchema),
 });
+
+interface CachedTimeline extends z.infer<typeof TimelineKeySchema> {
+  bytes: number;
+  value?: StoredTimeline;
+  payload?: string;
+  dirty: boolean;
+}
+interface CachedHost {
+  directory: Omit<StoredHost, "timeline" | "timelines">;
+  timelines: CachedTimeline[];
+}
 
 type StoredAgent = z.infer<typeof StoredAgentSchema>;
 type StoredHost = z.infer<typeof StoredHostSchema>;
@@ -317,6 +341,7 @@ export interface ReplicaCacheStorage {
   getItem: (key: string) => Promise<string | null>;
   setItem: (key: string, value: string) => Promise<void>;
   removeItem: (key: string) => Promise<void>;
+  getAllKeys?: () => Promise<readonly string[]>;
 }
 
 interface ReplicaCacheOptions {
@@ -324,8 +349,12 @@ interface ReplicaCacheOptions {
 }
 
 function previousStoredTimelines(stored: StoredHost | undefined): StoredTimeline[] {
-  if (stored?.timelines && stored.timelines.length > 0) return stored.timelines;
-  return stored?.timeline ? [stored.timeline] : [];
+  return [
+    ...(stored?.timeline ? [stored.timeline] : []),
+    ...(stored?.timelines ?? []).filter(
+      (timeline) => timeline.agentId !== stored?.timeline?.agentId,
+    ),
+  ];
 }
 
 function deserializeTimeline(stored: StoredHost["timeline"]): SessionReplica["timeline"] {
@@ -675,6 +704,16 @@ function isTimelineItemStoredLosslessly(item: StreamItem): boolean {
   }
 }
 
+function timelineInputsEqual(left: ReplicaInput | undefined, right: ReplicaInput): boolean {
+  return (
+    left !== undefined &&
+    left.focusedAgent?.id === right.focusedAgent?.id &&
+    left.timelineItems === right.timelineItems &&
+    left.timelineRange === right.timelineRange &&
+    left.timelineHasOlder === right.timelineHasOlder
+  );
+}
+
 function replicaInputsEqual(left: ReplicaInput, right: ReplicaInput): boolean {
   return (
     left.agents === right.agents &&
@@ -786,7 +825,11 @@ function legacyProjectDescriptorFromWorkspace(workspace: WorkspaceDescriptor): P
 
 export class ReplicaCache {
   private readonly activeServerIds = new Set<string>();
-  private readonly storedHosts = new Map<string, StoredHost>();
+  private readonly storedHosts = new Map<string, CachedHost>();
+  private readonly persistedTimelineKeys = new Set<string>();
+  private discoveredTimelineKeys = false;
+  private lastIndexPayload: string | null = null;
+  private backgroundRestore: Promise<void> = Promise.resolve();
   private readonly lastFocusedAgentIds = new Map<string, string>();
   private readonly capturedInputs = new Map<string, ReplicaInput>();
   private readonly maxBytes: number;
@@ -843,17 +886,42 @@ export class ReplicaCache {
       return;
     }
     const cache = StoredCacheSchema.safeParse(parsed);
-    if (!cache.success) {
-      await this.clearInvalidCache();
-      return;
-    }
-    for (const host of cache.data.hosts) {
-      if (!this.activeServerIds.has(host.serverId)) {
-        this.needsPersist = true;
-        continue;
+    if (cache.success) {
+      this.lastIndexPayload = raw;
+      for (const host of cache.data.hosts) {
+        for (const entry of host.timelineKeys) this.persistedTimelineKeys.add(entry.key);
+        if (!this.activeServerIds.has(host.serverId)) {
+          this.needsPersist = true;
+          continue;
+        }
+        const { timelineKeys, ...directory } = host;
+        this.storedHosts.set(host.serverId, {
+          directory,
+          timelines: timelineKeys.map(({ agentId, key }) => ({
+            agentId,
+            key,
+            bytes: 0,
+            dirty: false,
+          })),
+        });
       }
-      this.storedHosts.set(host.serverId, host);
-      if (host.timeline) this.lastFocusedAgentIds.set(host.serverId, host.timeline.agentId);
+    } else {
+      const legacy = LegacyCacheSchema.safeParse(parsed);
+      if (!legacy.success) {
+        await this.clearInvalidCache();
+        return;
+      }
+      for (const host of legacy.data.hosts) {
+        if (!this.activeServerIds.has(host.serverId)) continue;
+        const { timeline: _timeline, timelines: _timelines, ...directory } = host;
+        this.storedHosts.set(host.serverId, {
+          directory,
+          timelines: previousStoredTimelines(host)
+            .slice(0, MAX_CACHED_TIMELINES_PER_HOST)
+            .map((timeline) => this.cacheTimeline(host.serverId, timeline)),
+        });
+      }
+      this.needsPersist = true;
     }
     const bounded = this.buildBoundedPayload();
     if (!bounded) {
@@ -862,16 +930,30 @@ export class ReplicaCache {
       return;
     }
     if (bounded.evicted) this.needsPersist = true;
-    for (const host of this.storedHosts.values()) {
-      useSessionStore.getState().restoreSessionReplica(host.serverId, deserializeHost(host));
-      const session = useSessionStore.getState().sessions[host.serverId];
+    for (const [serverId, host] of this.storedHosts) {
+      const focused = host.timelines[0];
+      if (focused) {
+        this.lastFocusedAgentIds.set(serverId, focused.agentId);
+        await this.loadTimeline(focused);
+      }
+      if (!this.activeServerIds.has(serverId)) continue;
+      const loaded = host.timelines.flatMap((entry) => (entry.value ? [entry.value] : []));
+      useSessionStore.getState().restoreSessionReplica(
+        serverId,
+        deserializeHost({
+          ...host.directory,
+          timeline: loaded[0] ?? null,
+          timelines: loaded.slice(1),
+        }),
+      );
+      const session = useSessionStore.getState().sessions[serverId];
       if (session) {
-        this.capturedInputs.set(
-          host.serverId,
-          selectReplicaInput(session, this.lastFocusedAgentIds.get(host.serverId) ?? null),
-        );
+        this.capturedInputs.set(serverId, selectReplicaInput(session, focused?.agentId ?? null));
       }
     }
+    // The registry may paint as soon as restore resolves. Do not put the other 19 reads
+    // or their validation/deserialization on that critical path.
+    this.backgroundRestore = this.restoreBackgroundTimelines();
   }
 
   start(): void {
@@ -893,7 +975,8 @@ export class ReplicaCache {
     const stored = this.storedHosts.get(oldServerId);
     if (stored) {
       this.storedHosts.delete(oldServerId);
-      this.storedHosts.set(newServerId, { ...stored, serverId: newServerId });
+      stored.directory = { ...stored.directory, serverId: newServerId };
+      this.storedHosts.set(newServerId, stored);
     }
     const focusedAgentId = this.lastFocusedAgentIds.get(oldServerId);
     if (focusedAgentId) {
@@ -911,7 +994,7 @@ export class ReplicaCache {
   }
 
   readDirectoryCheckpoint(serverId: string): unknown {
-    return this.storedHosts.get(serverId)?.directorySync;
+    return this.storedHosts.get(serverId)?.directory.directorySync;
   }
 
   writeDirectoryCheckpoint(serverId: string, checkpoint: unknown): void {
@@ -919,12 +1002,15 @@ export class ReplicaCache {
     if (!stored) {
       const session = useSessionStore.getState().sessions[serverId];
       if (!session) return;
-      const input = selectReplicaInput(session, this.lastFocusedAgentIds.get(serverId) ?? null);
-      this.capturedInputs.set(serverId, input);
-      stored = serializeHost(serverId, input);
+      this.captureHost(serverId, session);
+      stored = this.storedHosts.get(serverId);
     }
+    if (!stored) return;
     this.storedHosts.delete(serverId);
-    this.storedHosts.set(serverId, { ...stored, directorySync: checkpoint });
+    this.storedHosts.set(serverId, {
+      ...stored,
+      directory: { ...stored.directory, directorySync: checkpoint },
+    });
     this.schedulePersist();
   }
 
@@ -933,6 +1019,7 @@ export class ReplicaCache {
       clearTimeout(this.persistTimer);
       this.persistTimer = null;
     }
+    await this.backgroundRestore;
     this.captureSessions();
     const bounded = this.buildBoundedPayload();
     this.needsPersist = false;
@@ -940,11 +1027,42 @@ export class ReplicaCache {
       await this.clearInvalidCache();
       return;
     }
+    const entries = Array.from(this.storedHosts.values()).flatMap((host) => host.timelines);
     const write = this.writeQueue
       .catch(() => undefined)
-      .then(() => this.storage.setItem(STORAGE_KEY, bounded.payload));
+      .then(async () => {
+        if (!this.discoveredTimelineKeys && this.storage.getAllKeys) {
+          const keys = await this.storage.getAllKeys();
+          for (const key of keys) {
+            if (key.startsWith(TIMELINE_KEY_PREFIX)) this.persistedTimelineKeys.add(key);
+          }
+          this.discoveredTimelineKeys = true;
+        }
+        for (const entry of entries) {
+          if (!entry.dirty || entry.payload === undefined) continue;
+          // Write rows before publishing their references. A failed v8 migration leaves
+          // the old single-value cache intact and can be retried on the next launch.
+          await this.storage.setItem(entry.key, entry.payload);
+          this.persistedTimelineKeys.add(entry.key);
+          entry.dirty = false;
+        }
+        if (bounded.payload !== this.lastIndexPayload) {
+          await this.storage.setItem(STORAGE_KEY, bounded.payload);
+          this.lastIndexPayload = bounded.payload;
+        }
+        const retained = new Set(entries.map((entry) => entry.key));
+        for (const key of this.persistedTimelineKeys) {
+          if (retained.has(key)) continue;
+          await this.storage.removeItem(key);
+          this.persistedTimelineKeys.delete(key);
+        }
+        return undefined;
+      });
     this.writeQueue = write;
-    await write.catch(() => undefined);
+    await write.catch(() => {
+      this.needsPersist = true;
+      if (this.unsubscribe) this.schedulePersist();
+    });
   }
 
   private captureSessions(): boolean {
@@ -981,16 +1099,24 @@ export class ReplicaCache {
 
     this.capturedInputs.set(serverId, input);
     const previousStored = this.storedHosts.get(serverId);
-    const directorySync = previousStored?.directorySync;
-    const serialized = serializeHost(serverId, input, directorySync);
-    const previousTimelines = previousStoredTimelines(previousStored);
-    serialized.timelines = serialized.timeline
-      ? previousTimelines
-          .filter((timeline) => timeline.agentId !== serialized.timeline?.agentId)
-          .slice(0, MAX_CACHED_TIMELINES_PER_HOST - 1)
-      : previousTimelines.slice(0, MAX_CACHED_TIMELINES_PER_HOST);
+    const serialized = serializeHost(serverId, input, previousStored?.directory.directorySync);
+    const { timeline, timelines: _timelines, ...directory } = serialized;
+    let timelines = previousStored?.timelines ?? [];
+    if (timeline) {
+      const previousEntry = timelines.find((entry) => entry.agentId === timeline.agentId);
+      const unchangedTimeline = timelineInputsEqual(previous, input);
+      const entry =
+        unchangedTimeline && previousEntry ? previousEntry : this.cacheTimeline(serverId, timeline);
+      timelines = [
+        entry,
+        ...timelines.filter((candidate) => candidate.agentId !== timeline.agentId),
+      ];
+    }
+    timelines = timelines
+      .filter((entry) => input.agents.has(entry.agentId))
+      .slice(0, MAX_CACHED_TIMELINES_PER_HOST);
     this.storedHosts.delete(serverId);
-    this.storedHosts.set(serverId, serialized);
+    this.storedHosts.set(serverId, { directory, timelines });
     return true;
   }
 
@@ -998,10 +1124,15 @@ export class ReplicaCache {
     let evicted = false;
     let payload = this.serialize();
     if (payload === null) return null;
-    while (Buffer.byteLength(payload, "utf8") > this.maxBytes && this.storedHosts.size > 0) {
+    while (this.payloadBytes(payload) > this.maxBytes && this.storedHosts.size > 0) {
       const oldestServerId = this.storedHosts.keys().next().value;
       if (oldestServerId === undefined) break;
-      this.storedHosts.delete(oldestServerId);
+      const oldest = this.storedHosts.get(oldestServerId)!;
+      if (this.storedHosts.size === 1 && oldest.timelines.length > 0) {
+        oldest.timelines = oldest.timelines.slice(0, -1);
+      } else {
+        this.storedHosts.delete(oldestServerId);
+      }
       evicted = true;
       payload = this.serialize();
       if (payload === null) return null;
@@ -1012,14 +1143,96 @@ export class ReplicaCache {
   private serialize(): string | null {
     const cache = StoredCacheSchema.safeParse({
       version: CACHE_VERSION,
-      hosts: Array.from(this.storedHosts.values()),
+      hosts: Array.from(this.storedHosts.values(), (host) => ({
+        ...host.directory,
+        timelineKeys: host.timelines.map(({ agentId, key }) => ({ agentId, key })),
+      })),
     });
     return cache.success ? JSON.stringify(cache.data) : null;
+  }
+
+  private cacheTimeline(serverId: string, value: StoredTimeline): CachedTimeline {
+    const validated = StoredTimelineSchema.parse(value);
+    const payload = JSON.stringify(validated);
+    return {
+      agentId: value.agentId,
+      key: `${TIMELINE_KEY_PREFIX}${encodeURIComponent(serverId)}:${encodeURIComponent(value.agentId)}`,
+      bytes: Buffer.byteLength(payload, "utf8"),
+      value: validated,
+      payload,
+      dirty: true,
+    };
+  }
+
+  private payloadBytes(payload: string): number {
+    let bytes = Buffer.byteLength(payload, "utf8");
+    for (const host of this.storedHosts.values()) {
+      for (const timeline of host.timelines) bytes += timeline.bytes;
+    }
+    return bytes;
+  }
+
+  private async loadTimeline(entry: CachedTimeline): Promise<void> {
+    if (entry.value) return;
+    try {
+      const raw = await this.storage.getItem(entry.key);
+      if (raw === null || Buffer.byteLength(raw, "utf8") > this.maxBytes) {
+        throw new Error("Missing or oversized cached timeline");
+      }
+      const value = StoredTimelineSchema.parse(JSON.parse(raw));
+      if (value.agentId !== entry.agentId || value.items.length > MAX_TIMELINE_ITEMS) {
+        throw new Error("Invalid cached timeline identity or size");
+      }
+      entry.value = value;
+      entry.payload = raw;
+      entry.bytes = Buffer.byteLength(raw, "utf8");
+    } catch {
+      // A corrupt chat is a cache miss, not a reason to discard the host directory.
+      const owner = this.findTimelineHost(entry);
+      if (owner) owner.timelines = owner.timelines.filter((candidate) => candidate !== entry);
+      this.needsPersist = true;
+      if (this.unsubscribe) this.schedulePersist();
+    }
+  }
+
+  private async restoreBackgroundTimelines(): Promise<void> {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const pending = Array.from(this.storedHosts.values()).flatMap((host) =>
+      host.timelines
+        .filter((entry) => entry.value === undefined)
+        .map(async (entry) => {
+          await this.loadTimeline(entry);
+          if (!entry.value) return;
+          const owner = this.findTimelineHost(entry);
+          if (!owner) return;
+          const timeline = deserializeTimeline(entry.value);
+          if (timeline)
+            useSessionStore.getState().restoreCachedTimeline(owner.directory.serverId, timeline);
+        }),
+    );
+    await Promise.all(pending);
+    const bounded = this.buildBoundedPayload();
+    if (bounded?.evicted) {
+      this.needsPersist = true;
+      if (this.unsubscribe) this.schedulePersist();
+    }
+  }
+
+  private findTimelineHost(entry: CachedTimeline): CachedHost | undefined {
+    return Array.from(this.storedHosts.values()).find((host) => host.timelines.includes(entry));
   }
 
   private async clearInvalidCache(): Promise<void> {
     try {
       await this.storage.removeItem(STORAGE_KEY);
+      this.lastIndexPayload = null;
+      const keys = this.storage.getAllKeys
+        ? await this.storage.getAllKeys()
+        : this.persistedTimelineKeys;
+      for (const key of keys) {
+        if (key.startsWith(TIMELINE_KEY_PREFIX)) await this.storage.removeItem(key);
+      }
+      this.persistedTimelineKeys.clear();
     } catch {
       // A storage failure must not turn invalid cached data into application state.
     }

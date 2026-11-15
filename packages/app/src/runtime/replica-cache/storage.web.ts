@@ -67,4 +67,25 @@ async function removeItem(key: string): Promise<void> {
   });
 }
 
-export const replicaCacheStorage: ReplicaCacheStorage = { getItem, setItem, removeItem };
+async function getAllKeys(): Promise<string[]> {
+  const database = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const request = database
+      .transaction(STORE_NAME, "readonly")
+      .objectStore(STORE_NAME)
+      .getAllKeys();
+    request.addEventListener("success", () =>
+      resolve(request.result.filter((key): key is string => typeof key === "string")),
+    );
+    request.addEventListener("error", () =>
+      reject(request.error ?? new Error("Failed to list replica cache keys")),
+    );
+  });
+}
+
+export const replicaCacheStorage: ReplicaCacheStorage = {
+  getItem,
+  setItem,
+  removeItem,
+  getAllKeys,
+};

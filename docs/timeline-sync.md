@@ -95,7 +95,14 @@ recomposition while the runtime still owns the same directory snapshot and timel
 Removing the host from the registry is the destructive boundary: it stops the runtime and clears the
 session and host-scoped setup state together.
 
-The durable replica cache keeps up to five recently focused agent timelines per host. It persists synchronization authority for each only when it can store that timeline's complete current canonical window losslessly. The stored range describes those exact items: `startSeq` drives
+The durable replica cache keeps up to 20 recently focused agent timelines per host, separate from
+the five-agent hot subscription limit. Each chat has its own storage value; a timeline-only update
+must not rewrite the other cached chats or the directory index. Restore applies the focused chat
+first and hydrates the others in the background without replacing newer network or live state.
+Version 8 migrates by writing chat values before publishing the new index; evicted values and
+interrupted-write orphans are removed. The total UTF-8 byte budget still bounds all cache values.
+
+It persists synchronization authority for each only when it can store that timeline's complete current canonical window losslessly. The stored range describes those exact items: `startSeq` drives
 older pagination and `endSeq` drives forward catch-up. Restore paints the items immediately, requests
 `after endSeq`, and requests `before startSeq` when the user loads older history.
 

@@ -492,6 +492,7 @@ interface SessionStoreActions {
     clientGeneration?: number,
   ) => void;
   restoreSessionReplica: (serverId: string, replica: SessionReplica) => void;
+  restoreCachedTimeline: (serverId: string, timeline: SessionReplicaTimeline) => void;
   clearSession: (serverId: string) => void;
   getSession: (serverId: string) => SessionState | undefined;
   updateSessionClient: (serverId: string, client: DaemonClient, clientGeneration?: number) => void;
@@ -865,6 +866,42 @@ export const useSessionStore = create<SessionStore>()(
             },
             agentLastActivity,
           };
+        });
+      },
+
+      restoreCachedTimeline: (serverId, timeline) => {
+        set((prev) => {
+          const session = prev.sessions[serverId];
+          if (!session || !session.agents.has(timeline.agentId)) return prev;
+          // Background disk reads must never replace network history, a live row, or
+          // even an authoritative empty timeline received since startup.
+          if (selectAgentTimelineState(session, timeline.agentId).status !== "cold") return prev;
+          if ((session.agentStreamHead.get(timeline.agentId)?.length ?? 0) > 0) return prev;
+          const next = {
+            ...session,
+            agentStreamTail: new Map(session.agentStreamTail).set(timeline.agentId, timeline.items),
+          };
+          const tasks = latestTasksFromStream(timeline.items);
+          if (tasks?.length && !session.agentTasks.has(timeline.agentId))
+            next.agentTasks = new Map(session.agentTasks).set(timeline.agentId, tasks);
+          if (timeline.range) {
+            next.agentTimelineCursor = new Map(session.agentTimelineCursor).set(
+              timeline.agentId,
+              timeline.range,
+            );
+            next.agentTimelineHasOlder = new Map(session.agentTimelineHasOlder).set(
+              timeline.agentId,
+              timeline.hasOlder,
+            );
+            next.agentTimelineHasNewer = new Map(session.agentTimelineHasNewer).set(
+              timeline.agentId,
+              false,
+            );
+            next.agentAuthoritativeHistoryApplied = new Map(
+              session.agentAuthoritativeHistoryApplied,
+            ).set(timeline.agentId, true);
+          }
+          return { ...prev, sessions: { ...prev.sessions, [serverId]: next } };
         });
       },
 

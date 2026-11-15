@@ -3058,6 +3058,12 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
      - **No rules.** No rule above the subagents track and none on the focus-mode task board. The prompt line's own top rule went in delta 115. The rule between the subagents track's header and its list stays.
      - **Key files:** `composer/hint-line.tsx` (`HintKeycap`), `screens/workspace/header-word.tsx`, `screens/workspace/workspace-scripts-button.tsx`, `git/actions-split-button.tsx` (`GIT_ACTION_WORDS`), `components/ui/button.tsx` (`resolveBracketTone`), `components/sidebar-callout.tsx`, `components/task-list-row.tsx` (`TASK_STATE_MARKERS`), `subagents/track.tsx`, `composer/task-list/index.tsx`.
 
+117. **20 restart-ready chats without whole-cache writes** — the owner approved keeping 20 recently viewed timelines on disk on 2026-11-15, after an app update left all but five chats behind a first-open loading panel. Each timeline keeps at most 50 rows; the total UTF-8 cache budget remains 32 MiB.
+     - **Per-chat storage.** Version 9 keeps the host directory, checkpoint and ordered timeline keys in the existing index, with one storage value per chat. A timeline-only change writes only that chat; the index is rewritten only when its directory or ordering changes. Size accounting stays in memory rather than changing the index on every streamed character. Eviction and host removal delete discarded keys; startup cleanup also removes keys left by an interrupted write. Native AsyncStorage and web IndexedDB share this layout.
+     - **Focused-first restore.** Read and apply the focused chat before the registry becomes ready. Other cached chats hydrate in the background, only into a still-cold timeline: newer network history, authoritative empty history and live rows win. The five-agent hot subscription limit is unchanged.
+     - **Migration.** Read version 8 once and publish version 9 only after writing its chat values, so an interrupted migration leaves the old cache readable. A corrupt chat is a cache miss, not a lost host directory. No protocol, daemon or dependency change.
+     - **Key files:** `packages/app/src/runtime/replica-cache/{index.ts,index.test.ts,storage.web.ts}`, `packages/app/src/stores/session-store.ts` (`restoreCachedTimeline`).
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including
