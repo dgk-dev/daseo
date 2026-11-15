@@ -100,7 +100,11 @@ import type {
   ManagedAgent,
 } from "./agent/agent-manager.js";
 import { createAgentCommand } from "./agent/create-agent/create.js";
-import { resolveCreateAgentIntent, type CreateAgentIntent } from "./agent/create-agent/intent.js";
+import {
+  resolveCreateAgentIntent,
+  type CreateAgentCaller,
+  type CreateAgentIntent,
+} from "./agent/create-agent/intent.js";
 import {
   archiveAgentCommand,
   cancelAgentRunCommand,
@@ -3675,20 +3679,13 @@ export class Session {
     workspacePromptTitle: string | null;
   }): Promise<ResolvedSessionCreateAgentIntent> {
     const { request, createdWorktree } = input;
-    const callerAgent = request.callerAgentId
-      ? this.agentManager.getAgent(request.callerAgentId)
-      : null;
-    if (request.callerAgentId && !callerAgent) {
-      throw new Error(`Caller agent ${request.callerAgentId} not found`);
-    }
+    const callerAgent = await this.resolveCreationCaller(request.callerAgentId);
 
     let config = request.config;
 
     const intent = await resolveCreateAgentIntent({
       explicitWorkspaceId: createdWorktree?.workspace.workspaceId ?? request.workspaceId,
-      caller: callerAgent
-        ? { id: callerAgent.id, cwd: callerAgent.cwd, workspaceId: callerAgent.workspaceId }
-        : null,
+      caller: callerAgent,
       labels: request.labels,
       resolveWorkspace: async (workspaceId) => {
         if (createdWorktree?.workspace.workspaceId === workspaceId) {
@@ -3716,6 +3713,24 @@ export class Session {
       intent,
       createdDirectoryWorkspace: !createdWorktree && !request.workspaceId && !callerAgent,
     };
+  }
+
+  // A caller that is persisted but not loaded (idle unload, daemon restart) still names the
+  // parent; only an unknown or archived caller is rejected (upstream #8714).
+  private async resolveCreationCaller(callerAgentId?: string): Promise<CreateAgentCaller | null> {
+    if (!callerAgentId) return null;
+    const caller: CreateAgentCaller | null =
+      this.agentManager.getAgent(callerAgentId) ??
+      (await this.resolveUnarchivedStoredCaller(callerAgentId));
+    if (!caller) throw new Error(`Caller agent ${callerAgentId} not found`);
+    return { id: caller.id, cwd: caller.cwd, workspaceId: caller.workspaceId };
+  }
+
+  private async resolveUnarchivedStoredCaller(
+    callerAgentId: string,
+  ): Promise<CreateAgentCaller | null> {
+    const stored = await this.agentStorage.get(callerAgentId);
+    return stored && !stored.archivedAt ? stored : null;
   }
 
   private async handleResumeAgentRequest(
