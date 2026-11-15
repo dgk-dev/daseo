@@ -3292,6 +3292,59 @@ Reviewed for 0.5.103 and deliberately not adopted: `5384abdba` #7229 and `c70a6c
 links through the plain Markdown renderer, not the assistant link opener, so neither problem
 exists here; carrying them means routing the preview through the opener first.
 
+Adopted for 0.5.125 (reviewed 2026-11-15, 521 upstream commits since 2026-10-21; five read-only
+research passes, then each candidate proved first: the upstream test ported and run red on Daseo
+before any production change, adopted only when it went green with no Daseo delta changed, no new
+dependency, and no protocol break):
+
+- #8107 keep probing the macOS watcher liveness canary until native event delivery starts
+  (cherry-pick of canary and tests; integration-test diagnostics not carried).
+- #8421 close the service socket when a proxied client disconnects, for event streams and
+  WebSocket upgrades (cherry-pick; teardown tests use a local fixture because Daseo lacks #6753).
+- #8462 stop Git polling while a workspace folder is missing and resume when it returns
+  (hand-port; Daseo keeps its 3-attempt watcher recovery, so a returned folder stays on fallback
+  polling).
+- `0952ddbd4` retry Git watcher setup after a subscribe timeout inside Daseo's limited retry
+  count; ignore callbacks from expired watchers (cherry-pick, two hunks by hand).
+- #8939 agents get `PASEO_WORKSPACE_ID` on create, resume, import and reload; a daemon-restart
+  resume reads the workspace from the stored record (hand-port; OpenCode key change not needed).
+- #8607 reject cron numeric steps like `0/15` on create and update; saved schedules keep their
+  old match (cherry-pick). #8611 a cron with both day-of-month and day-of-week restricted runs
+  when either matches (cherry-pick; no saved schedule used that form on 2026-11-15).
+- #9680 the CLI treats a full agent UUID as an exact id, never a title match (cherry-pick).
+- #8714 child creation accepts a caller that is stored but not loaded; an archived caller is
+  still rejected (hand-port of the caller lookup only).
+- #9753 reconciliation re-reads a workspace and skips it once archived, so an archive racing
+  worktree removal stays restorable (hand-port into Daseo's older reconcile loop).
+- #8903 archiving a parent publishes the update for a closed child it detaches (hand-port).
+- #9506 Pi: null optional tool arguments are treated as omitted, so typed tool cards stay
+  (Pi-only hand-port; OMP not carried).
+- #8523 Pi imports and empty-timeline hydration read the complete active transcript ancestry
+  across compaction with native rewind identities (hand-port; delta 58's committed timeline and
+  idle-unload route stay).
+- #8972 rich-text paste keeps link destinations as Markdown (hand-port; image paste keeps delta
+  15's path). #9079 closing an agent tab keeps its unsent text and attachments; only agent
+  deletion clears the draft (hand-port into Daseo's agent-directory-sync). #9015 a mouse click on
+  Send gives focus back to the composer; touch layouts keep the keyboard dismissed (port).
+
+Reviewed for 0.5.125 and deliberately not adopted: #8485 (Daseo's markdown-it 10 already lets a
+table interrupt a paragraph; upstream's 8 cases kept as a guard test) and #8453 (Daseo has no path
+that clears pending requests on agent messages; reproduction kept as a guard test), both not
+needed. #8442 (archived Pi chat with a missing working folder): trade-off, its temporary session
+copy accepted a later interactive turn, so a turn could be written to a disposable copy after
+unarchive; patch and proof under
+`~/.pi/agent/plans/-Users-ddgk/2026-11-15-daseo-upstream/proofs/`. #8717 (rebuilt native chat
+list, 67 files and native modules, anchoring not open speed), #8906 / #8744 / #7645 (plugin
+sidebar and composer surfaces, 106 / 305 / 38 files on upstream's architecture), #7644 (terminal
+worker that outlives the daemon, about 100 files and one more resident process), #7785 / #8109
+(folded turns and tool grouping, replace Daseo's terminal tool rows), #8554 / #7848 / #8718 /
+#7782 (Daseo's own idle unload, compaction queue and dead-runtime recovery cover them), #8575 /
+#9109 (multi-host paths Daseo does not use), and the upstream advisor, committee and handoff
+skills (not substitutes for pi-local's research-fanout and delegate-implementation). Still open,
+each needing its own measurement first: #9175 + #9242 (skip the catch-up fetch for an unchanged
+chat), #8683 (background helper agents), #8904 + #9210 (workspace archive undo), #8735 (fewer
+full agent scans).
+
 ## Product version policy
 
 - Mac and Android share one Daseo product SemVer. Any shipped platform change advances it.
