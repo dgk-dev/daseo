@@ -8,6 +8,22 @@ import {
 } from "./tool-call-mapper.js";
 
 describe("Pi tool call mapper", () => {
+  test.each([
+    ["read", { path: "./preview.png", offset: null, limit: null }, { path: "./preview.png" }],
+    ["bash", { command: "ls", timeout: null }, { command: "ls" }],
+  ])("parses %s with null optional arguments as its own tool kind", (toolName, rawArgs, args) => {
+    expect(parseToolArgs(toolName, rawArgs)).toEqual({ kind: toolName, toolName, args });
+  });
+
+  test("preserves invalid required null arguments as unknown input", () => {
+    const rawArgs = { path: null, offset: null };
+    expect(parseToolArgs("read", rawArgs)).toEqual({
+      kind: "unknown",
+      toolName: "read",
+      args: rawArgs,
+    });
+  });
+
   test("maps bash args and result to shell detail", () => {
     const toolCall = parseToolArgs("bash", { command: "echo hello" });
     const result = parseToolResult({ output: "hello\n", exitCode: 0 });
