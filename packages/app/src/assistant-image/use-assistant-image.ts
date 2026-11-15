@@ -15,8 +15,10 @@ import { isWeb } from "@/constants/platform";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { retainAttachmentForGarbageCollection } from "@/attachments/gc-retention";
 import {
+  persistAttachmentFromBlob,
   persistAttachmentFromBytes,
   persistAttachmentFromDataUrl,
+  persistAttachmentFromFileUri,
   releaseAttachmentPreviewUrl,
   resolveAttachmentPreviewUrl,
 } from "@/attachments/service";
@@ -31,6 +33,7 @@ import {
   createAssistantImageFileAcquisition,
   type AssistantImageAcquisition,
   type AssistantImageFileAcquisitionPort,
+  type AssistantImageSnapshotCopyPersister,
 } from "./file-acquisition";
 import {
   createAssistantImageLifecycle,
@@ -43,6 +46,8 @@ import {
   resolveAssistantImageLoadDimensions,
 } from "./load-dimensions";
 import { runAssistantImageOperationWithRetry } from "./retry";
+import type { AssistantImageSnapshotCache } from "./snapshot-cache";
+import { createAssistantImageRetryOnReconnect } from "./retry-on-reconnect";
 
 interface AssistantImageRenderBinding {
   uri: string;
@@ -74,7 +79,7 @@ export type AssistantImageResult =
       binding: AssistantImageRenderBinding;
       aspectRatio: number;
     }
-  | { status: "failed"; message: string };
+  | { status: "failed"; message: string; retry: () => void };
 
 interface UseAssistantImageInput {
   source: string;
@@ -224,16 +229,33 @@ function useAttachmentAcquisition(
   return entry.key === acquisitionKey ? entry.state : { status: "waiting" };
 }
 
+// Loaded lazily: the platform store pulls in file system and storage modules the image
+// component's import graph does not otherwise need.
+function loadSnapshotCache(): Promise<AssistantImageSnapshotCache> {
+  return import("./snapshot-cache-store").then((module) => module.getAssistantImageSnapshotCache());
+}
+
+const persistSnapshotCopy: AssistantImageSnapshotCopyPersister = async ({
+  id,
+  copy,
+  mimeType,
+  fileName,
+}) =>
+  copy.kind === "file_uri"
+    ? await persistAttachmentFromFileUri({ id, uri: copy.uri, mimeType, fileName })
+    : await persistAttachmentFromBlob({ id, blob: copy.blob, mimeType, fileName });
+
 function createDataImageAcquisition(input: {
   source: string;
   dataImage: DataImage | null;
+  generation: number;
 }): AssistantImageAcquisition | null {
   if (!input.dataImage) {
     return null;
   }
   const { dataImage, source } = input;
   return {
-    key: dataImage.cacheKey,
+    key: input.generation ? `${dataImage.cacheKey}#retry-${input.generation}` : dataImage.cacheKey,
     locate: async () =>
       await persistAttachmentFromDataUrl({
         id: createPreviewAttachmentId({
@@ -247,14 +269,18 @@ function createDataImageAcquisition(input: {
   };
 }
 
-function usePreviewUrl(attachment: AttachmentMetadata | null | undefined): PreviewUrlState {
+function usePreviewUrl(
+  attachment: AttachmentMetadata | null | undefined,
+  generation: number,
+): PreviewUrlState {
   const id = attachment?.id;
   const storageType = attachment?.storageType;
   const storageKey = attachment?.storageKey;
   const mimeType = attachment?.mimeType;
+  const retrySuffix = generation ? `#retry-${generation}` : "";
   const previewKey =
     id && storageType && storageKey && mimeType
-      ? `${id}:${storageType}:${storageKey}:${mimeType}`
+      ? `${id}:${storageType}:${storageKey}:${mimeType}${retrySuffix}`
       : null;
   const [entry, setEntry] = useState<{ key: string | null; state: PreviewUrlState }>(() => {
     return {
@@ -346,7 +372,7 @@ function getAcquisitionFailure(input: {
   preview: PreviewUrlState;
   hasDirectUri: boolean;
   fallbackMessage: string;
-}): AssistantImageResult | null {
+}): { status: "failed"; message: string } | null {
   if (!input.hasResolution) {
     return { status: "failed", message: input.fallbackMessage };
   }
@@ -371,6 +397,28 @@ function getAcquisitionFailure(input: {
   return null;
 }
 
+/** Retries a failed image once each time the host connection comes back. */
+function useRetryOnReconnect(input: {
+  client?: DaemonClient | null;
+  isFailed: boolean;
+  retry: () => void;
+}): void {
+  const isFailedRef = useRef(input.isFailed);
+  isFailedRef.current = input.isFailed;
+  const retry = useStableEvent(input.retry);
+  const { client } = input;
+  useEffect(() => {
+    if (!client) {
+      return;
+    }
+    const watcher = createAssistantImageRetryOnReconnect({
+      isFailed: () => isFailedRef.current,
+      retry,
+    });
+    return client.subscribeConnectionStatus((state) => watcher.onConnectionStatus(state.status));
+  }, [client, retry]);
+}
+
 export function useAssistantImage({
   source,
   occurrenceKey,
@@ -384,6 +432,10 @@ export function useAssistantImage({
     [source, workspaceRoot],
   );
   const dataImage = useMemo(() => parseImageDataUrl(source), [source]);
+  // Daseo: a retry (a tap on the failed placeholder, or the host reconnecting) bumps the
+  // generation, so acquisition and preview start fresh instead of reusing the failed attempt.
+  const [generation, setGeneration] = useState(0);
+  const retry = useCallback(() => setGeneration((current) => current + 1), []);
   const fileAcquisition = useMemo(() => {
     const port: AssistantImageFileAcquisitionPort | null = client
       ? {
@@ -397,19 +449,24 @@ export function useAssistantImage({
       serverId,
       occurrenceKey,
       unavailableMessage: t("message.attachments.imagePreviewUnavailable"),
+      generation,
+      loadSnapshotCache,
+      persistSnapshotCopy,
     });
-  }, [client, occurrenceKey, resolution, serverId, t]);
+  }, [client, generation, occurrenceKey, resolution, serverId, t]);
   const dataImageAcquisition = useMemo(
-    () => createDataImageAcquisition({ source, dataImage }),
-    [dataImage, source],
+    () => createDataImageAcquisition({ source, dataImage, generation }),
+    [dataImage, generation, source],
   );
   const fileAttachment = useAttachmentAcquisition(fileAcquisition);
   const dataImageAttachment = useAttachmentAcquisition(dataImageAcquisition);
   const filePreview = usePreviewUrl(
     fileAttachment.status === "loaded" ? fileAttachment.attachment : null,
+    generation,
   );
   const dataImagePreview = usePreviewUrl(
     dataImageAttachment.status === "loaded" ? dataImageAttachment.attachment : null,
+    generation,
   );
   const directUri = resolution?.kind === "direct" && !dataImage ? resolution.uri : null;
   const preview = dataImage ? dataImagePreview : filePreview;
@@ -456,8 +513,10 @@ export function useAssistantImage({
       uri,
       aspectRatio: cachedMetadata?.aspectRatio ?? null,
     });
-  }, [cachedMetadata, dispatch, uri]);
+    // The generation restarts a failed render with the same preview URI after a retry.
+  }, [cachedMetadata, dispatch, generation, uri]);
 
+  const snapshotCacheKey = fileAcquisition?.snapshotCacheKey ?? null;
   const handleImageError = useCallback(() => {
     if (uri) {
       dispatch({
@@ -465,8 +524,14 @@ export function useAssistantImage({
         uri,
         message: t("message.attachments.imageUnavailable"),
       });
+      // A device copy that does not render is dropped, so a retry asks the host again.
+      if (snapshotCacheKey) {
+        void loadSnapshotCache()
+          .then((cache) => cache.forget(snapshotCacheKey))
+          .catch(() => undefined);
+      }
     }
-  }, [dispatch, t, uri]);
+  }, [dispatch, snapshotCacheKey, t, uri]);
   const handleImageLoad = useCallback(
     (event: ImageLoadEvent) => {
       if (!uri) {
@@ -508,37 +573,43 @@ export function useAssistantImage({
     hasDirectUri: directUri !== null,
     fallbackMessage: t("message.attachments.imagePreviewLoadFailed"),
   });
+  useRetryOnReconnect({
+    client,
+    isFailed: acquisitionFailure !== null || lifecycle.status === "failed",
+    retry,
+  });
   if (acquisitionFailure) {
-    return acquisitionFailure;
+    return { ...acquisitionFailure, retry };
   }
-  const hasCurrentLifecycleUri = lifecycle.status !== "failed" && lifecycle.uri === uri;
-  let binding: AssistantImageRenderBinding | null = null;
-  if (hasCurrentLifecycleUri && lifecycle.uri) {
-    binding = {
-      uri: lifecycle.uri,
-      onRef: handleImageRef,
-      onLoad: handleImageLoad,
-      onError: handleImageError,
-    };
+  return resolveLifecycleResult({
+    lifecycle,
+    uri,
+    handlers: { onRef: handleImageRef, onLoad: handleImageLoad, onError: handleImageError },
+    retry,
+  });
+}
+
+function resolveLifecycleResult(input: {
+  lifecycle: AssistantImageLifecycle;
+  uri: string | null;
+  handlers: Omit<AssistantImageRenderBinding, "uri">;
+  retry: () => void;
+}): AssistantImageResult {
+  const { lifecycle, uri, handlers } = input;
+  if (lifecycle.status === "failed") {
+    return { status: "failed", message: lifecycle.message, retry: input.retry };
   }
   if (lifecycle.status === "loaded" && lifecycle.uri === uri) {
     return {
       status: "loaded",
-      binding: {
-        uri: lifecycle.uri,
-        onRef: handleImageRef,
-        onLoad: handleImageLoad,
-        onError: handleImageError,
-      },
+      binding: { uri: lifecycle.uri, ...handlers },
       aspectRatio: lifecycle.aspectRatio,
     };
   }
-  if (lifecycle.status === "failed") {
-    return lifecycle;
-  }
+  const hasCurrentLifecycleUri = lifecycle.uri === uri;
   return {
     status: "loading",
-    binding,
+    binding: hasCurrentLifecycleUri && lifecycle.uri ? { uri: lifecycle.uri, ...handlers } : null,
     aspectRatio: hasCurrentLifecycleUri ? lifecycle.aspectRatio : null,
   };
 }

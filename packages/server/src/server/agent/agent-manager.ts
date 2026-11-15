@@ -68,6 +68,7 @@ import {
   AGENT_STREAM_COALESCE_DEFAULT_WINDOW_MS,
   AgentStreamCoalescer,
 } from "./agent-stream-coalescer.js";
+import type { AssistantImageSnapshotter } from "../assistant-image-snapshots/assistant-image-snapshotter.js";
 import { limitAgentTimelineItemContent } from "./agent-timeline-content.js";
 import { AgentRunState, type ForegroundTurnWaiter } from "./agent-run-state.js";
 import { invokeRewindCapability, type RewindMode } from "./rewind/rewind.js";
@@ -308,6 +309,8 @@ export interface AgentManagerOptions {
   appendSystemPrompt?: string;
   agentStreamCoalesceWindowMs?: number;
   rescueTimeouts?: AgentManagerRescueTimeouts;
+  /** Daseo: durable snapshots of images shown in assistant messages. */
+  assistantImageSnapshots?: AssistantImageSnapshotter;
   logger: Logger;
 }
 
@@ -724,6 +727,7 @@ export class AgentManager {
   private readonly providerDefinitions = new Map<AgentProvider, ProviderEnabledFlag>();
   private readonly agents = new Map<string, LiveManagedAgent>();
   private readonly timelineStore = new InMemoryAgentTimelineStore();
+  private readonly assistantImageSnapshots: AssistantImageSnapshotter | undefined;
   private readonly providerSubagents = new ProviderSubagentStore();
   private readonly agentsAwaitingInitialSnapshotPersist = new Set<string>();
   private readonly sessionEventTails = new Map<string, Promise<void>>();
@@ -763,6 +767,7 @@ export class AgentManager {
     this.idFactory = options?.idFactory ?? (() => randomUUID());
     this.registry = options?.registry;
     this.durableTimelineStore = options?.durableTimelineStore;
+    this.assistantImageSnapshots = options.assistantImageSnapshots;
     this.onAgentAttention = options?.onAgentAttention;
     this.onWorkspaceStateMayHaveChanged = options?.onWorkspaceStateMayHaveChanged;
     this.mcpBaseUrl = options?.mcpBaseUrl ?? null;
@@ -2390,11 +2395,15 @@ export class AgentManager {
         if (event.item.type === "assistant_message") replies.push(event.item.text);
         this.touchUpdatedAt(agent);
         const row = this.recordTimeline(agent.id, event.item);
-        this.dispatchStream(agent.id, event, {
-          seq: row.seq,
-          epoch: this.timelineStore.getEpoch(agent.id),
-          timestamp: row.timestamp,
-        });
+        this.dispatchStream(
+          agent.id,
+          { ...event, item: row.item },
+          {
+            seq: row.seq,
+            epoch: this.timelineStore.getEpoch(agent.id),
+            timestamp: row.timestamp,
+          },
+        );
         return;
       }
       this.dispatchStream(agent.id, event, { timestamp: new Date().toISOString() });
@@ -2500,7 +2509,7 @@ export class AgentManager {
       agentId,
       {
         type: "timeline",
-        item,
+        item: row.item,
         provider: agent.provider,
       },
       {
@@ -3078,6 +3087,14 @@ export class AgentManager {
   async deleteAgentState(agentId: string): Promise<void> {
     this.discardRetainedAgentState(agentId);
     await this.deleteCommittedTimeline(agentId);
+    try {
+      this.assistantImageSnapshots?.deleteAgent(agentId);
+    } catch (error) {
+      this.logger.warn(
+        { err: error, agentId },
+        "agent.manager.assistant_image_snapshot_delete_failed",
+      );
+    }
   }
 
   async getLastAssistantMessage(agentId: string): Promise<string | null> {
@@ -3864,6 +3881,7 @@ export class AgentManager {
     this.timelineStore.delete(agent.id);
     this.timelineStore.initialize(agent.id, { timestamp: new Date().toISOString() });
     agent.historyPrimed = true;
+    this.assistantImageSnapshots?.beginReplay(agent.id);
 
     for (const event of this.providerSubagents.deleteParent(agent.id)) {
       if (broadcast) {
@@ -3877,17 +3895,20 @@ export class AgentManager {
       }
     }
     for (const event of historyEvents) {
-      const row = this.recordTimeline(
-        agent.id,
-        event.item,
-        event.timestamp ? { timestamp: event.timestamp } : undefined,
-      );
+      const row = this.recordTimeline(agent.id, event.item, {
+        ...(event.timestamp ? { timestamp: event.timestamp } : {}),
+        imageMode: "history",
+      });
       if (broadcast) {
-        this.dispatchStream(agent.id, event, {
-          seq: row.seq,
-          epoch: this.timelineStore.getEpoch(agent.id),
-          timestamp: row.timestamp,
-        });
+        this.dispatchStream(
+          agent.id,
+          { ...event, item: row.item },
+          {
+            seq: row.seq,
+            epoch: this.timelineStore.getEpoch(agent.id),
+            timestamp: row.timestamp,
+          },
+        );
       }
     }
     this.touchUpdatedAt(agent);
@@ -3905,6 +3926,7 @@ export class AgentManager {
     }> = [];
     const providerSubagentEvents: AgentManagerEvent[] = [];
     agent.historyPrimed = true;
+    this.assistantImageSnapshots?.beginReplay(agent.id);
     try {
       for await (const rawEvent of agent.session.streamHistory()) {
         if (rawEvent.type === "provider_subagent") {
@@ -3920,12 +3942,12 @@ export class AgentManager {
         if (rawEvent.type !== "timeline") {
           continue;
         }
-        const event = { ...rawEvent, item: withSystemPromptOrigin(rawEvent.item) };
-        const row = this.recordTimeline(
-          agent.id,
-          event.item,
-          event.timestamp ? { timestamp: event.timestamp } : undefined,
-        );
+        const historyEvent = { ...rawEvent, item: withSystemPromptOrigin(rawEvent.item) };
+        const row = this.recordTimeline(agent.id, historyEvent.item, {
+          ...(historyEvent.timestamp ? { timestamp: historyEvent.timestamp } : {}),
+          imageMode: "history",
+        });
+        const event = { ...historyEvent, item: row.item };
         if (deferredBroadcast) {
           timelineEvents.push({ event, row });
         } else if (broadcast) {
@@ -4268,11 +4290,10 @@ export class AgentManager {
     }
 
     if (options?.fromHistory) {
-      this.recordTimeline(
-        agent.id,
-        event.item,
-        event.timestamp ? { timestamp: event.timestamp } : undefined,
-      );
+      this.recordTimeline(agent.id, event.item, {
+        ...(event.timestamp ? { timestamp: event.timestamp } : {}),
+        imageMode: "history",
+      });
       flags.shouldDispatchEvent = false;
       flags.shouldNotifyWaiters = false;
       return;
@@ -4506,7 +4527,7 @@ export class AgentManager {
     });
     const event: AgentStreamEvent = {
       type: "timeline",
-      item,
+      item: row.item,
       provider,
       ...(turnId !== undefined ? { turnId } : {}),
     };
@@ -4718,12 +4739,50 @@ export class AgentManager {
   private recordTimeline(
     agentId: string,
     item: AgentTimelineItem,
-    options?: { timestamp?: string; turnId?: string; providerMessageId?: string },
+    options?: {
+      timestamp?: string;
+      turnId?: string;
+      providerMessageId?: string;
+      /** Daseo: `history` resolves assistant images to earlier snapshots instead of taking new ones. */
+      imageMode?: "live" | "history";
+    },
   ): AgentTimelineRow {
+    const { imageMode = "live", ...appendOptions } = options ?? {};
     item = limitAgentTimelineItemContent(item);
-    const row = this.timelineStore.append(agentId, item, options);
+    item = this.snapshotAssistantImages(agentId, item, imageMode, appendOptions.timestamp);
+    const row = this.timelineStore.append(agentId, item, appendOptions);
     this.enqueueDurableTimelineAppend(agentId, row);
     return row;
+  }
+
+  /**
+   * Daseo: points the images of an assistant message at durable snapshots before the item is
+   * recorded and sent, so every client and every later fetch shows the bytes of this moment.
+   * A snapshot failure keeps the item as it was; it must never lose the message.
+   */
+  private snapshotAssistantImages(
+    agentId: string,
+    item: AgentTimelineItem,
+    mode: "live" | "history",
+    timestamp: string | undefined,
+  ): AgentTimelineItem {
+    const snapshots = this.assistantImageSnapshots;
+    const cwd = this.agents.get(agentId)?.cwd;
+    if (!snapshots || !cwd) {
+      return item;
+    }
+    try {
+      return snapshots.rewriteItem({
+        agentId,
+        cwd,
+        item,
+        mode,
+        ...(timestamp ? { timestamp } : {}),
+      });
+    } catch (error) {
+      this.logger.warn({ err: error, agentId }, "agent.manager.assistant_image_snapshot_failed");
+      return item;
+    }
   }
 
   private emitState(agent: ManagedAgent, options?: { persist?: boolean }): void {

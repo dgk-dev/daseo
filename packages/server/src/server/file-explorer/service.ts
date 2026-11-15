@@ -1,4 +1,4 @@
-import { constants, promises as fs, type BigIntStats } from "fs";
+import { constants, promises as fs, realpathSync, type BigIntStats } from "fs";
 import type { FileHandle } from "fs/promises";
 import path from "path";
 import { randomUUID } from "crypto";
@@ -110,10 +110,23 @@ const ACCESS_OUTSIDE_WORKSPACE_MESSAGE = "Access outside of workspace is not all
  */
 export type ScopedPathAccess = "read" | "write";
 
+const extraReadableRoots = new Set<string>();
+
+/**
+ * Daseo: adds a directory the daemon owns (the assistant image snapshot store) to the
+ * readable roots, for a `$PASEO_HOME` that lies outside home and temp (Docker).
+ */
+export function registerReadableRoot(root: string): void {
+  extraReadableRoots.add(expandUserPath(root));
+}
+
 function readableRoots(): string[] {
   // macOS resolves `os.tmpdir()` to `/var/folders/…` while agents write to
   // `/tmp`; both are temp space, so both are readable.
-  return [homedir(), tmpdir(), "/tmp"].map((root) => expandUserPath(root));
+  return [
+    ...[homedir(), tmpdir(), "/tmp"].map((root) => expandUserPath(root)),
+    ...extraReadableRoots,
+  ];
 }
 
 function isWithinRoot(root: string, candidate: string): boolean {
@@ -152,6 +165,52 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
   ".webp": "image/webp",
   ".svg": "image/svg+xml",
 };
+
+export function imageMimeTypeForPath(filePath: string): string | null {
+  return IMAGE_MIME_TYPES[path.extname(filePath).toLowerCase()] ?? null;
+}
+
+function realpathSyncIfPresent(target: string): string | null {
+  try {
+    return realpathSync(target);
+  } catch (error) {
+    if (isMissingEntryError(error)) return null;
+    throw error;
+  }
+}
+
+export interface ReadableImageFile {
+  /** The absolute path as requested, before symlinks are resolved. */
+  requestedPath: string;
+  resolvedPath: string;
+  mimeType: string;
+}
+
+/**
+ * Synchronous form of the read scope check `readExplorerFile` applies, limited to the image
+ * types it serves as images. Returns null for a path outside the readable roots, a missing
+ * file, or a non-image extension. The daemon snapshots assistant images while recording a
+ * timeline item, which is synchronous so stream order holds.
+ */
+export function resolveReadableImageFileSync(input: {
+  root: string;
+  filePath: string;
+}): ReadableImageFile | null {
+  const normalizedRoot = expandUserPath(input.root);
+  const requestedPath = resolvePathFromBase(normalizedRoot, input.filePath);
+  const realPath = realpathSyncIfPresent(requestedPath);
+  const mimeType = realPath === null ? null : imageMimeTypeForPath(realPath);
+  if (realPath === null || !mimeType) {
+    return null;
+  }
+  const realRoots = [normalizedRoot, ...readableRoots()]
+    .map((root) => realpathSyncIfPresent(root))
+    .filter((value): value is string => value !== null);
+  if (!realRoots.some((allowed) => isWithinRoot(allowed, realPath))) {
+    return null;
+  }
+  return { requestedPath, resolvedPath: realPath, mimeType };
+}
 
 interface ScopedPathParams {
   root: string;

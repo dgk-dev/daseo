@@ -1056,6 +1056,11 @@ export const assistantMessageStylesheet = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     textAlign: "center",
   },
+  imageRetryText: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.sm,
+    textAlign: "center",
+  },
 }));
 
 const ASSISTANT_IMAGE_MIN_HEIGHT = 160;
@@ -1133,10 +1138,21 @@ function AssistantMarkdownImage({
   );
 
   if (image.status === "failed") {
+    // Daseo: the failed placeholder retries on press; a loaded image gets no new control.
     return (
-      <View style={stateFrameStyle}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={t("message.attachments.retryImage", {
+          defaultValue: "Retry loading image",
+        })}
+        onPress={image.retry}
+        style={stateFrameStyle}
+      >
         <Text style={assistantMessageStylesheet.imageErrorText}>{image.message}</Text>
-      </View>
+        <Text style={assistantMessageStylesheet.imageRetryText}>
+          {t("message.attachments.tapToRetryImage", { defaultValue: "Tap to retry" })}
+        </Text>
+      </Pressable>
     );
   }
 

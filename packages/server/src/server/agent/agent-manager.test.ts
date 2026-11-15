@@ -1,6 +1,6 @@
 import { expect, test, vi } from "vitest";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -15,6 +15,8 @@ import {
   type ManagedAgent,
 } from "./agent-manager.js";
 import { AgentStorage } from "./agent-storage.js";
+import { AssistantImageSnapshotStore } from "../assistant-image-snapshots/assistant-image-snapshot-store.js";
+import { AssistantImageSnapshotter } from "../assistant-image-snapshots/assistant-image-snapshotter.js";
 import { FileBackedAgentTimelineStore } from "./file-backed-agent-timeline-store.js";
 import { toAgentPayload } from "./agent-projections.js";
 import { getOpenAgentTabLabel, PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
@@ -10426,4 +10428,54 @@ test("a steered prompt keeps a pending permission answerable", async () => {
 
   session.pushEvent({ type: "turn_completed", provider: "codex", turnId });
   await drain;
+});
+
+test("an assistant image is sent, recorded, and kept as the bytes from when it was emitted", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-assistant-image-"));
+  try {
+    const store = new AssistantImageSnapshotStore({ rootDir: join(workdir, "assistant-images") });
+    const manager = new AgentManager({
+      clients: { codex: new TestAgentClient() },
+      assistantImageSnapshots: new AssistantImageSnapshotter(store),
+      logger,
+      idFactory: () => "00000000-0000-4000-8000-000000000a11",
+    });
+    const snapshot = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    const sent: string[] = [];
+    manager.subscribe(
+      (event) => {
+        if (
+          event.type === "agent_stream" &&
+          event.event.type === "timeline" &&
+          event.event.item.type === "assistant_message"
+        ) {
+          sent.push(event.event.item.text);
+        }
+      },
+      { agentId: snapshot.id, replayState: false },
+    );
+    const screenshot = join(workdir, "screenshot.png");
+    writeFileSync(screenshot, "before");
+
+    await manager.appendTimelineItem(snapshot.id, {
+      type: "assistant_message",
+      text: `![screenshot](${screenshot})`,
+    });
+    writeFileSync(screenshot, "after");
+
+    const recorded = manager.getTimeline(snapshot.id).at(-1);
+    expect(recorded?.type === "assistant_message" ? recorded.text : null).toBe(sent[0]);
+    const snapshotPath = decodeURIComponent(
+      new URL(sent[0].match(/\]\(([^)]+)\)/)?.[1] ?? "file:///missing").pathname,
+    );
+    expect(snapshotPath.startsWith(store.blobDir)).toBe(true);
+    expect(readFileSync(snapshotPath, "utf8")).toBe("before");
+
+    await manager.deleteAgentState(snapshot.id);
+    expect(existsSync(snapshotPath)).toBe(false);
+  } finally {
+    rmSync(workdir, { recursive: true, force: true });
+  }
 });

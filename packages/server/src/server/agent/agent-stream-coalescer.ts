@@ -1,6 +1,14 @@
 import type { AgentProvider, AgentStreamEvent, AgentTimelineItem } from "./agent-sdk-types.js";
+import { splitTrailingIncompleteMarkdownImage } from "../assistant-image-snapshots/markdown-image-sources.js";
 
 export const AGENT_STREAM_COALESCE_DEFAULT_WINDOW_MS = 60;
+/**
+ * Daseo: a timed flush holds back an assistant image whose Markdown has started but not
+ * finished, so the image reaches the timeline (and its snapshot) as one piece. The hold is
+ * bounded in size and time; a forced flush always releases it.
+ */
+export const AGENT_STREAM_IMAGE_HOLD_MAX_CHARS = 2048;
+export const AGENT_STREAM_IMAGE_HOLD_MAX_MS = 1000;
 
 type CoalescableTextKind = "assistant_message" | "reasoning";
 type CoalescableTimelineKind = CoalescableTextKind | "tool_call";
@@ -51,6 +59,8 @@ interface PendingAgentStreamBuffer {
   toolCallEntryIndexes: Map<string, number>;
   timer: ReturnType<typeof setTimeout> | null;
   flushing: boolean;
+  /** Consecutive timed flushes that held back an unfinished image. */
+  imageHoldFlushes: number;
 }
 
 function isCoalescableTimelineEvent(event: AgentStreamEvent): event is CoalescableTimelineEvent {
@@ -162,6 +172,7 @@ export class AgentStreamCoalescer {
       toolCallEntryIndexes: new Map(),
       timer: null,
       flushing: false,
+      imageHoldFlushes: 0,
     };
     this.buffers.set(agentId, buffer);
     return buffer;
@@ -198,7 +209,7 @@ export class AgentStreamCoalescer {
 
   private scheduleFlush(buffer: PendingAgentStreamBuffer): void {
     const timer = this.timers.setTimeout(() => {
-      this.flushBuffer(buffer.agentId, buffer);
+      this.flushBuffer(buffer.agentId, buffer, { holdUnfinishedImage: true });
     }, this.windowMs);
     timer.unref?.();
     buffer.timer = timer;
@@ -212,7 +223,11 @@ export class AgentStreamCoalescer {
     buffer.timer = null;
   }
 
-  private flushBuffer(agentId: string, expectedBuffer?: PendingAgentStreamBuffer): void {
+  private flushBuffer(
+    agentId: string,
+    expectedBuffer?: PendingAgentStreamBuffer,
+    options?: { holdUnfinishedImage?: boolean },
+  ): void {
     const buffer = this.buffers.get(agentId);
     if (!buffer) {
       return;
@@ -234,8 +249,14 @@ export class AgentStreamCoalescer {
     buffer.toolCallEntryIndexes.clear();
     buffer.flushing = true;
 
+    const collapsed = this.collapseEntries(entries);
+    const held = options?.holdUnfinishedImage ? this.holdUnfinishedImage(buffer, collapsed) : null;
+    if (!held) {
+      buffer.imageHoldFlushes = 0;
+    }
+
     try {
-      for (const entry of this.collapseEntries(entries)) {
+      for (const entry of collapsed) {
         this.onFlush({
           agentId,
           item:
@@ -252,6 +273,44 @@ export class AgentStreamCoalescer {
     } finally {
       buffer.flushing = false;
     }
+    if (held) {
+      buffer.entries.unshift(held);
+      if (!buffer.timer) {
+        this.scheduleFlush(buffer);
+      }
+    }
+  }
+
+  /**
+   * Removes an unfinished trailing image from the last collapsed entry and returns it as the
+   * entry to keep buffered, or null when nothing should be held.
+   */
+  private holdUnfinishedImage(
+    buffer: PendingAgentStreamBuffer,
+    collapsed: PendingAgentStreamEntry[],
+  ): PendingTextEntry | null {
+    const last = collapsed.at(-1);
+    if (!last || last.kind !== "text" || last.item.type !== "assistant_message") {
+      return null;
+    }
+    if (
+      this.windowMs <= 0 ||
+      (buffer.imageHoldFlushes + 1) * this.windowMs > AGENT_STREAM_IMAGE_HOLD_MAX_MS
+    ) {
+      return null;
+    }
+    const { complete, pending } = splitTrailingIncompleteMarkdownImage(last.text);
+    if (!pending || pending.length > AGENT_STREAM_IMAGE_HOLD_MAX_CHARS) {
+      return null;
+    }
+    buffer.imageHoldFlushes += 1;
+    const heldEntry: PendingTextEntry = { ...last, text: pending };
+    if (complete) {
+      last.text = complete;
+    } else {
+      collapsed.pop();
+    }
+    return heldEntry;
   }
 
   private collapseEntries(entries: PendingAgentStreamEntry[]): PendingAgentStreamEntry[] {

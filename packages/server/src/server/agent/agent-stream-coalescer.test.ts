@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { AgentProvider, AgentStreamEvent } from "./agent-sdk-types.js";
 import {
   AGENT_STREAM_COALESCE_DEFAULT_WINDOW_MS,
+  AGENT_STREAM_IMAGE_HOLD_MAX_MS,
   AgentStreamCoalescer,
   type AgentStreamCoalescerFlush,
   type AgentStreamCoalescerTimers,
@@ -785,6 +786,41 @@ describe("AgentStreamCoalescer", () => {
       },
       { type: "reasoning", text: "r" },
       { type: "assistant_message", text: "b" },
+    ]);
+  });
+
+  test("a timed flush holds back an unfinished image until the rest arrives", async () => {
+    const { coalescer, flushes } = createHarness();
+
+    coalescer.handle("agent-1", assistant("See ![shot](/tmp/sh"));
+    await vi.advanceTimersByTimeAsync(60);
+    expect(flushes.map((flush) => flush.item)).toEqual([
+      { type: "assistant_message", text: "See " },
+    ]);
+
+    coalescer.handle("agent-1", assistant("ot.png) done"));
+    await vi.advanceTimersByTimeAsync(60);
+    expect(flushes.map((flush) => flush.item)).toEqual([
+      { type: "assistant_message", text: "See " },
+      { type: "assistant_message", text: "![shot](/tmp/shot.png) done" },
+    ]);
+  });
+
+  test("a held image is released by a forced flush and after the hold limit", async () => {
+    const forced = createHarness();
+    forced.coalescer.handle("agent-1", assistant("![a](/tmp/a"));
+    await vi.advanceTimersByTimeAsync(60);
+    expect(forced.flushes).toEqual([]);
+    forced.coalescer.flushFor("agent-1");
+    expect(forced.flushes.map((flush) => flush.item)).toEqual([
+      { type: "assistant_message", text: "![a](/tmp/a" },
+    ]);
+
+    const stalled = createHarness();
+    stalled.coalescer.handle("agent-1", assistant("![a](/tmp/a"));
+    await vi.advanceTimersByTimeAsync(AGENT_STREAM_IMAGE_HOLD_MAX_MS + 60);
+    expect(stalled.flushes.map((flush) => flush.item)).toEqual([
+      { type: "assistant_message", text: "![a](/tmp/a" },
     ]);
   });
 });

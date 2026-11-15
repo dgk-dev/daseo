@@ -107,6 +107,15 @@ const PROVIDER_IMAGE_MARKDOWN = new RegExp(
   `^!\\[[^\\]]*\\]\\([^)]*${PROVIDER_IMAGE_ATTACHMENT_DIR}(?:-[^/\\\\)]+)?[/\\\\]+(?:[^/\\\\)]+[/\\\\]+)?[0-9a-f]{64}\\.[a-z0-9]+\\)`,
 );
 
+// A file this module materialized: `<attachments dir>/<sha256>.<ext>`. Its name fixes its bytes.
+const PROVIDER_IMAGE_PATH = new RegExp(
+  `${PROVIDER_IMAGE_ATTACHMENT_DIR}(?:-[^/\\\\]+)?[/\\\\]+[0-9a-f]{64}\\.[a-z0-9]+$`,
+);
+
+export function isMaterializedProviderImagePath(filePath: string): boolean {
+  return PROVIDER_IMAGE_PATH.test(filePath);
+}
+
 export function isProviderImageMarkdown(text: string): boolean {
   return PROVIDER_IMAGE_MARKDOWN.test(text);
 }
@@ -165,7 +174,7 @@ function markdownImageSource(value: string): string {
   return value;
 }
 
-function escapeMarkdownImageSource(value: string): string {
+export function escapeMarkdownImageSource(value: string): string {
   return markdownImageSource(value).replace(/\\/g, "\\\\").replace(/\)/g, "\\)");
 }
 
