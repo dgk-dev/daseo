@@ -75,6 +75,7 @@ import { useShellPromptParts } from "./use-shell-prompt-parts";
 import { useComposerHeightMirror } from "./height-mirror";
 import { resolveComposerInputMode, type ComposerInputMode } from "@/composer/input-mode";
 import { pasteLinkedClipboardText } from "@/composer/pasted-text";
+import { hasFinePointer } from "@/hooks/use-fine-pointer";
 import type { NativePastedFile } from "@/composer/native-pasted-image";
 import {
   EditingTextInput,
@@ -1630,6 +1631,11 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         handleSendMessage,
         handleQueueMessage,
       });
+      // A mouse click on Send moves focus off the editor; give it back so the next
+      // message can be typed at once. Touch layouts keep the keyboard dismissed.
+      if (hasFinePointer()) {
+        textInputRef.current?.focus();
+      }
     }, [
       defaultSendBehavior,
       isAgentRunning,
