@@ -74,6 +74,7 @@ import { ShellPromptSpans } from "./shell-prompt-view";
 import { useShellPromptParts } from "./use-shell-prompt-parts";
 import { useComposerHeightMirror } from "./height-mirror";
 import { resolveComposerInputMode, type ComposerInputMode } from "@/composer/input-mode";
+import { pasteLinkedClipboardText } from "@/composer/pasted-text";
 import type { NativePastedFile } from "@/composer/native-pasted-image";
 import {
   EditingTextInput,
@@ -479,7 +480,7 @@ function getTextInputNativeElement(current: ComposerTextInputHandle | null): HTM
   return native instanceof HTMLElement ? native : null;
 }
 
-interface PasteImagesEffectArgs {
+interface PasteEffectArgs {
   getWebTextArea: () => TextAreaHandle | null;
   isConnected: boolean;
   disabled: boolean;
@@ -490,7 +491,7 @@ interface PasteImagesEffectArgs {
   onPasteError: (message: string) => void;
 }
 
-function usePasteImagesEffect(args: PasteImagesEffectArgs): void {
+function usePasteEffect(args: PasteEffectArgs): void {
   const {
     getWebTextArea,
     isConnected,
@@ -503,7 +504,7 @@ function usePasteImagesEffect(args: PasteImagesEffectArgs): void {
   } = args;
 
   useEffect(() => {
-    if (!isWeb || !onAddImages) return;
+    if (!isWeb) return;
 
     const textarea = getWebTextArea() as
       | (TextAreaHandle & {
@@ -521,10 +522,21 @@ function usePasteImagesEffect(args: PasteImagesEffectArgs): void {
 
     let disposed = false;
     const handlePaste = (event: ClipboardEvent) => {
-      if (!isConnected || disabled || isDictating || isRealtimeVoiceForCurrentAgent) return;
+      if (disabled || isDictating || isRealtimeVoiceForCurrentAgent) return;
 
       const imageFiles = collectImageFilesFromClipboardData(event.clipboardData);
-      if (!clipboardDataMayContainImage(event.clipboardData) && imageFiles.length === 0) return;
+      if (!clipboardDataMayContainImage(event.clipboardData) && imageFiles.length === 0) {
+        // Rich text whose links live only in its HTML is pasted as Markdown so the
+        // destinations survive; everything else keeps the browser's native paste.
+        if (
+          textarea instanceof HTMLElement &&
+          pasteLinkedClipboardText(textarea, event.clipboardData)
+        ) {
+          event.preventDefault();
+        }
+        return;
+      }
+      if (!isConnected || !onAddImages) return;
 
       event.preventDefault();
 
@@ -1684,7 +1696,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       }
     }, [getWebTextArea]);
 
-    usePasteImagesEffect({
+    usePasteEffect({
       getWebTextArea,
       isConnected,
       disabled,
