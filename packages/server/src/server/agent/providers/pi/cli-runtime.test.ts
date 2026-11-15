@@ -1,4 +1,7 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import pino from "pino";
@@ -120,6 +123,81 @@ function writePiResponse(
 }
 
 describe("PiCliRuntime", () => {
+  test("permits an unpersisted empty new session but refuses a missing resumed transcript", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paseo-pi-empty-history-"));
+    const file = path.join(root, "not-created.jsonl");
+    try {
+      const freshChild = createPiChild();
+      replyToCommands(freshChild, () => ({ sessionFile: file, messageCount: 0 }));
+      const fresh = await createRuntime(freshChild).startSession({ cwd: root });
+      try {
+        expect(await fresh.getHistory()).toEqual({ messages: [], userEntries: [] });
+      } finally {
+        await fresh.close();
+      }
+      const resumedChild = createPiChild();
+      replyToCommands(resumedChild, () => ({ sessionFile: file, messageCount: 0 }));
+      const resumed = await createRuntime(resumedChild).startSession({ cwd: root, session: file });
+      try {
+        await expect(resumed.getHistory()).rejects.toThrow("ENOENT");
+      } finally {
+        await resumed.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("reads complete persisted history instead of compacted RPC context", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paseo-pi-history-"));
+    const file = path.join(root, "session.jsonl");
+    const oldUser = { role: "user", content: "before compaction" };
+    const oldAnswer = { role: "assistant", content: [{ type: "text", text: "old answer" }] };
+    const newUser = { role: "user", content: "after compaction" };
+    const records = [
+      { type: "session", version: 3, id: "session" },
+      { type: "message", id: "old-user", parentId: null, message: oldUser },
+      { type: "message", id: "old-answer", parentId: "old-user", message: oldAnswer },
+      { type: "compaction", id: "compact", parentId: "old-answer", summary: "summary" },
+      { type: "message", id: "new-user", parentId: "compact", message: newUser },
+    ];
+    const contents = records.map((row) => JSON.stringify(row)).join("\n");
+    await writeFile(file, contents);
+    const child = createPiChild();
+    replyToCommands(child, (command) =>
+      command.type === "get_state" ? { sessionFile: file } : { messages: [newUser] },
+    );
+    const session = await createRuntime(child).startSession({ cwd: root, session: file });
+    try {
+      expect(await session.getHistory()).toEqual({
+        messages: [oldUser, oldAnswer, newUser],
+        userEntries: [
+          { id: "old-user", text: "before compaction" },
+          { id: "new-user", text: "after compaction" },
+        ],
+      });
+      expect(await readFile(file, "utf8")).toBe(contents);
+      await writeFile(
+        file,
+        contents +
+          '\n{"type":"custom","id":"rewind","parentId":"old-answer","customType":"paseo_rewind"}',
+      );
+      expect((await session.getHistory()).userEntries).toEqual([
+        { id: "old-user", text: "before compaction" },
+      ]);
+      await writeFile(
+        file,
+        contents + '\n{"type":"custom","id":"rewind","parentId":null,"customType":"paseo_rewind"}',
+      );
+      expect((await session.getHistory()).messages).toEqual([]);
+      await writeFile(file, contents + '\n{"type":"custom","id":"bad","parentId":"missing"}');
+      await expect(session.getHistory()).rejects.toThrow("Missing Pi transcript ancestor");
+    } finally {
+      await session.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("kills a real child that ignores abort and SIGTERM before reporting success", async () => {
     const source = `
       process.on('SIGTERM', () => {});

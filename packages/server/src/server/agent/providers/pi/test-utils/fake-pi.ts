@@ -108,8 +108,8 @@ export class FakePiSession implements PiRuntimeSession {
   readonly rawFrames: Array<object & { type: string }> = [];
   // Every user entry in the session file, including rewound and compacted ones.
   treeUserEntries: FakePiUserEntry[] = [];
-  // The user entries on the current branch that getMessages() replays.
-  contextUserEntries: FakePiUserEntry[] = [];
+  // Native user entries paired with the complete active-branch history.
+  historyUserEntries: FakePiUserEntry[] = [];
   abortRequested = false;
   readonly canceledExtensionUiRequests: string[] = [];
   readonly extensionUiResponses: Array<{
@@ -289,8 +289,8 @@ export class FakePiSession implements PiRuntimeSession {
     return this.state;
   }
 
-  async getMessages(): Promise<PiAgentMessage[]> {
-    return this.messages;
+  async getHistory() {
+    return { messages: this.messages, userEntries: this.historyUserEntries };
   }
 
   async getAvailableModels(_timeoutMs?: number | null): Promise<PiModel[]> {
@@ -528,7 +528,6 @@ export class FakePiSession implements PiRuntimeSession {
         reason,
         requestId,
         treeEntries: this.treeUserEntries,
-        contextEntries: this.contextUserEntries,
       })}`,
     });
   }

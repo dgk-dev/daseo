@@ -1,5 +1,7 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import type { Logger } from "pino";
+import { readFile } from "node:fs/promises";
+import { readPiTranscript, type PiTranscript } from "./transcript.js";
 
 import type { ProviderRuntimeSettings } from "../../provider-launch-config.js";
 import {
@@ -15,7 +17,6 @@ import {
   type PiStartSessionInput,
 } from "./runtime.js";
 import type {
-  PiAgentMessage,
   PiModel,
   PiPromptAck,
   PiRpcCommand,
@@ -90,7 +91,12 @@ export class PiCliRuntime implements PiRuntime {
       await process.close(input.signal.reason);
       input.signal.throwIfAborted();
     }
-    return new PiCliRuntimeSession(process, this.commandsRpcName, this.options.logger);
+    return new PiCliRuntimeSession(
+      process,
+      this.commandsRpcName,
+      this.options.logger,
+      input.session === undefined,
+    );
   }
 }
 
@@ -103,6 +109,7 @@ class PiCliRuntimeSession implements PiRuntimeSession {
     private readonly process: JsonlRpcProcess,
     private readonly commandsRpcName: string,
     private readonly logger: Logger,
+    private readonly newSession: boolean,
   ) {
     process.onMessage((message) => {
       this.emit(message as PiRuntimeEvent);
@@ -207,9 +214,24 @@ class PiCliRuntimeSession implements PiRuntimeSession {
     return (await this.request({ type: "get_state" })) as PiSessionState;
   }
 
-  async getMessages(): Promise<PiAgentMessage[]> {
-    const data = (await this.request({ type: "get_messages" })) as { messages?: PiAgentMessage[] };
-    return data.messages ?? [];
+  async getHistory(): Promise<PiTranscript> {
+    const state = await this.getState();
+    if (!state.sessionFile) throw new Error("Pi history requires a persisted session file");
+    try {
+      return readPiTranscript(await readFile(state.sessionFile, "utf8"));
+    } catch (error) {
+      // Pi creates the file only after saving the first conversation message.
+      if (
+        this.newSession &&
+        state.messageCount === 0 &&
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "ENOENT"
+      ) {
+        return { messages: [], userEntries: [] };
+      }
+      throw error;
+    }
   }
 
   async getAvailableModels(timeoutMs?: number | null): Promise<PiModel[]> {
