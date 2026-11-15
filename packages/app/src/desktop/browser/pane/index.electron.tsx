@@ -52,6 +52,12 @@ import {
 } from "@/attachments/workspace-attachments-store";
 import type { AttachmentMetadata, BrowserElementAttachment } from "@/attachments/types";
 import { persistAttachmentFromDataUrl } from "@/attachments/service";
+import {
+  captureAnnotationScreenshot,
+  createAnnotationScreenshotHold,
+  type AnnotationCaptureFailure,
+  type AnnotationCaptureResult,
+} from "./annotation-capture";
 import { WORKSPACE_SECONDARY_HEADER_HEIGHT } from "@/constants/layout";
 import {
   getDesktopHost,
@@ -680,6 +686,13 @@ export function BrowserPane({
     null,
   );
   const annotationCaptureGenerationRef = useRef(0);
+  const annotationScreenshotHoldRef = useRef<ReturnType<
+    typeof createAnnotationScreenshotHold
+  > | null>(null);
+  if (!annotationScreenshotHoldRef.current) {
+    annotationScreenshotHoldRef.current = createAnnotationScreenshotHold();
+  }
+  const annotationScreenshotHold = annotationScreenshotHoldRef.current;
   const [draftUrl, setDraftUrl] = useState(browser?.url ?? DEFAULT_BROWSER_URL);
   const [popupActionError, setPopupActionError] = useState<string | null>(null);
   const workspaceAttachmentScopeKey = useMemo(
@@ -725,8 +738,9 @@ export function BrowserPane({
     return () => {
       mountedRef.current = false;
       annotationCaptureGenerationRef.current += 1;
+      annotationScreenshotHold.release();
     };
-  }, []);
+  }, [annotationScreenshotHold]);
 
   useEffect(() => subscribeWebOverlayActivity(setWebOverlayActive), []);
 
@@ -1318,29 +1332,17 @@ export function BrowserPane({
   );
 
   const captureElementScreenshot = useCallback(
-    async (selection: BrowserElementSelection): Promise<AttachmentMetadata | undefined> => {
+    async (selection: BrowserElementSelection): Promise<AnnotationCaptureResult> => {
       const captureElement = getDesktopHost()?.browser?.captureElement;
-      if (typeof captureElement !== "function") {
-        return undefined;
-      }
-      const { x, y, width, height } = selection.boundingRect;
-      if (width <= 0 || height <= 0) {
-        return undefined;
-      }
-      try {
-        const dataUrl = await captureElement(browserIdRef.current, { x, y, width, height });
-        if (!dataUrl) {
-          return undefined;
-        }
-        return await persistAttachmentFromDataUrl({
-          dataUrl,
-          mimeType: "image/png",
-          fileName: `element-${selection.tag}.png`,
-        });
-      } catch (error) {
-        console.warn("[browser-pane] captureElement failed", error);
-        return undefined;
-      }
+      const captureBrowserId = browserIdRef.current;
+      return await captureAnnotationScreenshot({
+        captureElement:
+          typeof captureElement === "function"
+            ? (rect) => captureElement(captureBrowserId, rect)
+            : undefined,
+        selection,
+        persist: persistAttachmentFromDataUrl,
+      });
     },
     [],
   );
@@ -1405,18 +1407,33 @@ export function BrowserPane({
       const generation = annotationCaptureGenerationRef.current + 1;
       const selectedBrowserId = browserIdRef.current;
       annotationCaptureGenerationRef.current = generation;
+      annotationScreenshotHold.release();
       setAnnotationDraft(beginBrowserElementAnnotation({ generation, selection }));
-      void captureElementScreenshot(selection).then((screenshot) => {
-        if (!mountedRef.current || browserIdRef.current !== selectedBrowserId) {
+      void captureElementScreenshot(selection).then((result) => {
+        if (
+          !mountedRef.current ||
+          browserIdRef.current !== selectedBrowserId ||
+          annotationCaptureGenerationRef.current !== generation
+        ) {
+          // The editor this capture belonged to is gone; let the file be collected.
+          if (result.status === "captured") result.release();
           return undefined;
         }
+        if (result.status === "captured") {
+          annotationScreenshotHold.hold(result.release);
+        }
         setAnnotationDraft((current) =>
-          settleBrowserElementAnnotationCapture(current, { generation, screenshot }),
+          settleBrowserElementAnnotationCapture(current, {
+            generation,
+            ...(result.status === "captured"
+              ? { screenshot: result.screenshot }
+              : { captureFailure: result.failure }),
+          }),
         );
         return undefined;
       });
     },
-    [captureElementScreenshot, screenshotElementToClipboard],
+    [annotationScreenshotHold, captureElementScreenshot, screenshotElementToClipboard],
   );
 
   const submitAnnotation = useCallback(
@@ -1426,15 +1443,18 @@ export function BrowserPane({
       }
       annotationCaptureGenerationRef.current += 1;
       setAnnotationDraft(null);
+      // The workspace attachment store retains the screenshot from here on.
       addElementAttachment(annotationDraft.selection, annotation, annotationDraft.screenshot);
+      annotationScreenshotHold.release();
     },
-    [addElementAttachment, annotationDraft],
+    [addElementAttachment, annotationDraft, annotationScreenshotHold],
   );
 
   const cancelAnnotation = useCallback(() => {
     annotationCaptureGenerationRef.current += 1;
     setAnnotationDraft(null);
-  }, []);
+    annotationScreenshotHold.release();
+  }, [annotationScreenshotHold]);
 
   const showSelectorFailure = useCallback(
     (reason: "loading" | "timeout" | "unavailable") => {
@@ -1484,9 +1504,15 @@ export function BrowserPane({
 
       annotationCaptureGenerationRef.current += 1;
       setAnnotationDraft(null);
+      annotationScreenshotHold.release();
       setSelectorMode(mode);
     },
-    [handleElementSelectorOutcome, showSelectorFailure, workspaceAttachmentScopeKey],
+    [
+      annotationScreenshotHold,
+      handleElementSelectorOutcome,
+      showSelectorFailure,
+      workspaceAttachmentScopeKey,
+    ],
   );
 
   const cancelElementSelector = useCallback(() => {
@@ -2016,6 +2042,7 @@ export function BrowserPane({
               <BrowserElementAnnotationCard
                 selection={annotationDraft.selection}
                 isCapturing={annotationDraft.captureStatus === "capturing"}
+                captureFailure={annotationDraft.captureFailure ?? null}
                 onSubmit={submitAnnotation}
                 onCancel={cancelAnnotation}
               />,
@@ -2043,14 +2070,44 @@ function shouldPageDialogTakeFocus(input: {
   );
 }
 
+function resolveCaptureFailureMessage(
+  failure: AnnotationCaptureFailure,
+  t: ReturnType<typeof useTranslation>["t"],
+): string {
+  switch (failure.reason) {
+    case "unavailable":
+      return t("workspace.browser.annotate.captureFailed.unavailable", {
+        defaultValue:
+          "Screenshots are not available here. The note will be added without an image.",
+      });
+    case "empty_selection":
+      return t("workspace.browser.annotate.captureFailed.emptySelection", {
+        defaultValue:
+          "This element has no visible area to capture. The note will be added without an image.",
+      });
+    case "too_large":
+      return t("workspace.browser.annotate.captureFailed.tooLarge", {
+        detail: failure.detail,
+        defaultValue: "{{detail}} The note will be added without an image.",
+      });
+    case "failed":
+      return t("workspace.browser.annotate.captureFailed.failed", {
+        defaultValue:
+          "The screenshot of this element could not be captured. The note will be added without an image.",
+      });
+  }
+}
+
 function BrowserElementAnnotationCard({
   selection,
   isCapturing,
+  captureFailure,
   onSubmit,
   onCancel,
 }: {
   selection: BrowserElementSelection;
   isCapturing: boolean;
+  captureFailure: AnnotationCaptureFailure | null;
   onSubmit: (annotation: BrowserElementAnnotation) => void;
   onCancel: () => void;
 }) {
@@ -2107,6 +2164,11 @@ function BrowserElementAnnotationCard({
         <Text numberOfLines={1} style={styles.annotationElement}>
           {elementLabel}
         </Text>
+        {captureFailure ? (
+          <Text style={styles.annotationCaptureFailure} accessibilityRole="alert">
+            {resolveCaptureFailureMessage(captureFailure, t)}
+          </Text>
+        ) : null}
         <ThemedAnnotationInput
           accessibilityLabel={t("workspace.browser.annotate.placeholder")}
           autoFocus
@@ -2289,6 +2351,11 @@ const styles = StyleSheet.create((theme) => ({
   annotationElement: {
     fontSize: theme.fontSize.xs,
     color: theme.colors.foregroundMuted,
+    marginBottom: theme.spacing[2],
+  },
+  annotationCaptureFailure: {
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.palette.red[500],
     marginBottom: theme.spacing[2],
   },
   annotationInput: {

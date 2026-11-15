@@ -78,6 +78,7 @@ import { resolveStreamRenderStrategy } from "./strategy-resolver";
 import { type StreamSegmentRenderers, type StreamViewportHandle } from "./strategy";
 import { ChatOutlineRail } from "@/agent-stream/chat-outline/rail";
 import { useChatOutline } from "@/agent-stream/chat-outline/use-chat-outline";
+import { hasPromptIndexAgent } from "@/agent-stream/chat-outline/model";
 import { useTimelineSeqJump } from "@/agent-stream/use-timeline-seq-jump";
 import { useTimelineJumpStore } from "@/stores/timeline-jump-store";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
@@ -371,10 +372,14 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const supportsPathResolve = useSessionStore(
       (state) => state.sessions[resolvedServerId]?.serverInfo?.features?.pathResolve === true,
     );
-    const supportsChatOutline = useSessionStore(
-      (state) =>
-        state.sessions[resolvedServerId]?.serverInfo?.features?.agentTimelinePromptIndex === true,
-    );
+    // Only a created agent has a prompt index on the host (a draft tab renders its draft id).
+    const supportsChatOutline = useSessionStore((state) => {
+      const session = state.sessions[resolvedServerId];
+      return (
+        session?.serverInfo?.features?.agentTimelinePromptIndex === true &&
+        hasPromptIndexAgent(session, agentId)
+      );
+    });
     const timelineEpoch = useSessionStore(
       (state) => state.sessions[resolvedServerId]?.agentTimelineCursor.get(agentId)?.epoch ?? null,
     );

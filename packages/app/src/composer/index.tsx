@@ -96,8 +96,10 @@ import {
   useHostRuntimeClient,
   useHostRuntimeIsConnected,
 } from "@/runtime/host-runtime";
+import { generateMessageId } from "@/types/stream";
 import {
   deleteAttachments,
+  findAttachmentsSentAsStill,
   persistAttachmentFromBlob,
   persistAttachmentFromDataUrl,
   persistAttachmentFromFileUri,
@@ -108,7 +110,11 @@ import { useKeyboardShiftStyle } from "@/hooks/use-keyboard-shift-style";
 import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
 import type { KeyboardActionDefinition } from "@/keyboard/keyboard-action-dispatcher";
 import type { MessageInputKeyboardActionKind } from "@/keyboard/actions";
-import { submitAgentInput } from "@/composer/submit";
+import { clearSubmittedFromDraft, submitAgentInput } from "@/composer/submit";
+import { restoreFailedIntoDraft, type DraftSnapshot } from "@/composer/draft-snapshot";
+import { resolveSendErrorAfterInputChange, type SendErrorAnchor } from "@/composer/send-error";
+import { runImmediateClientSlashCommand } from "@/composer/client-slash-command";
+import { retainComposerAttachmentFiles } from "@/composer/attachment-retention";
 import { createMessageSubmissionWriter } from "@/composer/submission/writer";
 import { ComposerKeyboardScopeProvider } from "@/composer/keyboard-scope";
 import { useAppSettings } from "@/hooks/use-settings";
@@ -171,6 +177,14 @@ const composerImageAttachmentPersister: Pick<
 };
 
 type QueuedMessage = QueuedComposerMessage;
+
+/** A send that failed while newer input was already in the composer (kept, not merged). */
+interface FailedSubmission {
+  id: string;
+  text: string;
+  attachments: UserComposerAttachment[];
+  release: () => void;
+}
 
 type AttachmentListUpdater =
   | UserComposerAttachment[]
@@ -503,6 +517,13 @@ function renderComposerAttachmentPill(args: RenderComposerAttachmentPillArgs): R
   );
 }
 
+/** The reason an image could not be attached; a failed batch reports its first failure. */
+function resolveImageAttachError(error: unknown, fallback: string): string {
+  const cause =
+    error instanceof AggregateError && error.errors[0] instanceof Error ? error.errors[0] : error;
+  return cause instanceof Error && cause.message.trim() ? cause.message : fallback;
+}
+
 function resolveErrorMessage(error: unknown): string | null {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
@@ -628,6 +649,50 @@ function resolveQueuedMessageStatusLabel(
   if (item.resolution?.status === "in_flight") return labels.inFlight;
   if (item.resolution?.status === "rejected") return labels.rejected;
   return null;
+}
+
+interface FailedSubmissionRowProps {
+  item: FailedSubmission;
+  onPutBack: (id: string) => void;
+  onDiscard: (id: string) => void;
+  labels: { notSent: string; putBack: string; discard: string };
+}
+
+function FailedSubmissionRow({ item, onPutBack, onDiscard, labels }: FailedSubmissionRowProps) {
+  const handlePutBack = useCallback(() => {
+    onPutBack(item.id);
+  }, [onPutBack, item.id]);
+  const handleDiscard = useCallback(() => {
+    onDiscard(item.id);
+  }, [onDiscard, item.id]);
+  return (
+    <View style={styles.queueItem} testID="composer-failed-message">
+      <View style={styles.queueContent}>
+        <Text style={styles.queueText} numberOfLines={2} ellipsizeMode="tail">
+          {item.text}
+        </Text>
+        <StatusBadge label={labels.notSent} variant="error" />
+      </View>
+      <View style={styles.queueActions}>
+        <Pressable
+          onPress={handlePutBack}
+          style={styles.queueActionButton}
+          accessibilityLabel={labels.putBack}
+          accessibilityRole="button"
+        >
+          <ThemedPencil size={ICON_SIZE.sm} uniProps={iconForegroundMapping} />
+        </Pressable>
+        <Pressable
+          onPress={handleDiscard}
+          style={styles.queueActionButton}
+          accessibilityLabel={labels.discard}
+          accessibilityRole="button"
+        >
+          <ThemedTrash size={ICON_SIZE.sm} uniProps={iconForegroundMapping} />
+        </Pressable>
+      </View>
+    </View>
+  );
 }
 
 interface QueuedMessageRowProps {
@@ -1189,6 +1254,8 @@ export function Composer({
   const toast = useToast();
   const toastErrorRef = useRef(toast.error);
   toastErrorRef.current = toast.error;
+  const toastShowRef = useRef(toast.show);
+  toastShowRef.current = toast.show;
   const voice = useVoiceOptional();
   const voiceToggleKeys = useShortcutKeys("voice-toggle");
   const agentInterruptKeys = useShortcutKeys("agent-interrupt");
@@ -1254,12 +1321,25 @@ export function Composer({
   const [isUploadingFile, setIsUploadingFile] = useState(false);
   const [pendingImagePastes, setPendingImagePastes] = useState(0);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [failedSubmissions, setFailedSubmissions] = useState<FailedSubmission[]>([]);
   const [isMessageInputFocused, setIsMessageInputFocused] = useState(false);
   const [isGithubPickerOpen, setIsGithubPickerOpen] = useState(false);
   const [githubSearchQuery, setGithubSearchQuery] = useState("");
   const [lightboxMetadata, setLightboxMetadata] = useState<AttachmentMetadata | null>(null);
   const attachButtonRef = useRef<View | null>(null);
   const messageInputRef = useRef<MessageInputRef>(null);
+  const userInputRef = useRef(userInput);
+  userInputRef.current = userInput;
+  const draftAttachmentsRef = useRef(attachments);
+  draftAttachmentsRef.current = attachments;
+  // The input stays editable while a send or queue write is in flight; read what is there now.
+  const readCurrentDraft = useCallback(
+    (): DraftSnapshot<UserComposerAttachment> => ({
+      text: messageInputRef.current?.getText() ?? userInputRef.current,
+      attachments: draftAttachmentsRef.current,
+    }),
+    [],
+  );
   const agentIdRef = useRef(agentId);
   agentIdRef.current = agentId;
   const isPaneFocusedRef = useRef(isPaneFocused);
@@ -1321,20 +1401,20 @@ export function Composer({
       if (blurOnSubmit) {
         messageInputRef.current?.blur();
       }
-      clearDraft("sent");
-      replaceUserInput("");
-      setSelectedAttachments([]);
-      resetSuppression();
-      setSendError(null);
-      setIsProcessing(true);
-      void onClientSlashCommand(command)
-        .catch((error) => {
-          console.error("[Composer] Failed to run client slash command:", error);
-          setSendError(error instanceof Error ? error.message : String(error));
-        })
-        .finally(() => {
-          setIsProcessing(false);
-        });
+      void runImmediateClientSlashCommand({
+        commandText: readCurrentDraft().text,
+        execute: () => onClientSlashCommand(command),
+        clearInput: () => {
+          clearDraft("sent");
+          replaceUserInput("");
+          setSelectedAttachments([]);
+          resetSuppression();
+        },
+        readCurrentDraft,
+        restoreText: (text) => replaceUserInput(text),
+        setSendError,
+        setIsProcessing,
+      });
       return true;
     },
     [
@@ -1342,6 +1422,7 @@ export function Composer({
       clearDraft,
       isComposerOwner,
       onClientSlashCommand,
+      readCurrentDraft,
       resetSuppression,
       setSelectedAttachments,
       replaceUserInput,
@@ -1380,11 +1461,16 @@ export function Composer({
   const autocompleteOnKeyPressRef = useRef(autocomplete.onKeyPress);
   autocompleteOnKeyPressRef.current = autocomplete.onKeyPress;
 
-  // Clear send error when user edits the input
+  // Clear the send error when the user edits the input, not when a failed message is restored.
+  const sendErrorAnchorRef = useRef<SendErrorAnchor | null>(null);
   useEffect(() => {
-    if (sendError && userInput) {
-      setSendError(null);
-    }
+    const next = resolveSendErrorAfterInputChange({
+      error: sendError,
+      userInput,
+      anchor: sendErrorAnchorRef.current,
+    });
+    sendErrorAnchorRef.current = next.anchor;
+    if (next.clear) setSendError(null);
   }, [userInput, sendError]);
 
   useEffect(() => {
@@ -1393,7 +1479,11 @@ export function Composer({
 
   // Delta 45: photos over the image budget arrive here as files and upload like "Upload file".
   const uploadPickedFilesRef = useRef<((files: PickedFile[]) => Promise<void>) | null>(null);
-  const { pickImages } = useImageAttachmentPicker({
+  const {
+    pickImages,
+    isProcessingSelection: isProcessingImageSelection,
+    withSelectionPending: withImageSelectionPending,
+  } = useImageAttachmentPicker({
     onOversizedFiles: (files) => {
       void uploadPickedFilesRef.current?.(files);
     },
@@ -1539,6 +1629,7 @@ export function Composer({
   const queueMessage = useCallback(
     async (queuedMessage: string, queuedAttachments: ComposerAttachment[]) => {
       if (!isComposerOwner()) throw new Error("Composer is no longer active");
+      // The draft is cleared by the caller once this durable write has succeeded.
       const result = await queueComposerMessage({
         serverId,
         agentId,
@@ -1548,21 +1639,83 @@ export function Composer({
       });
       if (!result.queued) return;
 
-      replaceUserInput("");
-      setSelectedAttachments([]);
       resetSuppression();
       clearSentAttachments(queuedAttachments);
     },
-    [
-      agentId,
-      clearSentAttachments,
-      isComposerOwner,
-      queueWriter,
-      resetSuppression,
-      serverId,
-      setSelectedAttachments,
-      replaceUserInput,
-    ],
+    [agentId, clearSentAttachments, isComposerOwner, queueWriter, resetSuppression, serverId],
+  );
+
+  const keepFailedSubmission = useCallback(
+    (failed: { message: string; attachments: ComposerAttachment[] }) => {
+      const userAttachments = composerWorkspaceAttachment.userAttachmentsOnly(failed.attachments);
+      const entry: FailedSubmission = {
+        id: generateMessageId(),
+        text: failed.message,
+        attachments: userAttachments,
+        // Its image files are in no draft or outbox now; keep them until it is put back or
+        // discarded.
+        release: retainComposerAttachmentFiles(userAttachments),
+      };
+      setFailedSubmissions((current) => [...current, entry]);
+    },
+    [],
+  );
+
+  const putBackFailedSubmission = useCallback(
+    (id: string) => {
+      const failed = failedSubmissions.find((entry) => entry.id === id);
+      if (!failed) return;
+      const next = restoreFailedIntoDraft(readCurrentDraft(), failed);
+      replaceUserInput(next.text);
+      setSelectedAttachments([...next.attachments]);
+      setFailedSubmissions((current) => current.filter((entry) => entry.id !== id));
+      failed.release();
+    },
+    [failedSubmissions, readCurrentDraft, replaceUserInput, setSelectedAttachments],
+  );
+
+  const discardFailedSubmission = useCallback(
+    (id: string) => {
+      failedSubmissions.find((entry) => entry.id === id)?.release();
+      setFailedSubmissions((current) => current.filter((entry) => entry.id !== id));
+    },
+    [failedSubmissions],
+  );
+
+  const failedSubmissionsRef = useRef(failedSubmissions);
+  failedSubmissionsRef.current = failedSubmissions;
+  useEffect(
+    () => () => {
+      for (const failed of failedSubmissionsRef.current) failed.release();
+    },
+    [],
+  );
+
+  // An animated GIF over the send limit goes out as its first frame; say so without blocking.
+  const noticeImagesSentAsStill = useCallback(
+    (outgoingAttachments: readonly ComposerAttachment[]) => {
+      const images = outgoingAttachments.flatMap((attachment) =>
+        attachment.kind === "image" ? [attachment.metadata] : [],
+      );
+      if (images.length === 0) return;
+      void findAttachmentsSentAsStill(images)
+        .then((stills) => {
+          if (stills.length === 0) return undefined;
+          const fileName = stills.map((image) => image.fileName?.trim() || image.id).join(", ");
+          toastShowRef.current(
+            t("composer.notices.animatedGifSentAsStill", {
+              fileName,
+              defaultValue:
+                "{{fileName}} is over 8 MB, so it is sent as a still image (first frame).",
+            }),
+          );
+          return undefined;
+        })
+        .catch((error) => {
+          console.warn("[Composer] Could not check images sent as stills:", error);
+        });
+    },
+    [t],
   );
 
   const sendMessageWithContent = useCallback(
@@ -1572,6 +1725,10 @@ export function Composer({
       forceSend?: boolean,
     ) => {
       if (!isComposerOwner()) return;
+      noticeImagesSentAsStill(outgoingAttachments);
+      // The submitted files leave the draft at once; keep them until the send settles and
+      // they are back in the draft or held as a failed message.
+      const releaseOutgoing = retainComposerAttachmentFiles(outgoingAttachments);
       const result = await submitAgentInput({
         message: outgoingMessage,
         attachments: outgoingAttachments,
@@ -1596,13 +1753,15 @@ export function Composer({
         setAttachments: (nextAttachments) => {
           setSelectedAttachments(composerWorkspaceAttachment.userAttachmentsOnly(nextAttachments));
         },
+        readCurrentDraft,
+        keepFailedSubmission,
         setSendError,
         setIsProcessing,
         onSubmitError: (error) => {
           console.error("[AgentInput] Failed to send message:", error);
         },
         failedToSendMessage: t("composer.errors.failedToSend"),
-      });
+      }).finally(releaseOutgoing);
       completeSubmit({
         result,
         outgoingAttachments,
@@ -1616,7 +1775,10 @@ export function Composer({
       hasExternalContent,
       isAgentRunning,
       isComposerOwner,
+      keepFailedSubmission,
+      noticeImagesSentAsStill,
       queueMessage,
+      readCurrentDraft,
       setSelectedAttachments,
       replaceUserInput,
       submitBehavior,
@@ -1658,19 +1820,22 @@ export function Composer({
 
   const handlePickImage = useCallback(async () => {
     try {
-      const newImages = await pickAndPersistImages({
-        pickImages,
-        persister: composerImageAttachmentPersister,
+      // Send stays blocked until the picked photos are persisted and in the draft.
+      await withImageSelectionPending(async () => {
+        const newImages = await pickAndPersistImages({
+          pickImages,
+          persister: composerImageAttachmentPersister,
+        });
+        if (newImages.length === 0) return;
+        addImages(newImages);
       });
-      if (newImages.length === 0) return;
-      addImages(newImages);
     } catch (error) {
       console.error("[Composer] Failed to attach picked image:", error);
       toastErrorRef.current(
         error instanceof Error ? error.message : t("imageAttachmentPicker.failedToSelect"),
       );
     }
-  }, [addImages, pickImages, t]);
+  }, [addImages, pickImages, t, withImageSelectionPending]);
 
   const handleImagePastePendingChange = useCallback((delta: 1 | -1) => {
     setPendingImagePastes((pending) => Math.max(0, pending + delta));
@@ -1693,7 +1858,7 @@ export function Composer({
       addImages(newImages);
     } catch (error) {
       console.error("[Composer] Failed to paste clipboard image:", error);
-      toastErrorRef.current(t("composer.errors.pasteImageFailed"));
+      toastErrorRef.current(resolveImageAttachError(error, t("composer.errors.pasteImageFailed")));
     } finally {
       handleImagePastePendingChange(-1);
     }
@@ -1714,7 +1879,9 @@ export function Composer({
         })
         .catch((error) => {
           console.error("[Composer] Failed to persist pasted image:", error);
-          toastErrorRef.current(t("composer.errors.pasteImageFailed"));
+          toastErrorRef.current(
+            resolveImageAttachError(error, t("composer.errors.pasteImageFailed")),
+          );
         })
         .finally(() => {
           handleImagePastePendingChange(-1);
@@ -2003,6 +2170,7 @@ export function Composer({
     [agentId, client, isComposerOwner, queueWriter, serverId, t],
   );
 
+  const queueWriteInFlightRef = useRef(false);
   const handleQueue = useCallback(
     (payload: MessagePayload) => {
       if (!isComposerOwner()) return;
@@ -2017,15 +2185,45 @@ export function Composer({
       if (clientSlashCommand && runClientSlashCommand(clientSlashCommand)) {
         return;
       }
-      void queueMessage(payload.text, outgoingAttachments);
+      // The text stays until the write is durable, so a second press in that window must not
+      // queue it twice. Nothing is lost by ignoring it: the text is still in the composer.
+      if (queueWriteInFlightRef.current) return;
+      queueWriteInFlightRef.current = true;
+      noticeImagesSentAsStill(outgoingAttachments);
+      // Clear only after the queue write is durable, and only what was queued.
+      void queueMessage(payload.text, outgoingAttachments)
+        .then(() => {
+          setSendError(null);
+          clearSubmittedFromDraft(
+            {
+              readCurrentDraft,
+              setUserInput: replaceUserInput,
+              setAttachments: (nextAttachments) => setSelectedAttachments(nextAttachments),
+            },
+            { text: payload.text, attachments: attachments },
+          );
+          return undefined;
+        })
+        .catch((error) => {
+          console.error("[Composer] Failed to queue message:", error);
+          setSendError(error instanceof Error ? error.message : t("composer.errors.failedToSend"));
+        })
+        .finally(() => {
+          queueWriteInFlightRef.current = false;
+        });
     },
     [
       attachments,
       buildOutgoingAttachments,
       isComposerOwner,
+      noticeImagesSentAsStill,
       queueMessage,
+      readCurrentDraft,
+      replaceUserInput,
       runClientSlashCommand,
       runSideQuestion,
+      setSelectedAttachments,
+      t,
     ],
   );
 
@@ -2388,7 +2586,11 @@ export function Composer({
   const messageInputContainerRef = useRef<View>(null);
 
   const isSubmitLoadingVisible =
-    isProcessing || isSubmitLoading || isUploadingFile || pendingImagePastes > 0;
+    isProcessing ||
+    isSubmitLoading ||
+    isUploadingFile ||
+    pendingImagePastes > 0 ||
+    isProcessingImageSelection;
   const isSubmitDisabled =
     isSubmitLoadingVisible || (waitForGithubAutoAttachOnSubmit && githubAutoAttach.isResolving);
 
@@ -2410,6 +2612,31 @@ export function Composer({
     () => (sendError ? <Text style={styles.sendErrorText}>{sendError}</Text> : null),
     [sendError],
   );
+  const failedSubmissionLabels = useMemo(
+    () => ({
+      notSent: t("composer.failedSubmission.notSent", { defaultValue: "Not sent" }),
+      putBack: t("composer.failedSubmission.putBack", { defaultValue: "Put back in the composer" }),
+      discard: t("composer.failedSubmission.discard", { defaultValue: "Discard" }),
+    }),
+    [t],
+  );
+  const failedSubmissionNodes = useMemo(
+    () =>
+      failedSubmissions.length === 0 ? null : (
+        <View style={styles.queueTrack}>
+          {failedSubmissions.map((item) => (
+            <FailedSubmissionRow
+              key={item.id}
+              item={item}
+              onPutBack={putBackFailedSubmission}
+              onDiscard={discardFailedSubmission}
+              labels={failedSubmissionLabels}
+            />
+          ))}
+        </View>
+      ),
+    [discardFailedSubmission, failedSubmissionLabels, failedSubmissions, putBackFailedSubmission],
+  );
   const githubEmptyText = githubSearchResultsQuery.isFetching
     ? t("composer.github.searching")
     : t("composer.github.noResults");
@@ -2423,6 +2650,7 @@ export function Composer({
         <View style={inputAreaContainerStyle}>
           <View style={styles.inputAreaContent}>
             {queueList}
+            {failedSubmissionNodes}
             {sendErrorNode}
 
             <View ref={messageInputContainerRef} style={styles.messageInputContainer}>

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createActivePromptPublisher,
+  hasPromptIndexAgent,
   shouldAcceptPromptIndexEpoch,
   promptTickMagnification,
   resolveActivePromptSeq,
@@ -69,5 +70,18 @@ describe("createActivePromptPublisher", () => {
 
     expect(notifications).toBe(2);
     expect(publisher.getActiveSeq()).toBeNull();
+  });
+});
+
+describe("chat outline prompt index agent", () => {
+  it("does not ask for the prompt index of a draft chat that is not an agent yet", () => {
+    const session = {
+      agents: new Map([["agent-1", {}]]),
+      agentDetails: new Map([["agent-2", {}]]),
+    };
+    expect(hasPromptIndexAgent(session, "draft_msg_1794746386418_qffccplr3")).toBe(false);
+    expect(hasPromptIndexAgent(undefined, "agent-1")).toBe(false);
+    expect(hasPromptIndexAgent(session, "agent-1")).toBe(true);
+    expect(hasPromptIndexAgent(session, "agent-2")).toBe(true);
   });
 });

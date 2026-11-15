@@ -349,6 +349,80 @@ async function preserveDeliveryUnknownComposerMessage(input: {
   }
 }
 
+// Relay string frames are encrypted and base64'd: 32 MiB on the wire carries
+// floor(32 MiB / 4) * 3 - 40 plaintext bytes (packages/relay/src/encrypted-channel.ts). Keep
+// 1 MiB for the surrounding message JSON, as the checkout diff limit does.
+const RELAY_MAX_FRAME_BYTES = 32 * 1024 * 1024;
+const RELAY_ENCRYPTED_PAYLOAD_OVERHEAD_BYTES = 40;
+const INLINE_MESSAGE_FRAME_HEADROOM_BYTES = 1024 * 1024;
+const MAX_INLINE_MESSAGE_PLAINTEXT_BYTES =
+  Math.floor(RELAY_MAX_FRAME_BYTES / 4) * 3 -
+  RELAY_ENCRYPTED_PAYLOAD_OVERHEAD_BYTES -
+  INLINE_MESSAGE_FRAME_HEADROOM_BYTES;
+
+const MISSING_FILE_MESSAGE_PATTERN =
+  /\bENOENT\b|no such file or directory|was not found in IndexedDB|does not exist|isn't readable|is not readable/i;
+
+function isMissingAttachmentFileError(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current instanceof Error && !seen.has(current)) {
+    seen.add(current);
+    const code = (current as Error & { code?: unknown }).code;
+    if (code === "ENOENT" || current.name === "NotFoundError") return true;
+    if (MISSING_FILE_MESSAGE_PATTERN.test(current.message)) return true;
+    current = current.cause;
+  }
+  return false;
+}
+
+/**
+ * Encodes each image on its own so a failure names the attachment it belongs to. A managed
+ * file that is gone cannot be recreated by retrying, so the error says how to recover.
+ */
+async function encodeComposerImages(
+  encodeImages: DispatchComposerAgentMessageInput["encodeImages"],
+  images: AttachmentMetadata[],
+): Promise<Array<{ data: string; mimeType: string }> | undefined> {
+  if (images.length === 0) return await encodeImages(images);
+  const encoded = await Promise.all(
+    images.map(async (image) => {
+      try {
+        return (await encodeImages([image]))?.[0];
+      } catch (error) {
+        if (!isMissingAttachmentFileError(error)) throw error;
+        const fileName = image.fileName?.trim() || image.id;
+        throw new Error(
+          i18n.t("composer.errors.imageAttachmentMissing", {
+            fileName,
+            defaultValue:
+              "The image '{{fileName}}' is no longer on this device, so the message was not sent. Remove it and attach it again.",
+          }),
+          { cause: error },
+        );
+      }
+    }),
+  );
+  return encoded.flatMap((entry) => (entry ? [entry] : []));
+}
+
+function assertInlineImagesFitRelayFrame(
+  text: string,
+  imagesData: ReadonlyArray<{ data: string; mimeType: string }>,
+): void {
+  let plaintextBytes = new TextEncoder().encode(text).byteLength;
+  for (const image of imagesData) {
+    plaintextBytes += image.data.length + image.mimeType.length;
+  }
+  if (plaintextBytes <= MAX_INLINE_MESSAGE_PLAINTEXT_BYTES) return;
+  throw new Error(
+    i18n.t("composer.errors.inlineImagesTooLargeForHost", {
+      defaultValue:
+        "These images are too large to send to this host in one message. Update Paseo on the host, or send fewer or smaller images.",
+    }),
+  );
+}
+
 async function uploadImagesIfSupported(
   input: Pick<DispatchComposerAgentMessageInput, "client" | "supportsImageUploads">,
   imagesData: Array<{ data: string; mimeType: string }> | undefined,
@@ -399,8 +473,12 @@ export async function dispatchComposerAgentMessage(
   });
   input.submission.begin(input.agentId, userMessage);
   try {
-    const imagesData = await input.encodeImages(wirePayload.images);
+    const imagesData = await encodeComposerImages(input.encodeImages, wirePayload.images);
     const imageUploads = await uploadImagesIfSupported(input, imagesData);
+    if (!imageUploads && imagesData) {
+      // COMPAT(imageUploads): added in v0.5.46, remove after 2027-05-16 with the inline path.
+      assertInlineImagesFitRelayFrame(input.text, imagesData);
+    }
     await outbox.mark({
       serverId: input.serverId,
       id: clientMessageId,

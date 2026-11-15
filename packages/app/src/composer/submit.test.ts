@@ -40,6 +40,8 @@ describe("submitAgentInput", () => {
       setAttachments,
       setSendError,
       setIsProcessing,
+      readCurrentDraft: () => ({ text: "", attachments: [] }),
+      keepFailedSubmission: vi.fn(),
     });
 
     expect(queueMessage).not.toHaveBeenCalled();
@@ -85,6 +87,8 @@ describe("submitAgentInput", () => {
       setAttachments,
       setSendError,
       setIsProcessing,
+      readCurrentDraft: () => ({ text: "  keep me  ", attachments }),
+      keepFailedSubmission: vi.fn(),
     });
 
     expect(queueMessage).not.toHaveBeenCalled();
@@ -126,6 +130,8 @@ describe("submitAgentInput", () => {
         setAttachments,
         setSendError,
         setIsProcessing,
+        readCurrentDraft: () => ({ text: "  queued message  ", attachments: [{ id: "img-1" }] }),
+        keepFailedSubmission: vi.fn(),
       }),
     ).resolves.toBe("queued");
 
@@ -164,6 +170,8 @@ describe("submitAgentInput", () => {
         setAttachments,
         setSendError,
         setIsProcessing: vi.fn(),
+        readCurrentDraft: () => ({ text: "", attachments: [] }),
+        keepFailedSubmission: vi.fn(),
         onSubmitError,
       }),
     ).resolves.toBe("failed");
@@ -201,6 +209,8 @@ describe("submitAgentInput", () => {
         setAttachments,
         setSendError,
         setIsProcessing,
+        readCurrentDraft: () => ({ text: "", attachments: [] }),
+        keepFailedSubmission: vi.fn(),
         onSubmitError,
       }),
     ).resolves.toBe("failed");
@@ -240,6 +250,8 @@ describe("submitAgentInput", () => {
         setAttachments,
         setSendError,
         setIsProcessing,
+        readCurrentDraft: () => ({ text: "", attachments: [] }),
+        keepFailedSubmission: vi.fn(),
       }),
     ).resolves.toBe("submitted");
 
@@ -249,5 +261,137 @@ describe("submitAgentInput", () => {
       attachments: [],
     });
     expect(clearDraft).toHaveBeenCalledWith("sent");
+  });
+
+  function createDraftModel(initial: { text: string; attachments: Array<{ id: string }> }) {
+    const draft = { text: initial.text, attachments: [...initial.attachments] };
+    return {
+      draft,
+      setUserInput: vi.fn((text: string) => {
+        draft.text = text;
+      }),
+      setAttachments: vi.fn((attachments: Array<{ id: string }>) => {
+        draft.attachments = [...attachments];
+      }),
+      readCurrentDraft: () => ({ text: draft.text, attachments: [...draft.attachments] }),
+    };
+  }
+
+  it("keeps text typed during an in-flight send when the send succeeds", async () => {
+    const deferred = createDeferredPromise<void>();
+    const model = createDraftModel({ text: "first", attachments: [] });
+    const clearDraft = vi.fn();
+
+    const submitPromise = submitAgentInput({
+      message: "first",
+      attachments: [],
+      isAgentRunning: false,
+      canSubmit: true,
+      queueMessage: vi.fn(),
+      submitMessage: async () => deferred.promise,
+      clearDraft,
+      setUserInput: model.setUserInput,
+      setAttachments: model.setAttachments,
+      readCurrentDraft: model.readCurrentDraft,
+      keepFailedSubmission: vi.fn(),
+      setSendError: vi.fn(),
+      setIsProcessing: vi.fn(),
+    });
+    expect(model.draft.text).toBe("");
+    model.draft.text = "typed while sending";
+    model.draft.attachments = [{ id: "img-new" }];
+
+    deferred.resolve();
+    await expect(submitPromise).resolves.toBe("submitted");
+
+    expect(clearDraft).not.toHaveBeenCalled();
+    expect(model.draft).toEqual({ text: "typed while sending", attachments: [{ id: "img-new" }] });
+  });
+
+  it("keeps newer input and the failed message when an in-flight send fails", async () => {
+    const deferred = createDeferredPromise<void>();
+    const model = createDraftModel({ text: "first", attachments: [{ id: "img-old" }] });
+    const keepFailedSubmission = vi.fn();
+    const setSendError = vi.fn();
+
+    const submitPromise = submitAgentInput({
+      message: "first",
+      attachments: [{ id: "img-old" }],
+      isAgentRunning: false,
+      canSubmit: true,
+      queueMessage: vi.fn(),
+      submitMessage: async () => deferred.promise,
+      clearDraft: vi.fn(),
+      setUserInput: model.setUserInput,
+      setAttachments: model.setAttachments,
+      readCurrentDraft: model.readCurrentDraft,
+      keepFailedSubmission,
+      setSendError,
+      setIsProcessing: vi.fn(),
+    });
+    model.draft.text = "typed while sending";
+
+    deferred.reject(new Error("Host went away"));
+    await expect(submitPromise).resolves.toBe("failed");
+
+    expect(model.draft).toEqual({ text: "typed while sending", attachments: [] });
+    expect(keepFailedSubmission).toHaveBeenCalledWith({
+      message: "first",
+      attachments: [{ id: "img-old" }],
+    });
+    expect(setSendError).toHaveBeenLastCalledWith("Host went away");
+  });
+
+  it("restores the failed message into an untouched empty draft", async () => {
+    const model = createDraftModel({ text: "first", attachments: [] });
+    const keepFailedSubmission = vi.fn();
+
+    await submitAgentInput({
+      message: "first",
+      attachments: [],
+      isAgentRunning: false,
+      canSubmit: true,
+      queueMessage: vi.fn(),
+      submitMessage: async () => {
+        throw new Error("nope");
+      },
+      clearDraft: vi.fn(),
+      setUserInput: model.setUserInput,
+      setAttachments: model.setAttachments,
+      readCurrentDraft: model.readCurrentDraft,
+      keepFailedSubmission,
+      setSendError: vi.fn(),
+      setIsProcessing: vi.fn(),
+    });
+
+    expect(model.draft.text).toBe("first");
+    expect(keepFailedSubmission).not.toHaveBeenCalled();
+  });
+
+  it("keeps text typed while a queue write is pending", async () => {
+    const deferred = createDeferredPromise<void>();
+    const model = createDraftModel({ text: "queued", attachments: [{ id: "img-q" }] });
+
+    const submitPromise = submitAgentInput({
+      message: "queued",
+      attachments: [{ id: "img-q" }],
+      isAgentRunning: true,
+      canSubmit: true,
+      queueMessage: async () => deferred.promise,
+      submitMessage: vi.fn(),
+      clearDraft: vi.fn(),
+      setUserInput: model.setUserInput,
+      setAttachments: model.setAttachments,
+      readCurrentDraft: model.readCurrentDraft,
+      keepFailedSubmission: vi.fn(),
+      setSendError: vi.fn(),
+      setIsProcessing: vi.fn(),
+    });
+    model.draft.text = "queued and more";
+
+    deferred.resolve();
+    await expect(submitPromise).resolves.toBe("queued");
+
+    expect(model.draft).toEqual({ text: "and more", attachments: [] });
   });
 });

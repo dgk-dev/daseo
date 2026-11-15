@@ -10,6 +10,20 @@ export function shouldAcceptPromptIndexEpoch(
 }
 
 /**
+ * Only a created agent has a prompt index on the host. A draft tab renders the stream with its
+ * draft id (`draft_msg_...`) while it is being created; asking for that id logs "Agent not
+ * found" on the daemon.
+ */
+export function hasPromptIndexAgent(
+  session:
+    | { agents?: ReadonlyMap<string, unknown>; agentDetails?: ReadonlyMap<string, unknown> }
+    | undefined,
+  agentId: string,
+): boolean {
+  return Boolean(session?.agents?.has(agentId) || session?.agentDetails?.has(agentId));
+}
+
+/**
  * Slots further than this from the pointer keep their resting size, so a long rail
  * magnifies a local band instead of swelling the whole column.
  */

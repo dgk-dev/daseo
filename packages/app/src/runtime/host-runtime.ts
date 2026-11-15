@@ -2519,10 +2519,17 @@ export class HostRuntimeStore {
 
     void (async () => {
       const records = await this.composerOutbox.list({ serverId, intent: "dispatch" });
+      // Records are oldest first. A later command for an agent waits until every earlier one
+      // reaches a terminal receipt, so a reconnect cannot deliver them out of order.
+      const agentsWaitingOnEarlierCommand = new Set<string>();
       for (const record of records) {
         if (record.status === "rejected") continue;
+        if (agentsWaitingOnEarlierCommand.has(record.agentId)) continue;
         const drainKey = `outbox:${serverId}:${record.id}`;
-        if (this.queuedAgentDrainInFlight.has(drainKey)) continue;
+        if (this.queuedAgentDrainInFlight.has(drainKey)) {
+          agentsWaitingOnEarlierCommand.add(record.agentId);
+          continue;
+        }
         this.queuedAgentDrainInFlight.add(drainKey);
         const baseSubmission = createMessageSubmissionWriter(serverId);
         try {
@@ -2542,6 +2549,7 @@ export class HostRuntimeStore {
                 lastError,
               });
             }
+            agentsWaitingOnEarlierCommand.add(record.agentId);
             continue;
           }
           if (receipt.status === "rejected") {
@@ -2583,7 +2591,14 @@ export class HostRuntimeStore {
             outbox: this.composerOutbox,
             preserveRejectedOutbox: true,
           });
+          const afterDispatch = (
+            await this.composerOutbox.list({ serverId, agentId: record.agentId })
+          ).find((candidate) => candidate.id === record.id);
+          if (afterDispatch && afterDispatch.status !== "rejected") {
+            agentsWaitingOnEarlierCommand.add(record.agentId);
+          }
         } catch (error) {
+          agentsWaitingOnEarlierCommand.add(record.agentId);
           await this.composerOutbox.mark({
             serverId,
             id: record.id,
@@ -2620,9 +2635,11 @@ export class HostRuntimeStore {
     ) {
       return;
     }
-    this.queuedAgentDrainInFlight.add(drainKey);
     const next = queue[0];
+    // An unresolved head waits for the user; taking the lock here would block every later
+    // drain for this agent until the app restarts.
     if (!next || next.resolution) return;
+    this.queuedAgentDrainInFlight.add(drainKey);
     void sendQueuedComposerMessageNow({
       serverId,
       agentId,

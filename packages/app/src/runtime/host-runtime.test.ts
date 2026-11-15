@@ -2966,6 +2966,44 @@ describe("HostRuntimeStore", () => {
     useSessionStore.getState().clearSession(host.serverId);
   });
 
+  it("drains the queue again once an unresolved head is resolved", async () => {
+    const host = makeHost({ serverId: "srv_unresolved_head_drain" });
+    const fakeClient = new FakeDaemonClient();
+    const store = new HostRuntimeStore();
+    const sessionStore = useSessionStore.getState();
+    sessionStore.initializeSession(host.serverId, fakeClient as unknown as DaemonClient, 1);
+    sessionStore.setQueuedMessages(
+      host.serverId,
+      new Map([
+        [
+          "agent",
+          [
+            {
+              id: "uncertain",
+              text: "needs a decision",
+              attachments: [],
+              resolution: { status: "delivery_unknown" as const },
+            },
+            { id: "next", text: "send after", attachments: [] },
+          ],
+        ],
+      ]),
+    );
+
+    store.drainQueuedAgentMessage(host.serverId, "agent");
+    expect(fakeClient.sentAgentMessages).toEqual([]);
+
+    // The user discards the uncertain head; the next message must drain.
+    sessionStore.setQueuedMessages(
+      host.serverId,
+      new Map([["agent", [{ id: "next", text: "send after", attachments: [] }]]]),
+    );
+    store.drainQueuedAgentMessage(host.serverId, "agent");
+    await fakeClient.waitForSentMessages(1);
+    expect(fakeClient.sentAgentMessages.map(([, text]) => text)).toEqual(["send after"]);
+    useSessionStore.getState().clearSession(host.serverId);
+  });
+
   it("uses legacy GitHub attachments when draining a queue for an old daemon", async () => {
     const host = makeHost({ serverId: "srv_legacy_queue_attachment" });
     const fakeClient = new FakeDaemonClient();
@@ -3189,6 +3227,74 @@ describe("HostRuntimeStore", () => {
         useSessionStore.getState().sessions[host.serverId]?.queuedMessages.get("agent-ambiguous"),
       ).toEqual([]);
     });
+    sessionStore.clearSession(host.serverId);
+  });
+
+  it("does not dispatch a later command for an agent while an earlier one is still in flight", async () => {
+    const host = makeHost({ serverId: "srv_outbox_order" });
+    const fakeClient = new FakeDaemonClient();
+    fakeClient.setConnectionState({ status: "connected" });
+    fakeClient.commandReceiptResponses.push({
+      commandId: "earlier",
+      agentId: "agent-order",
+      status: "in_flight",
+      error: "Provider admission was not confirmed",
+    });
+    const outbox = new ComposerOutboxStore();
+    await outbox.enqueue({
+      id: "earlier",
+      serverId: host.serverId,
+      agentId: "agent-order",
+      text: "first",
+      attachments: [],
+      intent: "dispatch",
+      now: 1,
+    });
+    await outbox.enqueue({
+      id: "later",
+      serverId: host.serverId,
+      agentId: "agent-order",
+      text: "second",
+      attachments: [],
+      intent: "dispatch",
+      now: 2,
+    });
+    await outbox.enqueue({
+      id: "other-agent",
+      serverId: host.serverId,
+      agentId: "agent-other",
+      text: "independent",
+      attachments: [],
+      intent: "dispatch",
+      now: 3,
+    });
+    const store = new HostRuntimeStore({ composerOutbox: outbox });
+    const sessionStore = useSessionStore.getState();
+    sessionStore.initializeSession(host.serverId, fakeClient as unknown as DaemonClient, 1);
+    sessionStore.updateSessionServerInfo(host.serverId, {
+      serverId: host.serverId,
+      hostname: null,
+      version: "0.5.3",
+      features: {
+        canonicalSubmittedPrompts: true,
+        durableCommandReceipts: true,
+        commandReceiptResolution: true,
+      },
+    });
+
+    store.drainComposerOutbox(host.serverId);
+
+    await fakeClient.waitForSentMessages(1);
+    await vi.waitFor(async () => {
+      expect(await outbox.list({ serverId: host.serverId })).toMatchObject([
+        { id: "earlier", status: "in_flight" },
+        { id: "later", status: "pending" },
+      ]);
+    });
+    expect(fakeClient.sentAgentMessages.map(([agentId, text]) => [agentId, text])).toEqual([
+      ["agent-other", "independent"],
+    ]);
+    expect(fakeClient.commandReceiptRequests).not.toContain("later");
     sessionStore.clearSession(host.serverId);
   });
 

@@ -1012,7 +1012,6 @@ interface QueueMessageContext {
   attachments: ComposerAttachment[];
   cwd: string;
   onQueue: ((payload: MessagePayload) => void) | undefined;
-  replaceText: (text: string) => void;
   onMinimizeHeight: () => void;
 }
 
@@ -1020,8 +1019,8 @@ function queueMessageImpl(ctx: QueueMessageContext): void {
   if (!ctx.onQueue) return;
   const trimmed = ctx.value.trim();
   if (!trimmed && ctx.attachments.length === 0) return;
+  // The composer clears the text once the queue write is durable, keeping anything typed since.
   ctx.onQueue({ text: trimmed, attachments: ctx.attachments, cwd: ctx.cwd });
-  ctx.replaceText("");
   ctx.onMinimizeHeight();
 }
 
@@ -1615,11 +1614,10 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
               attachments,
               cwd,
               onQueue,
-              replaceText,
               onMinimizeHeight: minimizeInputHeight,
             })
           : undefined,
-      [attachments, cwd, onQueue, replaceText, minimizeInputHeight, isSubmitOwner],
+      [attachments, cwd, onQueue, minimizeInputHeight, isSubmitOwner],
     );
 
     const handleDefaultSendAction = useCallback(() => {

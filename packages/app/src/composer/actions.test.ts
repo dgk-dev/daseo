@@ -741,6 +741,113 @@ describe("dispatchComposerAgentMessage", () => {
     ).rejects.toBe(transportError);
   });
 
+  it("names a missing image file and tells the user to remove and re-attach it", async () => {
+    const client = createFakeSendClient();
+    const outbox = createFakeOutbox();
+    const missing = { ...imageWithId("att_missing"), fileName: "element-div.png" };
+    const present = imageWithId("att_present");
+    const enoent = Object.assign(
+      new Error("ENOENT: no such file or directory, open '/home/.paseo/att_missing.png'"),
+      { code: "ENOENT" },
+    );
+
+    const failure = await dispatchComposerAgentMessage({
+      serverId: "server",
+      outbox,
+      client,
+      agentId: "agent",
+      text: "look at this",
+      attachments: [
+        { kind: "image", metadata: present },
+        { kind: "image", metadata: missing },
+      ],
+      encodeImages: async (images) => {
+        if (images.some((image) => image.id === missing.id)) {
+          throw new Error(
+            "Failed to read image attachment 'element-div.png'. The message was not sent. " +
+              enoent.message,
+            { cause: enoent },
+          );
+        }
+        return images.map((image) => ({ data: image.id, mimeType: image.mimeType }));
+      },
+      submission: createFakeStream(),
+      clientMessageId: "missing-image",
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe(
+      "The image 'element-div.png' is no longer on this device, so the message was not sent. Remove it and attach it again.",
+    );
+    expect(client.calls).toEqual([]);
+    expect(outbox.records.has("missing-image")).toBe(false);
+  });
+
+  it("keeps other image read errors as they are", async () => {
+    const client = createFakeSendClient();
+    const decodeError = new Error("Failed to read image attachment 'a.png'. Unsupported image");
+
+    await expect(
+      dispatchComposerAgentMessage({
+        serverId: "server",
+        outbox: createFakeOutbox(),
+        client,
+        agentId: "agent",
+        text: "x",
+        attachments: [{ kind: "image", metadata: imageWithId("a") }],
+        encodeImages: async () => {
+          throw decodeError;
+        },
+        submission: createFakeStream(),
+      }),
+    ).rejects.toBe(decodeError);
+  });
+
+  it("refuses inline images that would overflow the relay frame on a host without imageUploads", async () => {
+    const client = createFakeSendClient();
+    const outbox = createFakeOutbox();
+    const bigBase64 = "A".repeat(25 * 1024 * 1024);
+
+    const failure = await dispatchComposerAgentMessage({
+      serverId: "server",
+      outbox,
+      client,
+      agentId: "agent",
+      text: "two photos",
+      attachments: [
+        { kind: "image", metadata: imageWithId("p1") },
+        { kind: "image", metadata: imageWithId("p2") },
+      ],
+      encodeImages: async (images) =>
+        images.map(() => ({ data: bigBase64.slice(0, 13 * 1024 * 1024), mimeType: "image/jpeg" })),
+      submission: createFakeStream(),
+      clientMessageId: "too-big-inline",
+    }).catch((error: unknown) => error);
+
+    expect((failure as Error).message).toBe(
+      "These images are too large to send to this host in one message. Update Paseo on the host, or send fewer or smaller images.",
+    );
+    expect(client.calls).toEqual([]);
+    expect(outbox.records.has("too-big-inline")).toBe(false);
+  });
+
+  it("sends large images inline when they fit the relay frame on a host without imageUploads", async () => {
+    const client = createFakeSendClient();
+
+    await dispatchComposerAgentMessage({
+      serverId: "server",
+      outbox: createFakeOutbox(),
+      client,
+      agentId: "agent",
+      text: "one photo",
+      attachments: [{ kind: "image", metadata: imageWithId("p1") }],
+      encodeImages: async () => [{ data: "A".repeat(10 * 1024 * 1024), mimeType: "image/jpeg" }],
+      submission: createFakeStream(),
+    });
+
+    expect(client.calls).toHaveLength(1);
+  });
+
   it("sends images through the chunked upload when the host supports imageUploads", async () => {
     const client = createFakeSendClient();
     const uploads: Array<{ fileName: string; mimeType: string; bytes: Uint8Array }> = [];
