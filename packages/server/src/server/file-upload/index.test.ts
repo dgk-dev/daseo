@@ -1,4 +1,13 @@
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,7 +18,12 @@ import {
   FileTransferOpcode,
   type FileTransferFrame,
 } from "@getpaseo/protocol/binary-frames/index";
-import { FileUploadStore } from "./index.js";
+import {
+  FileUploadStore,
+  markUploadsAdmitted,
+  sweepAbandonedUploads,
+  UPLOAD_ADMITTED_MARKER,
+} from "./index.js";
 
 const tempDirs: string[] = [];
 
@@ -244,6 +258,73 @@ describe("file uploads", () => {
       },
     });
     expect(readFileSync(path, "utf8")).toBe("hello world");
+  });
+});
+
+describe("stale and abandoned uploads", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    for (const dir of tempDirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("answers the next frame of an expired transfer with an error instead of silence", async () => {
+    vi.useFakeTimers();
+    const paseoHome = makePaseoHome();
+    const uploads = new FileUploadStore({ paseoHome, staleUploadTimeoutMs: 50 });
+    uploads.beginUpload({
+      type: "file.upload.request",
+      fileName: "notes.txt",
+      mimeType: "text/plain",
+      size: 11,
+      modifiedAt: "2026-05-02T00:00:00.000Z",
+      requestId: "req-stalled",
+    });
+    await expect(uploads.receiveFrame(uploadBegins("req-stalled"))).resolves.toBeNull();
+    await expect(uploads.receiveFrame(uploadChunk("req-stalled", "hello"))).resolves.toBeNull();
+
+    await vi.advanceTimersByTimeAsync(60);
+
+    const response = await uploads.receiveFrame(uploadChunk("req-stalled", " world"));
+    expect(response).toMatchObject({
+      type: "file.upload.response",
+      payload: { requestId: "req-stalled", file: null },
+    });
+    expect(response?.payload.error).toMatch(/Send it again/);
+    expect(existsSync(join(paseoHome, "uploads", "upload_req-stalled"))).toBe(false);
+    // One answer per expired transfer; the rest of its frames are dropped.
+    await expect(uploads.receiveFrame(uploadEnds("req-stalled"))).resolves.toBeNull();
+  });
+
+  it("sweeps unadmitted uploads older than the age limit and keeps admitted or recent ones", async () => {
+    const paseoHome = makePaseoHome();
+    const now = Date.now();
+    const old = (now - 8 * 24 * 60 * 60 * 1000) / 1000;
+    for (const id of ["upload_old", "upload_old_admitted", "upload_recent"]) {
+      mkdirSync(join(paseoHome, "uploads", id), { recursive: true });
+      writeFileSync(join(paseoHome, "uploads", id, "file.bin"), "x");
+    }
+    await markUploadsAdmitted({ paseoHome, uploadIds: ["upload_old_admitted", "../escape"] });
+    for (const id of ["upload_old", "upload_old_admitted"]) {
+      utimesSync(join(paseoHome, "uploads", id, "file.bin"), old, old);
+      utimesSync(join(paseoHome, "uploads", id), old, old);
+    }
+
+    const { removed } = await sweepAbandonedUploads({ paseoHome, now });
+
+    expect(removed).toEqual(["upload_old"]);
+    expect(existsSync(join(paseoHome, "uploads", "upload_old"))).toBe(false);
+    expect(
+      existsSync(join(paseoHome, "uploads", "upload_old_admitted", UPLOAD_ADMITTED_MARKER)),
+    ).toBe(true);
+    expect(existsSync(join(paseoHome, "uploads", "upload_recent"))).toBe(true);
+  });
+
+  it("sweeping a home without uploads does nothing", async () => {
+    await expect(sweepAbandonedUploads({ paseoHome: makePaseoHome() })).resolves.toEqual({
+      removed: [],
+    });
   });
 });
 

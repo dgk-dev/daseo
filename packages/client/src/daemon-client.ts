@@ -1702,6 +1702,21 @@ export class DaemonClient {
   }
 
   /**
+   * Upload frames always throw on failure, even with `suppressSendErrors`: a dropped frame
+   * corrupts the file, and the caller is waiting for the upload's response.
+   */
+  private sendUploadFrame(frame: Uint8Array): void {
+    if (!this.transport || this.connectionState.status !== "connected") {
+      throw new Error(`Transport not connected (status: ${this.connectionState.status})`);
+    }
+    this.traceInstant("paseo.ws.message.outbound", {
+      envelopeType: "binary",
+      messageType: "binary",
+    });
+    this.sendTransportFrame(frame);
+  }
+
+  /**
    * Send a session message for RPC methods that create waiters.
    * If the connection is still being established ("connecting"), the message
    * is queued and will be sent once connected (or rejected after timeout).
@@ -4677,37 +4692,49 @@ export class DaemonClient {
       options: { skipQueue: true },
     });
 
-    this.sendBinaryFrame(
-      encodeFileTransferFrame({
-        opcode: FileTransferOpcode.FileBegin,
-        requestId: resolvedRequestId,
-        metadata: {
-          mime: input.mimeType,
-          size: bytes.byteLength,
-          encoding: "binary",
-          modifiedAt,
-          fileName: input.fileName,
-        },
-      }),
-    );
-
-    const chunkSize = input.chunkSize ?? 1024 * 1024;
-    for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
-      this.sendBinaryFrame(
+    try {
+      this.sendUploadFrame(
         encodeFileTransferFrame({
-          opcode: FileTransferOpcode.FileChunk,
+          opcode: FileTransferOpcode.FileBegin,
           requestId: resolvedRequestId,
-          payload: bytes.subarray(offset, Math.min(offset + chunkSize, bytes.byteLength)),
+          metadata: {
+            mime: input.mimeType,
+            size: bytes.byteLength,
+            encoding: "binary",
+            modifiedAt,
+            fileName: input.fileName,
+          },
         }),
       );
-    }
 
-    this.sendBinaryFrame(
-      encodeFileTransferFrame({
-        opcode: FileTransferOpcode.FileEnd,
-        requestId: resolvedRequestId,
-      }),
-    );
+      const chunkSize = input.chunkSize ?? 1024 * 1024;
+      for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
+        this.sendUploadFrame(
+          encodeFileTransferFrame({
+            opcode: FileTransferOpcode.FileChunk,
+            requestId: resolvedRequestId,
+            payload: bytes.subarray(offset, Math.min(offset + chunkSize, bytes.byteLength)),
+          }),
+        );
+      }
+
+      this.sendUploadFrame(
+        encodeFileTransferFrame({
+          opcode: FileTransferOpcode.FileEnd,
+          requestId: resolvedRequestId,
+        }),
+      );
+    } catch (error) {
+      // A lost frame means the host can never complete this file: fail now and drop the
+      // waiter instead of letting it run into the RPC timeout.
+      const reason = error instanceof Error ? error.message : String(error);
+      const failure = new Error(`Upload of '${input.fileName}' failed: ${reason}`, {
+        cause: error,
+      });
+      this.rejectWaitersForRequestId(resolvedRequestId, failure);
+      void responsePromise.catch(() => undefined);
+      throw failure;
+    }
 
     return responsePromise;
   }

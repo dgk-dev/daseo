@@ -1,9 +1,9 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
-import { mergeInlineImages, readImageUploads } from "./image-uploads.js";
+import { consumeImageUploads, mergeInlineImages, readImageUploads } from "./image-uploads.js";
 
 describe("readImageUploads", () => {
   let paseoHome: string;
@@ -47,6 +47,35 @@ describe("readImageUploads", () => {
         uploads: [{ uploadId: "upload_gone", mimeType: "image/png" }],
       }),
     ).rejects.toThrow("no longer on the host");
+  });
+
+  test("consuming uploads returns their bytes and removes the upload directories", async () => {
+    await mkdir(join(paseoHome, "uploads", "upload_one"), { recursive: true });
+    await writeFile(join(paseoHome, "uploads", "upload_one", "image-1.png"), "hello");
+
+    const images = await consumeImageUploads({
+      paseoHome,
+      uploads: [{ uploadId: "upload_one", mimeType: "image/png" }],
+    });
+
+    expect(images).toEqual([{ data: "aGVsbG8=", mimeType: "image/png" }]);
+    await expect(access(join(paseoHome, "uploads", "upload_one"))).rejects.toThrow();
+  });
+
+  test("a failed consume removes nothing", async () => {
+    await mkdir(join(paseoHome, "uploads", "upload_kept"), { recursive: true });
+    await writeFile(join(paseoHome, "uploads", "upload_kept", "image-1.png"), "hello");
+
+    await expect(
+      consumeImageUploads({
+        paseoHome,
+        uploads: [
+          { uploadId: "upload_kept", mimeType: "image/png" },
+          { uploadId: "upload_gone", mimeType: "image/png" },
+        ],
+      }),
+    ).rejects.toThrow("no longer on the host");
+    await expect(access(join(paseoHome, "uploads", "upload_kept"))).resolves.toBeUndefined();
   });
 
   test("appends uploaded images after inline ones", () => {

@@ -2326,6 +2326,56 @@ test("uploadFile waits for a connection that is still opening before sending fra
   });
 });
 
+test("uploadFile fails at once when a binary frame cannot be sent, even with suppressed send errors", async () => {
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+  const send = mock.transport.send;
+  let binaryFrames = 0;
+  mock.transport.send = (data) => {
+    if (typeof data !== "string") {
+      binaryFrames += 1;
+      if (binaryFrames === 2) {
+        throw new Error("socket closed");
+      }
+    }
+    send(data);
+  };
+
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger,
+    reconnect: { enabled: false },
+    suppressSendErrors: true,
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const outcome = await Promise.race([
+    client
+      .uploadFile({
+        fileName: "photo.jpg",
+        mimeType: "image/jpeg",
+        bytes: new TextEncoder().encode("jpeg bytes"),
+        requestId: "req-lost-frame",
+        chunkSize: 4,
+      })
+      .then(
+        () => "resolved",
+        (error: Error) => error.message,
+      ),
+    new Promise((resolve) => setTimeout(() => resolve("still waiting"), 50)),
+  ]);
+
+  expect(outcome).toBe("Upload of 'photo.jpg' failed: socket closed");
+  // The JSON request plus the frame that went out before the failure; nothing after it.
+  expect(mock.sent).toHaveLength(2);
+});
+
 test("uploadFile sends metadata request and file bytes as binary chunks", async () => {
   const logger = createMockLogger();
   const mock = createMockTransport();

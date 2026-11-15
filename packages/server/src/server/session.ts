@@ -131,7 +131,8 @@ import {
 } from "./agent/timeline-projection.js";
 import { buildAgentForkContextAttachment } from "./agent/activity-curator.js";
 import { buildAgentPrompt } from "./agent/prompt-attachments.js";
-import { mergeInlineImages, readImageUploads } from "./file-upload/image-uploads.js";
+import { consumeImageUploads, mergeInlineImages } from "./file-upload/image-uploads.js";
+import { markUploadsAdmitted } from "./file-upload/index.js";
 import type { StructuredGenerationDaemonConfig } from "./agent/structured-generation-providers.js";
 import {
   getAgentStreamEventTurnId,
@@ -293,6 +294,22 @@ type ProviderSubagentManagerEvent = Extract<
 const LEGACY_PROVIDER_IDS = new Set(["claude", "codex", "opencode"]);
 const MIN_VERSION_ALL_PROVIDERS = "0.1.45";
 const MIN_VERSION_EXPLICIT_WORKSPACE_RECOVERY = "0.1.105";
+/**
+ * An "Upload file" attachment reaches the agent as a path it may read on any later turn, so the
+ * upload is marked to survive the abandoned-upload sweep.
+ */
+async function markUploadedFileAttachmentsAdmitted(
+  paseoHome: string,
+  attachments: readonly AgentAttachment[] | undefined,
+): Promise<void> {
+  const uploadIds = (attachments ?? []).flatMap((attachment) =>
+    attachment.type === "uploaded_file" ? [attachment.id] : [],
+  );
+  if (uploadIds.length > 0) {
+    await markUploadsAdmitted({ paseoHome, uploadIds });
+  }
+}
+
 function errorToFriendlyMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
@@ -3562,8 +3579,9 @@ export class Session {
       // before any worktree exists, so a missing upload fails cleanly.
       const resolvedImages = mergeInlineImages(
         images,
-        await readImageUploads({ paseoHome: this.paseoHome, uploads: msg.imageUploads }),
+        await consumeImageUploads({ paseoHome: this.paseoHome, uploads: msg.imageUploads }),
       );
+      await markUploadedFileAttachmentsAdmitted(this.paseoHome, attachments);
       const trimmedPrompt = initialPrompt?.trim();
       const { provisionalTitle } = resolveCreateAgentTitles({
         configTitle: config.title,
@@ -7727,7 +7745,7 @@ export class Session {
       try {
         images = mergeInlineImages(
           msg.images,
-          await readImageUploads({ paseoHome: this.paseoHome, uploads: msg.imageUploads }),
+          await consumeImageUploads({ paseoHome: this.paseoHome, uploads: msg.imageUploads }),
         );
       } catch (error) {
         this.emit({
@@ -7745,6 +7763,8 @@ export class Session {
         return;
       }
     }
+
+    await markUploadedFileAttachmentsAdmitted(this.paseoHome, msg.attachments);
 
     const agentId = resolved.agentId;
     const commandId = msg.commandId;

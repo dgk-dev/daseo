@@ -1,4 +1,9 @@
 import { assertImageSourceBudget } from "@/attachments/image-budget";
+import {
+  getRasterImageMimeTypeFromPath,
+  resolveAgentImageMimeType,
+  resolveRasterImageMimeType,
+} from "@/attachments/file-types";
 
 export type PickedImageSource = { kind: "file_uri"; uri: string } | { kind: "blob"; blob: Blob };
 
@@ -18,21 +23,17 @@ export interface ExpoImagePickerAssetLike {
   height?: number | null;
 }
 
-export type ExportPickedImageAsPng = (uri: string) => Promise<string>;
-
-interface SupportedPickedImageFormat {
-  mimeType: "image/jpeg" | "image/png";
-  extension: "jpg" | "png";
+interface PickedImageFormat {
+  mimeType: string;
+  /** Extension to give the file name when the picker's name disagrees with the content. */
+  extension: string | null;
 }
 
-const JPEG_FORMAT: SupportedPickedImageFormat = {
-  mimeType: "image/jpeg",
-  extension: "jpg",
-};
-
-const PNG_FORMAT: SupportedPickedImageFormat = {
-  mimeType: "image/png",
-  extension: "png",
+const AGENT_FORMAT_BY_MIME_TYPE: Record<string, PickedImageFormat> = {
+  "image/jpeg": { mimeType: "image/jpeg", extension: "jpg" },
+  "image/png": { mimeType: "image/png", extension: "png" },
+  "image/gif": { mimeType: "image/gif", extension: "gif" },
+  "image/webp": { mimeType: "image/webp", extension: "webp" },
 };
 
 function extensionFromPath(path: string | null | undefined): string | null {
@@ -40,84 +41,66 @@ function extensionFromPath(path: string | null | undefined): string | null {
   return match?.[1]?.toLowerCase() ?? null;
 }
 
-function supportedFormatForExtension(extension: string | null): SupportedPickedImageFormat | null {
-  if (extension === "jpg" || extension === "jpeg") {
-    return JPEG_FORMAT;
-  }
-  if (extension === "png") {
-    return PNG_FORMAT;
-  }
-  return null;
+function formatForMimeType(mimeType: string | null): PickedImageFormat | null {
+  if (!mimeType) return null;
+  return AGENT_FORMAT_BY_MIME_TYPE[mimeType] ?? { mimeType, extension: null };
 }
 
-function supportedFormatForMimeType(
-  mimeType: string | null | undefined,
-): SupportedPickedImageFormat | null {
-  const normalizedMimeType = mimeType?.toLowerCase();
-  if (normalizedMimeType === "image/jpeg" || normalizedMimeType === "image/jpg") {
-    return JPEG_FORMAT;
-  }
-  if (normalizedMimeType === "image/png") {
-    return PNG_FORMAT;
-  }
-  return null;
-}
-
-function pickedAssetSupportedFormat(
-  asset: ExpoImagePickerAssetLike,
-): SupportedPickedImageFormat | null {
+/**
+ * The content type of a picked file. The URI extension names the bytes Android actually
+ * handed over, so a raster extension there wins (a ".heic" URI labelled image/jpeg is HEIC);
+ * otherwise the picker's MIME metadata, then the file name.
+ */
+function pickedAssetFormat(asset: ExpoImagePickerAssetLike): PickedImageFormat | null {
   const uriExtension = extensionFromPath(asset.uri);
-  const uriFormat = supportedFormatForExtension(uriExtension);
-  if (uriExtension && !uriFormat) {
-    return null;
+  const uriMimeType = uriExtension ? getRasterImageMimeTypeFromPath(`.${uriExtension}`) : null;
+  if (uriMimeType && !resolveAgentImageMimeType(uriMimeType)) {
+    return formatForMimeType(uriMimeType);
   }
-
   return (
-    supportedFormatForMimeType(asset.mimeType) ??
-    supportedFormatForExtension(extensionFromPath(asset.fileName)) ??
-    uriFormat
+    formatForMimeType(resolveRasterImageMimeType({ mimeType: asset.mimeType })) ??
+    formatForMimeType(resolveRasterImageMimeType({ path: asset.fileName })) ??
+    formatForMimeType(uriMimeType)
   );
 }
 
 function replaceFileExtension(
   fileName: string | null | undefined,
-  extension: SupportedPickedImageFormat["extension"],
+  extension: string | null,
 ): string | null {
   if (!fileName) {
     return null;
   }
-
+  if (!extension) {
+    return fileName;
+  }
   return fileName.replace(/\.[^./\\]+$/, "") + `.${extension}`;
 }
 
-export async function normalizePickedImageAssetsWith(
+/**
+ * Native picker and paste intake. Nothing is decoded here: the attachment service reads the
+ * pixel size from the stored file's header and converts HEIC, HEIF, AVIF, BMP and TIFF to JPEG
+ * when the image is attached. GIF and WebP stay as they are (the agent takes them; a GIF keeps
+ * its animation).
+ */
+export async function normalizePickedImageAssets(
   assets: readonly ExpoImagePickerAssetLike[],
-  exportAsPng: ExportPickedImageAsPng,
 ): Promise<PickedImageAttachmentInput[]> {
-  return await Promise.all(
-    assets.map(async (asset) => {
-      assertImageSourceBudget({
-        byteSize: asset.file?.size ?? asset.fileSize,
-        width: asset.width,
-        height: asset.height,
-        label: asset.fileName,
-      });
-      const supportedFormat = pickedAssetSupportedFormat(asset);
-      if (supportedFormat) {
-        return {
-          source: { kind: "file_uri", uri: asset.uri },
-          mimeType: supportedFormat.mimeType,
-          fileName: replaceFileExtension(asset.fileName, supportedFormat.extension),
-        };
-      }
-
-      const convertedUri = await exportAsPng(asset.uri);
-
-      return {
-        source: { kind: "file_uri", uri: convertedUri },
-        mimeType: PNG_FORMAT.mimeType,
-        fileName: replaceFileExtension(asset.fileName, PNG_FORMAT.extension),
-      };
-    }),
-  );
+  return assets.map((asset) => {
+    assertImageSourceBudget({
+      byteSize: asset.file?.size ?? asset.fileSize,
+      width: asset.width,
+      height: asset.height,
+      label: asset.fileName,
+    });
+    const format = pickedAssetFormat(asset);
+    if (!format) {
+      throw new Error(`Unsupported image type for '${asset.fileName ?? asset.uri}'.`);
+    }
+    return {
+      source: { kind: "file_uri", uri: asset.uri },
+      mimeType: format.mimeType,
+      fileName: replaceFileExtension(asset.fileName, format.extension),
+    };
+  });
 }

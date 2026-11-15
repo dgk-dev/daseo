@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, AppState } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { File } from "expo-file-system";
@@ -24,6 +24,17 @@ interface UseImageAttachmentPickerOptions {
 
 interface UseImageAttachmentPickerResult {
   pickImages: () => Promise<PickedImageAttachmentInput[] | null>;
+  /**
+   * True from the moment a pick starts (permission, picker launch, reading oversized photos)
+   * until it settles, and for as long as any `withSelectionPending` work runs. The composer
+   * blocks send while it is true so a photo still being read is not left out of the message.
+   */
+  isProcessingSelection: boolean;
+  /**
+   * Keeps `isProcessingSelection` true while `work` runs. Wrap the pick together with the
+   * persistence of its result so the flag covers the whole selection.
+   */
+  withSelectionPending: <T>(work: () => Promise<T>) => Promise<T>;
 }
 
 const MAX_OVERSIZED_FILE_BYTES = 50 * 1024 * 1024;
@@ -62,6 +73,7 @@ export function useImageAttachmentPicker(
   const { t } = useTranslation();
   const [mediaPermission, requestMediaPermission] = ImagePicker.useMediaLibraryPermissions();
   const phaseRef = useRef<PickPhase>("idle");
+  const [pendingSelections, setPendingSelections] = useState(0);
   const activeSinceRef = useRef<number>(Date.now());
   const onOversizedFilesRef = useRef(options.onOversizedFiles);
   onOversizedFilesRef.current = options.onOversizedFiles;
@@ -121,7 +133,16 @@ export function useImageAttachmentPicker(
     [],
   );
 
-  const pickImages = useCallback(async () => {
+  const withSelectionPending = useCallback(async <T>(work: () => Promise<T>): Promise<T> => {
+    setPendingSelections((pending) => pending + 1);
+    try {
+      return await work();
+    } finally {
+      setPendingSelections((pending) => Math.max(0, pending - 1));
+    }
+  }, []);
+
+  const runPick = useCallback(async () => {
     if (phaseRef.current !== "idle") {
       const stale =
         phaseRef.current === "launching" &&
@@ -179,5 +200,14 @@ export function useImageAttachmentPicker(
     }
   }, [ensurePermission, normalizeAssets, t]);
 
-  return { pickImages };
+  const pickImages = useCallback(
+    () => withSelectionPending(runPick),
+    [runPick, withSelectionPending],
+  );
+
+  return {
+    pickImages,
+    isProcessingSelection: pendingSelections > 0,
+    withSelectionPending,
+  };
 }

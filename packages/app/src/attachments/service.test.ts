@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AttachmentMetadata, AttachmentStore, SaveAttachmentInput } from "@/attachments/types";
 import { __setAttachmentStoreForTests } from "./store";
 import {
@@ -53,9 +53,54 @@ function createRecordingStore(): AttachmentStore & {
   };
 }
 
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+/** A store that keeps real bytes, for paths that decode what they stored. */
+function createBytesStore(): AttachmentStore & { deletedIds: string[] } {
+  const bytesById = new Map<string, Uint8Array>();
+  const deletedIds: string[] = [];
+  let next = 0;
+  return {
+    storageType: "web-indexeddb",
+    deletedIds,
+    async save(input) {
+      const id = input.id ?? `saved_${(next += 1)}`;
+      let bytes: Uint8Array;
+      if (input.source.kind === "bytes") bytes = input.source.bytes;
+      else if (input.source.kind === "blob")
+        bytes = new Uint8Array(await input.source.blob.arrayBuffer());
+      else throw new Error("unsupported source in test");
+      bytesById.set(id, bytes);
+      return createAttachment({
+        id,
+        storageKey: id,
+        mimeType: input.mimeType,
+        fileName: input.fileName,
+        byteSize: bytes.byteLength,
+      });
+    },
+    async encodeBase64({ attachment }) {
+      return bytesToBase64(bytesById.get(attachment.id) ?? new Uint8Array());
+    },
+    async resolvePreviewUrl({ attachment }) {
+      return `blob:${attachment.id}`;
+    },
+    async delete({ attachment }) {
+      deletedIds.push(attachment.id);
+      bytesById.delete(attachment.id);
+    },
+    async garbageCollect() {},
+  };
+}
+
 describe("attachment service", () => {
   afterEach(() => {
     __setAttachmentStoreForTests(null);
+    vi.unstubAllGlobals();
   });
 
   it("persists raw bytes without requiring a base64 wrapper", async () => {
@@ -144,6 +189,59 @@ describe("attachment service", () => {
         }),
       ]),
     ).rejects.toThrow("Unsupported image format 'image/heic'. Use PNG, JPEG, GIF, or WebP.");
+  });
+
+  it("refuses at attach time an image format this runtime cannot convert, instead of failing at send", async () => {
+    const store = createBytesStore();
+    __setAttachmentStoreForTests(store);
+    vi.stubGlobal("createImageBitmap", undefined);
+
+    await expect(
+      persistAttachmentFromBytes({
+        id: "att_heic",
+        bytes: new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63]),
+        mimeType: "image/heic",
+        fileName: "camera.heic",
+      }),
+    ).rejects.toThrow("camera.heic is a HEIC image, which this device can't convert");
+    expect(store.deletedIds).toEqual(["att_heic"]);
+  });
+
+  it("converts a decodable BMP to JPEG when it is attached", async () => {
+    const store = createBytesStore();
+    __setAttachmentStoreForTests(store);
+    const bitmap = { width: 2, height: 1, close: vi.fn() };
+    vi.stubGlobal(
+      "createImageBitmap",
+      vi.fn(async () => bitmap),
+    );
+    vi.stubGlobal(
+      "OffscreenCanvas",
+      class {
+        getContext() {
+          return { fillStyle: "", fillRect: vi.fn(), drawImage: vi.fn() };
+        }
+        async convertToBlob() {
+          return new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xd9])], { type: "image/jpeg" });
+        }
+      },
+    );
+    const bmp = new Uint8Array(30);
+    bmp.set([0x42, 0x4d]);
+    new DataView(bmp.buffer).setUint32(14, 40, true);
+    new DataView(bmp.buffer).setInt32(18, 2, true);
+    new DataView(bmp.buffer).setInt32(22, 1, true);
+
+    const attachment = await persistAttachmentFromBytes({
+      id: "att_bmp",
+      bytes: bmp,
+      mimeType: "image/bmp",
+      fileName: "diagram.bmp",
+    });
+
+    expect(attachment).toMatchObject({ mimeType: "image/jpeg", fileName: "diagram.jpg" });
+    expect(store.deletedIds).toEqual(["att_bmp"]);
+    expect(bitmap.close).toHaveBeenCalled();
   });
 
   it("does not collect an attachment persisted while garbage collection is starting", async () => {

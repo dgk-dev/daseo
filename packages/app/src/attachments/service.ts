@@ -1,7 +1,11 @@
 import { collectRetainedAttachmentIds } from "@/attachments/gc-retention";
 import { getAttachmentStore } from "@/attachments/store";
 import type { AttachmentMetadata, SaveAttachmentInput } from "@/attachments/types";
-import { encodeImageAttachmentForSend } from "@/attachments/image-send-encoder";
+import {
+  encodeImageAttachmentForSend,
+  findAnimatedGifsSentAsStill,
+  prepareImageAttachmentForAgent,
+} from "@/attachments/image-send-encoder";
 import { assertImageSourceBudget, estimateDataUrlBytes } from "@/attachments/image-budget";
 
 const activePersistence = new Set<Promise<AttachmentMetadata>>();
@@ -32,11 +36,15 @@ async function persistAttachment(input: SaveAttachmentInput): Promise<Attachment
   await waitForPersistenceBarrier();
   const pending = (async () => {
     const store = await getAttachmentStore();
-    const attachment = await store.save(input);
+    const saved = await store.save(input);
+    let attachment: AttachmentMetadata;
     try {
-      assertImageSourceBudget({ byteSize: attachment.byteSize, label: attachment.fileName });
+      assertImageSourceBudget({ byteSize: saved.byteSize, label: saved.fileName });
+      // Pixel check from the header and conversion of formats the agent does not take, so an
+      // attached image never fails later at send.
+      attachment = await prepareImageAttachmentForAgent({ attachment: saved, store });
     } catch (error) {
-      await store.delete({ attachment }).catch(() => undefined);
+      await store.delete({ attachment: saved }).catch(() => undefined);
       throw error;
     }
     if (pendingGarbageCollections > 0) {
@@ -133,6 +141,17 @@ export async function encodeAttachmentsForSend(
       }
     }),
   );
+}
+
+/**
+ * Image attachments that will lose their animation at send (an animated GIF over the send
+ * limit goes out as its first frame). Empty where images are sent as they are.
+ */
+export async function findAttachmentsSentAsStill(
+  attachments: readonly AttachmentMetadata[] | undefined,
+): Promise<AttachmentMetadata[]> {
+  if (!attachments || attachments.length === 0) return [];
+  return await findAnimatedGifsSentAsStill(attachments);
 }
 
 export async function resolveAttachmentPreviewUrl(attachment: AttachmentMetadata): Promise<string> {
