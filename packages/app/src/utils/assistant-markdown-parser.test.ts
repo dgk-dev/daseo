@@ -143,3 +143,26 @@ describe("createAssistantMarkdownParser", () => {
     expect(parser.renderInline("[unfinished")).toBe("[unfinished");
   });
 });
+
+// Upstream #8485 cases: a GFM table written on the line right after prose.
+describe("tables directly below prose", () => {
+  it.each([
+    ["a paragraph", "**Notes**\n| Item | Detail |\n| --- | --- |\n| A | one |\n| B | two |"],
+    ["a quote", "> Notes\n> | Item |\n> | --- |\n> | A |"],
+    ["a list item", "- Notes\n  | Item |\n  | --- |\n  | A |\n- Next"],
+    ["a quoted list item", "> - Notes\n>   | Item |\n>   | --- |\n>   | A |"],
+    ["a quote inside a list item", "- > Notes\n  > | Item |\n  > | --- |\n  > | A |"],
+    ["aligned columns without outer pipes", "Notes\nItem | Detail\n:--- | ---:\nA | one"],
+    ["CRLF lines", "Notes\r\n| Item |\r\n| --- |\r\n| A |"],
+    ["CR lines", "Notes\r| Item |\r| --- |\r| A |"],
+  ])("parses a table directly below %s", (_name, source) => {
+    for (const streaming of [false, true]) {
+      const types = createAssistantMarkdownParser({ streaming })
+        .parse(source, {})
+        .map((token) => token.type);
+      expect(types).toContain("paragraph_open");
+      expect(types).toContain("table_open");
+      expect(types.indexOf("paragraph_open")).toBeLessThan(types.indexOf("table_open"));
+    }
+  });
+});
