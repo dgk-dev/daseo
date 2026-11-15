@@ -1,7 +1,9 @@
+import { type EventEmitter, once } from "node:events";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import http from "node:http";
 import net from "node:net";
+import type { Duplex } from "node:stream";
 import express from "express";
 import { describe, expect, it } from "vitest";
 import pino from "pino";
@@ -556,4 +558,262 @@ describe("service proxy forwarded headers", () => {
       await fixture.close();
     }
   });
+});
+
+interface ProxiedServiceFixture {
+  daemonPort: number;
+  daemon: http.Server;
+  hostname: string;
+  close(): Promise<void>;
+}
+
+/**
+ * Runs the given workspace service behind a real daemon listener that serves the
+ * service proxy for both HTTP and upgrades.
+ */
+async function startProxiedService(
+  upstream: http.Server,
+  options: { logger?: pino.Logger } = {},
+): Promise<ProxiedServiceFixture> {
+  const proxyLogger = options.logger ?? logger;
+  // Upgraded sockets keep the server alive; close() alone would hang.
+  const sockets = new Set<net.Socket>();
+  function trackConnections(server: http.Server) {
+    server.on("connection", (socket: net.Socket) => {
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+    });
+  }
+  trackConnections(upstream);
+  await new Promise<void>((resolve, reject) => {
+    upstream.once("error", reject);
+    upstream.listen(0, "127.0.0.1", resolve);
+  });
+  const upstreamPort = (upstream.address() as net.AddressInfo).port;
+
+  const serviceProxy = createServiceProxySubsystem({ logger: proxyLogger });
+  const route = serviceProxy.registerWorkspaceService({
+    workspaceId: "workspace-a",
+    projectSlug: "repo",
+    branchName: "feature",
+    scriptName: "api",
+    port: upstreamPort,
+  });
+
+  const daemonPort = await findFreePort();
+  const app = express();
+  app.use(serviceProxy.middleware());
+  app.use((_req, res) => {
+    res.status(404).send("404 Not Found");
+  });
+  const daemon = http.createServer(app);
+  trackConnections(daemon);
+  daemon.on("upgrade", serviceProxy.upgradeHandler({ passthroughUnknown: false }));
+  await new Promise<void>((resolve) => daemon.listen(daemonPort, "127.0.0.1", resolve));
+
+  return {
+    daemonPort,
+    daemon,
+    hostname: route.hostname,
+    async close() {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => daemon.close(() => resolve()));
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    },
+  };
+}
+
+function closed(emitter: EventEmitter): Promise<void> {
+  return new Promise((resolve) => {
+    emitter.once("close", () => resolve());
+  });
+}
+
+async function within<T>(promise: Promise<T>, ms: number, failure: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`${failure} after ${ms}ms`)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function requestThroughProxy(
+  fixture: ProxiedServiceFixture,
+  requestPath: string,
+): http.ClientRequest {
+  return http.get({
+    hostname: "127.0.0.1",
+    port: fixture.daemonPort,
+    path: requestPath,
+    headers: { host: fixture.hostname },
+  });
+}
+
+const STRAY_WARNING_GRACE_MS = 100;
+
+function createUpgradeUpstream(onUpgrade: (socket: Duplex) => void): http.Server {
+  const upstream = http.createServer();
+  upstream.on("upgrade", (_req, socket) => {
+    socket.on("error", () => socket.destroy());
+    socket.on("end", () => socket.end());
+    socket.write(
+      "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+    );
+    onUpgrade(socket);
+  });
+  return upstream;
+}
+
+function openUpgradeThroughProxy(fixture: ProxiedServiceFixture): Promise<net.Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect({ host: "127.0.0.1", port: fixture.daemonPort }, () => {
+      const lines = [
+        "GET /ws HTTP/1.1",
+        `Host: ${fixture.hostname}`,
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        "",
+        "",
+      ];
+      socket.write(lines.join("\r\n"));
+    });
+    let raw = "";
+    socket.on("data", (chunk: Buffer) => {
+      raw += chunk.toString();
+      if (raw.includes("\r\n\r\n")) resolve(socket);
+    });
+    socket.on("close", () => reject(new Error("upgrade closed before the 101 arrived")));
+    socket.on("error", reject);
+  });
+}
+
+describe("service proxy connection teardown", () => {
+  it("closes the upstream connection when a client leaves an event stream", async () => {
+    const upstreamResponse = Promise.withResolvers<http.ServerResponse>();
+    const upstream = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write("data: open\n\n");
+      upstreamResponse.resolve(res);
+    });
+    const fixture = await startProxiedService(upstream);
+    try {
+      const request = requestThroughProxy(fixture, "/events");
+      const [response] = (await once(request, "response")) as [http.IncomingMessage];
+      await once(response, "data");
+      const upstreamClosed = closed(await upstreamResponse.promise);
+
+      request.destroy();
+
+      await within(upstreamClosed, 1000, "the service still holds the event stream");
+    } finally {
+      await fixture.close();
+    }
+  }, 5000);
+
+  it("aborts the upstream request when a client leaves before the response starts", async () => {
+    const warnings: unknown[] = [];
+    const proxyLogger = pino(
+      { level: "warn" },
+      { write: (line: string) => warnings.push(JSON.parse(line)) },
+    );
+    const upstreamResponse = Promise.withResolvers<http.ServerResponse>();
+    const upstream = http.createServer((_req, res) => {
+      upstreamResponse.resolve(res);
+    });
+    const fixture = await startProxiedService(upstream, { logger: proxyLogger });
+    try {
+      const request = requestThroughProxy(fixture, "/slow");
+      request.on("error", () => undefined);
+      const upstreamClosed = closed(await upstreamResponse.promise);
+
+      request.destroy();
+
+      await within(upstreamClosed, 1000, "the service still holds the abandoned request");
+      await new Promise((resolve) => setTimeout(resolve, STRAY_WARNING_GRACE_MS));
+      expect(warnings).toEqual([]);
+    } finally {
+      await fixture.close();
+    }
+  }, 5000);
+
+  it("lets a complete response finish without resetting the service", async () => {
+    const upstreamResponse = Promise.withResolvers<http.ServerResponse>();
+    const upstream = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.write("first;");
+      upstreamResponse.resolve(res);
+    });
+    const fixture = await startProxiedService(upstream);
+    try {
+      const response = httpGet(fixture.daemonPort, fixture.hostname, { path: "/" });
+      const res = await upstreamResponse.promise;
+      const upstreamClosed = closed(res);
+
+      res.end("second");
+
+      await expect(response).resolves.toEqual({ status: 200, body: "first;second" });
+      await within(upstreamClosed, 1000, "the service response never closed");
+      expect(res.writableFinished).toBe(true);
+    } finally {
+      await fixture.close();
+    }
+  }, 5000);
+
+  it("closes the upstream WebSocket when the daemon drops the client socket", async () => {
+    const upstreamSocket = Promise.withResolvers<Duplex>();
+    const fixture = await startProxiedService(
+      createUpgradeUpstream((socket) => upstreamSocket.resolve(socket)),
+    );
+    const daemonSide = Promise.withResolvers<Duplex>();
+    fixture.daemon.on("upgrade", (_req, socket) => daemonSide.resolve(socket));
+    try {
+      const client = await openUpgradeThroughProxy(fixture);
+      const upstreamClosed = closed(await upstreamSocket.promise);
+
+      (await daemonSide.promise).destroy();
+
+      await within(upstreamClosed, 1000, "the service still holds the WebSocket");
+      client.destroy();
+    } finally {
+      await fixture.close();
+    }
+  }, 5000);
+
+  it("closes the upstream WebSocket when the client disconnects", async () => {
+    const upstreamSocket = Promise.withResolvers<Duplex>();
+    const fixture = await startProxiedService(
+      createUpgradeUpstream((socket) => upstreamSocket.resolve(socket)),
+    );
+    try {
+      const client = await openUpgradeThroughProxy(fixture);
+      const upstreamClosed = closed(await upstreamSocket.promise);
+
+      client.destroy();
+
+      await within(upstreamClosed, 1000, "the service still holds the WebSocket");
+    } finally {
+      await fixture.close();
+    }
+  }, 5000);
+
+  it("closes the client WebSocket when the service closes it", async () => {
+    const upstreamSocket = Promise.withResolvers<Duplex>();
+    const fixture = await startProxiedService(
+      createUpgradeUpstream((socket) => upstreamSocket.resolve(socket)),
+    );
+    try {
+      const client = await openUpgradeThroughProxy(fixture);
+      const clientClosed = closed(client);
+
+      (await upstreamSocket.promise).destroy();
+
+      await within(clientClosed, 1000, "the client WebSocket is still open");
+    } finally {
+      await fixture.close();
+    }
+  }, 5000);
 });
