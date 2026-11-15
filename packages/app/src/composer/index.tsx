@@ -1703,7 +1703,7 @@ export function Composer({
           if (stills.length === 0) return undefined;
           const fileName = stills.map((image) => image.fileName?.trim() || image.id).join(", ");
           toastShowRef.current(
-            t("composer.notices.animatedGifSentAsStill", {
+            t("attachments.notices.animatedGifSentAsStill", {
               fileName,
               defaultValue:
                 "{{fileName}} is over 8 MB, so it is sent as a still image (first frame).",
