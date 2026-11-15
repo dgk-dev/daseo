@@ -162,6 +162,10 @@ export const fr: TranslationResources = {
       noClipboardImage: "Aucune image dans le presse-papiers",
       pasteImageFailed: "Impossible de coller l’image",
       fileTooLarge: "{{fileName}} is too large (max {{size}})",
+      imageAttachmentMissing:
+        "L'image '{{fileName}}' n'est plus sur cet appareil, le message n'a donc pas été envoyé. Retirez-la et joignez-la à nouveau.",
+      inlineImagesTooLargeForHost:
+        "Ces images sont trop volumineuses pour être envoyées à cet hôte en un seul message. Mettez à jour Paseo sur l'hôte ou envoyez moins d'images, ou des images plus petites.",
     },
     clientCommands: {
       archiveAgent: "Archiver l'agent actuel",
@@ -175,6 +179,11 @@ export const fr: TranslationResources = {
       searchPlaceholder_mr: "Problèmes de recherche et MR...",
       title: "Joindre le problème ouPR",
       title_mr: "Joindre le problème ou MR",
+    },
+    failedSubmission: {
+      notSent: "Non envoyé",
+      putBack: "Remettre dans la zone de saisie",
+      discard: "Supprimer",
     },
   },
   agentControls: {
@@ -369,6 +378,8 @@ export const fr: TranslationResources = {
       textAttachment: "Texte en pièce jointe",
       text: "Texte",
       file: "Fichier",
+      retryImage: "Réessayer de charger l'image",
+      tapToRetryImage: "Touchez pour réessayer",
     },
     speak: {
       header: "Rayon",
@@ -656,6 +667,14 @@ export const fr: TranslationResources = {
         placeholder: "Message à l'agent concernant cet élément…",
         submit: "Joindre",
         cancel: "Annuler",
+        captureFailed: {
+          unavailable:
+            "Les captures d'écran ne sont pas disponibles ici. La note sera ajoutée sans image.",
+          emptySelection:
+            "Cet élément n'a pas de zone visible à capturer. La note sera ajoutée sans image.",
+          tooLarge: "{{detail}} La note sera ajoutée sans image.",
+          failed: "La capture de cet élément a échoué. La note sera ajoutée sans image.",
+        },
       },
       devices: {
         label: "Taille de l'appareil",
@@ -2692,6 +2711,21 @@ export const fr: TranslationResources = {
         saving: "Sauvegarde...",
         cancel: "Annuler",
       },
+    },
+  },
+  attachments: {
+    imageErrors: {
+      fallbackLabel: "Image",
+      tooManyBytes: "{{label}} fait {{size}} Mo ; la limite de sécurité est de {{limit}} Mo.",
+      tooManyPixels:
+        "{{label}} fait {{width}}×{{height}} ; la limite de sécurité en pixels décodés est de {{limit}} pixels.",
+      unconvertible:
+        "{{label}} est une image {{format}} que cet appareil ne peut pas convertir pour l'agent. Enregistrez-la en JPEG ou PNG et joignez-la à nouveau.",
+      unsupportedType: "Type d'image non pris en charge pour '{{name}}'.",
+    },
+    notices: {
+      animatedGifSentAsStill:
+        "{{fileName}} dépasse 8 Mo, elle est donc envoyée comme image fixe (première image).",
     },
   },
 };

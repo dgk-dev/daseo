@@ -161,6 +161,10 @@ export const ru: TranslationResources = {
       noClipboardImage: "В буфере обмена нет изображения",
       pasteImageFailed: "Не удалось вставить изображение",
       fileTooLarge: "{{fileName}} is too large (max {{size}})",
+      imageAttachmentMissing:
+        "Изображения '{{fileName}}' больше нет на этом устройстве, поэтому сообщение не отправлено. Удалите его и прикрепите снова.",
+      inlineImagesTooLargeForHost:
+        "Эти изображения слишком велики, чтобы отправить их на этот хост одним сообщением. Обновите Paseo на хосте или отправьте меньше изображений либо изображения меньшего размера.",
     },
     clientCommands: {
       archiveAgent: "Архивировать текущего агента",
@@ -174,6 +178,11 @@ export const ru: TranslationResources = {
       searchPlaceholder_mr: "Поиск проблем и MR...",
       title: "Прикрепите проблему или PR",
       title_mr: "Прикрепите проблему или MR",
+    },
+    failedSubmission: {
+      notSent: "Не отправлено",
+      putBack: "Вернуть в поле ввода",
+      discard: "Удалить",
     },
   },
   agentControls: {
@@ -367,6 +376,8 @@ export const ru: TranslationResources = {
       textAttachment: "Текстовое вложение",
       text: "Текст",
       file: "Файл",
+      retryImage: "Повторить загрузку изображения",
+      tapToRetryImage: "Нажмите, чтобы повторить",
     },
     speak: {
       header: "Говорил",
@@ -656,6 +667,14 @@ export const ru: TranslationResources = {
         placeholder: "Сообщение агенту об этом элементе…",
         submit: "Прикрепить",
         cancel: "Отмена",
+        captureFailed: {
+          unavailable: "Снимки экрана здесь недоступны. Заметка будет добавлена без изображения.",
+          emptySelection:
+            "У этого элемента нет видимой области для снимка. Заметка будет добавлена без изображения.",
+          tooLarge: "{{detail}} Заметка будет добавлена без изображения.",
+          failed:
+            "Не удалось сделать снимок этого элемента. Заметка будет добавлена без изображения.",
+        },
       },
       devices: {
         label: "Размер устройства",
@@ -2675,6 +2694,21 @@ export const ru: TranslationResources = {
         saving: "Сохранение...",
         cancel: "Отмена",
       },
+    },
+  },
+  attachments: {
+    imageErrors: {
+      fallbackLabel: "Изображение",
+      tooManyBytes: "Размер {{label}} — {{size}} МБ; безопасный предел — {{limit}} МБ.",
+      tooManyPixels:
+        "Размер {{label}} — {{width}}×{{height}}; безопасный предел декодированных пикселей — {{limit}}.",
+      unconvertible:
+        "{{label}} — изображение {{format}}, которое это устройство не может преобразовать для агента. Сохраните его как JPEG или PNG и прикрепите снова.",
+      unsupportedType: "Неподдерживаемый тип изображения для '{{name}}'.",
+    },
+    notices: {
+      animatedGifSentAsStill:
+        "{{fileName}} больше 8 МБ, поэтому отправляется как статичное изображение (первый кадр).",
     },
   },
 };

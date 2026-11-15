@@ -160,6 +160,10 @@ export const ko: TranslationResources = {
       noClipboardImage: "클립보드에 이미지가 없습니다.",
       pasteImageFailed: "이미지를 붙여넣지 못했습니다.",
       fileTooLarge: "{{fileName}}이(가) 너무 큽니다 (최대 {{size}})",
+      imageAttachmentMissing:
+        "이미지 '{{fileName}}' 파일이 이 기기에 더 이상 없어 메시지를 보내지 못했습니다. 첨부를 지우고 다시 첨부해 주세요.",
+      inlineImagesTooLargeForHost:
+        "이 이미지들은 이 호스트에 한 메시지로 보내기에 너무 큽니다. 호스트의 Paseo를 업데이트하거나, 이미지 수나 크기를 줄여 보내 주세요.",
     },
     clientCommands: {
       archiveAgent: "현재 에이전트 보관",
@@ -173,6 +177,11 @@ export const ko: TranslationResources = {
       searchPlaceholder_mr: "이슈 및 MR 검색...",
       title: "이슈 또는 PR 첨부",
       title_mr: "이슈 또는 MR 첨부",
+    },
+    failedSubmission: {
+      notSent: "보내지 못함",
+      putBack: "입력창으로 되돌리기",
+      discard: "버리기",
     },
   },
   agentControls: {
@@ -364,6 +373,8 @@ export const ko: TranslationResources = {
       textAttachment: "텍스트 첨부",
       text: "텍스트",
       file: "파일",
+      retryImage: "이미지 다시 불러오기",
+      tapToRetryImage: "눌러서 다시 시도",
     },
     speak: {
       header: "말함",
@@ -651,6 +662,13 @@ export const ko: TranslationResources = {
         placeholder: "이 요소에 관해 에이전트에게 보낼 메시지…",
         submit: "첨부",
         cancel: "취소",
+        captureFailed: {
+          unavailable: "여기서는 스크린샷을 찍을 수 없습니다. 메모는 이미지 없이 추가됩니다.",
+          emptySelection:
+            "이 요소는 보이는 영역이 없어 캡처할 수 없습니다. 메모는 이미지 없이 추가됩니다.",
+          tooLarge: "{{detail}} 메모는 이미지 없이 추가됩니다.",
+          failed: "이 요소의 스크린샷을 찍지 못했습니다. 메모는 이미지 없이 추가됩니다.",
+        },
       },
       devices: {
         label: "장치 크기",
@@ -2644,6 +2662,20 @@ export const ko: TranslationResources = {
         saving: "저장하는 중...",
         cancel: "취소",
       },
+    },
+  },
+  attachments: {
+    imageErrors: {
+      fallbackLabel: "이미지",
+      tooManyBytes: "{{label}}은(는) {{size}}MB입니다. 안전 한도는 {{limit}}MB입니다.",
+      tooManyPixels:
+        "{{label}}은(는) {{width}}×{{height}}입니다. 이미지를 펼쳤을 때의 안전 한도는 {{limit}}픽셀입니다.",
+      unconvertible:
+        "{{label}}은(는) {{format}} 이미지라 이 기기에서 에이전트용으로 변환할 수 없습니다. JPEG나 PNG로 저장한 뒤 다시 첨부하세요.",
+      unsupportedType: "'{{name}}'은(는) 지원하지 않는 이미지 형식입니다.",
+    },
+    notices: {
+      animatedGifSentAsStill: "{{fileName}}은(는) 8MB를 넘어 첫 장면만 정지 이미지로 보냅니다.",
     },
   },
 };

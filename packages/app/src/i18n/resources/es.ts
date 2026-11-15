@@ -160,6 +160,10 @@ export const es: TranslationResources = {
       noClipboardImage: "No hay ninguna imagen en el portapapeles",
       pasteImageFailed: "No se pudo pegar la imagen",
       fileTooLarge: "{{fileName}} is too large (max {{size}})",
+      imageAttachmentMissing:
+        "La imagen '{{fileName}}' ya no está en este dispositivo, así que el mensaje no se envió. Quítala y vuelve a adjuntarla.",
+      inlineImagesTooLargeForHost:
+        "Estas imágenes son demasiado grandes para enviarlas a este host en un solo mensaje. Actualiza Paseo en el host o envía menos imágenes o más pequeñas.",
     },
     clientCommands: {
       archiveAgent: "Archivar el agente actual",
@@ -173,6 +177,11 @@ export const es: TranslationResources = {
       searchPlaceholder_mr: "Problemas de búsqueda y MRs...",
       title: "Adjuntar problema oPR",
       title_mr: "Adjuntar problema o MR",
+    },
+    failedSubmission: {
+      notSent: "No enviado",
+      putBack: "Devolver al editor",
+      discard: "Descartar",
     },
   },
   agentControls: {
@@ -369,6 +378,8 @@ export const es: TranslationResources = {
       textAttachment: "Adjunto de texto",
       text: "Texto",
       file: "Archivo",
+      retryImage: "Reintentar cargar la imagen",
+      tapToRetryImage: "Toca para reintentar",
     },
     speak: {
       header: "Habló",
@@ -657,6 +668,14 @@ export const es: TranslationResources = {
         placeholder: "Mensaje al agente sobre este elemento…",
         submit: "Adjuntar",
         cancel: "Cancelar",
+        captureFailed: {
+          unavailable:
+            "Las capturas de pantalla no están disponibles aquí. La nota se añadirá sin imagen.",
+          emptySelection:
+            "Este elemento no tiene un área visible para capturar. La nota se añadirá sin imagen.",
+          tooLarge: "{{detail}} La nota se añadirá sin imagen.",
+          failed: "No se pudo capturar la imagen de este elemento. La nota se añadirá sin imagen.",
+        },
       },
       devices: {
         label: "Tamaño del dispositivo",
@@ -2686,6 +2705,21 @@ export const es: TranslationResources = {
         saving: "Guardando...",
         cancel: "Cancelar",
       },
+    },
+  },
+  attachments: {
+    imageErrors: {
+      fallbackLabel: "Imagen",
+      tooManyBytes: "{{label}} pesa {{size}} MB; el límite de seguridad es {{limit}} MB.",
+      tooManyPixels:
+        "{{label}} mide {{width}}×{{height}}; el límite de seguridad de píxeles decodificados es {{limit}} píxeles.",
+      unconvertible:
+        "{{label}} es una imagen {{format}} que este dispositivo no puede convertir para el agente. Guárdala como JPEG o PNG y vuelve a adjuntarla.",
+      unsupportedType: "Tipo de imagen no compatible para '{{name}}'.",
+    },
+    notices: {
+      animatedGifSentAsStill:
+        "{{fileName}} supera los 8 MB, así que se envía como imagen fija (primer fotograma).",
     },
   },
 };

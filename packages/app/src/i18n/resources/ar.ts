@@ -160,6 +160,10 @@ export const ar: TranslationResources = {
       noClipboardImage: "لا توجد صورة في الحافظة",
       pasteImageFailed: "تعذر لصق الصورة",
       fileTooLarge: "{{fileName}} is too large (max {{size}})",
+      imageAttachmentMissing:
+        "لم تعد الصورة '{{fileName}}' موجودة على هذا الجهاز، لذلك لم تُرسل الرسالة. أزلها ثم أرفقها مرة أخرى.",
+      inlineImagesTooLargeForHost:
+        "هذه الصور أكبر من أن تُرسل إلى هذا المضيف في رسالة واحدة. حدّث Paseo على المضيف، أو أرسل صورًا أقل أو أصغر.",
     },
     clientCommands: {
       archiveAgent: "أرشفة الوكيل الحالي",
@@ -173,6 +177,11 @@ export const ar: TranslationResources = {
       searchPlaceholder_mr: "بحث القضايا و MR...",
       title: "إرفاق المشكلة أو PR",
       title_mr: "إرفاق المشكلة أو MR",
+    },
+    failedSubmission: {
+      notSent: "لم يُرسل",
+      putBack: "إعادته إلى مربع الكتابة",
+      discard: "تجاهل",
     },
   },
   agentControls: {
@@ -363,6 +372,8 @@ export const ar: TranslationResources = {
       textAttachment: "مرفق النص",
       text: "نص",
       file: "ملف",
+      retryImage: "إعادة تحميل الصورة",
+      tapToRetryImage: "اضغط لإعادة المحاولة",
     },
     speak: {
       header: "تكلم",
@@ -650,6 +661,12 @@ export const ar: TranslationResources = {
         placeholder: "رسالة إلى الوكيل حول هذا العنصر…",
         submit: "إرفاق",
         cancel: "إلغاء",
+        captureFailed: {
+          unavailable: "لقطات الشاشة غير متاحة هنا. ستُضاف الملاحظة بدون صورة.",
+          emptySelection: "لا توجد مساحة مرئية لهذا العنصر لالتقاطها. ستُضاف الملاحظة بدون صورة.",
+          tooLarge: "{{detail}} ستُضاف الملاحظة بدون صورة.",
+          failed: "تعذّر التقاط صورة لهذا العنصر. ستُضاف الملاحظة بدون صورة.",
+        },
       },
       devices: {
         label: "حجم الجهاز",
@@ -2627,6 +2644,21 @@ export const ar: TranslationResources = {
         saving: "جارٍ الحفظ...",
         cancel: "يلغي",
       },
+    },
+  },
+  attachments: {
+    imageErrors: {
+      fallbackLabel: "صورة",
+      tooManyBytes: "حجم {{label}} هو {{size}} ميغابايت؛ الحد الآمن هو {{limit}} ميغابايت.",
+      tooManyPixels:
+        "أبعاد {{label}} هي {{width}}×{{height}}؛ الحد الآمن للبكسلات بعد فك الترميز هو {{limit}} بكسل.",
+      unconvertible:
+        "{{label}} صورة بتنسيق {{format}} لا يستطيع هذا الجهاز تحويلها للوكيل. احفظها بصيغة JPEG أو PNG ثم أرفقها مرة أخرى.",
+      unsupportedType: "نوع الصورة غير مدعوم لـ '{{name}}'.",
+    },
+    notices: {
+      animatedGifSentAsStill:
+        "{{fileName}} أكبر من 8 ميغابايت، لذلك يُرسل كصورة ثابتة (الإطار الأول).",
     },
   },
 };

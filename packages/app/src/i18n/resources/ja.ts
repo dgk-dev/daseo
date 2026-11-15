@@ -160,6 +160,10 @@ export const ja: TranslationResources = {
       noClipboardImage: "クリップボードに画像がありません",
       pasteImageFailed: "画像を貼り付けられませんでした",
       fileTooLarge: "{{fileName}}が大きすぎます（最大{{size}}）",
+      imageAttachmentMissing:
+        "画像 '{{fileName}}' がこのデバイスにもうないため、メッセージは送信されませんでした。削除してもう一度添付してください。",
+      inlineImagesTooLargeForHost:
+        "これらの画像は、このホストに 1 通のメッセージで送るには大きすぎます。ホストの Paseo を更新するか、画像の枚数やサイズを減らしてください。",
     },
     clientCommands: {
       archiveAgent: "現在のエージェントをアーカイブ",
@@ -173,6 +177,11 @@ export const ja: TranslationResources = {
       searchPlaceholder_mr: "イシューとMRを検索...",
       title: "イシューまたはPRを添付",
       title_mr: "イシューまたはMRを添付",
+    },
+    failedSubmission: {
+      notSent: "未送信",
+      putBack: "入力欄に戻す",
+      discard: "破棄",
     },
   },
   agentControls: {
@@ -366,6 +375,8 @@ export const ja: TranslationResources = {
       textAttachment: "テキスト添付ファイル",
       text: "テキスト",
       file: "ファイル",
+      retryImage: "画像を再読み込み",
+      tapToRetryImage: "タップして再試行",
     },
     speak: {
       header: "読み上げ済み",
@@ -654,6 +665,13 @@ export const ja: TranslationResources = {
         placeholder: "この要素についてエージェントへのメッセージ…",
         submit: "添付",
         cancel: "キャンセル",
+        captureFailed: {
+          unavailable: "ここではスクリーンショットを撮れません。メモは画像なしで追加されます。",
+          emptySelection:
+            "この要素には撮影できる表示領域がありません。メモは画像なしで追加されます。",
+          tooLarge: "{{detail}} メモは画像なしで追加されます。",
+          failed: "この要素のスクリーンショットを撮れませんでした。メモは画像なしで追加されます。",
+        },
       },
       devices: {
         label: "デバイスサイズ",
@@ -2653,6 +2671,21 @@ export const ja: TranslationResources = {
         saving: "保存中...",
         cancel: "キャンセル",
       },
+    },
+  },
+  attachments: {
+    imageErrors: {
+      fallbackLabel: "画像",
+      tooManyBytes: "{{label}} は {{size}} MB です。安全上の上限は {{limit}} MB です。",
+      tooManyPixels:
+        "{{label}} は {{width}}×{{height}} です。展開後のピクセル数の安全上限は {{limit}} ピクセルです。",
+      unconvertible:
+        "{{label}} は {{format}} 画像のため、このデバイスではエージェント用に変換できません。JPEG か PNG で保存してもう一度添付してください。",
+      unsupportedType: "'{{name}}' は対応していない画像形式です。",
+    },
+    notices: {
+      animatedGifSentAsStill:
+        "{{fileName}} は 8 MB を超えるため、静止画（最初のフレーム）として送信します。",
     },
   },
 } as const;

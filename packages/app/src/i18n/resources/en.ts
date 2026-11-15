@@ -157,6 +157,10 @@ export const en = {
       noClipboardImage: "No image in clipboard",
       pasteImageFailed: "Failed to paste image",
       fileTooLarge: "{{fileName}} is too large (max {{size}})",
+      imageAttachmentMissing:
+        "The image '{{fileName}}' is no longer on this device, so the message was not sent. Remove it and attach it again.",
+      inlineImagesTooLargeForHost:
+        "These images are too large to send to this host in one message. Update Paseo on the host, or send fewer or smaller images.",
     },
     clientCommands: {
       archiveAgent: "Archive the current agent",
@@ -170,6 +174,11 @@ export const en = {
       searchPlaceholder_mr: "Search issues and MRs...",
       title: "Attach issue or PR",
       title_mr: "Attach issue or MR",
+    },
+    failedSubmission: {
+      notSent: "Not sent",
+      putBack: "Put back in the composer",
+      discard: "Discard",
     },
   },
   agentControls: {
@@ -362,6 +371,8 @@ export const en = {
       textAttachment: "Text attachment",
       text: "Text",
       file: "File",
+      retryImage: "Retry loading image",
+      tapToRetryImage: "Tap to retry",
     },
     speak: {
       header: "Spoke",
@@ -649,6 +660,15 @@ export const en = {
         placeholder: "Message to the agent about this element…",
         submit: "Attach",
         cancel: "Cancel",
+        captureFailed: {
+          unavailable:
+            "Screenshots are not available here. The note will be added without an image.",
+          emptySelection:
+            "This element has no visible area to capture. The note will be added without an image.",
+          tooLarge: "{{detail}} The note will be added without an image.",
+          failed:
+            "The screenshot of this element could not be captured. The note will be added without an image.",
+        },
       },
       devices: {
         label: "Device size",
@@ -2688,6 +2708,21 @@ export const en = {
         saving: "Saving...",
         cancel: "Cancel",
       },
+    },
+  },
+  attachments: {
+    imageErrors: {
+      fallbackLabel: "Image",
+      tooManyBytes: "{{label}} is {{size}} MB; the safety limit is {{limit}} MB.",
+      tooManyPixels:
+        "{{label}} is {{width}}×{{height}}; the decoded-pixel safety limit is {{limit}} pixels.",
+      unconvertible:
+        "{{label}} is a {{format}} image, which this device can't convert for the agent. Save it as JPEG or PNG and attach it again.",
+      unsupportedType: "Unsupported image type for '{{name}}'.",
+    },
+    notices: {
+      animatedGifSentAsStill:
+        "{{fileName}} is over 8 MB, so it is sent as a still image (first frame).",
     },
   },
 } as const;

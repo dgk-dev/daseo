@@ -159,6 +159,10 @@ export const zhCN: TranslationResources = {
       noClipboardImage: "剪贴板中没有图片",
       pasteImageFailed: "无法粘贴图片",
       fileTooLarge: "{{fileName}} is too large (max {{size}})",
+      imageAttachmentMissing:
+        "图片 '{{fileName}}' 已不在此设备上，因此消息未发送。请移除后重新附加。",
+      inlineImagesTooLargeForHost:
+        "这些图片太大，无法在一条消息中发送到此主机。请更新主机上的 Paseo，或发送更少或更小的图片。",
     },
     clientCommands: {
       archiveAgent: "归档当前 Agent",
@@ -172,6 +176,11 @@ export const zhCN: TranslationResources = {
       searchPlaceholder_mr: "搜索 issues 和 MRs...",
       title: "附加 issue 或 PR",
       title_mr: "附加 issue 或 MR",
+    },
+    failedSubmission: {
+      notSent: "未发送",
+      putBack: "放回输入框",
+      discard: "丢弃",
     },
   },
   agentControls: {
@@ -362,6 +371,8 @@ export const zhCN: TranslationResources = {
       textAttachment: "文本附件",
       text: "文本",
       file: "文件",
+      retryImage: "重新加载图片",
+      tapToRetryImage: "点按重试",
     },
     speak: {
       header: "已朗读",
@@ -649,6 +660,12 @@ export const zhCN: TranslationResources = {
         placeholder: "给智能体关于此元素的留言…",
         submit: "附加",
         cancel: "取消",
+        captureFailed: {
+          unavailable: "此处无法截图。备注将不带图片添加。",
+          emptySelection: "此元素没有可截取的可见区域。备注将不带图片添加。",
+          tooLarge: "{{detail}} 备注将不带图片添加。",
+          failed: "无法截取此元素的截图。备注将不带图片添加。",
+        },
       },
       devices: {
         label: "设备尺寸",
@@ -2596,6 +2613,19 @@ export const zhCN: TranslationResources = {
         saving: "正在保存...",
         cancel: "取消",
       },
+    },
+  },
+  attachments: {
+    imageErrors: {
+      fallbackLabel: "图片",
+      tooManyBytes: "{{label}} 为 {{size}} MB；安全上限为 {{limit}} MB。",
+      tooManyPixels: "{{label}} 为 {{width}}×{{height}}；解码后像素的安全上限为 {{limit}} 像素。",
+      unconvertible:
+        "{{label}} 是 {{format}} 图片，此设备无法为代理转换。请另存为 JPEG 或 PNG 后重新附加。",
+      unsupportedType: "'{{name}}' 的图片类型不受支持。",
+    },
+    notices: {
+      animatedGifSentAsStill: "{{fileName}} 超过 8 MB，因此作为静态图片（第一帧）发送。",
     },
   },
 };
