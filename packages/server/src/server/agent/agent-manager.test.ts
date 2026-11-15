@@ -10372,3 +10372,58 @@ test("an idle unload leaves the agent loaded when the eligibility check fails", 
     rmSync(workdir, { recursive: true, force: true });
   }
 });
+
+// Upstream #8453 reproduction: a prompt delivered to an agent that waits on a question or
+// approval (every Daseo prompt path steers through startAgentRun with replaceRunning) must
+// leave the pending request answerable. Daseo has no daemon-level clearPendingPermissions flag.
+test("a steered prompt keeps a pending permission answerable", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-steer-permission-"));
+  const turnId = "turn-steer-permission";
+  const session = new SteerableControlledSession(
+    { provider: "codex", cwd: workdir },
+    turnId,
+    async () => undefined,
+  );
+  const client = new (class extends TestAgentClient {
+    override readonly capabilities = session.capabilities;
+
+    override async createSession(): Promise<AgentSession> {
+      return session;
+    }
+  })();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: new AgentStorage(join(workdir, "agents"), logger),
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000141",
+  });
+
+  const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+  });
+  const run = manager.streamAgent(agent.id, "initial prompt");
+  const drain = (async () => {
+    for await (const _event of run) {
+      // Keep the foreground run attached.
+    }
+  })();
+  await manager.waitForAgentRunStart(agent.id);
+  session.pushEvent({
+    type: "permission_requested",
+    provider: "codex",
+    request: { id: "question-1", provider: "codex", kind: "question", name: "Color" },
+    turnId,
+  });
+  await expect
+    .poll(() => manager.getAgent(agent.id)?.pendingPermissions.has("question-1"))
+    .toBe(true);
+
+  await startAgentRun(manager, agent.id, "Peer status check", logger, { replaceRunning: true });
+
+  expect(session.steerCalls).toHaveLength(1);
+  expect(session.interruptCalled).toBe(false);
+  expect(manager.getAgent(agent.id)?.pendingPermissions.has("question-1")).toBe(true);
+
+  session.pushEvent({ type: "turn_completed", provider: "codex", turnId });
+  await drain;
+});
