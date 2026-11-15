@@ -3,6 +3,8 @@ import type { AgentSnapshotPayload } from "@getpaseo/protocol/messages";
 import { clearArchiveAgentPending } from "@/hooks/use-archive-agent";
 import { queryClient } from "@/data/query-client";
 import { useSessionStore, type Agent } from "@/stores/session-store";
+import { useDraftStore } from "@/stores/draft-store";
+import { buildDraftStoreKey } from "@/stores/draft-keys";
 import { normalizeAgentSnapshot, projectAgentSnapshot } from "@/utils/agent-snapshots";
 import {
   applyAgentDirectoryDelta,
@@ -138,6 +140,11 @@ export class AgentDirectoryReplica {
     this.members.delete(agentId);
     this.advance(agentId);
     removeAgentDirectoryReplica(this.serverId, agentId);
+    // Only entity deletion discards the unsent draft. Archiving (closing a tab)
+    // drops the agent from the active directory but keeps the conversation.
+    useDraftStore.getState().clearDraftInput({
+      draftKey: buildDraftStoreKey({ serverId: this.serverId, agentId }),
+    });
   }
 
   private advance(agentId: string): void {

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { DaemonClient, FetchAgentsEntry } from "@getpaseo/client/internal/daemon-client";
 import type { AgentSnapshotPayload } from "@getpaseo/protocol/messages";
 import { useSessionStore } from "@/stores/session-store";
+import { useDraftStore } from "@/stores/draft-store";
+import { buildDraftStoreKey } from "@/stores/draft-keys";
 import { AgentDirectoryReplica } from "./agent-replica";
 
 function payload(title: string): AgentSnapshotPayload {
@@ -108,4 +110,40 @@ describe("AgentDirectoryReplica", () => {
     ).toEqual(directoryPlacement);
     store.clearSession(serverId);
   });
+  it.each(["delta", "snapshot"] as const)(
+    "preserves an unsent draft when the active directory removes an agent by %s",
+    (removal) => {
+      const serverId = `agent-replica-draft-${removal}`;
+      const store = useSessionStore.getState();
+      store.initializeSession(serverId, null as unknown as DaemonClient);
+      const replica = new AgentDirectoryReplica(serverId, () => undefined);
+      replica.commitSnapshot([entry(payload("directory"))], []);
+      const draftKey = buildDraftStoreKey({ serverId, agentId: "agent" });
+      const draft = {
+        text: "Keep this unsent draft",
+        attachments: [
+          {
+            kind: "workspace_file" as const,
+            path: "README.md",
+            selection: { kind: "whole_file" as const },
+          },
+        ],
+      };
+      useDraftStore.getState().saveDraftInput({ draftKey, draft });
+
+      // Closing a tab archives the agent, which drops it from the active directory.
+      if (removal === "delta") {
+        replica.applyDelta({ kind: "remove", agentId: "agent" });
+      } else {
+        replica.commitSnapshot([], []);
+      }
+      expect(useSessionStore.getState().sessions[serverId]?.agents.has("agent")).toBe(false);
+      expect(useDraftStore.getState().getDraftInput(draftKey)).toEqual(draft);
+
+      // Only deleting the agent itself discards its draft.
+      replica.remove("agent");
+      expect(useDraftStore.getState().getDraftInput(draftKey)).toBeUndefined();
+      store.clearSession(serverId);
+    },
+  );
 });
