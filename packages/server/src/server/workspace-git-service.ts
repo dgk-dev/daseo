@@ -1455,6 +1455,8 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     options?: { replaceFallback?: boolean },
   ): Promise<boolean> {
     const ignore = [join(target.watchPath, ".git"), ...target.ignoredDirectories];
+    let abandoned = false;
+    let activeSubscription: FileObserverSubscription | null = null;
     let watcherErrored = false;
     let subscribeSettled = false;
     const markSubscribeSettled = () => {
@@ -1467,6 +1469,13 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       const subscription = await this.subscribeWithDeadline(
         target.watchPath,
         (error, events) => {
+          if (
+            abandoned ||
+            target.closed ||
+            (activeSubscription && target.subscription !== activeSubscription)
+          ) {
+            return;
+          }
           if (error) {
             if (watcherErrored) {
               return;
@@ -1498,6 +1507,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
         markSubscribeSettled,
       );
       if (watcherErrored) {
+        abandoned = true;
         await this.unsubscribeWatcherSubscription(subscription, target.watchPath);
         return false;
       }
@@ -1506,9 +1516,11 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
         (target.fallbackPolling && !options?.replaceFallback) ||
         target.subscription
       ) {
+        abandoned = true;
         await this.unsubscribeWatcherSubscription(subscription, target.watchPath);
         return false;
       }
+      activeSubscription = subscription;
       target.subscription = subscription;
       if (options?.replaceFallback && target.repoRoot !== null) {
         target.fallbackPolling = false;
@@ -1519,11 +1531,12 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       }
       return true;
     } catch (error) {
+      abandoned = true;
       if (watcherErrored) {
         return false;
       }
       if (this.disposed || target.closed) {
-        throw error;
+        return false;
       }
       this.logger.warn(
         { err: error, cwd: target.cwd },
@@ -1532,6 +1545,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       if (!options?.replaceFallback) {
         this.startWorkingTreeWatchFallback(target, "watcher_setup_failed");
       }
+      this.scheduleWorkingTreeWatchRecovery(target);
       return false;
     }
   }
@@ -1743,7 +1757,13 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     const delayMs = WATCH_RECOVERY_BASE_DELAY_MS * 2 ** (target.recovery.attemptCount - 1);
     target.recovery.timer = setTimeout(() => {
       target.recovery.timer = null;
-      void this.recoverWorkingTreeWatch(target);
+      void this.recoverWorkingTreeWatch(target).catch((error) => {
+        if (this.disposed || target.closed) {
+          return;
+        }
+        this.logger.warn({ err: error }, "Git watcher recovery failed; retrying with backoff");
+        this.scheduleWorkingTreeWatchRecovery(target);
+      });
     }, delayMs);
   }
 
@@ -2016,6 +2036,8 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     const matchesRepoGitRoot = createRealpathAwarePathMatcher(target.repoGitRoot);
     const canary = this.deps.createWatcherLivenessCanary(target.repoGitRoot);
     let openedSubscription: FileObserverSubscription | null = null;
+    let abandoned = false;
+    let activeSubscription: FileObserverSubscription | null = null;
     let watcherErrored = false;
     let subscribeSettled = false;
     const markSubscribeSettled = () => {
@@ -2028,6 +2050,13 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       const subscription = await this.subscribeWithDeadline(
         target.repoGitRoot,
         (error, events) => {
+          if (
+            abandoned ||
+            target.closed ||
+            (activeSubscription && target.subscription !== activeSubscription)
+          ) {
+            return;
+          }
           const liveEvents = canary.filterEvents(events);
           if (error) {
             if (watcherErrored) {
@@ -2084,6 +2113,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       openedSubscription = subscription;
       await canary.verify(this.disposeController.signal);
       if (watcherErrored) {
+        abandoned = true;
         await this.unsubscribeWatcherSubscription(subscription, target.repoGitRoot);
         return false;
       }
@@ -2092,9 +2122,11 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
         (target.fallbackPolling && !options?.replaceFallback) ||
         this.repoTargets.get(target.repoGitRoot) !== target
       ) {
+        abandoned = true;
         await this.unsubscribeWatcherSubscription(subscription, target.repoGitRoot);
         return false;
       }
+      activeSubscription = subscription;
       target.subscription = subscription;
       if (options?.replaceFallback) {
         target.fallbackPolling = false;
@@ -2105,6 +2137,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       }
       return true;
     } catch (error) {
+      abandoned = true;
       if (openedSubscription) {
         await this.unsubscribeWatcherSubscription(openedSubscription, target.repoGitRoot);
       }
@@ -2112,7 +2145,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
         return false;
       }
       if (this.disposed || target.closed) {
-        throw error;
+        return false;
       }
       this.logger.warn(
         { err: error, repoGitRoot: target.repoGitRoot },
@@ -2121,6 +2154,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       if (!options?.replaceFallback) {
         this.startRepoMetadataFallback(target);
       }
+      this.scheduleRepoMetadataWatchRecovery(target);
       return false;
     }
   }
@@ -2148,7 +2182,13 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     const delayMs = WATCH_RECOVERY_BASE_DELAY_MS * 2 ** (target.recovery.attemptCount - 1);
     target.recovery.timer = setTimeout(() => {
       target.recovery.timer = null;
-      void this.recoverRepoMetadataWatch(target);
+      void this.recoverRepoMetadataWatch(target).catch((error) => {
+        if (this.disposed || target.closed) {
+          return;
+        }
+        this.logger.warn({ err: error }, "Git watcher recovery failed; retrying with backoff");
+        this.scheduleRepoMetadataWatchRecovery(target);
+      });
     }, delayMs);
   }
 
@@ -2162,6 +2202,8 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       return;
     }
     this.logger.info({ repoGitRoot: target.repoGitRoot }, "Repository metadata watcher recovered");
+    await this.refreshWorkingTreeIgnoresForWorkspaces(target.workspaceKeys);
+    this.scheduleRepoMetadataRefresh(target, "git-metadata-watch-recovered", true);
   }
 
   private routeRepoMetadataEvents(
@@ -2204,13 +2246,23 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
         }
       }
     }
+    void this.refreshWorkingTreeIgnoresForWorkspaces(workspaceKeys);
+  }
+
+  private async refreshWorkingTreeIgnoresForWorkspaces(
+    workspaceKeys: Iterable<string>,
+  ): Promise<void> {
+    const targets = new Set<WorkingTreeWatchTarget>();
     for (const workspaceKey of workspaceKeys) {
       const workspaceTarget = this.workspaceTargets.get(workspaceKey);
       const workingTreeTarget = workspaceTarget
         ? this.getWorkingTreeWatchTargetForWorkspace(workspaceTarget)
         : null;
-      if (workingTreeTarget) void this.refreshWorkingTreeIgnoredDirectories(workingTreeTarget);
+      if (workingTreeTarget) targets.add(workingTreeTarget);
     }
+    await Promise.all(
+      [...targets].map((target) => this.refreshWorkingTreeIgnoredDirectories(target)),
+    );
   }
 
   private isFetchRemoteMetadataEvent(target: RepoGitTarget, event: FileChange): boolean {
