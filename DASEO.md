@@ -2206,7 +2206,12 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
     the guard: the web input writes the DOM value at once, and a guard there would only reject
     pasting the text just sent. On web, measured 2026-11-13 on the dev app with 4,465 and 7,749
     Korean characters, sending idle, steering a running agent, and sampling 90 frames after
-    Enter all left an empty 46 px input; the bug did not reproduce there. Key files:
+    Enter all left an empty 46 px input; the bug did not reproduce there. The owner reported
+    it again on 2026-11-16 on 0.5.125 after a dictated prompt: the guard matched only a late
+    event equal to the replaced text, and voice typing finalises its last phrase on send, so
+    the event carries the prompt with a changed tail. A late event that continues the replaced
+    text (shares at least half of it and 16 characters from the start, and more than it shares
+    with the replacement) is now pushed out the same way. Not reproduced on a device. Key files:
     `packages/app/src/components/ui/text-input/native-replacement.ts`,
     `packages/app/src/composer/input/input.tsx` (`replaceNativeText`).
 

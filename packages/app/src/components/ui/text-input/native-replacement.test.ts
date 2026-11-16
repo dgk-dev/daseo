@@ -107,6 +107,41 @@ describe("a sent prompt stays sent (Daseo delta 96)", () => {
     });
   });
 
+  // 2026-11-16: a dictated prompt came back after sending on 0.5.125. Voice typing finalises
+  // its last phrase on send, so the late event is the prompt with a changed tail, not a copy.
+  it("pushes the replacement out again when the late commit changed the prompt's tail", () => {
+    const prompt = "사이드바도 다 디자인 통일되고, 본문 시작 높이도 통일되";
+    const sent = createPendingNativeTextReplacement(prompt, "");
+
+    for (const late of [`${prompt}고.`, `${prompt} `, `${prompt.slice(0, -3)}통일되고.`]) {
+      expect(resolveNativeTextChangeAfterReplacement(sent, late)).toEqual({
+        action: "reassert",
+        pending: sent,
+      });
+    }
+  });
+
+  it("accepts typing that continues the replacement, and short prompts typed again", () => {
+    const longPrompt = "긴 프롬프트의 앞부분이 그대로 이어지는 문장 @fi";
+    const completed = createPendingNativeTextReplacement(longPrompt, `${longPrompt}le.ts `);
+    expect(resolveNativeTextChangeAfterReplacement(completed, `${longPrompt}le.ts a`)).toEqual({
+      action: "accept",
+      pending: null,
+    });
+
+    const short = createPendingNativeTextReplacement("네 알겠습니다", "");
+    expect(resolveNativeTextChangeAfterReplacement(short, "네 알겠습니다 그리고")).toEqual({
+      action: "accept",
+      pending: null,
+    });
+
+    const sent = createPendingNativeTextReplacement("처음 보낸 긴 프롬프트의 전체 내용입니다", "");
+    expect(resolveNativeTextChangeAfterReplacement(sent, "처음 보낸 것과 다른 새 글")).toEqual({
+      action: "accept",
+      pending: null,
+    });
+  });
+
   it("drops the guard once the native input reports the replaced text", () => {
     const sent = createPendingNativeTextReplacement("prompt", "");
     const settled = resolveNativeTextChangeAfterReplacement(sent, "");

@@ -80,8 +80,38 @@ export function resolveNativeTextChangeAfterReplacement(
   if (nextText === pending.expectedText) {
     return { action: "ignore", pending: null };
   }
-  if (nextText === pending.previousText) {
+  if (nextText === pending.previousText || isLateCommitOfReplacedText(pending, nextText)) {
     return { action: "reassert", pending };
   }
   return { action: "accept", pending: null };
+}
+
+const LATE_COMMIT_MIN_SHARED_LENGTH = 16;
+
+function sharedPrefixLength(a: string, b: string): number {
+  const limit = Math.min(a.length, b.length);
+  let index = 0;
+  while (index < limit && a.charCodeAt(index) === b.charCodeAt(index)) index += 1;
+  return index;
+}
+
+/**
+ * A late IME commit rarely carries the replaced text unchanged: voice typing finalises its last
+ * phrase when send is pressed (a revised word, an added full stop or space), so the event holds
+ * the replaced prompt with a different tail. Such an event continues the replaced text, not the
+ * replacement: it shares at least half of the replaced text (and 16 characters) from the start,
+ * and more than it shares with the replacement. Typing after the replacement starts from the
+ * replacement and never matches.
+ */
+function isLateCommitOfReplacedText(
+  pending: PendingNativeTextReplacement,
+  nextText: string,
+): boolean {
+  const replaced = pending.previousText;
+  if (replaced.length < LATE_COMMIT_MIN_SHARED_LENGTH) return false;
+  const shared = sharedPrefixLength(nextText, replaced);
+  if (shared < Math.max(LATE_COMMIT_MIN_SHARED_LENGTH, Math.ceil(replaced.length / 2))) {
+    return false;
+  }
+  return shared > sharedPrefixLength(nextText, pending.expectedText);
 }
