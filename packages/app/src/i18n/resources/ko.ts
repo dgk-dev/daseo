@@ -2214,6 +2214,7 @@ export const ko: TranslationResources = {
         toggleModel: "모델 전환",
         toggleVoiceMode: "음성 모드 토글",
         startStopDictation: "받아쓰기 시작/중지",
+        openAttachMenu: "업로드 메뉴 열기",
         interruptAgent: "에이전트 중단",
         sendMessage: "메시지 보내기",
         queueMessage: "메시지 대기열에 추가",

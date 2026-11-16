@@ -2262,6 +2262,7 @@ export const en = {
         toggleModel: "Toggle model",
         toggleVoiceMode: "Toggle voice mode",
         startStopDictation: "Start/stop dictation",
+        openAttachMenu: "Open the upload menu",
         interruptAgent: "Interrupt agent",
         sendMessage: "Send message",
         queueMessage: "Queue message",

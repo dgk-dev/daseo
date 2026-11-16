@@ -2220,6 +2220,7 @@ export const ja: TranslationResources = {
         toggleModel: "モデルを切り替え",
         toggleVoiceMode: "音声モードを切り替え",
         startStopDictation: "音声入力を開始/停止",
+        openAttachMenu: "アップロードメニューを開く",
         interruptAgent: "エージェントを中断",
         sendMessage: "メッセージを送信",
         queueMessage: "メッセージをキューに追加",

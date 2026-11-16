@@ -34,6 +34,7 @@ function createDictationKeyboard({ startsRecording }: { startsRecording: boolean
         toggleRealtimeVoice: () => undefined,
         isRealtimeVoiceActive: false,
         toggleRealtimeVoiceMute: () => undefined,
+        openAttachMenu: () => undefined,
       }),
   };
 }
@@ -160,6 +161,29 @@ describe("dictation keyboard behavior", () => {
     keyboard.pressDictationShortcut();
 
     expect(keyboard.actions).toEqual(["start", "start"]);
+  });
+});
+
+describe("attach menu keyboard behavior", () => {
+  it("opens the attach menu and reports the shortcut as handled", () => {
+    const openAttachMenu = vi.fn();
+    const startDictation = vi.fn();
+
+    const handled = runMessageInputKeyboardAction("attach-menu-open", {
+      focusInput: () => undefined,
+      isDictationRecording: () => false,
+      startDictation,
+      confirmDictation: () => undefined,
+      cancelDictation: () => undefined,
+      toggleRealtimeVoice: () => undefined,
+      isRealtimeVoiceActive: false,
+      toggleRealtimeVoiceMute: () => undefined,
+      openAttachMenu,
+    });
+
+    expect(handled).toBe(true);
+    expect(openAttachMenu).toHaveBeenCalledTimes(1);
+    expect(startDictation).not.toHaveBeenCalled();
   });
 });
 

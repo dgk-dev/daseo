@@ -25,7 +25,7 @@ export const HINT_LINE_LABELS = {
   focus: "focus",
   commands: "commands",
   files: "files",
-  attach: "attach",
+  upload: "upload",
   dictate: "dictate",
   voice: "voice",
   mute: "mute",

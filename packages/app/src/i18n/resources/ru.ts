@@ -2245,6 +2245,7 @@ export const ru: TranslationResources = {
         toggleModel: "Переключить модель",
         toggleVoiceMode: "Переключить голосовой режим",
         startStopDictation: "Начать диктовку /stop",
+        openAttachMenu: "Открыть меню загрузки",
         interruptAgent: "Агент прерываний",
         sendMessage: "Отправить сообщение",
         queueMessage: "Сообщение в очереди",

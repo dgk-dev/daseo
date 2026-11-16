@@ -49,6 +49,36 @@ describe("keyboard-action-dispatcher", () => {
     expect(calls).toEqual(["high"]);
   });
 
+  it("delivers the attach-menu action only to a handler that registered it", () => {
+    const dictationOnly = vi.fn(() => true);
+    const composer = vi.fn(() => true);
+    const action: KeyboardActionDefinition = {
+      id: "message-input.attach-menu-open",
+      scope: "message-input",
+    };
+
+    dispatcher.registerHandler({
+      handlerId: "dictation-only",
+      actions: ["message-input.dictation-toggle"],
+      enabled: true,
+      priority: 300,
+      isActive: () => true,
+      handle: dictationOnly,
+    });
+    dispatcher.registerHandler({
+      handlerId: "composer",
+      actions: ["message-input.dictation-toggle", action.id],
+      enabled: true,
+      priority: 100,
+      isActive: () => true,
+      handle: composer,
+    });
+
+    expect(dispatcher.dispatch(action)).toBe(true);
+    expect(composer).toHaveBeenCalledWith(action);
+    expect(dictationOnly).not.toHaveBeenCalled();
+  });
+
   it("skips disabled and inactive handlers", () => {
     const handle = vi.fn(() => true);
     const action: KeyboardActionDefinition = {

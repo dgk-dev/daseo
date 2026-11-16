@@ -2255,6 +2255,7 @@ export const es: TranslationResources = {
         toggleModel: "Alternar modelo",
         toggleVoiceMode: "Alternar modo de voz",
         startStopDictation: "Iniciar dictado/stop",
+        openAttachMenu: "Abrir el menú de carga",
         interruptAgent: "agente de interrupción",
         sendMessage: "enviar mensaje",
         queueMessage: "mensaje de cola",

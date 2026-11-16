@@ -2202,6 +2202,7 @@ export const ar: TranslationResources = {
         toggleModel: "تبديل النموذج",
         toggleVoiceMode: "تبديل الوضع الصوتي",
         startStopDictation: "بدء إملاء /stop",
+        openAttachMenu: "فتح قائمة الرفع",
         interruptAgent: "عامل المقاطعة",
         sendMessage: "أرسل رسالة",
         queueMessage: "رسالة قائمة الانتظار",

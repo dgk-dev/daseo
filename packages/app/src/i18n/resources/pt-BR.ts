@@ -2239,6 +2239,7 @@ export const ptBR: TranslationResources = {
         toggleModel: "Alternar modelo",
         toggleVoiceMode: "Alternar modo de voz",
         startStopDictation: "Iniciar/parar ditado",
+        openAttachMenu: "Abrir o menu de upload",
         interruptAgent: "Interromper agente",
         sendMessage: "Enviar mensagem",
         queueMessage: "Enfileirar mensagem",

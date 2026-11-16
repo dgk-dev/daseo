@@ -70,6 +70,7 @@ interface MessageInputKeyboardActions {
   toggleRealtimeVoice: () => void;
   isRealtimeVoiceActive: boolean;
   toggleRealtimeVoiceMute: () => void;
+  openAttachMenu: () => void;
 }
 
 export function computeCanStartDictation(input: {
@@ -134,6 +135,10 @@ export function runMessageInputKeyboardAction(
       return true;
     }
     return false;
+  }
+  if (action === "attach-menu-open") {
+    actions.openAttachMenu();
+    return true;
   }
   if (action === "dictation-toggle") {
     if (actions.isDictationRecording()) {

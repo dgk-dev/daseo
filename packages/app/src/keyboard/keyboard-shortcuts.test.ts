@@ -334,6 +334,20 @@ describe("keyboard-shortcuts", () => {
       payload: { kind: "dictation-toggle" },
     },
     {
+      name: "routes Cmd+U to open the attach menu from the message input on macOS",
+      event: { key: "u", code: "KeyU", metaKey: true },
+      context: { isMac: true, focusScope: "message-input" },
+      action: "message-input.action",
+      payload: { kind: "attach-menu-open" },
+    },
+    {
+      name: "routes Ctrl+U to open the attach menu from the message input off macOS",
+      event: { key: "u", code: "KeyU", ctrlKey: true },
+      context: { isMac: false, focusScope: "message-input" },
+      action: "message-input.action",
+      payload: { kind: "attach-menu-open" },
+    },
+    {
       name: "routes Shift+Tab to cycle agent mode from the message input",
       event: { key: "Tab", code: "Tab", shiftKey: true },
       context: { focusScope: "message-input" },
@@ -524,6 +538,21 @@ describe("keyboard-shortcuts", () => {
       name: "does not bind Ctrl+Enter as a rebindable message queue shortcut",
       event: { key: "Enter", code: "Enter", ctrlKey: true },
       context: { isMac: false, focusScope: "message-input" },
+    },
+    {
+      name: "keeps Cmd+U for the terminal when it is focused",
+      event: { key: "u", code: "KeyU", metaKey: true },
+      context: { isMac: true, focusScope: "terminal" },
+    },
+    {
+      name: "does not open the attach menu while the command center is open",
+      event: { key: "u", code: "KeyU", metaKey: true },
+      context: { isMac: true, commandCenterOpen: true },
+    },
+    {
+      name: "does not bind Ctrl+U to the attach menu on macOS",
+      event: { key: "u", code: "KeyU", ctrlKey: true },
+      context: { isMac: true, focusScope: "message-input" },
     },
     {
       name: "does not interrupt agent when terminal is focused",
@@ -733,6 +762,7 @@ describe("keyboard-shortcut help sections", () => {
         "workspace-pane-split-right": ["mod", "\\"],
         "workspace-pane-close": ["mod", "shift", "W"],
         "cycle-agent-mode": ["shift", "Tab"],
+        "attach-menu-open": ["mod", "U"],
       },
     },
     {
@@ -759,6 +789,7 @@ describe("keyboard-shortcut help sections", () => {
       expectedKeys: {
         "workspace-tab-jump-index": ["alt", "1-9"],
         "workspace-tab-close-current": ["ctrl", "W"],
+        "attach-menu-open": ["ctrl", "U"],
       },
     },
     {

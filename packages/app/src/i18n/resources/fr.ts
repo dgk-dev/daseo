@@ -2257,6 +2257,7 @@ export const fr: TranslationResources = {
         toggleModel: "Basculer de modèle",
         toggleVoiceMode: "Changer le mode vocal",
         startStopDictation: "Démarrer la dictée/stop",
+        openAttachMenu: "Ouvrir le menu d'envoi",
         interruptAgent: "Agent d'interruption",
         sendMessage: "Envoyer un message",
         queueMessage: "Message de file d'attente",

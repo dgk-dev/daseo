@@ -275,6 +275,7 @@ describe("routeKeyboardShortcut — message-input.action", () => {
     ["focus", "message-input.focus"],
     ["send", "message-input.send"],
     ["dictation-toggle", "message-input.dictation-toggle"],
+    ["attach-menu-open", "message-input.attach-menu-open"],
     ["dictation-cancel", "message-input.dictation-cancel"],
     ["dictation-confirm", "message-input.dictation-confirm"],
     ["voice-toggle", "message-input.voice-toggle"],

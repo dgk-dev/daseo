@@ -2178,6 +2178,7 @@ export const zhCN: TranslationResources = {
         toggleModel: "切换模型",
         toggleVoiceMode: "切换语音模式",
         startStopDictation: "开始/停止听写",
+        openAttachMenu: "打开上传菜单",
         interruptAgent: "中断 Agent",
         sendMessage: "发送消息",
         queueMessage: "消息排队",

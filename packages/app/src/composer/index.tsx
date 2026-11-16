@@ -630,6 +630,8 @@ function resolveMessageInputPassthroughAction(
       return "dictation-confirm";
     case "message-input.dictation-toggle":
       return "dictation-toggle";
+    case "message-input.attach-menu-open":
+      return "attach-menu-open";
     case "message-input.dictation-cancel":
       return "dictation-cancel";
     case "message-input.voice-toggle":
@@ -2059,6 +2061,7 @@ export function Composer({
       "message-input.focus",
       "message-input.send",
       "message-input.dictation-toggle",
+      "message-input.attach-menu-open",
       "message-input.dictation-cancel",
       "message-input.dictation-confirm",
       "message-input.voice-toggle",

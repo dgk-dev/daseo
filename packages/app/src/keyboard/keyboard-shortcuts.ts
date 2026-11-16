@@ -198,6 +198,7 @@ export const SHORTCUT_HELP_ROW_ORDER: Record<ShortcutSectionId, readonly string[
     "model-toggle",
     "voice-toggle",
     "dictation-toggle",
+    "attach-menu-open",
     "agent-interrupt",
     "voice-mute-toggle",
   ],
@@ -244,6 +245,7 @@ const SHORTCUT_HELP_LABEL_KEYS: Record<string, string> = {
   "model-toggle": "settings.shortcuts.help.toggleModel",
   "voice-toggle": "settings.shortcuts.help.toggleVoiceMode",
   "dictation-toggle": "settings.shortcuts.help.startStopDictation",
+  "attach-menu-open": "settings.shortcuts.help.openAttachMenu",
   "agent-interrupt": "settings.shortcuts.help.interruptAgent",
   "voice-mute-toggle": "settings.shortcuts.help.muteUnmuteVoiceMode",
 };
@@ -1112,6 +1114,32 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
       id: "dictation-toggle",
       section: "agent-input",
       label: "Start/stop dictation",
+    },
+  },
+  // Daseo delta 121: opens the composer's upload (attach) menu, the same menu the hint-line word
+  // opens. Same scope guards as the dictation toggle.
+  {
+    id: "message-input-attach-menu-open-cmd-u-mac",
+    action: "message-input.action",
+    combo: "Cmd+U",
+    when: { mac: true, commandCenter: false, terminal: false },
+    payload: { type: "message-input", kind: "attach-menu-open" },
+    help: {
+      id: "attach-menu-open",
+      section: "agent-input",
+      label: "Open the upload menu",
+    },
+  },
+  {
+    id: "message-input-attach-menu-open-ctrl-u-non-mac",
+    action: "message-input.action",
+    combo: "Ctrl+U",
+    when: { mac: false, commandCenter: false, terminal: false },
+    payload: { type: "message-input", kind: "attach-menu-open" },
+    help: {
+      id: "attach-menu-open",
+      section: "agent-input",
+      label: "Open the upload menu",
     },
   },
   {

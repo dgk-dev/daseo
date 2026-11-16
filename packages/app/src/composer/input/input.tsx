@@ -250,14 +250,19 @@ interface TextAreaHandle {
 function AttachButtonLabel({
   hovered,
   onAttachButtonRef,
+  shortcut,
 }: {
   hovered: boolean;
   onAttachButtonRef: ((node: View | null) => void) | undefined;
+  shortcut: ShortcutChord | null | undefined;
 }) {
   return (
-    <View ref={onAttachButtonRef} collapsable={false} style={styles.attachButtonAnchor}>
-      <HintWord active={hovered}>{HINT_LINE_LABELS.attach}</HintWord>
-    </View>
+    <>
+      <HintKeycap chord={shortcut} />
+      <View ref={onAttachButtonRef} collapsable={false} style={styles.attachButtonAnchor}>
+        <HintWord active={hovered}>{HINT_LINE_LABELS.upload}</HintWord>
+      </View>
+    </>
   );
 }
 
@@ -287,6 +292,8 @@ function AttachmentDropdown({
   renderAttachButtonIcon,
   attachmentMenuItems,
   addAttachmentLabel,
+  open,
+  onOpenChange,
 }: {
   visible: boolean;
   isConnected: boolean;
@@ -295,11 +302,13 @@ function AttachmentDropdown({
   renderAttachButtonIcon: (input: { hovered?: boolean }) => React.ReactElement;
   attachmentMenuItems: AttachmentMenuItem[];
   addAttachmentLabel: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }) {
   const isButtonDisabled = !isConnected || disabled;
   if (!visible) return null;
   return (
-    <DropdownMenu compactMode="sheet">
+    <DropdownMenu compactMode="sheet" open={open} onOpenChange={onOpenChange}>
       <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
         <TooltipTrigger asChild>
           <DropdownMenuTrigger
@@ -1270,6 +1279,9 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const voice = useVoiceOptional();
     const voiceMuteToggleKeys = useShortcutKeys("voice-mute-toggle");
     const dictationToggleKeys = useShortcutKeys("dictation-toggle");
+    const attachMenuKeys = useShortcutKeys("attach-menu-open");
+    // Controlled so the keyboard shortcut (delta 121) opens the same menu a press on the word does.
+    const [isAttachMenuOpen, setIsAttachMenuOpen] = useState(false);
     const focusInputKeys = useShortcutKeys("focus-message-input");
     const [inputHeight, setInputHeight] = useState(MIN_INPUT_HEIGHT);
     const [isInputFocused, setIsInputFocused] = useState(false);
@@ -1315,6 +1327,12 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       [onChangeText, onReplaceText, replaceNativeText],
     );
 
+    // The shortcut opens the menu only where the word itself is shown and pressable.
+    const openAttachMenuFromShortcut = () => {
+      if (!mode.showAttachments || disabled || !(client?.isConnected ?? false)) return;
+      setIsAttachMenuOpen(true);
+    };
+
     useImperativeHandle(ref, () => ({
       focus: () => {
         textInputRef.current?.focus();
@@ -1335,6 +1353,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
               toggleRealtimeVoice: handleToggleRealtimeVoiceShortcut,
               isRealtimeVoiceActive: isRealtimeVoiceForCurrentAgent,
               toggleRealtimeVoiceMute: () => voice?.toggleMute(),
+              openAttachMenu: openAttachMenuFromShortcut,
             })
           : false,
       getNativeElement: () => (isWeb ? getTextInputNativeElement(textInputRef.current) : null),
@@ -1928,9 +1947,10 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         <AttachButtonLabel
           hovered={Boolean(hovered) || Boolean(pressed)}
           onAttachButtonRef={onAttachButtonRef}
+          shortcut={attachMenuKeys}
         />
       ),
-      [onAttachButtonRef],
+      [attachMenuKeys, onAttachButtonRef],
     );
 
     const renderVoiceButtonIcon = useCallback(
@@ -2054,6 +2074,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
                 renderAttachButtonIcon={renderAttachButtonIcon}
                 attachmentMenuItems={attachmentMenuItems}
                 addAttachmentLabel={t("composer.input.addAttachment")}
+                open={isAttachMenuOpen}
+                onOpenChange={setIsAttachMenuOpen}
               />
               <VoiceButtonTooltip
                 visible={mode.showVoice}

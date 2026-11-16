@@ -1892,7 +1892,7 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
     - **Words instead of icons.** Message actions read `copy`, `fork`, `undo` on the metadata
       line (always visible, delta 32). Under the input sits one hint line: `model … ▾`,
       `effort … ▾`, `mode … ▾`, then only key hints that really work on that platform
-      (`⏎ send`, `⇧⏎ newline`, `⌘L focus`, `/ commands`, `@ files`), `attach`, `dictate`,
+      (`⏎ send`, `⇧⏎ newline`, `⌘L focus`, `/ commands`, `@ files`), `upload` (was `attach`, delta 121), `dictate`,
       `voice`, then a trailing group that never wraps: the context meter, and on desktop
       `↓ bottom`. Jump-to-newest is that word on desktop instead of a button floating over the
       transcript (it covered the end of wide code blocks and tables): same condition and
@@ -3088,6 +3088,10 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
      - **App.** A snapshot is keyed by host and hash; a durable copy (native cache directory or IndexedDB, index in AsyncStorage, at most 500 entries and 200 MiB, least recently used evicted) shows it after a restart without the host. A failed image placeholder retries on tap, and a host reconnect retries failed images on screen.
      - **Key files:** `packages/server/src/server/assistant-image-snapshots/`, `packages/server/src/server/agent/{agent-manager.ts,agent-stream-coalescer.ts}`, `bootstrap.ts`, `file-explorer/service.ts`, `packages/app/src/assistant-image/`, `packages/app/src/components/message.tsx`.
      - **Not verified on a device:** on the Fold 7 and the packaged Mac app, offline display after restart, the retry tap, reconnect retry, IndexedDB persistence in Electron, and the cache directory under Android storage pressure.
+121. **`⌘U upload`: a key for the attach menu, and the word `upload`** — the owner's ask on 2026-11-16: the hint line showed a key for newline, focus, commands, files and dictate, but `attach` had none.
+     - **Shortcut.** `Cmd+U` on macOS, `Ctrl+U` elsewhere (unbound before), with the dictation toggle's guards (not while the command center is open or the terminal is focused). It opens the same attach menu a press on the word opens (the menu root is now controlled from the composer input); it opens nothing while the word is hidden, disabled, or the host is disconnected, but the key is still consumed in the composer scope, like the dictation key. Listed in the shortcuts help as "Open the upload menu" (`settings.shortcuts.help.openAttachMenu`, nine locales) and rebindable like the others.
+     - **Word.** The hint-line word `attach` reads `upload` on every platform, with the bound key in front on desktop (`⌘U upload`) and the word alone on phones. English in every locale (delta 89). The accessibility label, tooltip, menu items and test ids are unchanged.
+     - **Key files:** `packages/app/src/keyboard/{actions,keyboard-shortcuts,route-shortcut,keyboard-action-dispatcher}.ts`, `packages/app/src/composer/{index.tsx,hint-line.tsx}`, `packages/app/src/composer/input/{input.tsx,state.ts}`.
 
 ## Local reliability contracts
 
