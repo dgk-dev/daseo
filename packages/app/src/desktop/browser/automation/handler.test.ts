@@ -3,6 +3,7 @@ import type { SessionInboundMessage, SessionOutboundMessage } from "@getpaseo/pr
 import { createJSONStorage, type StateStorage } from "zustand/middleware";
 import { mountBrowserAutomationHandler } from "./handler";
 import type { DesktopHostBridge } from "@/desktop/host";
+import type { BrowserRegistrationResult } from "@/desktop/browser/resident-webviews";
 import { getBrowserRecord, useBrowserStore } from "@/desktop/browser/store";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
@@ -140,6 +141,13 @@ class FakeResidentBrowser {
     url: string;
   }> = [];
 
+  public readonly registrationWaits: Array<{ browserId: string; timeoutMs: number }> = [];
+  public registration: BrowserRegistrationResult = {
+    ok: true,
+    stage: "registered",
+    elapsedMs: 3,
+  };
+
   public ensure = (input: {
     browserId: string;
     workspaceId: string;
@@ -147,6 +155,14 @@ class FakeResidentBrowser {
   }): HTMLElement | null => {
     this.ensuredWebviews.push(input);
     return null;
+  };
+
+  public waitForRegistration = async (
+    browserId: string,
+    options: { timeoutMs: number },
+  ): Promise<BrowserRegistrationResult> => {
+    this.registrationWaits.push({ browserId, timeoutMs: options.timeoutMs });
+    return this.registration;
   };
 }
 
@@ -161,7 +177,6 @@ class BrowserAutomationHandlerHarness {
       serverId?: string;
       host?: DesktopHostBridge | null;
       registrationWaitTimeoutMs?: number;
-      registrationPollIntervalMs?: number;
       hostStallCheckAfterMs?: number;
       hostPingTimeoutMs?: number;
     } = {},
@@ -177,11 +192,9 @@ class BrowserAutomationHandlerHarness {
       ...(input.serverId ? { serverId: input.serverId } : {}),
       getHost: () => (input.host === undefined ? { browser: this.browser } : input.host),
       ensureResidentBrowserWebview: this.resident.ensure,
+      waitForBrowserRegistration: this.resident.waitForRegistration,
       ...(input.registrationWaitTimeoutMs !== undefined
         ? { registrationWaitTimeoutMs: input.registrationWaitTimeoutMs }
-        : {}),
-      ...(input.registrationPollIntervalMs !== undefined
-        ? { registrationPollIntervalMs: input.registrationPollIntervalMs }
         : {}),
     });
   }
@@ -399,17 +412,18 @@ describe("mountBrowserAutomationHandler", () => {
     ]);
   });
 
-  test("browser_new_tab returns a retryable timeout when the resident webview does not register", async () => {
+  test("browser_new_tab returns a retryable timeout naming the stage when the tab does not register", async () => {
     const browser = new BrowserAutomationHandlerHarness();
-    browser.browser.response = emptyListTabsPayload();
-    browser.mount({
-      serverId: "server-1",
-      registrationWaitTimeoutMs: 1,
-      registrationPollIntervalMs: 1,
-    });
+    browser.resident.registration = {
+      ok: false,
+      stage: "waiting-for-identity",
+      reason: "still waiting for identity after 5000ms",
+      elapsedMs: 5000,
+    };
+    browser.mount({ serverId: "server-1" });
 
     browser.receive(browserNewTabRequest());
-    await waitForRegistrationTimeout();
+    await flushAsyncWork();
 
     expect(browser.client.sentResponses).toEqual([
       {
@@ -419,20 +433,19 @@ describe("mountBrowserAutomationHandler", () => {
           ok: false,
           error: {
             code: "browser_timeout",
-            message: expect.stringContaining("Timed out waiting for browser tab"),
+            message: expect.stringMatching(
+              /^Browser tab \S+ did not open: the attached page view never reported its identity \(still waiting for identity after 5000ms, 5000ms\)\. Try browser_new_tab again\.$/,
+            ),
             retryable: true,
           },
         },
       },
     ]);
-    expect(browser.resident.ensuredWebviews).toEqual([
-      expect.objectContaining({
-        workspaceId: "wks_workspace_a",
-        url: "https://example.com",
-      }),
-    ]);
     const browserId = browser.resident.ensuredWebviews[0]?.browserId;
     expect(browserId).toBeTruthy();
+    expect(browser.resident.registrationWaits).toEqual([{ browserId, timeoutMs: 5000 }]);
+    // No list_tabs poll: the tab's own acknowledgement decides.
+    expect(browser.browser.executedRequests).toEqual([]);
     expect(browserId ? getBrowserRecord(browserId) : null).toBeNull();
     expect(
       browserId
@@ -445,6 +458,59 @@ describe("mountBrowserAutomationHandler", () => {
           )
         : [],
     ).toEqual([]);
+    expect(browser.browser.unregisteredWorkspaceBrowsers).toEqual([browserId]);
+  });
+
+  test("browser_new_tab reports main's rejection at once and rolls the tab back", async () => {
+    const browser = new BrowserAutomationHandlerHarness();
+    browser.resident.registration = {
+      ok: false,
+      stage: "rejected",
+      reason: "Attached browser registration was rejected: guest destroyed",
+      elapsedMs: 12,
+    };
+    browser.mount({ serverId: "server-1", registrationWaitTimeoutMs: 250 });
+
+    browser.receive(browserNewTabRequest());
+    await flushAsyncWork();
+
+    const payload = browser.client.payloadAt(0);
+    expect(payload).toEqual({
+      requestId: "req-new",
+      ok: false,
+      error: {
+        code: "browser_unknown_error",
+        message: expect.stringContaining(
+          "the app's main process rejected the tab's registration (Attached browser registration was rejected: guest destroyed, 12ms)",
+        ),
+        retryable: true,
+      },
+    });
+    const browserId = browser.resident.ensuredWebviews[0]?.browserId;
+    expect(browser.resident.registrationWaits).toEqual([{ browserId, timeoutMs: 250 }]);
+    expect(browserId ? getBrowserRecord(browserId) : null).toBeNull();
+    expect(browser.browser.unregisteredWorkspaceBrowsers).toEqual([browserId]);
+  });
+
+  test("browser_new_tab fails at the list_tabs stage when main registered but does not list the tab", async () => {
+    const browser = new BrowserAutomationHandlerHarness();
+    browser.browser.response = emptyListTabsPayload();
+    browser.mount({ serverId: "server-1" });
+
+    browser.receive(browserNewTabRequest());
+    await flushAsyncWork();
+
+    expect(browser.client.payloadAt(0)).toEqual({
+      requestId: "req-new",
+      ok: false,
+      error: {
+        code: "browser_unknown_error",
+        message: expect.stringContaining("registered the tab but does not list it"),
+        retryable: true,
+      },
+    });
+    const browserId = browser.resident.ensuredWebviews[0]?.browserId;
+    expect(browserId ? getBrowserRecord(browserId) : null).toBeNull();
     expect(browser.browser.unregisteredWorkspaceBrowsers).toEqual([browserId]);
   });
 
@@ -815,8 +881,9 @@ describe("mountBrowserAutomationHandler", () => {
     expect(browser.resident.ensuredWebviews).toEqual([
       { browserId: targetId, workspaceId: "wks_workspace_a", url: "https://one.example" },
     ]);
+    // Delta 123: the guest's own registration acknowledgement replaces the list_tabs poll.
+    expect(browser.resident.registrationWaits).toEqual([{ browserId: targetId, timeoutMs: 5000 }]);
     expect(browser.browser.executedRequests.map((request) => request.command.command)).toEqual([
-      "list_tabs",
       "snapshot",
     ]);
     expect(browser.browser.executedRequests.at(-1)).toEqual(snapshot);

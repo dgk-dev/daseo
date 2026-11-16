@@ -148,6 +148,8 @@ export interface DesktopAttachedBrowserRegistration {
   browserId: string;
   workspaceId: string;
   webContentsId: number;
+  /** Delta 123: the URL the tab was opened with; main reports it until the first commit. */
+  requestedUrl?: string;
 }
 
 export interface DesktopBrowserPopupTarget {

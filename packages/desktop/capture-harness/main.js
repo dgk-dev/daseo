@@ -6608,6 +6608,355 @@ async function verifyPageSettleNavigate(fixture) {
   );
 }
 
+// Delta 123: new-tab and navigation reliability (2026-11-16, Google Search Console). Real guests,
+// the compiled automation service, and a server whose pages hold a request open forever, answer
+// their main document after 30 s, or sit under a service worker that never answers a navigation.
+async function startTabReliabilityServer() {
+  const held = [];
+  const server = http.createServer((request, response) => {
+    const url = request.url ?? "/";
+    if (url.startsWith("/never")) {
+      held.push(response);
+      return;
+    }
+    if (url.startsWith("/slow-doc")) {
+      held.push(response);
+      setTimeout(() => {
+        if (response.writableEnded || response.destroyed) return;
+        response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        response.end("<!doctype html><title>Slow doc</title><p>slow doc</p>");
+      }, 30_000);
+      return;
+    }
+    if (url.startsWith("/sw.js")) {
+      response.writeHead(200, { "content-type": "text/javascript" });
+      response.end(
+        "self.addEventListener('install', () => self.skipWaiting());" +
+          "self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));" +
+          "self.addEventListener('fetch', (e) => { if (e.request.mode === 'navigate' && e.request.url.includes('/sw/')) e.respondWith(new Promise(() => {})); });",
+      );
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    const name = /^\/([a-z0-9-]+)/.exec(url)?.[1] ?? "root";
+    if (url.startsWith("/hang")) {
+      response.end(
+        `<!doctype html><title>${name}</title><h1 id="t">${name} text</h1><img src="/never?${name}">`,
+      );
+      return;
+    }
+    if (url.startsWith("/sw-install")) {
+      response.end(
+        "<!doctype html><title>sw-install</title><p>installing</p><script>navigator.serviceWorker.register('/sw.js',{scope:'/'}).then(() => navigator.serviceWorker.ready).then(() => { document.title = 'sw-ready'; })</script>",
+      );
+      return;
+    }
+    response.end(`<!doctype html><title>${name}</title><h1 id="t">${name} text</h1>`);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return {
+    server,
+    origin: `http://127.0.0.1:${server.address().port}`,
+    close: async () => {
+      for (const response of held) response.destroy();
+      server.closeAllConnections?.();
+      await closeServer(server);
+    },
+  };
+}
+
+function tabReliabilityCheck(checks, name, problems, detail) {
+  console.log(`DETAIL tab-reliability ${name}: ${JSON.stringify(detail)}`);
+  if (problems.length > 0) {
+    fail(`tab-reliability ${name} (${problems.join("; ")}): ${JSON.stringify(detail)}`);
+  }
+  pass(`tab-reliability ${name}`);
+  checks.push({ group: "tab-reliability", check: name, pass: true, detail });
+}
+
+// The main.log lines the production adapter writes, captured from electron-log.
+function captureBrowserStageLog() {
+  const log = require("electron-log/main");
+  const lines = [];
+  const hook = (message, _transport, transportName) => {
+    if (transportName !== "console") return message;
+    const [first, fields] = message.data ?? [];
+    if (typeof first === "string" && first.startsWith("[browser-nav]")) {
+      lines.push(`${first} ${JSON.stringify(fields ?? {})}`);
+    }
+    return message;
+  };
+  log.hooks.push(hook);
+  return {
+    lines,
+    stop: () => {
+      const index = log.hooks.indexOf(hook);
+      if (index >= 0) log.hooks.splice(index, 1);
+    },
+  };
+}
+
+async function timedNavigate(harness, url, limitMs) {
+  const started = Date.now();
+  const response = await Promise.race([
+    harness.execute({ command: "navigate", args: { browserId: harness.browserId, url } }),
+    delay(limitMs).then(() => ({ unanswered: true })),
+  ]);
+  return { ms: Date.now() - started, response };
+}
+
+async function loadHanging(guest, url) {
+  guest.loadURL(url).catch(() => {});
+  await withTimeout(
+    new Promise((resolve) => guest.once("dom-ready", resolve)),
+    `${url} dom-ready`,
+    10_000,
+  );
+}
+
+// When a new guest's identity becomes readable: what the delta 123 registration relies on.
+async function measureAttachIdentity(win, url) {
+  return renderer(
+    win,
+    `new Promise((resolve) => {
+      const t0 = performance.now();
+      const seen = {};
+      const webview = document.createElement("webview");
+      webview.style.cssText = "position:fixed;left:0;top:0;width:1280px;height:800px";
+      const read = (key) => { if (seen[key] !== undefined) return; try { webview.getWebContentsId(); seen[key] = Math.round(performance.now() - t0); } catch { seen[key] = false; } };
+      webview.addEventListener("did-attach", () => { read("inDidAttach"); setTimeout(() => { read("nextTask"); resolve(seen); }, 0); });
+      webview.addEventListener("dom-ready", () => { seen.domReady = Math.round(performance.now() - t0); }, { once: true });
+      setTimeout(() => resolve(seen), 5000);
+      webview.src = ${JSON.stringify(url)};
+      document.body.appendChild(webview);
+    })`,
+  );
+}
+
+async function runTabReliabilityGroup() {
+  const target = await startTabReliabilityServer();
+  const handle = createInactiveHarnessWindow({
+    width: 1000,
+    height: 700,
+    backgroundColor: "#202020",
+    webPreferences: { webviewTag: true, contextIsolation: true, nodeIntegration: false },
+  });
+  const { win } = handle;
+  installHarnessWebviewGuards(win);
+  const tracker = trackAttachedGuests(win, { disableGuestBackgroundThrottlingAtAttach: true });
+  const checks = [];
+  const stageLog = captureBrowserStageLog();
+  const at = (name) => `${target.origin}/${name}`;
+  try {
+    await withTimeout(
+      win.loadFile(path.join(ROOT, "index.html"), {
+        query: { webviewCount: "0", permanentParkingState: "p1-overflow-1x1" },
+      }),
+      "tab-reliability harness window loadFile",
+    );
+    await waitForInactiveReveal(handle, "tab-reliability harness window");
+    const { guest } = await appendPermanentWebview({
+      win,
+      tracker,
+      state: { id: "p1-overflow-1x1" },
+      sourceUrl: at("start"),
+    });
+    await waitForGuestLoad(guest);
+    const harness = createFramesAutomation(guest);
+    await verifyTabReliabilityNavigation({ checks, harness, guest, at });
+    await verifyTabReliabilityServiceWorker({ checks, harness, guest, at });
+    stageLog.stop();
+    verifyTabReliabilityStageLog({ checks, lines: stageLog.lines });
+    await verifyTabReliabilityRegistration({ checks, win, tracker, at });
+    return checks;
+  } finally {
+    stageLog.stop();
+    try {
+      await session.defaultSession.clearStorageData({ storages: ["serviceworkers"] });
+    } catch {}
+    if (!win.isDestroyed()) win.close();
+    await target.close();
+  }
+}
+
+async function verifyTabReliabilityNavigation({ checks, harness, guest, at }) {
+  // 1. Away from a page whose image never finishes (before: an error naming the old page's abort).
+  await loadHanging(guest, at("hang-a"));
+  const away = await timedNavigate(harness, `${at("plain-b")}?token=secret`, 10_000);
+  tabReliabilityCheck(
+    checks,
+    "navigate away from a page that never finishes loading reports the new page",
+    failedChecks({
+      answered: !away.response.unanswered,
+      ok: away.response.ok === true,
+      url: away.response.result?.url === `${at("plain-b")}?token=secret`,
+      status: away.response.result?.httpStatus === 200,
+      fast: away.ms < 3000,
+      guestThere: guest.getURL().includes("/plain-b"),
+    }),
+    { ms: away.ms, response: away.response },
+  );
+
+  // 2. To a page whose image never finishes (before: no answer, broker "has been loading").
+  const toHanging = await timedNavigate(harness, at("hang-c"), 10_000);
+  const read = await harness.execute({
+    command: "snapshot",
+    args: { browserId: harness.browserId },
+  });
+  tabReliabilityCheck(
+    checks,
+    "navigate to a page that never finishes loading answers at its commit",
+    failedChecks({
+      answered: !toHanging.response.unanswered,
+      ok: toHanging.response.ok === true,
+      url: toHanging.response.result?.url === at("hang-c"),
+      status: toHanging.response.result?.httpStatus === 200,
+      fast: toHanging.ms < 3000,
+      stillLoading: guest.isLoading(),
+      snapshotNewPage: read.ok && read.result.snapshot.includes("hang-c text"),
+      snapshotMarkedLoading: read.ok && read.result.loading === true,
+    }),
+    { ms: toHanging.ms, response: toHanging.response, snapshotOk: read.ok },
+  );
+
+  // 3. From one never-finishing page to another.
+  const hangToHang = await timedNavigate(harness, at("hang-d"), 10_000);
+  tabReliabilityCheck(
+    checks,
+    "navigate between two pages that never finish loading answers each time",
+    failedChecks({
+      ok: hangToHang.response.ok === true,
+      url: hangToHang.response.result?.url === at("hang-d"),
+      fast: hangToHang.ms < 3000,
+    }),
+    { ms: hangToHang.ms, response: hangToHang.response },
+  );
+
+  // 4. A navigation the page's own script starts while its load still runs.
+  const assigned = await harness.execute({
+    command: "evaluate",
+    args: {
+      browserId: harness.browserId,
+      function: `() => { window.location.assign(${JSON.stringify(at("plain-e"))}); return "assigned"; }`,
+    },
+  });
+  const assignDeadline = Date.now() + 3000;
+  while (!guest.getURL().includes("/plain-e") && Date.now() < assignDeadline) await delay(25);
+  const afterAssign = await timedNavigate(harness, at("plain-f"), 10_000);
+  tabReliabilityCheck(
+    checks,
+    "a navigation started by page script commits, and the next navigate answers",
+    failedChecks({
+      evaluated: assigned.ok === true,
+      assignedCommitted: guest.getURL().includes("/plain-e") || guest.getURL().includes("/plain-f"),
+      nextOk: afterAssign.response.ok === true,
+      nextUrl: afterAssign.response.result?.url === at("plain-f"),
+    }),
+    { assigned, afterAssign },
+  );
+
+  // 5. Navigate while a main document is still on its way.
+  guest.loadURL(at("slow-doc")).catch(() => {});
+  await delay(300);
+  const overSlow = await timedNavigate(harness, at("plain-g"), 10_000);
+  tabReliabilityCheck(
+    checks,
+    "navigate while a slow main document is pending replaces it",
+    failedChecks({
+      ok: overSlow.response.ok === true,
+      url: overSlow.response.result?.url === at("plain-g"),
+      fast: overSlow.ms < 3000,
+    }),
+    { ms: overSlow.ms, response: overSlow.response },
+  );
+}
+
+async function verifyTabReliabilityServiceWorker({ checks, harness, guest, at }) {
+  // 6. A service worker that never answers a navigation holds that navigation (the site's own
+  // doing); the tab reports it loading and the next navigate still takes over.
+  await guest.loadURL(at("sw-install")).catch(() => {});
+  const swDeadline = Date.now() + 10_000;
+  while (guest.getTitle() !== "sw-ready" && Date.now() < swDeadline) await delay(100);
+  const swTitle = guest.getTitle();
+  const swHeld = await timedNavigate(harness, at("sw/page"), 3000);
+  const swList = await harness.execute({ command: "list_tabs", args: {} });
+  const overSw = await timedNavigate(harness, at("plain-h"), 10_000);
+  tabReliabilityCheck(
+    checks,
+    "a navigation held by the page's service worker is reported loading and replaced by the next navigate",
+    failedChecks({
+      swInstalled: swTitle === "sw-ready",
+      heldBySite: swHeld.response.unanswered === true,
+      listedLoading: swList.ok && swList.result.tabs[0]?.isLoading === true,
+      nextOk: overSw.response.ok === true,
+      nextUrl: overSw.response.result?.url === at("plain-h"),
+      fast: overSw.ms < 3000,
+    }),
+    { swHeld, swList: swList.ok ? swList.result.tabs[0] : swList, overSw },
+  );
+}
+
+function verifyTabReliabilityStageLog({ checks, lines }) {
+  // 7. Stage lines: one per stage, URLs as origin and path.
+  const joined = lines.join("\n");
+  tabReliabilityCheck(
+    checks,
+    "every navigate stage is logged with origin and path only",
+    failedChecks({
+      loadUrl: joined.includes("[browser-nav] loadURL"),
+      started: joined.includes("[browser-nav] did-start-navigation"),
+      commit: joined.includes("[browser-nav] commit"),
+      domReady: joined.includes("[browser-nav] dom-ready"),
+      failCode: /\[browser-nav\] did-fail-load .*"code":-3/.test(joined),
+      outcome: joined.includes("[browser-nav] outcome"),
+      noQuery: !joined.includes("token=secret"),
+    }),
+    { lines: lines.slice(0, 40) },
+  );
+}
+
+async function verifyTabReliabilityRegistration({ checks, win, tracker, at }) {
+  // 8. Registration: Electron's guest identity timing the delta 123 retry relies on.
+  const fastIdentity = await measureAttachIdentity(win, at("attach-fast"));
+  const slowIdentity = await measureAttachIdentity(win, at("slow-doc?attach"));
+  tabReliabilityCheck(
+    checks,
+    "a new guest's identity is readable one task after did-attach, before a slow first document",
+    failedChecks({
+      fastNextTask: typeof fastIdentity.nextTask === "number",
+      slowNextTask: typeof slowIdentity.nextTask === "number",
+      slowBeforeDomReady: slowIdentity.domReady === undefined,
+    }),
+    { fastIdentity, slowIdentity },
+  );
+
+  // 9. A tab whose first document has not committed reports the URL it was opened with.
+  const { noteRequestedTabUrl } = require(
+    path.join(PRODUCTION_BROWSER_AUTOMATION_DIR, "load-tracker.js"),
+  );
+  const pendingGuestPromise = tracker.waitForNextAttachedGuest();
+  await renderer(
+    win,
+    `(() => { const w = document.createElement("webview"); w.style.cssText = "position:fixed;left:0;top:0;width:1280px;height:800px"; w.src = ${JSON.stringify(at("slow-doc?first"))}; document.body.appendChild(w); return true; })()`,
+  );
+  const pendingGuest = await withTimeout(pendingGuestPromise, "pending guest attach", 10_000);
+  const pending = createFramesAutomation(pendingGuest);
+  await delay(500);
+  noteRequestedTabUrl(pendingGuest.id, at("slow-doc?first"));
+  const pendingList = await pending.execute({ command: "list_tabs", args: {} });
+  const pendingTab = pendingList.ok ? pendingList.result.tabs[0] : null;
+  tabReliabilityCheck(
+    checks,
+    "a tab whose first document has not committed reports the URL it was opened with",
+    failedChecks({
+      loading: pendingTab?.isLoading === true,
+      uncommitted: pendingGuest.getURL() === "",
+      url: pendingTab?.url === at("slow-doc?first"),
+    }),
+    { pendingTab },
+  );
+}
+
 // Groups that run on their own: each writes results.json under its own key.
 const SINGLE_GROUPS = {
   "click-effect": ["clickEffectResults", runClickEffectGroup],
@@ -6616,6 +6965,7 @@ const SINGLE_GROUPS = {
   "tab-discard": ["tabDiscardResults", runTabDiscardGroup],
   dialogs: ["dialogsResults", runDialogsGroup],
   delta92: ["delta92Results", runDelta92Group],
+  "tab-reliability": ["tabReliabilityResults", runTabReliabilityGroup],
   passkeys: ["passkeysResults", runPasskeysGroup],
   debugging: ["debuggingResults", runDebuggingGroup],
   "frames-network": ["framesNetworkResults", runFramesNetworkGroup],

@@ -78,6 +78,7 @@ import {
   registerManagedPaseoBrowserTarget,
   unregisterPaseoBrowser,
   unregisterPaseoBrowserFromHost,
+  attachedBrowserRegistrationRejection,
   registerAttachedPaseoBrowser,
   setWorkspaceActivePaseoBrowserId,
   unregisterPaseoBrowserHost,
@@ -137,6 +138,7 @@ import {
   preparePaseoBrowserPageDialogs,
   registerBrowserAutomationIpc,
 } from "./features/browser-automation/ipc.js";
+import { noteRequestedTabUrl } from "./features/browser-automation/load-tracker.js";
 import {
   PASSKEY_KEY_ENV,
   PaseoBrowserPasskeys,
@@ -198,6 +200,8 @@ interface AttachedBrowserInput {
   browserId: string;
   workspaceId: string;
   webContentsId: number;
+  /** Delta 123: the URL the tab was opened with, reported until its first navigation commits. */
+  requestedUrl?: string;
 }
 
 function readAttachedBrowserInput(input: unknown): AttachedBrowserInput | null {
@@ -218,10 +222,15 @@ function readAttachedBrowserInput(input: unknown): AttachedBrowserInput | null {
   ) {
     return null;
   }
+  const requestedUrl =
+    typeof record.requestedUrl === "string" && /^https?:\/\//i.test(record.requestedUrl)
+      ? record.requestedUrl
+      : undefined;
   return {
     browserId: record.browserId.trim(),
     workspaceId: record.workspaceId.trim(),
     webContentsId: record.webContentsId,
+    ...(requestedUrl ? { requestedUrl } : {}),
   };
 }
 
@@ -777,20 +786,34 @@ function normalizeBrowserCaptureRect(
 ipcMain.handle("paseo:browser:register-attached", (event, rawInput: unknown) => {
   const input = readAttachedBrowserInput(rawInput);
   if (!input) {
+    log.warn("[browser-webview] registration rejected", { reason: "invalid input" });
     throw new Error("Invalid attached browser registration");
   }
-  const registered = registerAttachedPaseoBrowser({
-    ...input,
+  const registration = {
+    browserId: input.browserId,
+    workspaceId: input.workspaceId,
+    webContentsId: input.webContentsId,
     sender: event.sender,
     profileSession: getPaseoBrowserProfileSession(session),
-    findWebContents: (webContentsId) => webContents.fromId(webContentsId) ?? null,
-  });
-  if (!registered) {
-    throw new Error("Attached browser registration was rejected");
+    findWebContents: (webContentsId: number) => webContents.fromId(webContentsId) ?? null,
+  };
+  // Delta 123: the reason reaches the renderer's rejection, which names it in the new_tab error.
+  const rejection = attachedBrowserRegistrationRejection(registration);
+  if (rejection !== null || !registerAttachedPaseoBrowser(registration)) {
+    const reason = rejection ?? "rejected";
+    log.warn("[browser-webview] registration rejected", {
+      browserId: input.browserId,
+      webContentsId: input.webContentsId,
+      reason,
+    });
+    throw new Error(`Attached browser registration was rejected: ${reason}`);
   }
   const guest = webContents.fromId(input.webContentsId);
   if (!guest) {
     throw new Error("Attached browser guest disappeared after registration");
+  }
+  if (input.requestedUrl && guest.getURL() === "") {
+    noteRequestedTabUrl(guest.id, input.requestedUrl);
   }
   browserKeyboard.attach({ contents: guest, hostContents: event.sender });
   browserPopupTargets.bindRoot({

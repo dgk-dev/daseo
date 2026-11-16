@@ -7,6 +7,7 @@ import {
   getPaseoBrowserWorkspaceId,
   isPaseoBrowserWebviewAttach,
   preparePaseoBrowserWebContents,
+  attachedBrowserRegistrationRejection,
   registerAttachedPaseoBrowser,
   unregisterPaseoBrowser,
   unregisterPaseoBrowserFromHost,
@@ -119,6 +120,46 @@ describe("browser webview attachment", () => {
 
     expect(registered).toBe(false);
     expect(getPaseoBrowserIdForWebContents(guest)).toBeNull();
+  });
+
+  // Delta 123: the reason travels to the renderer's rejection and the new_tab error.
+  test("names why a guest cannot be registered", () => {
+    const profileSession = {};
+    const owner = new FakeRenderer(1);
+    const claimant = new FakeRenderer(2);
+    const guest = new FakeBrowserGuest(401, owner, profileSession);
+    const base = {
+      browserId: "browser-reason",
+      workspaceId: "workspace-a",
+      webContentsId: guest.id,
+      profileSession,
+    };
+
+    expect(
+      attachedBrowserRegistrationRejection({ ...base, sender: owner, findWebContents: () => null }),
+    ).toBe("guest not found");
+    expect(
+      attachedBrowserRegistrationRejection({
+        ...base,
+        sender: claimant,
+        findWebContents: () => guest,
+      }),
+    ).toBe("guest belongs to another window");
+    expect(
+      attachedBrowserRegistrationRejection({
+        ...base,
+        sender: owner,
+        profileSession: {},
+        findWebContents: () => guest,
+      }),
+    ).toBe("guest is not in the browser profile session");
+    expect(
+      attachedBrowserRegistrationRejection({
+        ...base,
+        sender: owner,
+        findWebContents: () => guest,
+      }),
+    ).toBeNull();
   });
 
   test("rejects a guest outside the shared profile", () => {

@@ -6,6 +6,7 @@ import {
 import type { BrowserViewport } from "@/desktop/browser/store";
 import { WEB_SURFACE_PLANE } from "@/lib/overlay-root";
 import { useBrowserProvenanceStore } from "@/desktop/browser/provenance";
+import { logBrowserTabStage, type BrowserTabStageFields } from "@/desktop/browser/tab-stage-log";
 
 const RESIDENT_BROWSER_HOST_ID = "paseo-browser-resident-webviews";
 const BROWSER_ID_ATTRIBUTE = "data-paseo-browser-id";
@@ -55,45 +56,216 @@ function getBrowserBridge(override?: BrowserWebviewProfileHost): BrowserWebviewP
   return browser;
 }
 
+/**
+ * Daseo delta 123: where a tab's registration with main stands. browser_new_tab waits on this
+ * instead of polling list_tabs, and names the stage when it gives up.
+ */
+export type BrowserRegistrationStage =
+  | "waiting-for-attach"
+  | "waiting-for-identity"
+  | "registering"
+  | "registered"
+  | "identity-unavailable"
+  | "rejected"
+  | "removed";
+
+export type BrowserRegistrationResult =
+  | { ok: true; stage: "registered"; elapsedMs: number }
+  | {
+      ok: false;
+      stage: Exclude<BrowserRegistrationStage, "registered">;
+      reason: string;
+      elapsedMs: number;
+    };
+
+interface BrowserRegistrationRecord {
+  stage: BrowserRegistrationStage;
+  startedAt: number;
+  reason: string | null;
+  /** Bumped by every did-attach: an older attempt's late answer is ignored. */
+  attempt: number;
+  waiters: Set<() => void>;
+}
+
+const registrationsByBrowserId = new Map<string, BrowserRegistrationRecord>();
+
+// Electron 44 makes getWebContentsId legal one task after did-attach (measured in the capture
+// harness group `tab-reliability`: not in the did-attach handler or its microtask, yes in a
+// setTimeout 0). Before delta 123 the identity was read again only at the guest's first
+// dom-ready, so a tab whose first document was slow (Search Console) could not register within
+// browser_new_tab's 5 s and was rolled back. The retries stop at the first success.
+const IDENTITY_RETRY_DELAYS_MS = [0, 16, 50, 100, 250, 500, 1000, 2000] as const;
+
+function registrationRecord(browserId: string): BrowserRegistrationRecord {
+  let record = registrationsByBrowserId.get(browserId);
+  if (!record) {
+    record = {
+      stage: "waiting-for-attach",
+      startedAt: Date.now(),
+      reason: null,
+      attempt: 0,
+      waiters: new Set(),
+    };
+    registrationsByBrowserId.set(browserId, record);
+  }
+  return record;
+}
+
+function setRegistrationStage(
+  browserId: string,
+  record: BrowserRegistrationRecord,
+  stage: BrowserRegistrationStage,
+  fields: BrowserTabStageFields = {},
+): void {
+  record.stage = stage;
+  if (stage === "identity-unavailable" || stage === "rejected" || stage === "removed") {
+    record.reason = typeof fields.reason === "string" ? fields.reason : stage;
+  } else {
+    record.reason = null;
+  }
+  logBrowserTabStage(stage, { browserId, ms: Date.now() - record.startedAt, ...fields });
+  for (const wake of Array.from(record.waiters)) wake();
+}
+
+function readRegistrationResult(
+  record: BrowserRegistrationRecord,
+): BrowserRegistrationResult | null {
+  const elapsedMs = Date.now() - record.startedAt;
+  if (record.stage === "registered") {
+    return { ok: true, stage: "registered", elapsedMs };
+  }
+  if (
+    record.stage === "identity-unavailable" ||
+    record.stage === "rejected" ||
+    record.stage === "removed"
+  ) {
+    return { ok: false, stage: record.stage, reason: record.reason ?? record.stage, elapsedMs };
+  }
+  return null;
+}
+
+/**
+ * Resolves once main has registered the tab's guest, or with the stage that failed or was still
+ * pending at the deadline. Never rejects.
+ */
+export async function waitForBrowserRegistration(
+  browserId: string,
+  options: { timeoutMs: number },
+): Promise<BrowserRegistrationResult> {
+  const record = registrationRecord(browserId);
+  const settled = readRegistrationResult(record);
+  if (settled) return settled;
+  let wake: () => void = () => {};
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const woken = new Promise<void>((resolve) => {
+    wake = () => {
+      if (readRegistrationResult(record)) resolve();
+    };
+    record.waiters.add(wake);
+  });
+  const timedOut = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, options.timeoutMs);
+  });
+  await Promise.race([woken, timedOut]);
+  record.waiters.delete(wake);
+  if (timer) clearTimeout(timer);
+  return (
+    readRegistrationResult(record) ?? {
+      ok: false,
+      stage: record.stage as Exclude<BrowserRegistrationStage, "registered">,
+      reason: `still ${record.stage.replace(/-/g, " ")} after ${options.timeoutMs}ms`,
+      elapsedMs: Date.now() - record.startedAt,
+    }
+  );
+}
+
+/** The stage a tab's registration is in; null for a tab this window never attached. */
+export function getBrowserRegistrationStage(browserId: string): BrowserRegistrationStage | null {
+  return registrationsByBrowserId.get(browserId)?.stage ?? null;
+}
+
 function registerBrowserWhenAttached(
   webview: BrowserWebviewElement,
-  identity: BrowserWebviewIdentity,
+  identity: BrowserWebviewIdentity & { requestedUrl?: string | null },
   browser: BrowserWebviewProfileHost,
 ): void {
-  let awaitingDomReady = false;
-  const register = (reportFailure: boolean): boolean => {
-    let webContentsId: number;
-    try {
-      webContentsId = webview.getWebContentsId();
-    } catch (error) {
-      if (reportFailure) {
-        console.error("[browser-webview] attached guest identity unavailable", error);
-      }
-      return false;
-    }
-    void browser
-      .registerAttachedBrowser({
-        browserId: identity.browserId,
-        workspaceId: identity.workspaceId,
-        webContentsId,
-      })
-      .catch((error) => {
+  const { browserId } = identity;
+  const record = registrationRecord(browserId);
+  // A webview prepared again (reparented, recreated) starts a new registration.
+  record.startedAt = Date.now();
+  record.attempt += 1;
+  if (record.stage !== "waiting-for-attach") {
+    setRegistrationStage(browserId, record, "waiting-for-attach");
+  }
+
+  const registerWith = (attempt: number, webContentsId: number): void => {
+    setRegistrationStage(browserId, record, "registering", { webContentsId });
+    const stillCurrent = () =>
+      registrationsByBrowserId.get(browserId) === record && record.attempt === attempt;
+    void (async () => {
+      try {
+        await browser.registerAttachedBrowser({
+          browserId,
+          workspaceId: identity.workspaceId,
+          webContentsId,
+          ...(identity.requestedUrl ? { requestedUrl: identity.requestedUrl } : {}),
+        });
+      } catch (error) {
+        if (!stillCurrent()) return;
+        const reason = error instanceof Error ? error.message : String(error);
         console.error("[browser-webview] attached registration failed", error);
-      });
-    return true;
+        setRegistrationStage(browserId, record, "rejected", { webContentsId, reason });
+        return;
+      }
+      // An answer for a removed or re-attached tab is dropped, so it cannot revive the tab.
+      if (stillCurrent()) setRegistrationStage(browserId, record, "registered", { webContentsId });
+    })();
   };
 
-  // Electron can emit did-attach before getWebContentsId becomes legal. A
-  // reparented, already-ready guest registers immediately; a new guest waits
-  // for its first dom-ready instead of throwing out of the renderer event.
+  const readIdentity = (): number | null => {
+    try {
+      return webview.getWebContentsId();
+    } catch {
+      return null;
+    }
+  };
+
   webview.addEventListener("did-attach", () => {
-    if (register(false) || awaitingDomReady) return;
-    awaitingDomReady = true;
+    if (registrationsByBrowserId.get(browserId) !== record) return;
+    record.attempt += 1;
+    const attempt = record.attempt;
+    setRegistrationStage(browserId, record, "waiting-for-identity", { event: "did-attach" });
+    const current = () =>
+      registrationsByBrowserId.get(browserId) === record && record.attempt === attempt;
+    const immediate = readIdentity();
+    if (immediate !== null) {
+      registerWith(attempt, immediate);
+      return;
+    }
+    let delayIndex = 0;
+    const retry = () => {
+      if (!current() || record.stage !== "waiting-for-identity") return;
+      const webContentsId = readIdentity();
+      if (webContentsId !== null) {
+        registerWith(attempt, webContentsId);
+        return;
+      }
+      if (delayIndex >= IDENTITY_RETRY_DELAYS_MS.length) {
+        setRegistrationStage(browserId, record, "identity-unavailable", {
+          reason: "guest identity unavailable after did-attach",
+        });
+        return;
+      }
+      setTimeout(retry, IDENTITY_RETRY_DELAYS_MS[delayIndex++]);
+    };
+    setTimeout(retry, IDENTITY_RETRY_DELAYS_MS[delayIndex++]);
+    // dom-ready stays a trigger too: it is the documented point where the identity is legal.
     webview.addEventListener(
       "dom-ready",
       () => {
-        awaitingDomReady = false;
-        register(true);
+        if (!current() || record.stage !== "waiting-for-identity") return;
+        logBrowserTabStage("dom-ready", { browserId, ms: Date.now() - record.startedAt });
+        retry();
       },
       { once: true },
     );
@@ -378,7 +550,11 @@ export function prepareBrowserWebview(
   if (input.initialUrl) {
     (webview as BrowserWebviewElement).src = input.initialUrl;
   }
-  registerBrowserWhenAttached(webview as BrowserWebviewElement, input, browser);
+  registerBrowserWhenAttached(
+    webview as BrowserWebviewElement,
+    { browserId: input.browserId, workspaceId: input.workspaceId, requestedUrl: input.initialUrl },
+    browser,
+  );
 }
 
 export function ensureResidentBrowserWebview(input: {
@@ -505,6 +681,13 @@ export function removeResidentBrowserWebview(browserId: string): void {
   residentSurfacesByBrowserId.delete(normalizedBrowserId);
   residentWebviewSizesByBrowserId.delete(normalizedBrowserId);
   reportBrowserPresentation(normalizedBrowserId, false);
+  // Delta 123: waiters learn the tab is gone, and a registration answer that arrives later is
+  // dropped (its record is no longer the current one), so it cannot revive the tab.
+  const registration = registrationsByBrowserId.get(normalizedBrowserId);
+  if (registration) {
+    setRegistrationStage(normalizedBrowserId, registration, "removed", { reason: "tab removed" });
+    registrationsByBrowserId.delete(normalizedBrowserId);
+  }
   resident?.remove();
   surface?.remove();
 }
@@ -517,5 +700,6 @@ export function clearResidentBrowserWebviewsForTests(): void {
   residentSurfacesByBrowserId.clear();
   residentWebviewSizesByBrowserId.clear();
   reportedPresentationByBrowserId.clear();
+  registrationsByBrowserId.clear();
   readDocument()?.getElementById(RESIDENT_BROWSER_HOST_ID)?.remove();
 }

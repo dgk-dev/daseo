@@ -51,6 +51,7 @@ import {
 } from "./passkey-choice-surface.js";
 import { getPaseoBrowserPasskeys, markPaseoBrowserUserGesture } from "./passkeys.js";
 import { executeAutomationCommand } from "./service.js";
+import { logBrowserStage } from "./stage-log.js";
 import { startScreencast, stopScreencast } from "./screencast.js";
 import {
   clearPaseoBrowserAutomationActivity,
@@ -217,12 +218,21 @@ interface BrowserAutomationWebContents extends ConsoleMessageEmitter {
   invalidate(): void;
   sendInputEvent(event: IsolatedKeyboardInputEvent): void;
   addListener?(event: "did-navigate", listener: DidNavigateListener): unknown;
-  addListener?(event: "did-start-loading" | "did-stop-loading", listener: () => void): unknown;
+  addListener?(
+    event: "did-start-loading" | "did-stop-loading" | "dom-ready",
+    listener: () => void,
+  ): unknown;
+  addListener?(event: "did-fail-load", listener: DidFailLoadListener): unknown;
   addListener?(
     event: "did-start-navigation",
     listener: (details: { url?: string; isMainFrame?: boolean; isSameDocument?: boolean }) => void,
   ): unknown;
   removeListener?(event: "did-navigate", listener: DidNavigateListener): unknown;
+  removeListener?(
+    event: "did-start-loading" | "did-stop-loading" | "dom-ready",
+    listener: () => void,
+  ): unknown;
+  removeListener?(event: "did-fail-load", listener: DidFailLoadListener): unknown;
   removeListener?(
     event: "did-start-navigation",
     listener: (details: NavigationStartDetails) => void,
@@ -234,6 +244,15 @@ interface NavigationStartDetails {
   isMainFrame?: boolean;
   isSameDocument?: boolean;
 }
+
+// Electron: (event, errorCode, errorDescription, validatedURL, isMainFrame, …).
+type DidFailLoadListener = (
+  event: unknown,
+  errorCode: number,
+  errorDescription?: string,
+  validatedURL?: string,
+  isMainFrame?: boolean,
+) => void;
 
 // Electron: (event, url, httpResponseCode, httpStatusText); the code is -1 for non-HTTP documents.
 type DidNavigateListener = (
@@ -371,6 +390,32 @@ export function adaptWebContents(contents: BrowserAutomationWebContents): TabCon
       contents.addListener?.("did-navigate", handler);
       return () => contents.removeListener?.("did-navigate", handler);
     },
+    // Daseo delta 123: the events a navigate follows to its own commit (requested-navigation.ts).
+    onMainFrameLoadFailed: (listener) => {
+      const handler: DidFailLoadListener = (
+        _event,
+        errorCode,
+        errorDescription,
+        validatedURL,
+        isMainFrame,
+      ) => {
+        if (isMainFrame) listener(validatedURL ?? "", errorCode, errorDescription ?? "");
+      };
+      contents.addListener?.("did-fail-load", handler);
+      return () => contents.removeListener?.("did-fail-load", handler);
+    },
+    onMainFrameDomReady: (listener) => {
+      const handler = () => listener();
+      contents.addListener?.("dom-ready", handler);
+      return () => contents.removeListener?.("dom-ready", handler);
+    },
+    onStopLoading: (listener) => {
+      const handler = () => listener();
+      contents.addListener?.("did-stop-loading", handler);
+      return () => contents.removeListener?.("did-stop-loading", handler);
+    },
+    logBrowserStage: (scope, stage, fields) =>
+      logBrowserStage(scope, stage, { webContentsId: contentsId, ...fields }),
     // Daseo delta 100: what an observed click or key started outside the page's DOM.
     onMainFrameNavigationStarted: (listener) => {
       const handler = (details: NavigationStartDetails) => {

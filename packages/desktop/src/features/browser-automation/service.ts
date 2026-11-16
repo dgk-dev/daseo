@@ -67,6 +67,7 @@ import {
   type InputEffectHostSignals,
 } from "./input-effect.js";
 import { watchPageSettle, type PageSettleWatch } from "./page-settle.js";
+import { runRequestedNavigation } from "./requested-navigation.js";
 import {
   BrowserSnapshotEngine,
   type BrowserRefTarget,
@@ -132,6 +133,20 @@ export interface TabContents {
    * included), and when the tab opens a popup, a tab, or a download; each returns an unsubscribe.
    */
   onMainFrameNavigationStarted?(listener: (url: string, sameDocument: boolean) => void): () => void;
+  /** Daseo delta 123: main-frame did-fail-load (URL, net error code, its name); returns an unsubscribe. */
+  onMainFrameLoadFailed?(
+    listener: (url: string, errorCode: number, errorDescription: string) => void,
+  ): () => void;
+  /** Daseo delta 123: dom-ready of the main frame's document; returns an unsubscribe. */
+  onMainFrameDomReady?(listener: () => void): () => void;
+  /** Daseo delta 123: did-stop-loading; returns an unsubscribe. */
+  onStopLoading?(listener: () => void): () => void;
+  /** Daseo delta 123: one main.log line for a stage of a tab command (URLs as origin and path). */
+  logBrowserStage?(
+    scope: string,
+    stage: string,
+    fields: Record<string, string | number | boolean | null | undefined>,
+  ): void;
   onTargetOpened?(listener: (event: TabOpenedTarget) => void): () => void;
   /** The tab's opt-in request capture; one per tab, idle until started. */
   getNetworkCapture?(): NetworkCaptureControl;
@@ -3266,33 +3281,58 @@ async function executeNavigate(
     );
   }
   snapshotEngine.clearBrowser(browserId);
-  const commits = watchMainFrameCommits(target.contents);
-  try {
-    await target.contents.loadURL(url);
-  } catch (error) {
-    const superseded = supersededNavigationResult(target.contents, error, commits.latest());
-    if (superseded) {
-      return {
+  const contents = target.contents;
+  // Delta 123: the navigate follows its own main-frame commit (requested-navigation.ts).
+  const outcome = await runRequestedNavigation({
+    contents,
+    url,
+    load: () => contents.loadURL(url),
+    log: (stage, fields) =>
+      contents.logBrowserStage?.("browser-nav", stage, {
+        browserId: target.browserId,
         requestId,
-        ok: true,
-        result: { command: "navigate", browserId: target.browserId, ...superseded },
-      };
-    }
-    return navigationFailure(requestId, url, target.contents, error, commits.latest());
-  } finally {
-    commits.stop();
+        ...fields,
+      }),
+  });
+  if (outcome.kind === "committed" || outcome.kind === "loaded") {
+    return {
+      requestId,
+      ok: true,
+      result: {
+        command: "navigate",
+        browserId: target.browserId,
+        url: outcome.commit?.url || url,
+        ...navigationStatusFields(outcome.commit),
+      },
+    };
   }
-  const commit = commits.latest();
-  return {
+  if (outcome.kind === "superseded" && outcome.commit && !contents.isDestroyed()) {
+    // A redirect or a script navigation that took over: report the page the tab holds now.
+    const current = contents.getURL() || outcome.commit.url;
+    return {
+      requestId,
+      ok: true,
+      result: {
+        command: "navigate",
+        browserId: target.browserId,
+        url: current,
+        ...(current === outcome.commit.url ? navigationStatusFields(outcome.commit) : {}),
+      },
+    };
+  }
+  const error =
+    outcome.kind === "failed" && outcome.netError && outcome.netError.code !== -3
+      ? new Error(
+          `${outcome.netError.description || "net error"} (${outcome.netError.code}) loading '${url}'`,
+        )
+      : outcome.error;
+  return navigationFailure(
     requestId,
-    ok: true,
-    result: {
-      command: "navigate",
-      browserId: target.browserId,
-      url: commit?.url || url,
-      ...navigationStatusFields(commit),
-    },
-  };
+    url,
+    contents,
+    error ?? new Error("ERR_ABORTED (-3)"),
+    outcome.commit,
+  );
 }
 
 async function executeNavigationAction(
@@ -3822,27 +3862,6 @@ function fileInputTargetExpression(elementExpression: string): string {
   })()`;
 }
 
-// A redirect or a script navigation that takes over after the requested document committed
-// makes loadURL reject with ERR_ABORTED even though the tab holds a loaded page; agents read
-// that as a failed load and spent a turn re-checking (17 times in 60 days of sessions).
-// Report it as the success it is, at the URL the tab is on now. Without a main-frame commit
-// (a download, or nothing loaded) it stays a failure.
-function supersededNavigationResult(
-  contents: TabContents,
-  error: unknown,
-  commit: MainFrameCommit | null,
-): { url: string; httpStatus?: number; httpStatusText?: string } | null {
-  const message = error instanceof Error ? error.message : String(error);
-  if (!commit || !/\bERR_ABORTED \(-3\)/.test(message) || contents.isDestroyed()) {
-    return null;
-  }
-  const current = contents.getURL() || commit.url;
-  return {
-    url: current,
-    ...(current === commit.url ? navigationStatusFields(commit) : {}),
-  };
-}
-
 // loadURL rejects with Chromium's net error; unhandled, it reached the agent
 // wrapped in Electron's IPC error text with no hint of where the tab ended up.
 function navigationFailure(
@@ -3853,7 +3872,10 @@ function navigationFailure(
   commit: MainFrameCommit | null,
 ): FailurePayload {
   const message = error instanceof Error ? error.message : String(error);
-  const netError = /\b(ERR_[A-Z_]+) \((-?\d+)\)/.exec(message)?.[1];
+  // Electron leaves the name empty for some aborts (" (-3) loading '…'").
+  const netError =
+    /\b(ERR_[A-Z_]+) \((-?\d+)\)/.exec(message)?.[1] ??
+    (/(^|\s)\(-3\)/.test(message) ? "ERR_ABORTED" : undefined);
   const current = contents.isDestroyed() ? "" : contents.getURL();
   const status = commit?.response ? ` (HTTP ${commit.response.httpStatus})` : "";
   const where = current ? ` The tab is now at ${current}${status}.` : "";

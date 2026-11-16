@@ -4,6 +4,7 @@ import {
   type BrowserWebviewProfileHost,
   clearResidentBrowserWebviewsForTests,
   ensureResidentBrowserWebview,
+  getBrowserRegistrationStage,
   getResidentBrowserWebview,
   prepareBrowserWebview,
   presentBrowserWebview,
@@ -12,6 +13,7 @@ import {
   removeResidentBrowserWebview,
   resizeResidentBrowserWebview,
   takeResidentBrowserWebview,
+  waitForBrowserRegistration,
 } from "./resident-webviews";
 import {
   setCommandCenterFocusRestoreElement,
@@ -23,6 +25,7 @@ const attachedBrowsers: Array<{
   browserId: string;
   workspaceId: string;
   webContentsId: number;
+  requestedUrl?: string;
 }> = [];
 const profileHost: BrowserWebviewProfileHost = {
   profilePartition: "persist:paseo-browser",
@@ -256,8 +259,18 @@ describe("resident browser webviews", () => {
     expect(firstWebview.getAttribute("partition")).toBe("persist:paseo-browser");
     expect(secondWebview.getAttribute("partition")).toBe("persist:paseo-browser");
     expect(attachedBrowsers).toEqual([
-      { browserId: "browser-first", workspaceId: "workspace-a", webContentsId: 101 },
-      { browserId: "browser-second", workspaceId: "workspace-b", webContentsId: 202 },
+      {
+        browserId: "browser-first",
+        workspaceId: "workspace-a",
+        webContentsId: 101,
+        requestedUrl: "https://example.com/first",
+      },
+      {
+        browserId: "browser-second",
+        workspaceId: "workspace-b",
+        webContentsId: 202,
+        requestedUrl: "https://example.com/second",
+      },
     ]);
   });
 
@@ -287,8 +300,124 @@ describe("resident browser webviews", () => {
         browserId: "browser-delayed-identity",
         workspaceId: "workspace-delayed-identity",
         webContentsId: 303,
+        requestedUrl: "https://example.com/delayed",
       },
     ]);
+  });
+
+  // Delta 123: Electron 44 makes the identity legal one task after did-attach; a tab whose first
+  // document is slow never reaches dom-ready within browser_new_tab's deadline.
+  it("registers one task after did-attach without waiting for dom-ready", async () => {
+    const webview = ensureTestBrowser({
+      browserId: "browser-next-task",
+      workspaceId: "workspace-next-task",
+      url: "https://example.com/slow?token=secret",
+    });
+    if (!webview) throw new Error("Expected resident webview");
+    let reads = 0;
+    Object.assign(webview, {
+      getWebContentsId: () => {
+        reads += 1;
+        if (reads === 1) throw new Error("guest is not ready");
+        return 404;
+      },
+    });
+
+    webview.dispatchEvent(new Event("did-attach"));
+    expect(attachedBrowsers).toEqual([]);
+    expect(getBrowserRegistrationStage("browser-next-task")).toBe("waiting-for-identity");
+
+    const result = await waitForBrowserRegistration("browser-next-task", { timeoutMs: 1000 });
+    expect(result).toEqual(expect.objectContaining({ ok: true, stage: "registered" }));
+    expect(attachedBrowsers).toEqual([
+      {
+        browserId: "browser-next-task",
+        workspaceId: "workspace-next-task",
+        webContentsId: 404,
+        requestedUrl: "https://example.com/slow?token=secret",
+      },
+    ]);
+  });
+
+  it("hands main's rejection to the waiter with its reason", async () => {
+    const rejectingHost: BrowserWebviewProfileHost = {
+      profilePartition: "persist:paseo-browser",
+      registerAttachedBrowser: async () => {
+        throw new Error("Attached browser registration was rejected: guest destroyed");
+      },
+    };
+    const webview = ensureResidentBrowserWebview({
+      browserId: "browser-rejected",
+      workspaceId: "workspace-rejected",
+      url: "https://example.com/",
+      profileHost: rejectingHost,
+    });
+    if (!webview) throw new Error("Expected resident webview");
+    Object.assign(webview, { getWebContentsId: () => 505 });
+
+    webview.dispatchEvent(new Event("did-attach"));
+    const result = await waitForBrowserRegistration("browser-rejected", { timeoutMs: 1000 });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        ok: false,
+        stage: "rejected",
+        reason: "Attached browser registration was rejected: guest destroyed",
+      }),
+    );
+  });
+
+  it("names the stage still pending at the deadline", async () => {
+    ensureTestBrowser({
+      browserId: "browser-never-attached",
+      workspaceId: "workspace-never-attached",
+      url: "https://example.com/",
+    });
+
+    const result = await waitForBrowserRegistration("browser-never-attached", { timeoutMs: 20 });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        ok: false,
+        stage: "waiting-for-attach",
+        reason: "still waiting for attach after 20ms",
+      }),
+    );
+  });
+
+  it("a registration answer after the tab was removed does not revive it", async () => {
+    let answer: (() => void) | null = null;
+    const slowHost: BrowserWebviewProfileHost = {
+      profilePartition: "persist:paseo-browser",
+      registerAttachedBrowser: (input) =>
+        new Promise<void>((resolve) => {
+          answer = () => {
+            attachedBrowsers.push(input);
+            resolve();
+          };
+        }),
+    };
+    const webview = ensureResidentBrowserWebview({
+      browserId: "browser-late",
+      workspaceId: "workspace-late",
+      url: "https://example.com/",
+      profileHost: slowHost,
+    });
+    if (!webview) throw new Error("Expected resident webview");
+    Object.assign(webview, { getWebContentsId: () => 606 });
+    webview.dispatchEvent(new Event("did-attach"));
+    const waiting = waitForBrowserRegistration("browser-late", { timeoutMs: 1000 });
+
+    removeResidentBrowserWebview("browser-late");
+    expect(await waiting).toEqual(
+      expect.objectContaining({ ok: false, stage: "removed", reason: "tab removed" }),
+    );
+    if (!answer) throw new Error("Expected a pending registration");
+    (answer as () => void)();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(getBrowserRegistrationStage("browser-late")).toBeNull();
+    expect(getResidentBrowserWebview("browser-late")).toBeNull();
   });
 
   it("normalizes an existing resident host back to permanent parking", () => {

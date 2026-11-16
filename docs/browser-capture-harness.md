@@ -76,6 +76,18 @@ busy page is reported as not responding within seconds, and that a crashed rende
 A `loadURL` issued while another load is still running is rejected with that load's abort, so
 the group stops the hanging load before the dialog check.
 
+The tab-reliability group (`PASEO_CAPTURE_HARNESS_GROUP=tab-reliability`) checks delta 123 against
+pages that hold an image open forever, a main document answered after 30 s, and a service worker
+that never answers a navigation in its scope. It runs the compiled `navigate` from such a page, to
+such a page, and between two of them (each must answer at its commit within 3 s, with the new URL
+and status, and a snapshot of the new page marked `loading`), after a `location.assign` the page
+runs itself, and over a pending slow document; it checks that the service worker's held navigation
+is listed as loading and the next navigate replaces it, that the `[browser-nav]` stage lines are
+written without query strings, that a new guest's `getWebContentsId()` is readable one task after
+`did-attach` on a slow first document (no `dom-ready` needed), and that an uncommitted first page
+lists the URL it was opened with. Electron rejects a `loadURL` issued while another load runs with
+that load's abort, which is why the navigate follows its own commit.
+
 The tab-discard group (`PASEO_CAPTURE_HARNESS_GROUP=tab-discard`) shortens the tab lifecycle to
 1 s throttle, 2 s freeze, and 5 s idle discard through `PASEO_BROWSER_TAB_LIFECYCLE_MS`, opens
 three real guests, types into one with the production `type` command, presents another, and runs

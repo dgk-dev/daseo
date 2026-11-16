@@ -1,10 +1,9 @@
 // How long each browser target has been loading, and where to.
 //
-// A tab that never finishes loading blocks every tab-scoped tool: Electron's
-// executeJavaScript waits for the load to stop, so snapshot, click, evaluate,
-// and the rest time out with no hint why (2026-09-29: a Cafe24 admin tab
-// stayed loading for over 3 minutes). The broker reads this through
-// browser_list_tabs to tell the agent the tab is still loading.
+// A diagnostic clock for list_tabs and the broker's "still loading" message; Electron's
+// isLoading() stays the authority on whether a tab is loading. Page scripts no longer wait for a
+// load to stop (delta 92: they run through the main frame), and browser_navigate follows its own
+// commit (delta 123), so this record blocks nothing.
 
 export interface LoadingEventSource {
   readonly id: number;
@@ -48,6 +47,19 @@ export function observeTabLoading(source: LoadingEventSource, now: () => number 
     state.navigationUrl = url;
   });
   source.onDestroyed(() => loadStates.delete(source.id));
+}
+
+/**
+ * Daseo delta 123: the URL a new tab was asked to open. Its first navigation can start before main
+ * observes the tab, and until it commits Electron has no URL for it: list_tabs reported `url: ""`
+ * and `title: ""` for a tab whose first document took over a minute (Search Console, 2026-11-16).
+ * Kept only while that load runs; a navigation main sees replaces it.
+ */
+export function noteRequestedTabUrl(contentsId: number, url: string): void {
+  const state = loadStates.get(contentsId);
+  if (state && state.navigationUrl === null && url) {
+    state.navigationUrl = url;
+  }
 }
 
 export function tabLoadingInfo(

@@ -2,6 +2,7 @@ import type { SessionInboundMessage, SessionOutboundMessage } from "@getpaseo/pr
 import { getDesktopHost, type DesktopHostBridge } from "@/desktop/host";
 import {
   ensureResidentBrowserWebview as ensureResidentBrowserWebviewDefault,
+  waitForBrowserRegistration as waitForBrowserRegistrationDefault,
   getResidentBrowserWebview,
   removeResidentBrowserWebview,
   resizeResidentBrowserWebview,
@@ -23,6 +24,7 @@ import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import { useBrowserProvenanceStore } from "@/desktop/browser/provenance";
 import { mountBrowserAutoCloseSweeper } from "@/desktop/browser/provenance/sweeper";
 import { countUnseenTabsOpenedByAgent } from "@/desktop/browser/provenance/state";
+import { logBrowserTabStage } from "@/desktop/browser/tab-stage-log";
 
 type BrowserAutomationExecuteRequest = Extract<
   SessionOutboundMessage,
@@ -86,8 +88,9 @@ export interface BrowserAutomationHandlerOptions {
   serverId?: string;
   getHost?: () => DesktopHostBridge | null;
   ensureResidentBrowserWebview?: typeof ensureResidentBrowserWebviewDefault;
+  /** Delta 123: resolves when main has registered a tab's guest (resident-webviews.ts). */
+  waitForBrowserRegistration?: typeof waitForBrowserRegistrationDefault;
   registrationWaitTimeoutMs?: number;
-  registrationPollIntervalMs?: number;
   hostStallCheckAfterMs?: number;
   hostPingTimeoutMs?: number;
 }
@@ -123,11 +126,10 @@ export function mountBrowserAutomationHandler(
       serverId: options.serverId,
       ensureResidentBrowserWebview:
         options.ensureResidentBrowserWebview ?? ensureResidentBrowserWebviewDefault,
+      waitForBrowserRegistration:
+        options.waitForBrowserRegistration ?? waitForBrowserRegistrationDefault,
       ...(options.registrationWaitTimeoutMs !== undefined
         ? { registrationWaitTimeoutMs: options.registrationWaitTimeoutMs }
-        : {}),
-      ...(options.registrationPollIntervalMs !== undefined
-        ? { registrationPollIntervalMs: options.registrationPollIntervalMs }
         : {}),
       hostStallCheckAfterMs: options.hostStallCheckAfterMs ?? BROWSER_HOST_STALL_CHECK_AFTER_MS,
       hostPingTimeoutMs: options.hostPingTimeoutMs ?? BROWSER_HOST_PING_TIMEOUT_MS,
@@ -167,8 +169,8 @@ interface BrowserAutomationRequestContext {
   request: BrowserAutomationExecuteRequest;
   serverId?: string;
   ensureResidentBrowserWebview: typeof ensureResidentBrowserWebviewDefault;
+  waitForBrowserRegistration: typeof waitForBrowserRegistrationDefault;
   registrationWaitTimeoutMs?: number;
-  registrationPollIntervalMs?: number;
 }
 
 async function handleBrowserAutomationRequest(
@@ -202,8 +204,8 @@ async function resolveBrowserAutomationRequest(
     request,
     serverId,
     ensureResidentBrowserWebview,
+    waitForBrowserRegistration,
     registrationWaitTimeoutMs,
-    registrationPollIntervalMs,
   } = params;
   const browserHost = getHost()?.browser;
   const executeAutomationCommand = browserHost?.executeAutomationCommand;
@@ -220,8 +222,8 @@ async function resolveBrowserAutomationRequest(
         serverId,
         browserHost,
         ensureResidentBrowserWebview,
+        waitForBrowserRegistration,
         ...(registrationWaitTimeoutMs !== undefined ? { registrationWaitTimeoutMs } : {}),
-        ...(registrationPollIntervalMs !== undefined ? { registrationPollIntervalMs } : {}),
       });
     }
 
@@ -246,8 +248,8 @@ async function resolveBrowserAutomationRequest(
       serverId,
       executeAutomationCommand,
       ensureResidentBrowserWebview,
+      waitForBrowserRegistration,
       ...(registrationWaitTimeoutMs !== undefined ? { registrationWaitTimeoutMs } : {}),
-      ...(registrationPollIntervalMs !== undefined ? { registrationPollIntervalMs } : {}),
     });
     const payload = await executeAutomationCommand(request);
     return normalizeBridgePayload(request.requestId, payload);
@@ -373,8 +375,8 @@ async function materializeWorkspaceBrowserForCommand(params: {
     request: BrowserAutomationExecuteRequest,
   ) => Promise<BrowserAutomationResponsePayload>;
   ensureResidentBrowserWebview: typeof ensureResidentBrowserWebviewDefault;
+  waitForBrowserRegistration: typeof waitForBrowserRegistrationDefault;
   registrationWaitTimeoutMs?: number;
-  registrationPollIntervalMs?: number;
 }): Promise<void> {
   const { request, serverId } = params;
   const workspaceId = request.workspaceId;
@@ -392,19 +394,20 @@ async function materializeWorkspaceBrowserForCommand(params: {
     return;
   }
   params.ensureResidentBrowserWebview({ browserId, workspaceId, url: browser.url });
+  logBrowserTabStage("materialize webview inserted", { browserId, requestId: request.requestId });
   // A guest that misses the deadline still gets the command, which then reports the tab missing.
-  await waitForBrowserRegistration({
-    request,
-    browserId,
-    workspaceId,
-    executeAutomationCommand: params.executeAutomationCommand,
-    ...(params.registrationWaitTimeoutMs !== undefined
-      ? { timeoutMs: params.registrationWaitTimeoutMs }
-      : {}),
-    ...(params.registrationPollIntervalMs !== undefined
-      ? { pollIntervalMs: params.registrationPollIntervalMs }
-      : {}),
+  const registration = await params.waitForBrowserRegistration(browserId, {
+    timeoutMs: params.registrationWaitTimeoutMs ?? BROWSER_REGISTRATION_TIMEOUT_MS,
   });
+  if (!registration.ok) {
+    logBrowserTabStage("materialize registration failed", {
+      browserId,
+      requestId: request.requestId,
+      stage: registration.stage,
+      reason: registration.reason,
+      ms: registration.elapsedMs,
+    });
+  }
 }
 
 async function listWorkspaceBrowserTabsForRequest(params: {
@@ -800,22 +803,21 @@ async function openBrowserTabForRequest(params: {
   serverId?: string;
   browserHost: DesktopHostBridge["browser"] | undefined;
   ensureResidentBrowserWebview: typeof ensureResidentBrowserWebviewDefault;
+  waitForBrowserRegistration: typeof waitForBrowserRegistrationDefault;
   registrationWaitTimeoutMs?: number;
-  registrationPollIntervalMs?: number;
 }): Promise<BrowserAutomationResponsePayload> {
-  const {
-    request,
-    serverId,
-    browserHost,
-    ensureResidentBrowserWebview,
-    registrationWaitTimeoutMs,
-    registrationPollIntervalMs,
-  } = params;
+  const { request, serverId, browserHost, ensureResidentBrowserWebview } = params;
   const command = request.command as Extract<
     BrowserAutomationExecuteRequest["command"],
     { command: "new_tab" }
   >;
   const workspaceId = request.workspaceId;
+  const startedAt = Date.now();
+  logBrowserTabStage("new_tab received", {
+    requestId: request.requestId,
+    workspaceId,
+    url: command.args.url,
+  });
   if (!serverId || !workspaceId) {
     return browserAutomationFailure({
       requestId: request.requestId,
@@ -838,34 +840,45 @@ async function openBrowserTabForRequest(params: {
     kind: "browser",
     browserId,
   });
+  const stageFields = () => ({
+    browserId,
+    requestId: request.requestId,
+    ms: Date.now() - startedAt,
+  });
+  logBrowserTabStage("new_tab layout tab created", { ...stageFields(), tabId });
 
   try {
     if (browserHost?.executeAutomationCommand) {
       ensureResidentBrowserWebview({ browserId, workspaceId, url: normalizedUrl });
-      const registered = await waitForBrowserRegistration({
+      logBrowserTabStage("new_tab webview inserted", stageFields());
+      const failure = await confirmBrowserRegistration({
         request,
         browserId,
         workspaceId,
         executeAutomationCommand: browserHost.executeAutomationCommand,
-        ...(registrationWaitTimeoutMs !== undefined
-          ? { timeoutMs: registrationWaitTimeoutMs }
-          : {}),
-        ...(registrationPollIntervalMs !== undefined
-          ? { pollIntervalMs: registrationPollIntervalMs }
-          : {}),
+        waitForBrowserRegistration: params.waitForBrowserRegistration,
+        timeoutMs: params.registrationWaitTimeoutMs ?? BROWSER_REGISTRATION_TIMEOUT_MS,
       });
-      if (!registered) {
+      if (failure) {
+        logBrowserTabStage("new_tab failed", { ...stageFields(), stage: failure.stage });
         await rollbackFailedBrowserTabOpen({ browserHost, browserId, workspaceKey, tabId });
+        logBrowserTabStage("new_tab rolled back", stageFields());
         return browserAutomationFailure({
           requestId: request.requestId,
-          code: "browser_timeout",
-          message: `Timed out waiting for browser tab ${browserId} to register with the browser automation host. Try browser_new_tab again.`,
+          code: failure.code,
+          message: `Browser tab ${browserId} did not open: ${failure.message} Try browser_new_tab again.`,
           retryable: true,
         });
       }
     }
   } catch (error) {
+    logBrowserTabStage("new_tab failed", {
+      ...stageFields(),
+      stage: "bridge error",
+      reason: error instanceof Error ? error.message : String(error),
+    });
     await rollbackFailedBrowserTabOpen({ browserHost, browserId, workspaceKey, tabId });
+    logBrowserTabStage("new_tab rolled back", stageFields());
     throw error;
   }
 
@@ -875,6 +888,7 @@ async function openBrowserTabForRequest(params: {
   } else {
     useBrowserProvenanceStore.getState().humanOpened({ browserId });
   }
+  logBrowserTabStage("new_tab ok", stageFields());
   return {
     requestId: request.requestId,
     ok: true,
@@ -901,34 +915,89 @@ async function rollbackFailedBrowserTabOpen(input: {
   }
 }
 
-async function waitForBrowserRegistration(params: {
+/**
+ * Delta 123: how long browser_new_tab waits for main to register the new guest. Unchanged from
+ * the polling it replaces; a tab that misses it is closed again and the error names the stage.
+ */
+export const BROWSER_REGISTRATION_TIMEOUT_MS = 5_000;
+
+interface BrowserRegistrationFailure {
+  stage: string;
+  code: BrowserAutomationErrorCode;
+  message: string;
+}
+
+/**
+ * Waits for the tab's own registration acknowledgement (resident-webviews.ts), then checks once
+ * that main lists it. Returns null when the tab is usable, else the stage that failed.
+ */
+async function confirmBrowserRegistration(params: {
   request: BrowserAutomationExecuteRequest;
   browserId: string;
   workspaceId: string;
   executeAutomationCommand: (
     request: BrowserAutomationExecuteRequest,
   ) => Promise<BrowserAutomationResponsePayload>;
-  timeoutMs?: number;
-  pollIntervalMs?: number;
-}): Promise<boolean> {
-  const deadline = Date.now() + (params.timeoutMs ?? 5_000);
-  while (Date.now() < deadline) {
-    const payload = await params.executeAutomationCommand({
-      type: "browser.automation.execute.request",
-      requestId: `${params.request.requestId}:list_tabs`,
-      // No agentId: this poll must not take the agent's tab events (delta 92).
-      cwd: params.request.cwd,
-      workspaceId: params.workspaceId,
-      command: { command: "list_tabs", args: {} },
-    });
-    if (payload.ok && payload.result.command === "list_tabs") {
-      if (payload.result.tabs.some((tab) => tab.browserId === params.browserId)) {
-        return true;
-      }
-    }
-    await delay(params.pollIntervalMs ?? 100);
+  waitForBrowserRegistration: typeof waitForBrowserRegistrationDefault;
+  timeoutMs: number;
+}): Promise<BrowserRegistrationFailure | null> {
+  const registration = await params.waitForBrowserRegistration(params.browserId, {
+    timeoutMs: params.timeoutMs,
+  });
+  if (!registration.ok) {
+    const timedOut =
+      registration.stage === "waiting-for-attach" ||
+      registration.stage === "waiting-for-identity" ||
+      registration.stage === "registering";
+    return {
+      stage: registration.stage,
+      code: timedOut ? "browser_timeout" : "browser_unknown_error",
+      message: `${describeRegistrationStage(registration.stage)} (${registration.reason}, ${registration.elapsedMs}ms).`,
+    };
   }
-  return false;
+  const payload = await params.executeAutomationCommand({
+    type: "browser.automation.execute.request",
+    requestId: `${params.request.requestId}:list_tabs`,
+    // No agentId: this check must not take the agent's tab events (delta 92).
+    cwd: params.request.cwd,
+    workspaceId: params.workspaceId,
+    command: { command: "list_tabs", args: {} },
+  });
+  const listed =
+    payload.ok &&
+    payload.result.command === "list_tabs" &&
+    payload.result.tabs.some((tab) => tab.browserId === params.browserId);
+  logBrowserTabStage(listed ? "list_tabs seen" : "list_tabs missing", {
+    browserId: params.browserId,
+    requestId: params.request.requestId,
+    ...(payload.ok ? {} : { reason: payload.error.message }),
+  });
+  if (listed) return null;
+  return {
+    stage: "list_tabs",
+    code: "browser_unknown_error",
+    message: payload.ok
+      ? "the browser automation host registered the tab but does not list it."
+      : `the browser automation host did not list tabs: ${payload.error.message}`,
+  };
+}
+
+function describeRegistrationStage(stage: string): string {
+  switch (stage) {
+    case "waiting-for-attach":
+      return "the tab's page view never attached to the app window";
+    case "waiting-for-identity":
+    case "identity-unavailable":
+      return "the attached page view never reported its identity";
+    case "registering":
+      return "the app's main process did not confirm the tab's registration";
+    case "rejected":
+      return "the app's main process rejected the tab's registration";
+    case "removed":
+      return "the tab was closed while it was opening";
+    default:
+      return `registration stopped at ${stage}`;
+  }
 }
 
 function delay(ms: number): Promise<void> {

@@ -594,14 +594,23 @@ function presentedBrowserKey(hostWebContentsId: number, browserId: string): stri
   return `${hostWebContentsId}:${browserId}`;
 }
 
-export function registerAttachedPaseoBrowser(input: RegisterAttachedBrowserInput): boolean {
+/**
+ * Daseo delta 123: why an attached guest cannot be registered, or null when it can. The renderer
+ * gets the reason in its rejection and logs it with the tab's stage.
+ */
+export function attachedBrowserRegistrationRejection(
+  input: RegisterAttachedBrowserInput,
+): string | null {
   const guest = input.findWebContents(input.webContentsId);
-  if (
-    !guest ||
-    guest.isDestroyed() ||
-    guest.hostWebContents !== input.sender ||
-    guest.session !== input.profileSession
-  ) {
+  if (!guest) return "guest not found";
+  if (guest.isDestroyed()) return "guest destroyed";
+  if (guest.hostWebContents !== input.sender) return "guest belongs to another window";
+  if (guest.session !== input.profileSession) return "guest is not in the browser profile session";
+  return null;
+}
+
+export function registerAttachedPaseoBrowser(input: RegisterAttachedBrowserInput): boolean {
+  if (attachedBrowserRegistrationRejection(input) !== null) {
     return false;
   }
 

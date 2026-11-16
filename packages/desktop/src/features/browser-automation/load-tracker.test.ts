@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { observeTabLoading, tabLoadingInfo, type LoadingEventSource } from "./load-tracker.js";
+import {
+  noteRequestedTabUrl,
+  observeTabLoading,
+  tabLoadingInfo,
+  type LoadingEventSource,
+} from "./load-tracker.js";
 
 class FakeLoadingContents implements LoadingEventSource {
   public loading = false;
@@ -103,5 +108,24 @@ describe("tab load tracker", () => {
     contents.emit("destroyed");
 
     expect(tabLoadingInfo(105, true, () => 1_000)).toBeNull();
+  });
+
+  // Delta 123: a new tab's first navigation can start before main observes it.
+  it("reports the requested URL of a first load that started before observation", () => {
+    const contents = new FakeLoadingContents(9123);
+    contents.loading = true;
+    observeTabLoading(contents, () => 1000);
+    expect(tabLoadingInfo(9123, true, () => 1500)).toEqual({ loadingForMs: 500, url: null });
+
+    noteRequestedTabUrl(9123, "https://search.google.com/search-console");
+    expect(tabLoadingInfo(9123, true, () => 2000)?.url).toBe(
+      "https://search.google.com/search-console",
+    );
+
+    contents.emit("navigate", "https://accounts.google.com/");
+    noteRequestedTabUrl(9123, "https://ignored.example/");
+    expect(tabLoadingInfo(9123, true, () => 2000)?.url).toBe("https://accounts.google.com/");
+    contents.emit("stop");
+    expect(tabLoadingInfo(9123, false)).toBeNull();
   });
 });
