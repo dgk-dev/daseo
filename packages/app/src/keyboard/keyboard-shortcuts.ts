@@ -1038,7 +1038,7 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
       label: "Cycle agent mode",
     },
   },
-  // --- Toggle between the top two models in the model list ---
+  // --- Toggle between the first model-list row and its provider's default model (delta 122) ---
   {
     id: "message-input-model-toggle-cmd-shift-m-mac",
     action: "message-input.action",

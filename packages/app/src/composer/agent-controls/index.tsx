@@ -89,6 +89,7 @@ import {
   type ComposerControlPresentation,
 } from "@/composer/agent-controls/layout";
 import { ComposerControlLayoutProvider } from "@/composer/agent-controls/layout-context";
+import { resolveModelToggleTarget } from "@/composer/agent-controls/model-toggle";
 import { AgentControlTrigger } from "@/composer/agent-controls/control";
 import {
   HINT_LINE_HIT_SLOP,
@@ -703,19 +704,21 @@ function ControlledAgentControls({
     [onSelectModel, onSelectProvider, onSelectProviderAndModel, provider],
   );
 
-  // Cmd/Ctrl+Shift+M toggles between the top two models in the model list
-  // (list order is roster order, so this flips between the two primary models).
+  // Cmd/Ctrl+Shift+M flips between the first model-list row and its provider's default model
+  // (delta 122, `resolveModelToggleTarget`). It goes through the selector's own handler, so the
+  // target runs at its default effort exactly as when it is picked in the selector.
   const { isActiveComposer } = useComposerKeyboardScope();
   const modelToggleHandlerIdRef = useRef(`model-toggle:${Math.random().toString(36).slice(2)}`);
   const handleModelToggleAction = useCallback(
     (action: KeyboardActionDefinition): boolean => {
       if (action.id !== "message-input.model-toggle") return false;
       if (modelDisabled || !canSelectModel || !isActiveComposer) return false;
-      const rows = getAllProviderModelRows(effectiveModelSelectorProviders);
-      const [first, second] = rows;
-      if (!first || !second) return false;
-      const firstSelected = first.provider === provider && first.modelId === selectedModelId;
-      const target = firstSelected ? second : first;
+      const target = resolveModelToggleTarget({
+        rows: getAllProviderModelRows(effectiveModelSelectorProviders),
+        currentProvider: provider,
+        currentModelId: selectedModelId,
+      });
+      if (!target) return false;
       handleSheetModelSelect(target.provider, target.modelId);
       return true;
     },
