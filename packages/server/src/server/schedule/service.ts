@@ -8,7 +8,7 @@ import {
   type WaitForAgentResult,
 } from "../agent/agent-manager.js";
 import type { AgentSessionConfig } from "../agent/agent-sdk-types.js";
-import type { AgentStorage } from "../agent/agent-storage.js";
+import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js";
 import { curateAgentActivity } from "../agent/activity-curator.js";
 import { ensureAgentLoaded } from "../agent/agent-loading.js";
 import {
@@ -33,6 +33,7 @@ import type {
   UpdateScheduleNewAgentConfig,
 } from "@getpaseo/protocol/schedule/types";
 import type { FirstAgentContext } from "@getpaseo/protocol/messages";
+import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 
 const SCHEDULE_TICK_INTERVAL_MS = 1000;
 
@@ -182,6 +183,124 @@ function completeSchedule(schedule: StoredSchedule, now: Date): StoredSchedule {
     pausedAt: null,
     updatedAt: now.toISOString(),
   };
+}
+
+type NewAgentScheduleConfig = Extract<ScheduleTarget, { type: "new-agent" }>["config"];
+
+/**
+ * Local fork (DASEO.md delta 125): what happens to a heartbeat whose agent is archived.
+ * A bounded heartbeat of a root session becomes a new-agent schedule (same id, cadence,
+ * limits, and run history) so its later work still runs, in a new session. Anything else
+ * completes, as before: a deleted agent, a sub-agent's heartbeat, an unbounded loop (it
+ * would open new sessions forever), or a record without the model a new session needs.
+ */
+type ArchivedHeartbeatOutcome =
+  | { kind: "convert"; schedule: StoredSchedule }
+  | {
+      kind: "complete";
+      reason: "agent-missing" | "sub-agent" | "unbounded" | "missing-agent-config";
+    };
+
+function decideArchivedHeartbeat(params: {
+  schedule: StoredSchedule;
+  agentId: string;
+  record: StoredAgentRecord | null;
+  now: Date;
+}): ArchivedHeartbeatOutcome {
+  const { schedule, agentId, record, now } = params;
+  if (!record) {
+    return { kind: "complete", reason: "agent-missing" };
+  }
+  if (record.labels?.[PARENT_AGENT_ID_LABEL]) {
+    return { kind: "complete", reason: "sub-agent" };
+  }
+  const bounded = schedule.maxRuns != null || schedule.expiresAt != null;
+  if (!bounded || shouldCompleteSchedule(schedule, now)) {
+    return { kind: "complete", reason: "unbounded" };
+  }
+  const config = buildNewAgentConfigFromRecord(record);
+  if (!config) {
+    return { kind: "complete", reason: "missing-agent-config" };
+  }
+  return {
+    kind: "convert",
+    schedule: {
+      ...schedule,
+      target: { type: "new-agent", config },
+      prompt: `${buildArchivedHeartbeatPreamble({ schedule, agentId, record, now })}\n\n${schedule.prompt}`,
+      updatedAt: now.toISOString(),
+    },
+  };
+}
+
+// The same fields a create_schedule call from this agent would have produced
+// (paseo-tools buildCallerAgentScheduleConfig), read from its stored record.
+function buildNewAgentConfigFromRecord(record: StoredAgentRecord): NewAgentScheduleConfig | null {
+  const provider = record.provider.trim();
+  const cwd = record.cwd.trim();
+  const model = record.config?.model ?? record.runtimeInfo?.model ?? null;
+  if (!provider || !cwd || !model) {
+    return null;
+  }
+  const modeId = record.lastModeId ?? record.config?.modeId ?? null;
+  return {
+    provider,
+    cwd,
+    model,
+    ...(modeId ? { modeId } : {}),
+    ...pickRecordSessionExtras(record.config ?? null),
+  };
+}
+
+function pickRecordSessionExtras(
+  config: StoredAgentRecord["config"],
+): Partial<NewAgentScheduleConfig> {
+  if (!config) {
+    return {};
+  }
+  const extras: Partial<NewAgentScheduleConfig> = {};
+  if (config.thinkingOptionId) extras.thinkingOptionId = config.thinkingOptionId;
+  if (config.providerOptions) extras.providerOptions = config.providerOptions;
+  if (config.featureValues) extras.featureValues = config.featureValues;
+  if (config.systemPrompt) extras.systemPrompt = config.systemPrompt;
+  if (config.mcpServers) extras.mcpServers = config.mcpServers;
+  return extras;
+}
+
+function formatArchivedAt(iso: string, timezone: string | undefined): string {
+  const date = new Date(iso);
+  const options: Intl.DateTimeFormatOptions = {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  };
+  try {
+    return new Intl.DateTimeFormat("sv-SE", { ...options, timeZone: timezone }).format(date);
+  } catch {
+    return new Intl.DateTimeFormat("sv-SE", options).format(date);
+  }
+}
+
+function buildArchivedHeartbeatPreamble(params: {
+  schedule: StoredSchedule;
+  agentId: string;
+  record: StoredAgentRecord;
+  now: Date;
+}): string {
+  const { schedule, agentId, record, now } = params;
+  const title = record.title?.trim() ? ` ("${record.title.trim()}")` : "";
+  const timezone = schedule.cadence.type === "cron" ? schedule.cadence.timezone : undefined;
+  const archivedAt = formatArchivedAt(record.archivedAt ?? now.toISOString(), timezone);
+  return (
+    `이 작업은 세션 ${agentId}${title}으로 돌아가도록 등록된 하트비트였는데, ` +
+    `그 세션이 ${archivedAt}에 보관되어 여기 새 세션에서 실행합니다. ` +
+    "그 세션의 대화는 이 문맥에 없으니, 아래 지시가 그 대화를 가리키면 " +
+    `session-history 스킬로 에이전트 id ${agentId}의 기록을 읽으세요. ` +
+    "마지막 메시지는 David-Daniel에게 하는 한국어 보고로 끝내세요."
+  );
 }
 
 function mergeScheduleCadenceTimezone(
@@ -500,7 +619,14 @@ export class ScheduleService {
     await this.store.delete(id);
   }
 
-  async completeForAgent(agentId: string): Promise<number> {
+  /**
+   * Called after an agent is archived. Each pending heartbeat of that agent either becomes a
+   * new-agent schedule or completes (decideArchivedHeartbeat). Idempotent: a converted
+   * schedule no longer targets the agent, and a completed one is skipped.
+   */
+  async releaseForArchivedAgent(
+    agentId: string,
+  ): Promise<{ converted: number; completed: number }> {
     const now = this.now();
     const schedules = await this.store.list();
     const matches = schedules.filter(
@@ -510,33 +636,36 @@ export class ScheduleService {
         schedule.status !== "completed",
     );
     const results = await Promise.allSettled(
-      matches.map((schedule) => this.completeScheduleForAgent(schedule.id, agentId, now)),
+      matches.map((schedule) => this.releaseScheduleForArchivedAgent(schedule.id, agentId, now)),
     );
-    let completed = 0;
+    const counts = { converted: 0, completed: 0 };
     for (const [index, result] of results.entries()) {
-      if (result.status === "fulfilled" && result.value) {
-        completed += 1;
-      } else if (result.status === "rejected") {
+      if (result.status === "fulfilled") {
+        if (result.value === "converted") counts.converted += 1;
+        if (result.value === "completed") counts.completed += 1;
+      } else {
         this.logger.warn(
           {
             err: result.reason,
             scheduleId: matches[index].id,
             agentId,
           },
-          "Failed to complete schedule for archived agent; continuing",
+          "Failed to release schedule for archived agent; continuing",
         );
       }
     }
-    return completed;
+    return counts;
   }
 
-  private async completeScheduleForAgent(
+  // One serialized store update per schedule: the decision and the write cannot interleave
+  // with a tick's claim or another archive call.
+  private async releaseScheduleForArchivedAgent(
     scheduleId: string,
     agentId: string,
     now: Date,
-  ): Promise<boolean> {
-    let completed = false;
-    const updated = await this.store.update(scheduleId, (schedule) => {
+  ): Promise<"converted" | "completed" | "unchanged"> {
+    let outcome: "converted" | "completed" | "unchanged" = "unchanged";
+    const updated = await this.store.update(scheduleId, async (schedule) => {
       if (
         schedule.target.type !== "agent" ||
         schedule.target.agentId !== agentId ||
@@ -544,11 +673,41 @@ export class ScheduleService {
       ) {
         return schedule;
       }
-      completed = true;
+      const record = await this.agentStorage.get(agentId);
+      const decision = decideArchivedHeartbeat({ schedule, agentId, record, now });
+      this.logArchivedHeartbeatDecision(scheduleId, agentId, decision);
+      if (decision.kind === "convert") {
+        outcome = "converted";
+        return decision.schedule;
+      }
+      outcome = "completed";
       return completeSchedule(schedule, now);
     });
     requireSchedule(updated, scheduleId);
-    return completed;
+    return outcome;
+  }
+
+  private logArchivedHeartbeatDecision(
+    scheduleId: string,
+    agentId: string,
+    decision: ArchivedHeartbeatOutcome,
+  ): void {
+    if (decision.kind === "convert") {
+      this.logger.info(
+        { scheduleId, agentId },
+        "Converted heartbeat of archived agent into a new-agent schedule",
+      );
+    } else if (decision.reason === "missing-agent-config") {
+      this.logger.warn(
+        { scheduleId, agentId },
+        "Archived agent record lacks provider, cwd, or model; completing its heartbeat",
+      );
+    } else {
+      this.logger.info(
+        { scheduleId, agentId, reason: decision.reason },
+        "Completed heartbeat of archived or deleted agent",
+      );
+    }
   }
 
   async runOnce(id: string): Promise<StoredSchedule> {
@@ -685,9 +844,9 @@ export class ScheduleService {
     }
   }
 
-  // Orphaned agent-target schedules (agent deleted while the daemon was down, or
-  // archived before completeForAgent existed) can never fire successfully. Complete
-  // them on startup so they stop ticking and surface as ended in the UI.
+  // Agent-target schedules whose agent was deleted or archived while the daemon was down (or
+  // before archive handling existed) can never fire as they are. On startup a pending one goes
+  // through the same rule as an archive: convert or complete. Completed schedules stay completed.
   private async sweepOrphanedSchedules(): Promise<void> {
     const now = this.now();
     const schedules = await this.store.list();
@@ -699,12 +858,58 @@ export class ScheduleService {
       if (schedule.target.type !== "agent" || schedule.status === "completed") {
         return schedule;
       }
-      const record = await this.agentStorage.get(schedule.target.agentId);
+      const agentId = schedule.target.agentId;
+      const record = await this.agentStorage.get(agentId);
       if (record && !record.archivedAt) {
         return schedule;
       }
-      return completeSchedule(schedule, now);
+      const decision = decideArchivedHeartbeat({ schedule, agentId, record, now });
+      this.logArchivedHeartbeatDecision(scheduleId, agentId, decision);
+      return decision.kind === "convert" ? decision.schedule : completeSchedule(schedule, now);
     });
+  }
+
+  // Fire path. Returns null when the agent is live. When the heartbeat escaped the archive
+  // callback, converts it in the store and returns it; otherwise the target is gone.
+  private async requireLiveTargetAgent(
+    scheduleId: string,
+    agentId: string,
+  ): Promise<StoredSchedule | null> {
+    const record = await this.agentStorage.get(agentId);
+    if (!record) {
+      throw new ScheduleTargetGoneError(`Agent ${agentId} no longer exists`);
+    }
+    if (!record.archivedAt) {
+      return null;
+    }
+    const converted = await this.convertHeartbeatAtFire(scheduleId, agentId);
+    if (!converted) {
+      throw new ScheduleTargetGoneError(`Agent ${agentId} is archived`);
+    }
+    return converted;
+  }
+
+  // Converts the heartbeat in the store; null when it must complete instead.
+  private async convertHeartbeatAtFire(
+    scheduleId: string,
+    agentId: string,
+  ): Promise<StoredSchedule | null> {
+    const now = this.now();
+    let converted: StoredSchedule | null = null;
+    await this.store.update(scheduleId, async (schedule) => {
+      if (schedule.target.type !== "agent" || schedule.target.agentId !== agentId) {
+        return schedule;
+      }
+      const record = await this.agentStorage.get(agentId);
+      const decision = decideArchivedHeartbeat({ schedule, agentId, record, now });
+      this.logArchivedHeartbeatDecision(scheduleId, agentId, decision);
+      if (decision.kind !== "convert") {
+        return schedule;
+      }
+      converted = decision.schedule;
+      return decision.schedule;
+    });
+    return converted;
   }
 
   private async runSchedule(
@@ -941,12 +1146,10 @@ export class ScheduleService {
   ): Promise<ScheduleExecutionResult> {
     if (schedule.target.type === "agent") {
       const wrappedPrompt = formatSystemNotificationPrompt(buildScheduleFireBody(schedule, runId));
-      const record = await this.agentStorage.get(schedule.target.agentId);
-      if (!record) {
-        throw new ScheduleTargetGoneError(`Agent ${schedule.target.agentId} no longer exists`);
-      }
-      if (record.archivedAt) {
-        throw new ScheduleTargetGoneError(`Agent ${schedule.target.agentId} is archived`);
+      const converted = await this.requireLiveTargetAgent(schedule.id, schedule.target.agentId);
+      if (converted) {
+        // Run this same fire in a new session; the run record stays on this schedule.
+        return this.executeSchedule(converted, runId);
       }
 
       const agent = await ensureAgentLoaded(schedule.target.agentId, {

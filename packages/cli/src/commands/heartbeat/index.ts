@@ -157,7 +157,9 @@ export function createHeartbeatCommand(): Command {
   addJsonAndDaemonHostOptions(
     heartbeat
       .command("create")
-      .description("Create a recurring prompt for this agent")
+      .description(
+        "Create a recurring prompt for this agent (after archive, one with --max-runs or --expires-in runs in a new session)",
+      )
       .argument("<prompt>", "Prompt to send")
       .requiredOption("--cron <expr>", "Five-field cron cadence")
       .option("--timezone <iana>", "IANA time zone")

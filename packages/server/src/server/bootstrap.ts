@@ -1427,9 +1427,9 @@ export async function createPaseoDaemon(
   idleAgentUnloader.start();
   agentManager.setAgentArchivedCallback(async (agentId) => {
     try {
-      await scheduleService.completeForAgent(agentId);
+      await scheduleService.releaseForArchivedAgent(agentId);
     } catch (error) {
-      logger.warn({ err: error, agentId }, "Failed to complete schedules for archived agent");
+      logger.warn({ err: error, agentId }, "Failed to release schedules for archived agent");
     }
   });
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
