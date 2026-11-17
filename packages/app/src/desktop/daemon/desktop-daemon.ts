@@ -125,6 +125,11 @@ export async function startDesktopDaemon(): Promise<DesktopDaemonStatus> {
   return parseDesktopDaemonStatus(await invokeDesktopCommand("start_desktop_daemon"));
 }
 
+/** Delta 126: wake or replace a managed daemon that is alive but does not answer. */
+export async function recoverDesktopDaemon(): Promise<DesktopDaemonStatus> {
+  return parseDesktopDaemonStatus(await invokeDesktopCommand("recover_desktop_daemon"));
+}
+
 export async function stopDesktopDaemon(
   reason: DesktopDaemonStopReason = "manual_ipc",
 ): Promise<DesktopDaemonStatus> {

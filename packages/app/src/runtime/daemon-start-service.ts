@@ -51,6 +51,7 @@ export class DaemonStartService {
   private readonly invokeStartDesktopDaemon: () => Promise<DesktopDaemonStatus>;
   private readonly listeners = new Set<() => void>();
   private lastError: string | null = null;
+  private managedServerId: string | null = null;
   private inFlightCount = 0;
 
   constructor(deps: DaemonStartServiceDeps) {
@@ -81,6 +82,10 @@ export class DaemonStartService {
       }
 
       const daemon = await this.invokeStartDesktopDaemon();
+      const serverId = daemon.serverId.trim();
+      if (serverId) {
+        this.managedServerId = serverId;
+      }
       const result = await upsertDesktopDaemonConnection(this.store, daemon);
       return result.ok ? result : this.fail(result.error);
     } catch (error) {
@@ -88,6 +93,11 @@ export class DaemonStartService {
     } finally {
       this.endRequest();
     }
+  }
+
+  /** Server id of the daemon the desktop app started or found running; null before a start. */
+  getManagedServerId(): string | null {
+    return this.managedServerId;
   }
 
   getLastError(): string | null {

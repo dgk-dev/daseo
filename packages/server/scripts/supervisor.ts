@@ -3,9 +3,25 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { createStream as createRotatingFileStream } from "rotating-file-stream";
 import { signalProcessTree } from "../src/utils/tree-kill.js";
+import {
+  createHttpHealthProbe,
+  findTcpListenHolders,
+  isPaseoDaemonCommand,
+  parseTcpListenPort,
+  recoverUnresponsiveDaemon,
+  type DaemonRecoveryTimings,
+} from "../src/server/daemon-recovery.js";
 
 const WORKER_HEARTBEAT_INTERVAL_MS = 1_000;
 const WORKER_TERMINATION_GRACE_MS = 10_000;
+// Delta 126: a worker that crashes before it has run this long is restarted after a growing delay
+// instead of at once, so a taken port cannot spin a restart every second (161 restarts in 3 min on
+// 2026-11-17). With these delays a crash loop restarts at most 5 times in its first minute, then
+// twice a minute.
+const DEFAULT_CRASH_RESTART_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
+const HEALTHY_RUN_RESETS_BACKOFF_MS = 60_000;
+// After this many workers in a row found the listen port taken, look at who holds it.
+const LISTEN_IN_USE_FAILURES_BEFORE_HOLDER_CHECK = 3;
 
 interface SupervisorLogFileOptions {
   path: string;
@@ -27,6 +43,10 @@ type WorkerLifecycleMessage =
   | {
       type: "paseo:restart";
       reason?: string;
+    }
+  | {
+      type: "paseo:listen-in-use";
+      listen: string;
     };
 
 interface SupervisorHeartbeatMessage {
@@ -49,6 +69,10 @@ interface SupervisorOptions {
   restartOnCrash?: boolean;
   onSupervisorExit?: () => Promise<void> | void;
   logFile?: SupervisorLogFileOptions;
+  /** Delays between crash restarts of a worker that never ran long; the last one repeats. */
+  crashRestartDelaysMs?: number[];
+  /** Timings for waking or replacing an old Paseo daemon that holds the listen port. */
+  portHolderRecoveryTimings?: Partial<DaemonRecoveryTimings>;
 }
 
 export interface SupervisorController {
@@ -77,6 +101,13 @@ function parseLifecycleMessage(msg: unknown): WorkerLifecycleMessage | null {
       return null;
     }
     return { type: "paseo:ready", listen };
+  }
+  if (type === "paseo:listen-in-use") {
+    const listen = (msg as { listen?: unknown }).listen;
+    if (typeof listen !== "string" || listen.trim().length === 0) {
+      return null;
+    }
+    return { type: "paseo:listen-in-use", listen };
   }
   if (type === "paseo:restart") {
     const reason = (msg as { reason?: unknown }).reason;
@@ -125,6 +156,13 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
   let shuttingDown = false;
   let exiting = false;
   let forceKillTimer: NodeJS.Timeout | null = null;
+  let restartTimer: NodeJS.Timeout | null = null;
+  const crashRestartDelaysMs =
+    options.crashRestartDelaysMs && options.crashRestartDelaysMs.length > 0
+      ? options.crashRestartDelaysMs
+      : DEFAULT_CRASH_RESTART_DELAYS_MS;
+  let crashRestartCount = 0;
+  let listenInUseStreak = 0;
   const logStream = createSupervisorLogStream(options.logFile);
 
   const writeDurableChunk = (chunk: string | Buffer): void => {
@@ -236,6 +274,8 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
     }
 
     const currentChild = child;
+    let workerReadyAt: number | null = null;
+    let listenInUse: string | null = null;
     const heartbeat = setInterval(() => {
       const message: SupervisorHeartbeatMessage = { type: "paseo:supervisor-heartbeat" };
       if (currentChild.connected) {
@@ -273,6 +313,8 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
       }
 
       if (lifecycleMessage.type === "paseo:ready") {
+        workerReadyAt = Date.now();
+        listenInUseStreak = 0;
         writeLifecycleLog("Worker ready", { listen: lifecycleMessage.listen });
         Promise.resolve(options.onWorkerReady?.({ listen: lifecycleMessage.listen })).catch(
           (error) => {
@@ -280,6 +322,11 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
             log(`Worker ready callback failed: ${message}`);
           },
         );
+        return;
+      }
+
+      if (lifecycleMessage.type === "paseo:listen-in-use") {
+        listenInUse = lifecycleMessage.listen;
         return;
       }
 
@@ -298,6 +345,9 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
     child.on("exit", (code, signal) => {
       clearInterval(heartbeat);
       clearForceKillTimer();
+      if (child === currentChild) {
+        child = null;
+      }
       const exitDescriptor = describeExit(code, signal);
       writeLifecycleLog("Worker exited", { code, signal, exit: exitDescriptor });
 
@@ -311,20 +361,132 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
         restartOnCrash &&
         ((code !== 0 && code !== null) || (signal !== null && signal !== "SIGTERM"));
 
-      if (restarting || crashed) {
+      if (restarting) {
         restarting = false;
-        log(
-          crashed
-            ? `Worker crashed (${exitDescriptor}). Restarting worker...`
-            : `Worker exited (${exitDescriptor}). Restarting worker...`,
-        );
+        log(`Worker exited (${exitDescriptor}). Restarting worker...`);
         spawnWorker();
+        return;
+      }
+
+      if (crashed) {
+        const ranLong =
+          workerReadyAt !== null && Date.now() - workerReadyAt >= HEALTHY_RUN_RESETS_BACKOFF_MS;
+        if (ranLong) {
+          crashRestartCount = 0;
+        }
+        listenInUseStreak = listenInUse ? listenInUseStreak + 1 : 0;
+        const delayMs = ranLong
+          ? 0
+          : (crashRestartDelaysMs[Math.min(crashRestartCount, crashRestartDelaysMs.length - 1)] ??
+            0);
+        if (!ranLong) {
+          crashRestartCount += 1;
+        }
+        log(
+          delayMs > 0
+            ? `Worker crashed (${exitDescriptor}). Restarting worker in ${delayMs} ms...`
+            : `Worker crashed (${exitDescriptor}). Restarting worker...`,
+        );
+        if (listenInUse && listenInUseStreak >= LISTEN_IN_USE_FAILURES_BEFORE_HOLDER_CHECK) {
+          scheduleRestartAfterHolderCheck(listenInUse, delayMs);
+          return;
+        }
+        scheduleRestart(delayMs);
         return;
       }
 
       log(`Worker exited (${exitDescriptor}). Supervisor exiting.`);
       exitSupervisor(typeof code === "number" ? code : 1);
     });
+  };
+
+  const clearRestartTimer = (): void => {
+    if (restartTimer) {
+      clearTimeout(restartTimer);
+      restartTimer = null;
+    }
+  };
+
+  const scheduleRestart = (delayMs: number): void => {
+    clearRestartTimer();
+    if (delayMs <= 0) {
+      spawnWorker();
+      return;
+    }
+    restartTimer = setTimeout(() => {
+      restartTimer = null;
+      if (!shuttingDown && !child) {
+        spawnWorker();
+      }
+    }, delayMs);
+  };
+
+  // Delta 126: find who holds the listen port. An old Paseo daemon is woken (SIGCONT) and, if it
+  // still does not answer, replaced; any other process is only named in the log, never signalled.
+  const scheduleRestartAfterHolderCheck = (listen: string, delayMs: number): void => {
+    const checkThenRestart = async (): Promise<void> => {
+      let freed = false;
+      try {
+        freed = await inspectListenPortHolder(listen);
+      } catch (error) {
+        writeLifecycleLog("Listen port holder check failed", {
+          listen,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      if (shuttingDown || child) {
+        return;
+      }
+      if (freed) {
+        crashRestartCount = 0;
+        listenInUseStreak = 0;
+      }
+      scheduleRestart(freed ? 0 : delayMs);
+    };
+    void checkThenRestart();
+  };
+
+  const inspectListenPortHolder = async (listen: string): Promise<boolean> => {
+    const port = parseTcpListenPort(listen);
+    if (port === null) {
+      log(`Listen address ${listen} is in use; holder lookup covers TCP ports only`);
+      return false;
+    }
+    const holders = await findTcpListenHolders(port);
+    if (holders.length === 0) {
+      writeLifecycleLog("Listen port in use but no holder found", { listen });
+      return false;
+    }
+    let freed = false;
+    for (const holder of holders) {
+      const paseo = isPaseoDaemonCommand(holder.command) && holder.pid !== process.pid;
+      log(
+        `Listen port ${listen} is held by PID ${holder.pid} (${holder.command})` +
+          (paseo ? "; checking the old Paseo daemon" : "; not a Paseo daemon, leaving it alone"),
+      );
+      writeLifecycleLog("Listen port holder", {
+        listen,
+        holderPid: holder.pid,
+        holderCommand: holder.command,
+        holderState: holder.state,
+        paseoDaemon: paseo,
+      });
+      if (!paseo) {
+        continue;
+      }
+      const result = await recoverUnresponsiveDaemon({
+        pid: holder.pid,
+        probe: createHttpHealthProbe(listen),
+        protectedPids: [process.pid],
+        timings: options.portHolderRecoveryTimings,
+        log: (message, fields) => writeLifecycleLog(message, { listen, ...fields }),
+      });
+      writeLifecycleLog("Listen port holder check result", { listen, ...result });
+      if (result.outcome === "replaced" || result.outcome === "gone") {
+        freed = true;
+      }
+    }
+    return freed;
   };
 
   const signalWorker = (signal: NodeJS.Signals, reason: string): void => {
@@ -341,7 +503,15 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
   };
 
   const requestRestart = (reason: string) => {
-    if (!child || restarting || shuttingDown) {
+    if (shuttingDown) {
+      return;
+    }
+    if (!child && restartTimer) {
+      writeLifecycleLog("Restart requested during crash backoff; restarting now", { reason });
+      scheduleRestart(0);
+      return;
+    }
+    if (!child || restarting) {
       return;
     }
     restarting = true;
@@ -357,6 +527,7 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
     }
     shuttingDown = true;
     restarting = false;
+    clearRestartTimer();
     writeLifecycleLog("Supervisor shutdown requested", { reason });
     log(`${reason}. Stopping worker...`);
     if (!child) {

@@ -74,9 +74,10 @@ import {
   type StartupBlocker,
 } from "@/navigation/host-runtime-bootstrap";
 import { startBackgroundSuspend } from "@/runtime/background-suspend";
+import { startDaemonLivenessRecovery } from "@/desktop/daemon/daemon-liveness-recovery";
 import { registerWorkspaceRouteNavigationRef } from "@/navigation/workspace-route-navigation";
 import { ThemedStack } from "@/navigation/themed-stack";
-import { shouldUseDesktopDaemon } from "@/desktop/daemon/desktop-daemon";
+import { recoverDesktopDaemon, shouldUseDesktopDaemon } from "@/desktop/daemon/desktop-daemon";
 import { AgentNavigationListener } from "@/desktop/agent-navigation";
 import { legacyFavoriteProfileMigration } from "@/agent-profiles/migration";
 import { listenToDesktopEvent } from "@/desktop/electron/events";
@@ -394,7 +395,21 @@ function HostRuntimeBootstrapProvider({ children }: { children: ReactNode }) {
       daemonStartService,
       shouldStartDaemon: shouldStartBuiltInDaemon,
     });
-    return startBackgroundSuspend(store);
+    const stopBackgroundSuspend = startBackgroundSuspend(store);
+    const stopLivenessRecovery = shouldUseDesktopDaemon()
+      ? startDaemonLivenessRecovery({
+          getManagedServerId: () => daemonStartService.getManagedServerId(),
+          subscribeManagedServerId: (listener) => daemonStartService.subscribe(listener),
+          getConnectionStatus: (serverId) => store.getSnapshot(serverId)?.connectionStatus ?? null,
+          subscribeConnectionStatus: (listener) => store.subscribeAll(listener),
+          recover: recoverDesktopDaemon,
+          log: (message, details) => console.warn(`[desktop daemon] ${message}`, details ?? {}),
+        })
+      : () => {};
+    return () => {
+      stopLivenessRecovery();
+      stopBackgroundSuspend();
+    };
   }, []);
 
   const anyOnlineHostServerId = useEarliestOnlineHostServerId();

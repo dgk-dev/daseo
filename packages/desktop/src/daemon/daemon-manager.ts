@@ -3,7 +3,14 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { app, ipcMain, powerMonitor } from "electron";
 import log from "electron-log/main";
-import { resolvePaseoHome, spawnProcess } from "@getpaseo/server";
+import {
+  createHttpHealthProbe,
+  getPidLockInfo,
+  recoverUnresponsiveDaemon,
+  resolvePaseoHome,
+  spawnProcess,
+  type DaemonRecoveryResult,
+} from "@getpaseo/server";
 import {
   copyAttachmentFileToManagedStorage,
   deleteManagedAttachmentFile,
@@ -342,10 +349,55 @@ async function pollForRunningDaemon(): Promise<DesktopDaemonStatus> {
   return poll(0);
 }
 
+// Delta 126: a daemon whose PID is alive but whose API does not answer (status "errored") was
+// trusted at start-up and never looked at while running; after the kernel suspended it on
+// 2026-11-17 every session stayed unreachable until a manual restart. Wake it, or replace it.
+async function recoverErroredDaemon(current: DesktopDaemonStatus): Promise<DaemonRecoveryResult> {
+  const lock = await getPidLockInfo(getPaseoHome());
+  const pid = lock?.pid ?? current.pid;
+  const listen = lock?.listen ?? current.listen;
+  if (pid === null || pid === undefined || !listen) {
+    logDesktopDaemonLifecycle("unresponsive daemon recovery skipped: no pid or listen address", {
+      pid: pid ?? null,
+      listen: listen ?? null,
+    });
+    return { outcome: "gone", pid: pid ?? 0 };
+  }
+  logDesktopDaemonLifecycle("daemon process is alive but does not answer; recovering", {
+    pid,
+    listen,
+  });
+  const result = await recoverUnresponsiveDaemon({
+    pid,
+    probe: createHttpHealthProbe(listen),
+    log: (message, fields) => logDesktopDaemonLifecycle(message, fields),
+  });
+  logDesktopDaemonLifecycle("unresponsive daemon recovery finished", { ...result });
+  return result;
+}
+
+let erroredDaemonRecovery: Promise<DaemonRecoveryResult> | null = null;
+
+function recoverErroredDaemonOnce(current: DesktopDaemonStatus): Promise<DaemonRecoveryResult> {
+  erroredDaemonRecovery ??= recoverErroredDaemon(current).finally(() => {
+    erroredDaemonRecovery = null;
+  });
+  return erroredDaemonRecovery;
+}
+
+async function resolveStatusRecoveringUnresponsiveDaemon(): Promise<DesktopDaemonStatus> {
+  const current = await resolveDesktopDaemonStatus();
+  if (current.status !== "errored" || current.error !== null) {
+    return current;
+  }
+  await recoverErroredDaemonOnce(current);
+  return resolveDesktopDaemonStatus();
+}
+
 async function startDaemon(): Promise<DesktopDaemonStatus> {
   assertBuiltInDaemonManagementEnabled(await getDesktopSettingsStore().get());
 
-  const current = await resolveDesktopDaemonStatus();
+  const current = await resolveStatusRecoveringUnresponsiveDaemon();
   logDesktopDaemonLifecycle("initial status check before start", {
     status: current.status,
     pid: current.pid,
@@ -475,6 +527,24 @@ export async function stopDesktopDaemon(
   return statusAfter ?? (await resolveDesktopDaemonStatus());
 }
 
+/**
+ * Called by the app when the managed daemon stopped answering while the app ran. Acts only on a
+ * live but unresponsive daemon: a stopped daemon is left to whoever stopped it (an activation, a
+ * `paseo daemon restart`), so this never races a deliberate restart.
+ */
+async function recoverDaemon(): Promise<DesktopDaemonStatus> {
+  const settings = await getDesktopSettingsStore().get();
+  const current = await resolveDesktopDaemonStatus();
+  if (!settings.daemon.manageBuiltInDaemon || current.status !== "errored" || current.error) {
+    logDesktopDaemonLifecycle("daemon recovery request: nothing to recover", {
+      manageBuiltInDaemon: settings.daemon.manageBuiltInDaemon,
+      status: summarizeDesktopDaemonStatus(current),
+    });
+    return current;
+  }
+  return startDaemon();
+}
+
 async function restartDaemon(): Promise<DesktopDaemonStatus> {
   assertBuiltInDaemonManagementEnabled(await getDesktopSettingsStore().get());
   await stopDesktopDaemon("restart");
@@ -523,6 +593,7 @@ export function createDaemonCommandHandlers(): Record<string, DesktopCommandHand
     }),
     desktop_daemon_status: () => resolveDesktopDaemonStatus(),
     start_desktop_daemon: () => startDaemon(),
+    recover_desktop_daemon: () => recoverDaemon(),
     stop_desktop_daemon: (args) => stopDesktopDaemon(parseDesktopDaemonStopReason(args)),
     restart_desktop_daemon: () => restartDaemon(),
     desktop_daemon_logs: () => getDaemonLogs(),

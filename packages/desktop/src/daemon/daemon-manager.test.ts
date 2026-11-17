@@ -23,6 +23,9 @@ const mocks = vi.hoisted(() => ({
     env: {},
   })),
   spawnProcess: vi.fn(),
+  getPidLockInfo: vi.fn(),
+  recoverUnresponsiveDaemon: vi.fn(),
+  createHttpHealthProbe: vi.fn((listen: string) => ({ listen })),
   logInfo: vi.fn(),
   logError: vi.fn(),
   appLogPath: "/tmp/paseo-desktop-daemon-manager-test-main.log",
@@ -54,6 +57,9 @@ vi.mock("electron-log/main", () => ({
 vi.mock("@getpaseo/server", () => ({
   resolvePaseoHome: vi.fn(() => mocks.paseoHome),
   spawnProcess: mocks.spawnProcess,
+  getPidLockInfo: mocks.getPidLockInfo,
+  recoverUnresponsiveDaemon: mocks.recoverUnresponsiveDaemon,
+  createHttpHealthProbe: mocks.createHttpHealthProbe,
 }));
 
 vi.mock("../settings/desktop-settings-electron.js", () => ({
@@ -117,6 +123,9 @@ describe("daemon-manager commands", () => {
     mocks.createNodeEntrypointInvocation.mockReset();
     mocks.createNodeEntrypointInvocation.mockReturnValue({ command: "node", args: [], env: {} });
     mocks.spawnProcess.mockReset();
+    mocks.getPidLockInfo.mockReset();
+    mocks.getPidLockInfo.mockResolvedValue(null);
+    mocks.recoverUnresponsiveDaemon.mockReset();
     mocks.logInfo.mockReset();
     mocks.logError.mockReset();
     mocks.getElectronLogFile.mockReset();
@@ -319,6 +328,127 @@ describe("daemon-manager commands", () => {
     );
   });
 
+  describe("a live daemon that does not answer (delta 126)", () => {
+    const unresponsive = {
+      localDaemon: "unresponsive",
+      connectedDaemon: "unreachable",
+      serverId: "server-1",
+      pid: 7675,
+      listen: "127.0.0.1:6767",
+      daemonVersion: "1.2.3",
+      desktopManaged: true,
+    };
+    const running = {
+      localDaemon: "running",
+      connectedDaemon: "reachable",
+      serverId: "server-1",
+      pid: 7675,
+      listen: "127.0.0.1:6767",
+      hostname: "dev-host",
+      daemonVersion: "1.2.3",
+      desktopManaged: true,
+    };
+    const lock = {
+      pid: 7675,
+      startedAt: "2026-11-17T01:41:27.000Z",
+      hostname: "dev-host",
+      uid: 501,
+      listen: "127.0.0.1:6767",
+      desktopManaged: true,
+    };
+
+    it("wakes it at start-up instead of trusting the PID file", async () => {
+      mocks.getPidLockInfo.mockResolvedValue(lock);
+      mocks.recoverUnresponsiveDaemon.mockResolvedValue({
+        outcome: "responsive",
+        pids: [7675, 7676],
+        woke: true,
+      });
+      mocks.runExternalCliJsonCommand
+        .mockResolvedValueOnce(unresponsive)
+        .mockResolvedValueOnce(running);
+      const handlers = createDaemonCommandHandlers();
+
+      await expect(handlers.start_desktop_daemon()).resolves.toMatchObject({
+        status: "running",
+        pid: 7675,
+      });
+      expect(mocks.recoverUnresponsiveDaemon).toHaveBeenCalledWith(
+        expect.objectContaining({ pid: 7675, probe: { listen: "127.0.0.1:6767" } }),
+      );
+      expect(mocks.spawnProcess).not.toHaveBeenCalled();
+    });
+
+    it("starts a fresh daemon at start-up after replacing a silent one", async () => {
+      mocks.getPidLockInfo.mockResolvedValue(lock);
+      mocks.recoverUnresponsiveDaemon.mockResolvedValue({
+        outcome: "replaced",
+        pids: [7675, 7676],
+        forced: true,
+      });
+      mocks.runExternalCliJsonCommand
+        .mockResolvedValueOnce(unresponsive)
+        .mockResolvedValueOnce({ localDaemon: "stale_pid", connectedDaemon: "unreachable" })
+        .mockResolvedValueOnce({ ...running, serverId: "server-1", pid: 9000 });
+      mocks.spawnProcess.mockReturnValue(createMockChildProcess());
+      const handlers = createDaemonCommandHandlers();
+
+      await expect(handlers.start_desktop_daemon()).resolves.toMatchObject({
+        status: "running",
+        pid: 9000,
+      });
+      expect(mocks.createNodeEntrypointInvocation).toHaveBeenCalledWith(
+        expect.objectContaining({ args: [] }),
+      );
+      expect(mocks.spawnProcess).toHaveBeenCalledTimes(1);
+    });
+
+    it("recovers it while the app runs, and leaves a stopped or healthy daemon alone", async () => {
+      const handlers = createDaemonCommandHandlers();
+
+      mocks.runExternalCliJsonCommand.mockResolvedValueOnce({
+        localDaemon: "stopped",
+        connectedDaemon: "unreachable",
+      });
+      await expect(handlers.recover_desktop_daemon()).resolves.toMatchObject({
+        status: "stopped",
+      });
+      mocks.runExternalCliJsonCommand.mockResolvedValueOnce(running);
+      await expect(handlers.recover_desktop_daemon()).resolves.toMatchObject({
+        status: "running",
+      });
+      expect(mocks.recoverUnresponsiveDaemon).not.toHaveBeenCalled();
+      expect(mocks.spawnProcess).not.toHaveBeenCalled();
+
+      mocks.getPidLockInfo.mockResolvedValue(lock);
+      mocks.recoverUnresponsiveDaemon.mockResolvedValue({
+        outcome: "responsive",
+        pids: [7675, 7676],
+        woke: true,
+      });
+      mocks.runExternalCliJsonCommand
+        .mockResolvedValueOnce(unresponsive)
+        .mockResolvedValueOnce(unresponsive)
+        .mockResolvedValueOnce(running);
+      await expect(handlers.recover_desktop_daemon()).resolves.toMatchObject({
+        status: "running",
+      });
+      expect(mocks.recoverUnresponsiveDaemon).toHaveBeenCalledTimes(1);
+      expect(mocks.spawnProcess).not.toHaveBeenCalled();
+    });
+
+    it("does nothing while built-in daemon management is off", async () => {
+      mocks.settings = desktopSettingsWithManagement(false);
+      mocks.runExternalCliJsonCommand.mockResolvedValueOnce(unresponsive);
+      const handlers = createDaemonCommandHandlers();
+
+      await expect(handlers.recover_desktop_daemon()).resolves.toMatchObject({
+        status: "errored",
+      });
+      expect(mocks.recoverUnresponsiveDaemon).not.toHaveBeenCalled();
+    });
+  });
+
   it("uses a stale reachable desktop daemon when the version matches", async () => {
     mocks.runExternalCliJsonCommand.mockResolvedValue({
       localDaemon: "stale_pid",
@@ -469,6 +599,13 @@ describe("daemon-manager commands", () => {
       listen: "127.0.0.1:6767",
       desktopManaged: true,
     });
+    // Delta 126 recovery runs first; when it cannot act (the PID is not a Paseo daemon), start-up
+    // falls back to the stale-lock reclaim.
+    mocks.recoverUnresponsiveDaemon.mockResolvedValue({
+      outcome: "not_paseo",
+      pid: 7675,
+      process: { pid: 7675, ppid: 1, state: "S", command: "/usr/bin/other" },
+    });
     mocks.spawnProcess.mockImplementation(() => {
       const child = createMockChildProcess();
       scheduleFailedStartup(child);
@@ -479,6 +616,9 @@ describe("daemon-manager commands", () => {
       "Daemon failed to start: exit code 1",
     );
 
+    expect(mocks.recoverUnresponsiveDaemon).toHaveBeenCalledWith(
+      expect.objectContaining({ pid: 7675 }),
+    );
     expect(mocks.createNodeEntrypointInvocation).toHaveBeenCalledWith(
       expect.objectContaining({ args: ["--reclaim-stale-pid-lock"] }),
     );

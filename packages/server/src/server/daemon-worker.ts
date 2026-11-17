@@ -21,6 +21,11 @@ type SupervisorLifecycleMessage =
   | {
       type: "paseo:restart";
       reason?: string;
+    }
+  | {
+      // Delta 126: the listen address is taken, so the supervisor backs off and looks at the holder.
+      type: "paseo:listen-in-use";
+      listen: string;
     };
 
 interface SupervisorHeartbeatMessage {
@@ -331,6 +336,9 @@ async function main() {
     sendSupervisorLifecycleMessage({ type: "paseo:ready", listen });
   } catch (err) {
     logger.fatal({ err }, "Daemon failed to start listening");
+    if (typeof err === "object" && err !== null && "code" in err && err.code === "EADDRINUSE") {
+      sendSupervisorLifecycleMessage({ type: "paseo:listen-in-use", listen: config.listen });
+    }
     throw err;
   }
 
