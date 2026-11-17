@@ -648,6 +648,9 @@ export const en = {
         cancel: "Cancel",
         answer: "Answer",
         agentNote: "The agent using this tab can answer this too.",
+        fromPopup: "Message from the pop-up",
+        fromTab: "Message from the original tab",
+        alreadyClosed: "This message was already closed",
       },
       passkeyChoice: {
         title: "Sign in to {{host}} with a passkey",

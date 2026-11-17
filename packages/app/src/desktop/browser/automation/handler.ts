@@ -739,7 +739,11 @@ async function closeBrowserTabForRequest(params: {
     };
   }
 
-  const closedPopup = await browserHost?.closePopupTarget?.({ browserId, workspaceId });
+  const closedPopup = await browserHost?.closePopupTarget?.({
+    browserId,
+    workspaceId,
+    by: "agent",
+  });
   if (closedPopup) {
     return {
       requestId: request.requestId,

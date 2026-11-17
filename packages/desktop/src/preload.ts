@@ -135,8 +135,11 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
       bounds?: { x: number; y: number; width: number; height: number };
       focus?: boolean;
     }) => ipcRenderer.invoke("paseo:browser:present-popup-target", input),
-    closePopupTarget: (input: { browserId: string; workspaceId: string }) =>
-      ipcRenderer.invoke("paseo:browser:close-popup-target", input),
+    closePopupTarget: (input: {
+      browserId: string;
+      workspaceId: string;
+      by?: "agent" | "person";
+    }) => ipcRenderer.invoke("paseo:browser:close-popup-target", input),
     resizePopupTarget: (input: {
       browserId: string;
       workspaceId: string;
@@ -162,6 +165,7 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
       dialogId: string;
       accept: boolean;
       promptText?: string;
+      forNavigation?: boolean;
     }) => ipcRenderer.invoke("paseo:browser:answer-page-dialog", input),
     watchPasskeyChoices: () => ipcRenderer.invoke("paseo:browser:watch-passkey-choices"),
     answerPasskeyChoice: (input: {

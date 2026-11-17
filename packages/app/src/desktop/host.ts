@@ -202,6 +202,8 @@ export interface DesktopBrowserPageDialog {
 
 export interface DesktopBrowserPageDialogEvent {
   browserId: string;
+  /** For a popup, the tab whose pane shows its dialog (delta 127). */
+  rootBrowserId?: string;
   dialog: DesktopBrowserPageDialog | null;
   dialogId?: string;
 }
@@ -266,7 +268,12 @@ export interface DesktopBrowserBridge {
   recordAutoClose?: (entries: DesktopBrowserAutoCloseLogEntry[]) => Promise<void>;
   listPopupTargets?: (rootBrowserId: string) => Promise<DesktopBrowserPopupTargetsSnapshot | null>;
   presentPopupTarget?: (input: DesktopBrowserPopupPresentation) => Promise<boolean>;
-  closePopupTarget?: (input: { browserId: string; workspaceId: string }) => Promise<boolean>;
+  /** Resolves true once the popup is destroyed (delta 127); `by` names who closed it in main.log. */
+  closePopupTarget?: (input: {
+    browserId: string;
+    workspaceId: string;
+    by?: "agent" | "person";
+  }) => Promise<boolean>;
   resizePopupTarget?: (input: {
     browserId: string;
     workspaceId: string;
@@ -297,6 +304,8 @@ export interface DesktopBrowserBridge {
     dialogId: string;
     accept: boolean;
     promptText?: string;
+    /** Dismiss it so the person's navigation can run (delta 127). */
+    forNavigation?: boolean;
   }) => Promise<boolean>;
   /**
    * Delta 102: this window's panes can show passkey account choices. Returns the ones its tabs

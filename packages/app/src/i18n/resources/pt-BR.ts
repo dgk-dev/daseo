@@ -656,6 +656,9 @@ export const ptBR: TranslationResources = {
         cancel: "Cancelar",
         answer: "Resposta",
         agentNote: "O agente que usa esta aba também pode responder.",
+        fromPopup: "Mensagem da janela pop-up",
+        fromTab: "Mensagem da aba original",
+        alreadyClosed: "Esta mensagem já foi fechada",
       },
       passkeyChoice: {
         title: "Entrar em {{host}} com uma chave de acesso",

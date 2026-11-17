@@ -85,7 +85,12 @@ import {
   takeResidentBrowserWebview,
 } from "../resident-webviews";
 import { selectAvailablePopupTarget, useDesktopBrowserPopupTargets } from "../popup-targets";
-import { answerPageDialog, usePageDialog } from "../page-dialogs";
+import {
+  answerPageDialog,
+  pickShownPageDialog,
+  usePageDialogsStore,
+  useTabPageDialogs,
+} from "../page-dialogs";
 import { BrowserPageDialogCard } from "./page-dialog-card.electron";
 import { answerPasskeyChoice, usePasskeyChoice } from "../passkey-choices";
 import { BrowserPasskeyChoiceCard } from "./passkey-choice-card.electron";
@@ -639,15 +644,32 @@ export function BrowserPane({
   const popupFocusRequestRef = useRef<string | null>(null);
   const lastHandledPopupActivationRevisionRef = useRef(-1);
   const lastHandledPopupFocusRevisionRef = useRef(-1);
-  // Delta 93: a dialog the tab's page (or its selected popup) holds open, shown in this pane.
-  const rootPageDialog = usePageDialog(browserId);
-  const popupPageDialog = usePageDialog(selectedPopup?.browserId ?? null);
-  // Delta 102: a passkey account choice the tab's page (or its selected popup) waits on.
+  // Delta 93, 127: a dialog the tab's page or any of its popups holds open, shown in this pane
+  // whichever side is on screen (a held dialog blocks its page, and a same-site opener with it).
+  // One at a time, the side on screen first.
+  const shownSideBrowserId = selectedPopup?.browserId ?? browserId;
+  const tabPageDialogs = useTabPageDialogs(browserId);
+  const popupOrder = useMemo(() => popupTargets.map((target) => target.browserId), [popupTargets]);
+  const shownPageDialogEntry = pickShownPageDialog(tabPageDialogs, {
+    rootBrowserId: browserId,
+    shownBrowserId: shownSideBrowserId,
+    popupOrder,
+  });
+  const shownPageDialog = shownPageDialogEntry?.dialog ?? null;
+  const shownPageDialogBrowserId = shownPageDialogEntry?.browserId ?? null;
+  // Delta 102: a passkey account choice the tab's page (or its selected popup) waits on. A page
+  // dialog holds the page's script thread, so it is shown first; the choice appears once it is
+  // answered.
   const rootPasskeyChoice = usePasskeyChoice(browserId);
   const popupPasskeyChoice = usePasskeyChoice(selectedPopup?.browserId ?? null);
+  let shownPasskeyChoice: typeof rootPasskeyChoice = null;
+  if (!shownPageDialog) shownPasskeyChoice = selectedPopup ? popupPasskeyChoice : rootPasskeyChoice;
   const passkeyChoiceFocusRef = useRef<{ choiceId: string; takeFocus: boolean } | null>(null);
+  // Any card shows in the pane itself, so a popup's native view on screen steps aside for it.
+  const cardInPane = shownPageDialog !== null || shownPasskeyChoice !== null;
   const popupDialogOpenRef = useRef(false);
-  popupDialogOpenRef.current = popupPageDialog !== null || popupPasskeyChoice !== null;
+  popupDialogOpenRef.current = cardInPane;
+  const [pageDialogNotice, setPageDialogNotice] = useState<string | null>(null);
   const pageDialogFocusRef = useRef<{ dialogId: string; takeFocus: boolean } | null>(null);
   const [webOverlayActive, setWebOverlayActive] = useState(() => hasActiveWebOverlay());
   const webOverlayActiveRef = useRef(webOverlayActive);
@@ -1128,8 +1150,7 @@ export function BrowserPane({
     browserId,
     browserViewport,
     isPresented,
-    popupPageDialog,
-    popupPasskeyChoice,
+    cardInPane,
     selectedPopup,
     syncBrowserSurface,
     webOverlayActive,
@@ -1196,22 +1217,24 @@ export function BrowserPane({
         });
         return;
       }
-      if (webview?.loadURL) {
-        void webview.loadURL(normalizedUrl).catch((error: unknown) => {
-          const message = getLoadUrlRejectionMessage(error, browserErrorLabels.failedToLoad);
-          if (!message) {
-            return;
-          }
-          updateBrowserRef.current(browserIdRef.current, {
-            isLoading: false,
-            lastError: message,
+      runAfterPageDialogDismissed(browserIdRef.current, () => {
+        if (webview?.loadURL) {
+          void webview.loadURL(normalizedUrl).catch((error: unknown) => {
+            const message = getLoadUrlRejectionMessage(error, browserErrorLabels.failedToLoad);
+            if (!message) {
+              return;
+            }
+            updateBrowserRef.current(browserIdRef.current, {
+              isLoading: false,
+              lastError: message,
+            });
           });
-        });
-        return;
-      }
-      if (webview) {
-        webview.setAttribute("src", normalizedUrl);
-      }
+          return;
+        }
+        if (webview) {
+          webview.setAttribute("src", normalizedUrl);
+        }
+      });
     },
     [browserErrorLabels, runPopupTargetAction],
   );
@@ -1222,8 +1245,10 @@ export function BrowserPane({
       void runPopupTargetAction(popup.browserId, "back");
       return;
     }
-    webviewRef.current?.goBack?.();
-    syncNavigationState();
+    runAfterPageDialogDismissed(browserIdRef.current, () => {
+      webviewRef.current?.goBack?.();
+      syncNavigationState();
+    });
   }, [runPopupTargetAction, syncNavigationState]);
 
   const handleForward = useCallback(() => {
@@ -1232,8 +1257,10 @@ export function BrowserPane({
       void runPopupTargetAction(popup.browserId, "forward");
       return;
     }
-    webviewRef.current?.goForward?.();
-    syncNavigationState();
+    runAfterPageDialogDismissed(browserIdRef.current, () => {
+      webviewRef.current?.goForward?.();
+      syncNavigationState();
+    });
   }, [runPopupTargetAction, syncNavigationState]);
 
   const handleRefresh = useCallback(() => {
@@ -1247,7 +1274,9 @@ export function BrowserPane({
       updateBrowser(browserId, { isLoading: false });
       return;
     }
-    webviewRef.current?.reload?.();
+    runAfterPageDialogDismissed(browserIdRef.current, () => {
+      webviewRef.current?.reload?.();
+    });
   }, [browser?.isLoading, browserId, runPopupTargetAction, updateBrowser]);
 
   useEffect(() => {
@@ -1765,8 +1794,6 @@ export function BrowserPane({
     ? residentSurface
     : null;
 
-  const shownPageDialog = selectedPopup ? popupPageDialog : rootPageDialog;
-  const shownPageDialogBrowserId = selectedPopup ? selectedPopup.browserId : browserId;
   // Decided once per dialog: the card takes focus only from this pane's own page or an idle
   // window, never from a composer or another workspace (delta 14).
   if (shownPageDialog && pageDialogFocusRef.current?.dialogId !== shownPageDialog.id) {
@@ -1781,29 +1808,43 @@ export function BrowserPane({
     };
   }
   const shownPageDialogId = shownPageDialog?.id ?? null;
-  const answersRootPage = selectedPopup === null;
+  const rootPageShown = selectedPopup === null;
+  // A dialog held by the side not on screen says whose it is.
+  let pageDialogSource: "tab" | "popup" | null = null;
+  if (shownPageDialogBrowserId !== null && shownPageDialogBrowserId !== shownSideBrowserId) {
+    pageDialogSource = shownPageDialogBrowserId === browserId ? "tab" : "popup";
+  }
+  const pageDialogClosedNotice = t("workspace.browser.pageDialog.alreadyClosed");
   const handlePageDialogAnswer = useCallback(
     (accept: boolean, promptText?: string) => {
-      if (!shownPageDialogId) return;
+      if (!shownPageDialogId || !shownPageDialogBrowserId) return;
       const active = typeof document === "undefined" ? null : document.activeElement;
       const cardHadFocus =
         active instanceof HTMLElement &&
         active.closest("[data-testid='browser-page-dialog']") !== null;
-      answerPageDialog({
+      void answerPageDialog({
         browserId: shownPageDialogBrowserId,
         dialogId: shownPageDialogId,
         accept,
         ...(promptText !== undefined ? { promptText } : {}),
+      }).then((answered) => {
+        // The card is gone already; say why its answer did nothing.
+        if (!answered && mountedRef.current) setPageDialogNotice(pageDialogClosedNotice);
+        return undefined;
       });
       // Back to the page the person was in, as a browser does when its dialog closes.
-      if (cardHadFocus && answersRootPage) webviewRef.current?.focus();
+      if (cardHadFocus && rootPageShown) webviewRef.current?.focus();
     },
-    [answersRootPage, shownPageDialogBrowserId, shownPageDialogId],
+    [pageDialogClosedNotice, rootPageShown, shownPageDialogBrowserId, shownPageDialogId],
   );
-  // Delta 102: a page dialog holds the page's script thread, so it is shown first; the passkey
-  // choice appears once it is answered.
-  let shownPasskeyChoice: typeof rootPasskeyChoice = null;
-  if (!shownPageDialog) shownPasskeyChoice = selectedPopup ? popupPasskeyChoice : rootPasskeyChoice;
+  useEffect(() => {
+    if (shownPageDialogId) setPageDialogNotice(null);
+  }, [shownPageDialogId]);
+  useEffect(() => {
+    if (!pageDialogNotice) return;
+    const timer = setTimeout(() => setPageDialogNotice(null), PAGE_DIALOG_NOTICE_MS);
+    return () => clearTimeout(timer);
+  }, [pageDialogNotice]);
   if (shownPasskeyChoice && passkeyChoiceFocusRef.current?.choiceId !== shownPasskeyChoice.id) {
     passkeyChoiceFocusRef.current = {
       choiceId: shownPasskeyChoice.id,
@@ -1824,13 +1865,13 @@ export function BrowserPane({
         active instanceof HTMLElement &&
         active.closest("[data-testid='browser-passkey-choice']") !== null;
       answerPasskeyChoice({
-        browserId: shownPageDialogBrowserId,
+        browserId: shownSideBrowserId,
         choiceId: shownPasskeyChoiceId,
         credentialId,
       });
-      if (cardHadFocus && answersRootPage) webviewRef.current?.focus();
+      if (cardHadFocus && rootPageShown) webviewRef.current?.focus();
     },
-    [answersRootPage, shownPageDialogBrowserId, shownPasskeyChoiceId],
+    [rootPageShown, shownSideBrowserId, shownPasskeyChoiceId],
   );
   const passkeyChoiceCard = shownPasskeyChoice ? (
     <BrowserPasskeyChoiceCard
@@ -1844,12 +1885,15 @@ export function BrowserPane({
     <BrowserPageDialogCard
       key={shownPageDialog.id}
       dialog={shownPageDialog}
+      source={pageDialogSource}
       takeFocus={pageDialogFocusRef.current?.takeFocus === true}
       onAnswer={handlePageDialogAnswer}
     />
   ) : (
     passkeyChoiceCard
   );
+
+  const errorRowText = (selectedPopup ? popupActionError : browser?.lastError) || pageDialogNotice;
 
   if (!isElectronRuntime()) {
     return (
@@ -2017,10 +2061,10 @@ export function BrowserPane({
           </ToolbarButton>
         </View>
       </View>
-      {(selectedPopup ? popupActionError : browser?.lastError) ? (
+      {errorRowText ? (
         <View style={styles.errorRow}>
           <Text numberOfLines={1} style={errorTextStyle}>
-            {selectedPopup ? popupActionError : browser?.lastError}
+            {errorRowText}
           </Text>
         </View>
       ) : null}
@@ -2052,6 +2096,31 @@ export function BrowserPane({
       </View>
     </View>
   );
+}
+
+/** How long the "message already closed" notice stays in the error row. */
+const PAGE_DIALOG_NOTICE_MS = 5_000;
+
+/**
+ * Runs a person's navigation of the tab's own page. Chromium does not start a navigation while
+ * the page waits on a dialog (loadURL and reload hang), so a held dialog is dismissed first, as an
+ * agent's navigation does (delta 127). Without a dialog the navigation runs at once.
+ */
+function runAfterPageDialogDismissed(browserId: string, navigate: () => void): void {
+  const held = usePageDialogsStore.getState().dialogsByBrowserId[browserId];
+  if (!held) {
+    navigate();
+    return;
+  }
+  void answerPageDialog({
+    browserId,
+    dialogId: held.dialog.id,
+    accept: false,
+    forNavigation: true,
+  }).then(() => {
+    navigate();
+    return undefined;
+  });
 }
 
 function shouldPageDialogTakeFocus(input: {

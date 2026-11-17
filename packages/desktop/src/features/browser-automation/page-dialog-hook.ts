@@ -22,6 +22,7 @@ import {
   PageDialogController,
   type HeldPageDialog,
   type PageDialogSurface,
+  type PageDialogTrace,
 } from "./page-dialogs.js";
 
 export const ELECTRON_RUN_DIALOG_EVENT = "-run-dialog";
@@ -29,6 +30,8 @@ export const ELECTRON_CANCEL_DIALOGS_EVENT = "-cancel-dialogs";
 /** Main to host renderer: a tab's held dialog appeared (`dialog`) or went away (`dialog: null`). */
 export const PAGE_DIALOG_SURFACE_EVENT = "paseo:event:browser-page-dialog";
 const PROMPT_RESTORE_SLOT_TIMEOUT_MS = 3_000;
+/** How much of a dialog's message goes into main.log. */
+const LOGGED_MESSAGE_CHARS = 80;
 
 export interface ElectronRunDialogInfo {
   frame?: { url?: string } | null;
@@ -64,10 +67,18 @@ export interface PageDialogWebContents {
   };
 }
 
+/** Where a tab's or popup's dialog is shown: its browser id, its tab, and its host window. */
+export interface PageDialogSurfaceLocation {
+  browserId: string;
+  hostWebContentsId: number;
+  /** For a popup, the browser id of the tab that opened it (directly or through other popups). */
+  rootBrowserId?: string;
+}
+
 /** What the surface needs from the browser registry and the host windows (set by main.ts). */
 export interface PageDialogSurfacePorts {
-  /** The browser id and host window of a registered tab or popup; null when not registered. */
-  locate(contentsId: number): { browserId: string; hostWebContentsId: number } | null;
+  /** The registration of a tab or popup WebContents; null when not registered. */
+  locate(contentsId: number): PageDialogSurfaceLocation | null;
   send(hostWebContentsId: number, payload: PageDialogSurfacePayload): void;
 }
 
@@ -84,12 +95,23 @@ export interface PageDialogSurfaceDialog {
 
 export interface PageDialogSurfacePayload {
   browserId: string;
+  /**
+   * For a popup, the tab whose pane shows its dialog. The pane shows a popup's dialog whether or
+   * not that popup is the one on screen: a held dialog freezes a same-site opener too.
+   */
+  rootBrowserId?: string;
   dialog: PageDialogSurfaceDialog | null;
   /** With `dialog: null`: the dialog that went away. */
   dialogId?: string;
 }
 
 const controllers = new Map<number, PageDialogController>();
+/**
+ * Where each shown dialog went (`contentsId:dialogId`). Its hide goes to the same pane even when
+ * the registration changed meanwhile or the WebContents is gone (a destroyed popup unregisters
+ * before its controller closes the dialog), so no stale card stays behind.
+ */
+const shownDestinations = new Map<string, PageDialogSurfaceLocation>();
 const hookMissingContentsIds = new Set<number>();
 const watchingHostIds = new Set<number>();
 let surfacePorts: PageDialogSurfacePorts | null = null;
@@ -111,7 +133,8 @@ export function watchPaseoBrowserPageDialogs(
     const dialog = controller.current();
     const location = surfacePorts?.locate(contentsId);
     if (dialog && location?.hostWebContentsId === hostWebContentsId) {
-      open.push({ browserId: location.browserId, dialog: toSurfaceDialog(dialog) });
+      shownDestinations.set(surfaceKey(contentsId, dialog.id), location);
+      open.push({ ...destinationFields(location), dialog: toSurfaceDialog(dialog) });
     }
   }
   return open;
@@ -140,6 +163,7 @@ export function attachPaseoBrowserPageDialogs(
   const controller = new PageDialogController({
     wasAgentDriven: () => wasPaseoBrowserAgentDriven(contentsId),
     surface: surfaceFor(contentsId),
+    onTrace: (trace) => logTrace(contentsId, trace),
   });
   controllers.set(contentsId, controller);
 
@@ -206,23 +230,73 @@ function surfaceFor(contentsId: number): PageDialogSurface {
     show: (dialog) => {
       const location = surfacePorts?.locate(contentsId);
       if (location && watchingHostIds.has(location.hostWebContentsId)) {
+        shownDestinations.set(surfaceKey(contentsId, dialog.id), location);
         surfacePorts?.send(location.hostWebContentsId, {
-          browserId: location.browserId,
+          ...destinationFields(location),
           dialog: toSurfaceDialog(dialog),
         });
       }
     },
     hide: (dialogId) => {
-      const location = surfacePorts?.locate(contentsId);
-      if (location && watchingHostIds.has(location.hostWebContentsId)) {
-        surfacePorts?.send(location.hostWebContentsId, {
-          browserId: location.browserId,
-          dialog: null,
-          dialogId,
-        });
-      }
+      const key = surfaceKey(contentsId, dialogId);
+      const shownTo = shownDestinations.get(key);
+      shownDestinations.delete(key);
+      // Never shown: no pane holds a card for it.
+      if (!shownTo) return;
+      surfacePorts?.send(shownTo.hostWebContentsId, {
+        ...destinationFields(shownTo),
+        dialog: null,
+        dialogId,
+      });
     },
   };
+}
+
+function surfaceKey(contentsId: number, dialogId: string): string {
+  return `${contentsId}:${dialogId}`;
+}
+
+function destinationFields(
+  location: PageDialogSurfaceLocation,
+): Pick<PageDialogSurfacePayload, "browserId" | "rootBrowserId"> {
+  return {
+    browserId: location.browserId,
+    ...(location.rootBrowserId !== undefined ? { rootBrowserId: location.rootBrowserId } : {}),
+  };
+}
+
+/** The dialog trail in main.log: no prompt answers, and only the start of the message. */
+function logTrace(contentsId: number, trace: PageDialogTrace): void {
+  const browserId = surfacePorts?.locate(contentsId)?.browserId ?? null;
+  if (trace.kind === "opened") {
+    log.info("[browser-dialogs] opened", {
+      contentsId,
+      browserId,
+      type: trace.type,
+      holder: trace.holder,
+      host: urlHost(trace.url),
+      shown: trace.shown,
+      message: trace.message.slice(0, LOGGED_MESSAGE_CHARS),
+    });
+    return;
+  }
+  log.info("[browser-dialogs] answered", {
+    contentsId,
+    browserId,
+    type: trace.type,
+    by: trace.by,
+    accept: trace.accept,
+    heldMs: trace.heldMs,
+  });
+}
+
+function urlHost(url: string | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).host || null;
+  } catch {
+    return null;
+  }
 }
 
 function toSurfaceDialog(dialog: HeldPageDialog): PageDialogSurfaceDialog {

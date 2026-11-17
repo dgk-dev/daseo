@@ -649,6 +649,9 @@ export const ar: TranslationResources = {
         cancel: "إلغاء",
         answer: "الإجابة",
         agentNote: "يمكن للوكيل الذي يستخدم علامة التبويب هذه الرد أيضًا.",
+        fromPopup: "رسالة من النافذة المنبثقة",
+        fromTab: "رسالة من علامة التبويب الأصلية",
+        alreadyClosed: "تم إغلاق هذه الرسالة بالفعل",
       },
       passkeyChoice: {
         title: "تسجيل الدخول إلى {{host}} بمفتاح مرور",

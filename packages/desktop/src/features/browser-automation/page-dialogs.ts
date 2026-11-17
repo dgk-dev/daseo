@@ -64,10 +64,36 @@ export interface PageDialogSurface {
   hide(dialogId: string): void;
 }
 
+/** Who ended a dialog, for the main.log trail. */
+export type PageDialogAnsweredBy = "agent" | "person" | "policy" | "timeout" | "page_left";
+
+/**
+ * One line of the dialog trail (main.log). Carries no prompt answer; the hook shortens the message.
+ * `holder: "none"` means the dialog was answered as it opened.
+ */
+export type PageDialogTrace =
+  | {
+      kind: "opened";
+      type: PageDialogType;
+      message: string;
+      url?: string;
+      holder: HeldPageDialog["holder"] | "none";
+      shown: boolean;
+    }
+  | {
+      kind: "answered";
+      type: PageDialogType;
+      by: PageDialogAnsweredBy;
+      accept: boolean;
+      heldMs: number;
+    };
+
 export interface PageDialogControllerOptions {
   /** True while an agent's last command on the tab is recent (the agent-driven window). */
   wasAgentDriven(): boolean;
   surface?: PageDialogSurface;
+  /** Every opening and every answer, for the log trail. */
+  onTrace?: (trace: PageDialogTrace) => void;
   now?: () => number;
   agentHoldMs?: number;
   setTimer?: (callback: () => void, ms: number) => unknown;
@@ -144,6 +170,7 @@ export class PageDialogController {
     for (const listener of this.openingListeners) listener(type);
     if (this.destroyed) {
       respond(false, "");
+      this.traceImmediate(type, fields, false, "page_left");
       return;
     }
     if (this.open) {
@@ -166,6 +193,7 @@ export class PageDialogController {
       const text =
         accept && type === "prompt" ? (preArm.promptText ?? fields.defaultValue ?? "") : "";
       respond(accept, text);
+      this.traceImmediate(type, fields, accept, "agent");
       this.record(answeredEvent(type, fields, accept, text, this.now()));
       return;
     }
@@ -192,9 +220,14 @@ export class PageDialogController {
     this.closeUnanswered("page_left");
   }
 
-  /** An agent navigates the tab away: the held dialog is dismissed so the navigation can run. */
-  public dismissForNavigation(): void {
-    this.closeUnanswered("page_left", true);
+  /**
+   * The tab navigates away (an agent's navigate, or a person's reload, back, forward, address, or
+   * popup close): the held dialog is dismissed so the navigation can run. Chromium does not start
+   * a navigation while the page waits on a dialog. A person's navigation reports it to an agent
+   * only when the agent was waiting on it.
+   */
+  public dismissForNavigation(by: "agent" | "person" = "agent"): void {
+    this.closeUnanswered("page_left", by === "agent");
   }
 
   /** The tab is gone; nothing more is answered or recorded. */
@@ -203,6 +236,7 @@ export class PageDialogController {
     const entry = this.open;
     if (entry) {
       this.close(entry);
+      this.traceAnswered(entry, "page_left", false);
     }
     this.pending.length = 0;
   }
@@ -228,6 +262,7 @@ export class PageDialogController {
       accept && dialog.type === "prompt" ? (input.promptText ?? dialog.defaultValue ?? "") : "";
     this.close(entry);
     entry.respond(accept, text);
+    this.traceAnswered(entry, input.by, accept);
     const event = answeredEvent(dialog.type, dialog, accept, text, this.now());
     if (input.by === "person") {
       if (dialog.holder === "agent") this.record({ ...event, reason: "person" });
@@ -336,7 +371,16 @@ export class PageDialogController {
       entry.timer = this.setTimer(() => this.expire(entry), this.agentHoldMs);
     }
     this.open = entry;
-    if (this.surfaceAvailable()) this.options.surface?.show(dialog);
+    const shown = this.surfaceAvailable();
+    this.options.onTrace?.({
+      kind: "opened",
+      type,
+      message: fields.message,
+      ...(fields.url !== undefined ? { url: fields.url } : {}),
+      holder,
+      shown,
+    });
+    if (shown) this.options.surface?.show(dialog);
     for (const scope of this.scopes) scope.onHeld?.(dialog);
   }
 
@@ -344,6 +388,7 @@ export class PageDialogController {
     if (this.open !== entry) return;
     this.close(entry);
     entry.respond(false, "");
+    this.traceAnswered(entry, "timeout", false);
     this.record({
       ...answeredEvent(entry.dialog.type, entry.dialog, false, "", this.now()),
       reason: "unanswered",
@@ -356,6 +401,7 @@ export class PageDialogController {
     this.close(entry);
     // Chromium drops the answer when the frame is gone; when it is not, the page goes on.
     entry.respond(false, "");
+    this.traceAnswered(entry, "page_left", false);
     if (byAgent || entry.dialog.holder === "agent" || this.scopes.size > 0) {
       this.record({
         ...answeredEvent(entry.dialog.type, entry.dialog, false, "", this.now()),
@@ -380,7 +426,38 @@ export class PageDialogController {
   ): void {
     const accept = type === "alert";
     respond(accept, "");
+    this.traceImmediate(type, fields, accept, "policy");
     this.record(answeredEvent(type, fields, accept, "", this.now()));
+  }
+
+  /** A dialog answered as it opened: one opened and one answered line. */
+  private traceImmediate(
+    type: PageDialogType,
+    fields: DialogFields,
+    accept: boolean,
+    by: PageDialogAnsweredBy,
+  ): void {
+    const trace = this.options.onTrace;
+    if (!trace) return;
+    trace({
+      kind: "opened",
+      type,
+      message: fields.message,
+      ...(fields.url !== undefined ? { url: fields.url } : {}),
+      holder: "none",
+      shown: false,
+    });
+    trace({ kind: "answered", type, by, accept, heldMs: 0 });
+  }
+
+  private traceAnswered(entry: OpenEntry, by: PageDialogAnsweredBy, accept: boolean): void {
+    this.options.onTrace?.({
+      kind: "answered",
+      type: entry.dialog.type,
+      by,
+      accept,
+      heldMs: Math.max(0, this.now() - entry.dialog.openedAt),
+    });
   }
 
   private activePreArm(): PageDialogPreArm | undefined {

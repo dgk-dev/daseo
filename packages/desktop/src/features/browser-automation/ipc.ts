@@ -1,6 +1,7 @@
 import type { Rectangle } from "electron";
 import path from "node:path";
 import { app, ipcMain, nativeImage, webContents as electronWebContents } from "electron";
+import log from "electron-log/main";
 import { BrowserAutomationExecuteRequestSchema } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import type { BrowserAutomationConsoleLogEntry } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import type { TabContents, BrowserRegistry } from "./service.js";
@@ -40,6 +41,7 @@ import {
   setPaseoBrowserPageDialogSurfacePorts,
   unwatchPaseoBrowserPageDialogs,
   watchPaseoBrowserPageDialogs,
+  type PageDialogSurfaceLocation,
   type PageDialogWebContents,
 } from "./page-dialog-hook.js";
 import {
@@ -769,7 +771,7 @@ export function registerBrowserAutomationIpc(options?: { ipc?: IpcHandlerRegistr
 
   // Delta 93: panes show a tab's held page dialog to a person and send the answer back.
   setPaseoBrowserPageDialogSurfacePorts({
-    locate: getPaseoBrowserRegistrationForWebContents,
+    locate: locatePageDialogSurface,
     send: (hostWebContentsId, payload) => {
       const host = electronWebContents.fromId(hostWebContentsId);
       if (host && !host.isDestroyed()) host.send(PAGE_DIALOG_SURFACE_EVENT, payload);
@@ -794,8 +796,25 @@ export function registerBrowserAutomationIpc(options?: { ipc?: IpcHandlerRegistr
     if (!host || !input) return false;
     const contents = getPaseoBrowserWebContentsForHostWindow(input.browserId, host.id);
     const dialogs = contents ? getPaseoBrowserPageDialogs(contents.id) : null;
+    if (!dialogs) {
+      log.info("[browser-dialogs] answer-missed", { browserId: input.browserId, reason: "no_tab" });
+      return false;
+    }
+    if (dialogs.current()?.id !== input.dialogId) {
+      log.info("[browser-dialogs] answer-missed", {
+        browserId: input.browserId,
+        reason: "no_dialog",
+      });
+      return false;
+    }
+    // A person's reload, back, forward, or address navigation: Chromium does not start it while
+    // the page waits on a dialog, so the pane dismisses the dialog first, as an agent's does.
+    if (input.forNavigation) {
+      dialogs.dismissForNavigation("person");
+      return true;
+    }
     return (
-      dialogs?.answer({
+      dialogs.answer({
         accept: input.accept,
         ...(input.promptText !== undefined ? { promptText: input.promptText } : {}),
         by: "person",
@@ -928,9 +947,23 @@ export function registerBrowserAutomationIpc(options?: { ipc?: IpcHandlerRegistr
 const watchingHosts = new Set<number>();
 const passkeyChoiceHosts = new Set<number>();
 
-function readPageDialogAnswer(
-  input: unknown,
-): { browserId: string; dialogId: string; accept: boolean; promptText?: string } | null {
+/** A tab's or popup's registration, with the tab a popup belongs to (its pane shows the dialog). */
+function locatePageDialogSurface(contentsId: number): PageDialogSurfaceLocation | null {
+  const registration = getPaseoBrowserRegistrationForWebContents(contentsId);
+  if (!registration) return null;
+  const metadata = getPaseoBrowserTargetMetadata(registration.browserId);
+  return metadata.kind === "popup" && metadata.rootBrowserId
+    ? { ...registration, rootBrowserId: metadata.rootBrowserId }
+    : registration;
+}
+
+function readPageDialogAnswer(input: unknown): {
+  browserId: string;
+  dialogId: string;
+  accept: boolean;
+  promptText?: string;
+  forNavigation?: boolean;
+} | null {
   if (typeof input !== "object" || input === null) return null;
   const record = input as Record<string, unknown>;
   if (
@@ -945,6 +978,7 @@ function readPageDialogAnswer(
     dialogId: record.dialogId,
     accept: record.accept,
     ...(typeof record.promptText === "string" ? { promptText: record.promptText } : {}),
+    ...(record.forNavigation === true ? { forNavigation: true } : {}),
   };
 }
 

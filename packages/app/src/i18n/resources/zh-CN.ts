@@ -648,6 +648,9 @@ export const zhCN: TranslationResources = {
         cancel: "取消",
         answer: "回答",
         agentNote: "使用此标签页的智能体也可以回答。",
+        fromPopup: "来自弹出窗口的消息",
+        fromTab: "来自原标签页的消息",
+        alreadyClosed: "此消息已关闭",
       },
       passkeyChoice: {
         title: "使用通行密钥登录 {{host}}",

@@ -653,6 +653,9 @@ export const ja: TranslationResources = {
         cancel: "キャンセル",
         answer: "回答",
         agentNote: "このタブを使っているエージェントも応答できます。",
+        fromPopup: "ポップアップのメッセージ",
+        fromTab: "元のタブのメッセージ",
+        alreadyClosed: "このメッセージはすでに閉じられています",
       },
       passkeyChoice: {
         title: "パスキーで {{host}} にサインイン",

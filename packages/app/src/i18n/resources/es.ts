@@ -656,6 +656,9 @@ export const es: TranslationResources = {
         cancel: "Cancelar",
         answer: "Respuesta",
         agentNote: "El agente que usa esta pestaña también puede responder.",
+        fromPopup: "Mensaje de la ventana emergente",
+        fromTab: "Mensaje de la pestaña original",
+        alreadyClosed: "Este mensaje ya se cerró",
       },
       passkeyChoice: {
         title: "Iniciar sesión en {{host}} con una llave de acceso",

@@ -58,7 +58,7 @@ export interface BrowserPopupContentsPort {
   canGoBack(): boolean;
   canGoForward(): boolean;
   focus(): void;
-  close(): void;
+  close(options?: { waitForBeforeUnload: boolean }): void;
   subscribe(event: BrowserPopupContentsEvent, listener: () => void): void;
 }
 
@@ -136,6 +136,46 @@ export interface BrowserPopupTargetManagerOptions {
    * Unknown foreground state must return true (fail-open).
    */
   isPresentationAllowed?(input: { workspaceId: string; hostWebContentsId: number }): boolean;
+  /** How long closeTarget waits for each close attempt to destroy the popup. */
+  closeWaitMs?: number;
+}
+
+/** What an explicit close did: the popup is gone, or why it is not. */
+export type BrowserPopupCloseResult =
+  | { closed: true; destroyedMs: number }
+  | { closed: false; reason: "not_found" | "not_destroyed" };
+
+/**
+ * A close of one popup asked for by the app: the pane's X (`by: "person"`) or the agent's
+ * browser_close_tab (`by: "agent"`). The popup's held dialog is dismissed first, so the controller
+ * records it as a navigation would. `expectedCloses` marks the close as the app's own (not news to
+ * the agent); it is cleared again when the popup did not go, since no destroyed event will clear it.
+ * Both steps leave a `[browser-popup]` line in main.log.
+ */
+export async function closeBrowserPopupTargetForRequest(input: {
+  manager: Pick<BrowserPopupTargetManager, "closeTarget">;
+  browserId: string;
+  hostWebContentsId: number;
+  by: "agent" | "person";
+  expectedCloses: Set<string>;
+  dismissDialog: () => void;
+  log: (message: string, data: Record<string, unknown>) => void;
+}): Promise<boolean> {
+  const { browserId, by } = input;
+  input.log("[browser-popup] close requested", { browserId, by });
+  input.dismissDialog();
+  input.expectedCloses.add(browserId);
+  const result = await input.manager.closeTarget({
+    browserId,
+    hostWebContentsId: input.hostWebContentsId,
+  });
+  if (result.closed) {
+    input.log("[browser-popup] close result", { browserId, destroyedMs: result.destroyedMs });
+    return true;
+  }
+  input.expectedCloses.delete(browserId);
+  input.log("[browser-popup] close result", { browserId, failed: result.reason });
+  return false;
 }
 
 const DEFAULT_POPUP_WIDTH = 800;
@@ -144,6 +184,9 @@ const DEFAULT_MAX_TARGETS_PER_ROOT = 12;
 const DEFAULT_MAX_TARGETS_PER_HOST = 64;
 const DEFAULT_OPEN_BURST_LIMIT = 20;
 const DEFAULT_OPEN_BURST_WINDOW_MS = 2_000;
+// Measured on Electron 44.10.2: close() destroys a popup within about 50 ms, also while it holds a
+// page dialog or its renderer is frozen.
+const DEFAULT_CLOSE_WAIT_MS = 1_500;
 
 export class BrowserPopupTargetManager {
   private readonly createBrowserId: () => string;
@@ -158,6 +201,7 @@ export class BrowserPopupTargetManager {
   private readonly onTargetVisibilityChanged: BrowserPopupTargetManagerOptions["onTargetVisibilityChanged"];
   private readonly onSnapshot: (snapshot: BrowserPopupTargetsSnapshot) => void;
   private readonly externalPresentationAllowed: BrowserPopupTargetManagerOptions["isPresentationAllowed"];
+  private readonly closeWaitMs: number;
   private readonly targetsByBrowserId = new Map<string, BrowserPopupTargetRecord>();
   private readonly targetBrowserIdsByWebContentsId = new Map<number, string>();
   private readonly rootBindingsByWebContentsId = new Map<number, RootBrowserBinding>();
@@ -184,6 +228,7 @@ export class BrowserPopupTargetManager {
     this.onTargetVisibilityChanged = options.onTargetVisibilityChanged;
     this.onSnapshot = options.onSnapshot ?? (() => {});
     this.externalPresentationAllowed = options.isPresentationAllowed;
+    this.closeWaitMs = options.closeWaitMs ?? DEFAULT_CLOSE_WAIT_MS;
   }
 
   public tryAdmit(input: { rootWebContentsId: number; hostWebContentsId: number }): boolean {
@@ -366,13 +411,59 @@ export class BrowserPopupTargetManager {
     return { width: actualBounds.width, height: actualBounds.height };
   }
 
-  public closeTarget(input: { browserId: string; hostWebContentsId: number }): boolean {
+  /**
+   * Closes a popup and waits until it is destroyed. A close request alone proves nothing: the
+   * popup could stay on screen while the caller reports success. A second attempt skips the
+   * page's beforeunload; a popup still alive after that is reported as not closed.
+   */
+  public async closeTarget(input: {
+    browserId: string;
+    hostWebContentsId: number;
+  }): Promise<BrowserPopupCloseResult> {
     const target = this.targetsByBrowserId.get(input.browserId);
     if (!target || target.hostWebContentsId !== input.hostWebContentsId) {
-      return false;
+      return { closed: false, reason: "not_found" };
     }
-    target.view.contents.close();
-    return true;
+    const contents = target.view.contents;
+    const startedAt = this.now();
+    let destroyed = contents.isDestroyed();
+    let markDestroyed: () => void = () => {};
+    const destroyedEvent = new Promise<void>((resolve) => {
+      markDestroyed = resolve;
+    });
+    if (!destroyed) {
+      contents.subscribe("destroyed", () => {
+        destroyed = true;
+        markDestroyed();
+      });
+    }
+    const attempts: Array<{ waitForBeforeUnload: boolean } | undefined> = [
+      undefined,
+      { waitForBeforeUnload: false },
+    ];
+    for (const options of attempts) {
+      if (destroyed || contents.isDestroyed()) break;
+      try {
+        if (options) contents.close(options);
+        else contents.close();
+      } catch {
+        // A WebContents torn down between the check and the call throws; the wait below sees it.
+      }
+      if (destroyed || contents.isDestroyed()) break;
+      // Ends at the destroyed event or after closeWaitMs, whichever comes first.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        destroyedEvent,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, this.closeWaitMs);
+        }),
+      ]);
+      clearTimeout(timer);
+    }
+    if (destroyed || contents.isDestroyed()) {
+      return { closed: true, destroyedMs: Math.max(0, this.now() - startedAt) };
+    }
+    return { closed: false, reason: "not_destroyed" };
   }
 
   /**

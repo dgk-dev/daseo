@@ -655,6 +655,9 @@ export const ru: TranslationResources = {
         cancel: "Отмена",
         answer: "Ответ",
         agentNote: "Агент, который использует эту вкладку, тоже может ответить.",
+        fromPopup: "Сообщение всплывающего окна",
+        fromTab: "Сообщение исходной вкладки",
+        alreadyClosed: "Это сообщение уже закрыто",
       },
       passkeyChoice: {
         title: "Вход на {{host}} с ключом доступа",

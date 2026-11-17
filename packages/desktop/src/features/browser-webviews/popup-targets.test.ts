@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   BrowserPopupTargetManager,
+  closeBrowserPopupTargetForRequest,
   type BrowserPopupBounds,
   type BrowserPopupContentsEvent,
   type BrowserPopupContentsPort,
@@ -18,6 +19,9 @@ class FakePopupContents implements BrowserPopupContentsPort {
   public canForward = false;
   public focusCalls = 0;
   public closeCalls = 0;
+  public readonly closeOptions: Array<{ waitForBeforeUnload: boolean } | undefined> = [];
+  /** How many close() calls do nothing before one destroys the page (Infinity: never). */
+  public ignoredCloses = 0;
   private destroyed = false;
   private readonly listeners = new Map<BrowserPopupContentsEvent, Array<() => void>>();
 
@@ -52,8 +56,13 @@ class FakePopupContents implements BrowserPopupContentsPort {
     this.emit("focus");
   }
 
-  public close(): void {
+  public close(options?: { waitForBeforeUnload: boolean }): void {
     this.closeCalls += 1;
+    this.closeOptions.push(options);
+    if (this.ignoredCloses > 0) {
+      this.ignoredCloses -= 1;
+      return;
+    }
     this.destroy();
   }
 
@@ -131,6 +140,7 @@ class PopupManagerHarness {
       maxTargetsPerHost?: number;
       openBurstLimit?: number;
       openBurstWindowMs?: number;
+      closeWaitMs?: number;
       isPresentationAllowed?: (input: {
         workspaceId: string;
         hostWebContentsId: number;
@@ -646,20 +656,122 @@ describe("BrowserPopupTargetManager", () => {
     expect(popup.view.bounds.at(-1)).toEqual(PRESENTED_BOUNDS);
   });
 
-  test("explicit close is scoped to the owning host window", () => {
+  test("explicit close is scoped to the owning host window", async () => {
     const harness = new PopupManagerHarness();
     harness.bind();
     const popup = harness.adopt();
 
-    expect(harness.manager.closeTarget({ browserId: popup.browserId, hostWebContentsId: 99 })).toBe(
-      false,
-    );
+    await expect(
+      harness.manager.closeTarget({ browserId: popup.browserId, hostWebContentsId: 99 }),
+    ).resolves.toEqual({ closed: false, reason: "not_found" });
     expect(popup.contents.closeCalls).toBe(0);
-    expect(harness.manager.closeTarget({ browserId: popup.browserId, hostWebContentsId: 10 })).toBe(
-      true,
-    );
+    await expect(
+      harness.manager.closeTarget({ browserId: popup.browserId, hostWebContentsId: 10 }),
+    ).resolves.toEqual({ closed: true, destroyedMs: 0 });
     expect(popup.contents.closeCalls).toBe(1);
     expect(harness.unregistered).toEqual([popup.browserId]);
+  });
+
+  test("a close that is not followed by destruction is retried without beforeunload (delta 127)", async () => {
+    const harness = new PopupManagerHarness({ closeWaitMs: 5 });
+    harness.bind();
+    const popup = harness.adopt();
+    popup.contents.ignoredCloses = 1;
+
+    await expect(
+      harness.manager.closeTarget({ browserId: popup.browserId, hostWebContentsId: 10 }),
+    ).resolves.toMatchObject({ closed: true });
+    expect(popup.contents.closeOptions).toEqual([undefined, { waitForBeforeUnload: false }]);
+    expect(harness.unregistered).toEqual([popup.browserId]);
+  });
+
+  test("a close that is answered later by destruction resolves as soon as it is destroyed", async () => {
+    const harness = new PopupManagerHarness({ closeWaitMs: 10_000 });
+    harness.bind();
+    const popup = harness.adopt();
+    popup.contents.ignoredCloses = 1;
+
+    const result = harness.manager.closeTarget({
+      browserId: popup.browserId,
+      hostWebContentsId: 10,
+    });
+    harness.advance(40);
+    popup.contents.destroy();
+    await expect(result).resolves.toEqual({ closed: true, destroyedMs: 40 });
+    expect(popup.contents.closeCalls).toBe(1);
+  });
+
+  test("the X on a popup that holds a dialog dismisses it, closes the popup, and logs both steps", async () => {
+    const harness = new PopupManagerHarness();
+    harness.bind();
+    const popup = harness.adopt();
+    const steps: string[] = [];
+    const logged: Array<[string, Record<string, unknown>]> = [];
+    const expectedCloses = new Set<string>();
+
+    const closed = await closeBrowserPopupTargetForRequest({
+      manager: {
+        closeTarget: (input) => {
+          steps.push("close");
+          return harness.manager.closeTarget(input);
+        },
+      },
+      browserId: popup.browserId,
+      hostWebContentsId: 10,
+      by: "person",
+      expectedCloses,
+      dismissDialog: () => steps.push("dismiss"),
+      log: (message, data) => logged.push([message, data]),
+    });
+
+    expect(closed).toBe(true);
+    expect(steps).toEqual(["dismiss", "close"]);
+    expect(popup.contents.isDestroyed()).toBe(true);
+    // The destroyed handler in main clears it; nothing here removed it early.
+    expect(expectedCloses.has(popup.browserId)).toBe(true);
+    expect(logged).toEqual([
+      ["[browser-popup] close requested", { browserId: popup.browserId, by: "person" }],
+      ["[browser-popup] close result", { browserId: popup.browserId, destroyedMs: 0 }],
+    ]);
+  });
+
+  test("a close that did not happen leaves no expected close behind", async () => {
+    const harness = new PopupManagerHarness({ closeWaitMs: 5 });
+    harness.bind();
+    const popup = harness.adopt();
+    popup.contents.ignoredCloses = Number.POSITIVE_INFINITY;
+    const logged: Array<[string, Record<string, unknown>]> = [];
+    const expectedCloses = new Set<string>();
+
+    const closed = await closeBrowserPopupTargetForRequest({
+      manager: harness.manager,
+      browserId: popup.browserId,
+      hostWebContentsId: 10,
+      by: "agent",
+      expectedCloses,
+      dismissDialog: () => {},
+      log: (message, data) => logged.push([message, data]),
+    });
+
+    expect(closed).toBe(false);
+    expect(expectedCloses.size).toBe(0);
+    expect(logged.at(-1)).toEqual([
+      "[browser-popup] close result",
+      { browserId: popup.browserId, failed: "not_destroyed" },
+    ]);
+  });
+
+  test("a popup that outlives both close attempts is reported as not closed", async () => {
+    const harness = new PopupManagerHarness({ closeWaitMs: 5 });
+    harness.bind();
+    const popup = harness.adopt();
+    popup.contents.ignoredCloses = Number.POSITIVE_INFINITY;
+
+    await expect(
+      harness.manager.closeTarget({ browserId: popup.browserId, hostWebContentsId: 10 }),
+    ).resolves.toEqual({ closed: false, reason: "not_destroyed" });
+    expect(popup.contents.closeCalls).toBe(2);
+    expect(harness.unregistered).toEqual([]);
   });
 
   test("closing an opener root closes every nested popup and clears admission state", () => {

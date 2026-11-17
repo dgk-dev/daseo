@@ -655,6 +655,9 @@ export const fr: TranslationResources = {
         cancel: "Annuler",
         answer: "Réponse",
         agentNote: "L’agent qui utilise cet onglet peut aussi répondre.",
+        fromPopup: "Message de la fenêtre pop-up",
+        fromTab: "Message de l’onglet d’origine",
+        alreadyClosed: "Ce message était déjà fermé",
       },
       passkeyChoice: {
         title: "Se connecter à {{host}} avec une clé d’accès",

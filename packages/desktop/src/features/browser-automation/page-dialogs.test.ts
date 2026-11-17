@@ -4,6 +4,7 @@ import {
   PageDialogController,
   type HeldPageDialog,
   type PageDialogResponder,
+  type PageDialogTrace,
 } from "./page-dialogs.js";
 
 interface Answer {
@@ -380,5 +381,89 @@ describe("page dialog owner (delta 93)", () => {
     stop();
     open("alert", "Again");
     expect(heard).toEqual(["alert"]);
+  });
+
+  test("a person's navigation dismisses the held dialog and tells only an agent that waited (delta 127)", () => {
+    const person = setup({ surface: true });
+    const personAnswers = person.open("confirm", "Stay?");
+    person.controller.dismissForNavigation("person");
+    expect(personAnswers).toEqual([{ accept: false, text: "" }]);
+    expect(person.controller.current()).toBeNull();
+    expect(person.hidden).toHaveLength(1);
+    expect(person.controller.takePending()).toEqual([]);
+
+    const agent = setup({ agentDriven: true });
+    agent.open("confirm", "Stay?");
+    agent.controller.dismissForNavigation("person");
+    expect(agent.controller.takePending()).toMatchObject([
+      { type: "confirm", action: "dismissed", reason: "page_left" },
+    ]);
+  });
+});
+
+describe("page dialog trail (delta 127)", () => {
+  function traced(input: { agentDriven?: boolean; surface?: boolean } = {}) {
+    let now = 1_000;
+    const traces: PageDialogTrace[] = [];
+    const controller = new PageDialogController({
+      wasAgentDriven: () => input.agentDriven ?? false,
+      surface: { available: () => input.surface ?? false, show: () => {}, hide: () => {} },
+      onTrace: (trace) => traces.push(trace),
+      now: () => now,
+      setTimer: () => null,
+      clearTimer: () => {},
+    });
+    const open = (type: string) => controller.handleOpening({ type, message: "m" }, () => {});
+    return {
+      controller,
+      traces,
+      open,
+      advance: (ms: number) => {
+        now += ms;
+      },
+    };
+  }
+
+  test("a held dialog leaves an opened line and an answered line with who and how long", () => {
+    const { controller, traces, open, advance } = traced({ surface: true });
+    open("confirm");
+    advance(2_500);
+    controller.answer({ accept: true, by: "person", dialogId: controller.current()?.id ?? "" });
+    expect(traces).toEqual([
+      { kind: "opened", type: "confirm", message: "m", holder: "person", shown: true },
+      { kind: "answered", type: "confirm", by: "person", accept: true, heldMs: 2_500 },
+    ]);
+  });
+
+  test("dialogs answered as they open are traced as policy or agent", async () => {
+    const { controller, traces, open } = traced();
+    open("alert");
+    await controller.runCommand(
+      { returnWhenHeld: false, preArm: { action: "dismiss" } },
+      async () => {
+        open("confirm");
+        return "clicked";
+      },
+    );
+    expect(traces.filter((trace) => trace.kind === "answered")).toEqual([
+      { kind: "answered", type: "alert", by: "policy", accept: true, heldMs: 0 },
+      { kind: "answered", type: "confirm", by: "agent", accept: false, heldMs: 0 },
+    ]);
+    expect(traces[0]).toMatchObject({ kind: "opened", holder: "none", shown: false });
+  });
+
+  test("page_left covers cancel, navigation, and a destroyed tab", () => {
+    const { controller, traces, open } = traced({ surface: true });
+    open("confirm");
+    controller.handleCancel();
+    open("confirm");
+    controller.dismissForNavigation("person");
+    open("prompt");
+    controller.destroy();
+    expect(traces.filter((trace) => trace.kind === "answered").map((trace) => trace.by)).toEqual([
+      "page_left",
+      "page_left",
+      "page_left",
+    ]);
   });
 });

@@ -28,10 +28,16 @@ export function pageDialogHost(url: string | undefined): string | null {
 
 export function BrowserPageDialogCard({
   dialog,
+  source = null,
   takeFocus,
   onAnswer,
 }: {
   dialog: DesktopBrowserPageDialog;
+  /**
+   * Delta 127: set when the dialog belongs to the side not on screen, the tab ("tab") while one
+   * of its popups is shown, or a popup ("popup") while the tab or another popup is shown.
+   */
+  source?: "tab" | "popup" | null;
   /** Focus the card when it appears: only when the person was already in this pane. */
   takeFocus: boolean;
   onAnswer: (accept: boolean, promptText?: string) => void;
@@ -99,6 +105,13 @@ export function BrowserPageDialogCard({
               ? t("workspace.browser.pageDialog.title", { host })
               : t("workspace.browser.pageDialog.titleNoHost")}
           </Text>
+          {source ? (
+            <Text style={styles.note}>
+              {source === "tab"
+                ? t("workspace.browser.pageDialog.fromTab")
+                : t("workspace.browser.pageDialog.fromPopup")}
+            </Text>
+          ) : null}
           <ScrollView style={styles.messageScroll}>
             <Text selectable style={styles.message}>
               {dialog.message}

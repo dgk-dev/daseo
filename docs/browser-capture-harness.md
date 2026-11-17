@@ -104,7 +104,9 @@ tab's and a popup's alert, confirm, and prompt are answered by Daseo with no nat
 sheet; that an agent click's confirm comes back as `openDialog` within a second and
 `handle_dialog` accept and Cancel reach the page; that `dialog: "accept"` answers in the same call;
 that prompt text reaches the page; that a held confirm makes snapshot answer at once while navigate
-still runs; that an agent leaves a page with a live `beforeunload`; that `Notification.permission`
+still runs; that an opener's confirm reaches a watching pane while its popup exists and a person's
+OK reaches the page, that a popup's confirm names its tab, and that the popup close destroys a
+popup holding a confirm and hides its card (delta 127); that an agent leaves a page with a live `beforeunload`; that `Notification.permission`
 is `denied`; that `disableDialogs` alone keeps Electron from showing a box; and that a held confirm
 nobody answers is dismissed after 60 s (set `PASEO_CAPTURE_HARNESS_SKIP_UNANSWERED=1` to skip that
 minute). Electron gives the page sticky activation only through real input or a user-gesture

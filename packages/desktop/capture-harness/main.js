@@ -4867,6 +4867,12 @@ async function startDialogsServer() {
       </script>`);
       return;
     }
+    if (url.startsWith("/opener-blank")) {
+      response.end(
+        '<!doctype html><title>Opener</title><script>window.popup = window.open("/blank", "dialogs-popup-127", "width=400,height=300")</script>',
+      );
+      return;
+    }
     if (url.startsWith("/opener")) {
       response.end(
         '<!doctype html><title>Opener</title><script>window.popup = window.open("/idle", "dialogs-popup", "width=400,height=300")</script>',
@@ -4991,6 +4997,7 @@ async function runDialogsGroup() {
       overrideBrowserWindowOptions: { show: false },
     }));
     await verifyPopupDialogs({ checks, guest, popups, target, nativeBoxes, extraWindows });
+    await verifyPaneDialogsAcrossTabAndPopup({ checks, guest, popups, target });
     const harness = createFramesAutomation(guest);
     await verifyAgentConfirmFlow({ checks, harness, guest, target });
     await verifyAgentPromptFlow({ checks, harness, guest, target });
@@ -5080,6 +5087,151 @@ async function verifyPopupDialogs({ checks, guest, popups, target, nativeBoxes }
   );
   popup.close();
   await guest.loadURL(`${target.origin}/blank`);
+}
+
+// Delta 127: the pane hears a dialog whichever of the tab or its popup holds it, the popup's names
+// its tab, a person's answer reaches the page, and the popup X destroys a popup that holds a
+// confirm and takes its card away. The harness has no app pane: a fake watching host window
+// records what main sends to it.
+async function verifyPaneDialogsAcrossTabAndPopup({ checks, guest, popups, target }) {
+  const hook = require(path.join(PRODUCTION_BROWSER_AUTOMATION_DIR, "page-dialog-hook.js"));
+  const { BrowserPopupTargetManager, closeBrowserPopupTargetForRequest } = require(
+    path.join(DIST_DIR, "features", "browser-webviews", "popup-targets.js"),
+  );
+  const HOST_ID = 127_127;
+  const before = popups.length;
+  await guest.loadURL(`${target.origin}/opener-blank`);
+  const popup = await waitFor(() => popups[before] ?? null, "delta 127 popup created");
+  await waitFor(() => !popup.isLoading() && popup.getURL().includes("/blank"), "popup loaded");
+  const sent = [];
+  hook.setPaseoBrowserPageDialogSurfacePorts({
+    locate: (contentsId) => {
+      if (contentsId === guest.id) return { browserId: "tab-127", hostWebContentsId: HOST_ID };
+      if (contentsId === popup.id && !popup.isDestroyed()) {
+        return { browserId: "popup-127", hostWebContentsId: HOST_ID, rootBrowserId: "tab-127" };
+      }
+      return null;
+    },
+    send: (_host, payload) => sent.push(payload),
+  });
+  hook.watchPaseoBrowserPageDialogs(HOST_ID);
+  const logged = [];
+  try {
+    // The opener's confirm while the popup is on screen.
+    void guest.mainFrame
+      .executeJavaScript("setTimeout(() => { window.c = confirm('opener confirm'); }, 0); 1", false)
+      .catch(() => {});
+    const openerShown = await waitFor(
+      () => sent.find((p) => p.browserId === "tab-127" && p.dialog?.type === "confirm"),
+      "opener confirm sent to the pane",
+    );
+    const popupFrozen = await withTimeout(
+      popup.mainFrame.executeJavaScript("1", false),
+      "popup script while its opener holds a confirm",
+      1000,
+    ).then(
+      () => false,
+      () => true,
+    );
+    const openerController = hook.getPaseoBrowserPageDialogs(guest.id);
+    const answered = openerController.answer({
+      accept: true,
+      by: "person",
+      dialogId: openerShown.dialog.id,
+    });
+    const openerResult = await waitFor(
+      () =>
+        guest.mainFrame.executeJavaScript("window.c === undefined ? null : { c: window.c }", false),
+      "opener confirm answered",
+    );
+    dialogsCheck(
+      checks,
+      "an opener's confirm reaches the pane while its popup exists, and the person's OK reaches the page",
+      failedChecks({
+        notNamedAsPopup: openerShown.rootBrowserId === undefined,
+        answered: answered !== null,
+        pageGotTrue: openerResult.c === true,
+        hidden: sent.some((p) => p.browserId === "tab-127" && p.dialog === null),
+      }),
+      { openerShown, popupFrozen, openerResult },
+    );
+
+    // The popup's confirm names its tab; the X closes the popup and takes the card away.
+    void popup.mainFrame
+      .executeJavaScript("setTimeout(() => { window.p = confirm('popup confirm'); }, 0); 1", false)
+      .catch(() => {});
+    const popupShown = await waitFor(
+      () => sent.find((p) => p.browserId === "popup-127" && p.dialog?.type === "confirm"),
+      "popup confirm sent to the pane",
+    );
+    const manager = new BrowserPopupTargetManager({ createBrowserId: () => "popup-127" });
+    manager.bindRoot({
+      rootWebContentsId: guest.id,
+      rootBrowserId: "tab-127",
+      workspaceId: "ws-127",
+      hostWebContentsId: HOST_ID,
+    });
+    const port = {
+      id: popup.id,
+      isDestroyed: () => popup.isDestroyed(),
+      getURL: () => popup.getURL(),
+      getTitle: () => popup.getTitle(),
+      isLoading: () => popup.isLoading(),
+      canGoBack: () => false,
+      canGoForward: () => false,
+      focus: () => {},
+      close: (options) => popup.close(options),
+      subscribe: (event, listener) => {
+        if (event === "destroyed") popup.on("destroyed", listener);
+      },
+    };
+    const managedId = manager.adopt({
+      rootWebContentsId: guest.id,
+      openerWebContentsId: guest.id,
+      hostWebContentsId: HOST_ID,
+      disposition: "new-window",
+      view: { contents: port, setBounds: () => {} },
+      hostView: {
+        addChildView: () => {},
+        setChildViewVisible: () => {},
+        removeChildView: () => {},
+      },
+    });
+    const expectedCloses = new Set();
+    const startedAt = Date.now();
+    const closed = await closeBrowserPopupTargetForRequest({
+      manager,
+      browserId: managedId,
+      hostWebContentsId: HOST_ID,
+      by: "person",
+      expectedCloses,
+      dismissDialog: () =>
+        hook.getPaseoBrowserPageDialogs(popup.id)?.dismissForNavigation("person"),
+      log: (message, data) => logged.push({ message, data }),
+    });
+    dialogsCheck(
+      checks,
+      "a popup's confirm names its tab, and the popup X destroys a popup that holds it and takes its card away",
+      failedChecks({
+        namesItsTab: popupShown.rootBrowserId === "tab-127",
+        closed,
+        destroyed: popup.isDestroyed(),
+        cardHidden: sent.some(
+          (p) =>
+            p.browserId === "popup-127" && p.dialog === null && p.dialogId === popupShown.dialog.id,
+        ),
+        logged:
+          logged.map((entry) => entry.message).join(",") ===
+          "[browser-popup] close requested,[browser-popup] close result",
+      }),
+      { closed, elapsedMs: Date.now() - startedAt, logged },
+    );
+  } finally {
+    hook.unwatchPaseoBrowserPageDialogs(HOST_ID);
+    hook.setPaseoBrowserPageDialogSurfacePorts(null);
+    if (!popup.isDestroyed()) popup.close();
+    await guest.loadURL(`${target.origin}/blank`);
+  }
 }
 
 function refFor(snapshotResult, role, name) {

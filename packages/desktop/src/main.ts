@@ -91,6 +91,7 @@ import {
 import {
   BROWSER_POPUP_TARGETS_EVENT,
   BrowserPopupTargetManager,
+  closeBrowserPopupTargetForRequest,
   type BrowserPopupContentsEvent,
   type BrowserPopupContentsPort,
   type BrowserPopupHostViewPort,
@@ -139,6 +140,7 @@ import {
   registerBrowserAutomationIpc,
 } from "./features/browser-automation/ipc.js";
 import { noteRequestedTabUrl } from "./features/browser-automation/load-tracker.js";
+import { getPaseoBrowserPageDialogs } from "./features/browser-automation/page-dialog-hook.js";
 import {
   PASSKEY_KEY_ENV,
   PaseoBrowserPasskeys,
@@ -269,7 +271,7 @@ function adaptBrowserPopupContents(contents: Electron.WebContents): BrowserPopup
     canGoBack: () => contents.canGoBack(),
     canGoForward: () => contents.canGoForward(),
     focus: () => contents.focus(),
-    close: () => contents.close(),
+    close: (options) => contents.close(options),
     subscribe: (event: BrowserPopupContentsEvent, listener: () => void) => {
       if (event === "destroyed") contents.on("destroyed", listener);
       else if (event === "did-start-loading") contents.on("did-start-loading", listener);
@@ -986,24 +988,36 @@ ipcMain.handle("paseo:browser:present-popup-target", (event, rawInput: unknown):
   });
 });
 
-ipcMain.handle("paseo:browser:close-popup-target", (event, rawInput: unknown): boolean => {
-  if (!rawInput || typeof rawInput !== "object" || Array.isArray(rawInput)) {
-    return false;
-  }
-  const input = rawInput as Record<string, unknown>;
-  const browserId = typeof input.browserId === "string" ? input.browserId.trim() : "";
-  const workspaceId = typeof input.workspaceId === "string" ? input.workspaceId.trim() : "";
-  if (!browserId || !workspaceId || getPaseoBrowserWorkspaceId(browserId) !== workspaceId) {
-    return false;
-  }
-  expectedPopupCloses.add(browserId);
-  const closed = browserPopupTargets.closeTarget({
-    browserId,
-    hostWebContentsId: event.sender.id,
-  });
-  if (!closed) expectedPopupCloses.delete(browserId);
-  return closed;
-});
+// The popup's X in the pane (by: person) and the agent's browser_close_tab (by: agent). Answers
+// true only once the popup is destroyed.
+ipcMain.handle(
+  "paseo:browser:close-popup-target",
+  async (event, rawInput: unknown): Promise<boolean> => {
+    if (!rawInput || typeof rawInput !== "object" || Array.isArray(rawInput)) {
+      return false;
+    }
+    const input = rawInput as Record<string, unknown>;
+    const browserId = typeof input.browserId === "string" ? input.browserId.trim() : "";
+    const workspaceId = typeof input.workspaceId === "string" ? input.workspaceId.trim() : "";
+    if (!browserId || !workspaceId || getPaseoBrowserWorkspaceId(browserId) !== workspaceId) {
+      return false;
+    }
+    const by = input.by === "agent" ? "agent" : "person";
+    const hostWebContentsId = event.sender.id;
+    return closeBrowserPopupTargetForRequest({
+      manager: browserPopupTargets,
+      browserId,
+      hostWebContentsId,
+      by,
+      expectedCloses: expectedPopupCloses,
+      dismissDialog: () => {
+        const contents = getPaseoBrowserWebContentsForHostWindow(browserId, hostWebContentsId);
+        if (contents) getPaseoBrowserPageDialogs(contents.id)?.dismissForNavigation(by);
+      },
+      log: (message, data) => log.info(message, data),
+    });
+  },
+);
 
 ipcMain.handle("paseo:browser:resize-popup-target", (event, rawInput: unknown) => {
   if (!rawInput || typeof rawInput !== "object" || Array.isArray(rawInput)) {
@@ -1049,15 +1063,26 @@ ipcMain.handle("paseo:browser:popup-target-action", async (event, rawInput: unkn
   if (!contents) {
     return false;
   }
+  // Chromium does not navigate a page that waits on a dialog (loadURL and reload hang): the
+  // person's toolbar action dismisses it first, as an agent's navigation does.
+  const dismissDialogForNavigation = () =>
+    getPaseoBrowserPageDialogs(contents.id)?.dismissForNavigation("person");
   if (action === "back") {
-    if (contents.canGoBack()) contents.goBack();
+    if (contents.canGoBack()) {
+      dismissDialogForNavigation();
+      contents.goBack();
+    }
     return true;
   }
   if (action === "forward") {
-    if (contents.canGoForward()) contents.goForward();
+    if (contents.canGoForward()) {
+      dismissDialogForNavigation();
+      contents.goForward();
+    }
     return true;
   }
   if (action === "reload") {
+    dismissDialogForNavigation();
     contents.reload();
     return true;
   }
@@ -1075,6 +1100,7 @@ ipcMain.handle("paseo:browser:popup-target-action", async (event, rawInput: unkn
     } catch {
       return false;
     }
+    dismissDialogForNavigation();
     await contents.loadURL(url);
     return true;
   }

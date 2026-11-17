@@ -221,6 +221,96 @@ describe("page dialog hook (delta 93)", () => {
     }
   });
 
+  test("a popup's dialog names its tab, and its hide reaches the same pane after the popup unregisters (delta 127)", () => {
+    const sent: Array<{ host: number; payload: PageDialogSurfacePayload }> = [];
+    let registered = true;
+    setPaseoBrowserPageDialogSurfacePorts({
+      locate: (contentsId) =>
+        contentsId === 510 && registered
+          ? { browserId: "popup-510", hostWebContentsId: 9, rootBrowserId: "tab-1" }
+          : null,
+      send: (host, payload) => sent.push({ host, payload }),
+    });
+    watchPaseoBrowserPageDialogs(9);
+    const contents = new FakeContents(510);
+    const controller = attachPaseoBrowserPageDialogs(contents);
+    mainLog.info.mockClear();
+    try {
+      contents.emit(
+        "-run-dialog",
+        { dialogType: "confirm", messageText: "Leave?", frame: { url: "https://a.example/x" } },
+        () => {},
+      );
+      const dialogId = controller.current()?.id ?? "";
+      expect(sent).toEqual([
+        {
+          host: 9,
+          payload: {
+            browserId: "popup-510",
+            rootBrowserId: "tab-1",
+            dialog: expect.objectContaining({ id: dialogId, type: "confirm" }),
+          },
+        },
+      ]);
+      expect(mainLog.info).toHaveBeenCalledWith("[browser-dialogs] opened", {
+        contentsId: 510,
+        browserId: "popup-510",
+        type: "confirm",
+        holder: "person",
+        host: "a.example",
+        shown: true,
+        message: "Leave?",
+      });
+
+      // A destroyed popup unregisters before its controller closes the dialog.
+      registered = false;
+      contents.destroy();
+      expect(sent.at(-1)).toEqual({
+        host: 9,
+        payload: { browserId: "popup-510", rootBrowserId: "tab-1", dialog: null, dialogId },
+      });
+      expect(mainLog.info).toHaveBeenCalledWith(
+        "[browser-dialogs] answered",
+        expect.objectContaining({ contentsId: 510, by: "page_left", accept: false }),
+      );
+    } finally {
+      unwatchPaseoBrowserPageDialogs(9);
+      setPaseoBrowserPageDialogSurfacePorts(null);
+    }
+  });
+
+  test("the log keeps only the start of a message and never a prompt answer", () => {
+    setPaseoBrowserPageDialogSurfacePorts({
+      locate: (contentsId) =>
+        contentsId === 511 ? { browserId: "tab-511", hostWebContentsId: 9 } : null,
+      send: () => {},
+    });
+    watchPaseoBrowserPageDialogs(9);
+    const contents = new FakeContents(511);
+    const controller = attachPaseoBrowserPageDialogs(contents);
+    mainLog.info.mockClear();
+    try {
+      contents.emit(
+        "-run-dialog",
+        { dialogType: "prompt", messageText: "x".repeat(200) },
+        () => {},
+      );
+      const dialogId = controller.current()?.id ?? "";
+      controller.answer({ accept: true, promptText: "secret-answer", by: "person", dialogId });
+      const logged = JSON.stringify(mainLog.info.mock.calls);
+      expect(logged).not.toContain("secret-answer");
+      expect(logged).not.toContain("x".repeat(81));
+      expect(mainLog.info).toHaveBeenCalledWith(
+        "[browser-dialogs] answered",
+        expect.objectContaining({ by: "person", accept: true, type: "prompt" }),
+      );
+    } finally {
+      unwatchPaseoBrowserPageDialogs(9);
+      setPaseoBrowserPageDialogSurfacePorts(null);
+      contents.destroy();
+    }
+  });
+
   test("the prompt restorer registers once per DevTools session, again after a detach", async () => {
     const contents = new FakeContents(507);
     const queue = new CdpSessionQueue();

@@ -650,6 +650,9 @@ export const ko: TranslationResources = {
         cancel: "취소",
         answer: "응답",
         agentNote: "이 탭을 쓰는 에이전트도 답할 수 있습니다.",
+        fromPopup: "팝업 창의 메시지",
+        fromTab: "원래 탭의 메시지",
+        alreadyClosed: "이미 닫힌 메시지입니다",
       },
       passkeyChoice: {
         title: "패스키로 {{host}}에 로그인",
