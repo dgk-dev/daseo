@@ -295,18 +295,12 @@ async function createRegistryBackedScheduleWorkspaceDeps(rootDir: string): Promi
   };
 }
 
-function markCompleted(schedule: StoredSchedule): StoredSchedule {
-  return { ...schedule, status: "completed", nextRunAt: null };
-}
-
 function buildAgentRecord(params: {
   id: string;
   cwd: string;
   iso: string;
   archivedAt?: string | null;
-  title?: string;
   labels?: Record<string, string>;
-  config?: { modeId?: string; model?: string; thinkingOptionId?: string };
 }) {
   return {
     id: params.id,
@@ -316,11 +310,11 @@ function buildAgentRecord(params: {
     updatedAt: params.iso,
     lastActivityAt: params.iso,
     lastUserMessageAt: null,
-    title: params.title ?? params.id,
+    title: params.id,
     labels: params.labels ?? {},
     lastStatus: "closed" as const,
     lastModeId: "default",
-    config: params.config ?? { modeId: "default" },
+    config: { modeId: "default" },
     runtimeInfo: null,
     features: [],
     persistence: null,
@@ -3202,7 +3196,7 @@ describe("ScheduleService", () => {
 
     now = new Date("2026-01-01T00:05:00.000Z");
     const released = await service.releaseForArchivedAgent(targetAgentId);
-    expect(released).toEqual({ converted: 0, completed: 1 });
+    expect(released).toEqual({ kept: 0, completed: 1 });
 
     const remaining = await service.list();
     expect(remaining.map((schedule) => schedule.id).sort()).toEqual(
@@ -3838,32 +3832,21 @@ describe("ScheduleService", () => {
     });
 
     now = new Date("2026-01-01T00:01:00.000Z");
-    expect(await service.releaseForArchivedAgent(agentId)).toEqual({ converted: 0, completed: 1 });
-    expect(await service.releaseForArchivedAgent(agentId)).toEqual({ converted: 0, completed: 0 });
+    expect(await service.releaseForArchivedAgent(agentId)).toEqual({ kept: 0, completed: 1 });
+    expect(await service.releaseForArchivedAgent(agentId)).toEqual({ kept: 0, completed: 0 });
   });
 
   describe("heartbeats of an archived session (delta 125)", () => {
     const rootAgentId = "c0c0c0c0-c0c0-4c0c-8c0c-c0c0c0c0c0c0";
-    const archivedAt = "2026-01-01T00:00:30.000Z";
 
-    async function upsertArchivedRoot(overrides?: {
-      labels?: Record<string, string>;
-      config?: { modeId?: string; model?: string; thinkingOptionId?: string };
-      archivedAt?: string | null;
-    }): Promise<void> {
+    async function upsertArchivedRoot(labels?: Record<string, string>): Promise<void> {
       await agentStorage.upsert(
         buildAgentRecord({
           id: rootAgentId,
           cwd: tempDir,
           iso: now.toISOString(),
-          archivedAt: overrides?.archivedAt === undefined ? archivedAt : overrides.archivedAt,
-          title: "배포 점검 세션",
-          labels: overrides?.labels,
-          config: overrides?.config ?? {
-            modeId: "default",
-            model: "test-model",
-            thinkingOptionId: "high",
-          },
+          archivedAt: "2026-01-01T00:00:30.000Z",
+          labels,
         }),
       );
     }
@@ -3883,11 +3866,10 @@ describe("ScheduleService", () => {
       });
     }
 
-    test("archive converts a bounded heartbeat into a new-agent schedule in place", async () => {
+    test("archive keeps a bounded heartbeat of a root session active and unchanged", async () => {
       await upsertArchivedRoot();
       const service = createService();
       const byRuns = await service.create({
-        name: "cutover check",
         prompt: "Check the cutover",
         cadence: { type: "cron", expression: "0 9 * * *", timezone: "Asia/Seoul" },
         target: { type: "agent", agentId: rootAgentId },
@@ -3902,48 +3884,21 @@ describe("ScheduleService", () => {
 
       now = new Date("2026-01-01T00:05:00.000Z");
       expect(await service.releaseForArchivedAgent(rootAgentId)).toEqual({
-        converted: 2,
+        kept: 2,
         completed: 0,
       });
+      expect(await service.inspect(byRuns.id)).toEqual(byRuns);
+      expect(await service.inspect(byExpiry.id)).toEqual(byExpiry);
 
-      const converted = await service.inspect(byRuns.id);
-      expect(converted.target).toEqual({
-        type: "new-agent",
-        config: {
-          provider: "claude",
-          cwd: tempDir,
-          model: "test-model",
-          modeId: "default",
-          thinkingOptionId: "high",
-        },
-      });
-      // Delta 76: the run keeps its session; conversion never sets archiveOnFinish.
-      expect(
-        converted.target.type === "new-agent" && converted.target.config.archiveOnFinish,
-      ).toBeUndefined();
-      expect(converted.prompt).toContain(`세션 ${rootAgentId} ("배포 점검 세션")`);
-      expect(converted.prompt).toContain("2026-01-01 09:00에 보관되어");
-      expect(converted.prompt).toContain(`session-history 스킬로 에이전트 id ${rootAgentId}`);
-      expect(converted.prompt).not.toContain("Schedule fired");
-      expect(converted.prompt.endsWith("\n\nCheck the cutover")).toBe(true);
-      expect(converted.name).toBe("cutover check");
-      expect(converted.cadence).toEqual(byRuns.cadence);
-      expect(converted.maxRuns).toBe(2);
-      expect(converted.status).toBe("active");
-      expect(converted.nextRunAt).toBe(byRuns.nextRunAt);
-      expect(converted.runs).toEqual(byRuns.runs);
-
-      const expiring = await service.inspect(byExpiry.id);
-      expect(expiring.target.type).toBe("new-agent");
-      expect(expiring.expiresAt).toBe("2026-02-01T00:00:00.000Z");
-      expect(expiring.status).toBe("active");
-
-      // A second archive call (or one after a daemon restart) changes nothing.
+      // A second archive call (or a restart sweep) changes nothing.
       expect(await service.releaseForArchivedAgent(rootAgentId)).toEqual({
-        converted: 0,
+        kept: 2,
         completed: 0,
       });
-      expect(await service.inspect(byRuns.id)).toEqual(converted);
+      const restarted = createService();
+      await restarted.start();
+      await restarted.stop();
+      expect(await restarted.inspect(byRuns.id)).toEqual(byRuns);
     });
 
     test("archive completes an unbounded heartbeat", async () => {
@@ -3956,18 +3911,14 @@ describe("ScheduleService", () => {
       });
 
       expect(await service.releaseForArchivedAgent(rootAgentId)).toEqual({
-        converted: 0,
+        kept: 0,
         completed: 1,
       });
-      const inspected = await service.inspect(loop.id);
-      expect(inspected.status).toBe("completed");
-      expect(inspected.target).toEqual({ type: "agent", agentId: rootAgentId });
+      expect((await service.inspect(loop.id)).status).toBe("completed");
     });
 
     test("archive completes a sub-agent's heartbeat", async () => {
-      await upsertArchivedRoot({
-        labels: { "paseo.parent-agent-id": "d0d0d0d0-d0d0-4d0d-8d0d-d0d0d0d0d0d0" },
-      });
+      await upsertArchivedRoot({ "paseo.parent-agent-id": "d0d0d0d0-d0d0-4d0d-8d0d-d0d0d0d0d0d0" });
       const service = createService();
       const heartbeat = await service.create({
         prompt: "report to the lead",
@@ -3977,19 +3928,14 @@ describe("ScheduleService", () => {
       });
 
       expect(await service.releaseForArchivedAgent(rootAgentId)).toEqual({
-        converted: 0,
+        kept: 0,
         completed: 1,
       });
       expect((await service.inspect(heartbeat.id)).status).toBe("completed");
     });
 
-    test("archive completes the heartbeat with a warning when the record has no model", async () => {
-      await upsertArchivedRoot({ config: { modeId: "default" } });
-      const logger = createTestLogger();
-      const scheduleLogger = createTestLogger();
-      const warn = vi.spyOn(scheduleLogger, "warn");
-      vi.spyOn(logger, "child").mockReturnValue(scheduleLogger);
-      const service = createService({ logger });
+    test("a bounded heartbeat of a deleted agent completes", async () => {
+      const service = createService();
       const heartbeat = await service.create({
         prompt: "check later",
         cadence: { type: "cron", expression: "0 9 * * *" },
@@ -3998,29 +3944,62 @@ describe("ScheduleService", () => {
       });
 
       expect(await service.releaseForArchivedAgent(rootAgentId)).toEqual({
-        converted: 0,
+        kept: 0,
         completed: 1,
       });
       expect((await service.inspect(heartbeat.id)).status).toBe("completed");
-      expect(warn).toHaveBeenCalledWith(
-        { scheduleId: heartbeat.id, agentId: rootAgentId },
-        expect.stringContaining("lacks provider, cwd, or model"),
-      );
     });
 
-    test("a heartbeat that fires after its session was archived runs once in a new session", async () => {
-      await upsertArchivedRoot();
+    test("a heartbeat that fires on an archived session unarchives it and runs there", async () => {
       const manager = new AgentManager({
         logger: createTestLogger(),
         clients: createTestAgentClients(),
         registry: agentStorage,
       });
+      const agent = await manager.createAgent({ provider: "claude", cwd: tempDir }, undefined, {
+        workspaceId: undefined,
+      });
+      const service = createService({ agentManager: manager, runner: undefined });
+      manager.setAgentArchivedCallback(service.releaseForArchivedAgent.bind(service));
+      const heartbeat = await service.create({
+        prompt: "Continue the cutover",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: { type: "agent", agentId: agent.id },
+        maxRuns: 2,
+        runOnCreate: false,
+      });
+      await manager.archiveAgent(agent.id);
+      expect((await agentStorage.get(agent.id))?.archivedAt).toBeTruthy();
+      expect((await service.inspect(heartbeat.id)).status).toBe("active");
+      const streamAgent = vi.spyOn(manager, "streamAgent");
+
+      now = new Date("2026-01-01T00:01:00.000Z");
+      await service.tick();
+
+      const inspected = await service.inspect(heartbeat.id);
+      expect(inspected.target).toEqual({ type: "agent", agentId: agent.id });
+      expect(inspected.runs).toHaveLength(1);
+      expect(inspected.runs[0]?.status).toBe("succeeded");
+      expect(inspected.runs[0]?.agentId).toBe(agent.id);
+      expect(inspected.status).toBe("active");
+      expect((await agentStorage.get(agent.id))?.archivedAt).toBeNull();
+      expect(streamAgent.mock.calls[0]?.[1]).toEqual(
+        expect.stringContaining(`<paseo-system>\nSchedule fired (id=${heartbeat.id}, run=`),
+      );
+    });
+
+    test("a failed unarchive is recorded as a failed run and the heartbeat stays", async () => {
+      await upsertArchivedRoot();
+      const manager = new AgentManager({ logger: createTestLogger(), registry: agentStorage });
+      vi.spyOn(manager, "unarchiveSnapshot").mockRejectedValue(
+        new Error("native unarchive failed"),
+      );
       const service = createService({ agentManager: manager, runner: undefined });
       const heartbeat = await service.create({
-        prompt: "Respond with exactly hello",
+        prompt: "Continue the cutover",
         cadence: { type: "every", everyMs: 60_000 },
         target: { type: "agent", agentId: rootAgentId },
-        maxRuns: 1,
+        maxRuns: 2,
         runOnCreate: false,
       });
 
@@ -4028,48 +4007,12 @@ describe("ScheduleService", () => {
       await service.tick();
 
       const inspected = await service.inspect(heartbeat.id);
-      expect(inspected.target.type).toBe("new-agent");
+      expect(inspected.status).toBe("active");
+      expect(inspected.target).toEqual({ type: "agent", agentId: rootAgentId });
       expect(inspected.runs).toHaveLength(1);
-      expect(inspected.runs[0]?.status).toBe("succeeded");
-      expect(inspected.runs[0]?.agentId).toMatch(
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
-      );
-      expect(inspected.runs[0]?.agentId).not.toBe(rootAgentId);
-      expect(inspected.status).toBe("completed");
-    });
-
-    test("startup converts a pending heartbeat of an archived session and leaves completed ones", async () => {
-      await upsertArchivedRoot();
-      const service1 = createService();
-      const pending = await service1.create({
-        prompt: "check tomorrow",
-        cadence: { type: "cron", expression: "0 9 * * *" },
-        target: { type: "agent", agentId: rootAgentId },
-        maxRuns: 1,
-      });
-      const done = await service1.create({
-        name: "already lost",
-        prompt: "lost earlier",
-        cadence: { type: "cron", expression: "0 9 * * *" },
-        target: { type: "agent", agentId: rootAgentId },
-        maxRuns: 1,
-      });
-      // Simulate a heartbeat completed by the old archive behaviour.
-      await new ScheduleStore(join(tempDir, "schedules"), createTestLogger()).update(
-        done.id,
-        markCompleted,
-      );
-
-      const service2 = createService();
-      await service2.start();
-      await service2.stop();
-
-      const converted = await service2.inspect(pending.id);
-      expect(converted.target.type).toBe("new-agent");
-      expect(converted.status).toBe("active");
-      const stillDone = await service2.inspect(done.id);
-      expect(stillDone.status).toBe("completed");
-      expect(stillDone.target).toEqual({ type: "agent", agentId: rootAgentId });
+      expect(inspected.runs[0]?.status).toBe("failed");
+      expect(inspected.runs[0]?.error).toBe("native unarchive failed");
+      expect(inspected.nextRunAt).toBe("2026-01-01T00:02:00.000Z");
     });
   });
 });

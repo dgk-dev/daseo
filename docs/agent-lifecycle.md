@@ -98,7 +98,7 @@ Archiving runs through `AgentManager.archiveAgent` (`packages/server/src/server/
 
 Cascade is what keeps subagent fleets from outliving their orchestrator.
 
-Archive also releases the agent's pending heartbeats (`ScheduleService.releaseForArchivedAgent`). A bounded heartbeat of a root agent becomes a new-agent schedule that runs in a new session at its time; an unbounded one, a subagent's, or a deleted agent's completes. Rule and reasons: `DASEO.md` delta 125.
+Archive also releases the agent's pending heartbeats (`ScheduleService.releaseForArchivedAgent`). A bounded heartbeat of a root agent stays active and, when it fires, unarchives the agent and runs there; an unbounded one, a subagent's, or a deleted agent's completes. Rule and reasons: `DASEO.md` delta 125.
 
 Workspace archive is a separate lifecycle. Archiving or removing a worktree can close a surviving
 agent record without setting the agent's `archivedAt`, while its `workspaceId` still points at the

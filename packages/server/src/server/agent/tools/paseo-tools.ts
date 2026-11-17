@@ -2753,8 +2753,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     {
       title: "Create schedule",
       description:
-        "Create a schedule that starts a new agent on a cron cadence. Use it for any later check " +
-        "or later work: it does not depend on this session staying open or unarchived.",
+        "Create a schedule that starts a new agent on a cron cadence. The new agent has no " +
+        "memory of this conversation, so put everything it needs in the prompt.",
       inputSchema: {
         prompt: z.string().trim().min(1, "prompt is required"),
         cron: z.string().trim().min(1, "cron is required"),
@@ -2805,9 +2805,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     {
       title: "Create heartbeat",
       description:
-        "Create a heartbeat that sends a prompt back to this conversation on a cron cadence. Use it " +
-        "for short coordination while this session keeps working. If this session is archived, a " +
-        "heartbeat with maxRuns or expiresIn continues as a new session; one without either stops.",
+        "Create a heartbeat that sends a prompt back to this conversation on a cron cadence. If " +
+        "this session is archived, a heartbeat with maxRuns or expiresIn still runs by reopening " +
+        "it; one without either stops.",
       inputSchema: {
         prompt: z.string().trim().min(1, "prompt is required"),
         cron: z.string().trim().min(1, "cron is required"),

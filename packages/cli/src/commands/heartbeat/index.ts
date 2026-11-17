@@ -158,7 +158,7 @@ export function createHeartbeatCommand(): Command {
     heartbeat
       .command("create")
       .description(
-        "Create a recurring prompt for this agent (after archive, one with --max-runs or --expires-in runs in a new session)",
+        "Create a recurring prompt for this agent (with --max-runs or --expires-in it reopens the agent if archived)",
       )
       .argument("<prompt>", "Prompt to send")
       .requiredOption("--cron <expr>", "Five-field cron cadence")
