@@ -80,6 +80,9 @@ export function startBackgroundSuspend(target: BackgroundSuspendTarget): () => v
           nativeModule?.releaseMemory();
         }
       },
+      // The app is on screen for these two: no memory release.
+      cycleConnections: () => target.cycleConnections(),
+      verifyConnections: () => target.verifyConnections(),
     },
     scheduler: nativeTimer?.scheduler ?? timeoutScheduler,
     initiallyVisible: getIsAppVisible(),

@@ -31,15 +31,29 @@ interface TimelineFetch {
   fail(message: string): void;
 }
 
+// Fails at once instead of at the test timeout when the sync never issues the request.
+async function soon<T>(promise: Promise<T>, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`expected ${what}`)), 50);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 class TimelineWorld {
   readonly errors: string[] = [];
   readonly cursors = new Map<string, { epoch: string; endSeq: number }>();
   readonly sync: ViewedTimelineSync;
 
-  constructor(options: { initialConnected?: boolean } = {}) {
+  constructor(options: { initialConnected?: boolean; initialConnectionEpoch?: number } = {}) {
     this.sync = createViewedTimelineSync({
       initialDeliveryMode: "selective",
       initialConnected: options.initialConnected ?? false,
+      initialConnectionEpoch: options.initialConnectionEpoch,
       setSubscription: async (agentIds) => {
         const result = deferred<void>();
         this.memberships.push({
@@ -909,4 +923,103 @@ test("a sync created for a replacement client while the host stays online resubs
   });
   catchUp.respond({ hasNewer: false, seq: 71 });
   await vi.waitFor(() => expect(next.sync.getAgentTimelineStatus("agent-a")).toBe("ready"));
+});
+
+test("a reconnect never observed as a disconnect resubscribes and catches up the open chat", async () => {
+  const world = new TimelineWorld({ initialConnected: true, initialConnectionEpoch: 1 });
+  world.sync.replaceVisibleAgentIds("workspace", ["agent-a"]);
+  world.takePendingMembership().succeed();
+  (await world.nextFetch("agent-a")).respond({ hasNewer: false, seq: 69 });
+  world.cursors.set("agent-a", { epoch: "epoch-agent-a", endSeq: 69 });
+  await vi.waitFor(() => expect(world.sync.getAgentTimelineStatus("agent-a")).toBe("ready"));
+
+  // The same transport reported again changes nothing.
+  world.sync.setConnected(true, 1);
+  world.expectNoPendingMembership();
+  world.expectNoPendingFetch();
+
+  // The host went offline and online again inside one React commit: only the epoch moved. The
+  // daemon gave the new socket no timeline subscription.
+  world.sync.setConnected(true, 2);
+  expect(world.sync.getAgentTimelineStatus("agent-a")).toBe("pending");
+  const membership = await soon(world.nextMembership(), "a resubscription on the new transport");
+  expect(membership.agentIds).toEqual(["agent-a"]);
+  membership.succeed();
+
+  const catchUp = await soon(world.nextFetch("agent-a"), "a catch-up on the new transport");
+  expect(catchUp.request).toEqual({
+    direction: "after",
+    cursor: { epoch: "epoch-agent-a", seq: 69 },
+    limit: 40,
+    projection: "projected",
+  });
+  catchUp.respond({ hasNewer: false, seq: 75 });
+  await vi.waitFor(() => expect(world.sync.getAgentTimelineStatus("agent-a")).toBe("ready"));
+});
+
+test("a catch-up running on the replaced transport cannot complete for the new one", async () => {
+  const world = new TimelineWorld({ initialConnected: true, initialConnectionEpoch: 4 });
+  world.sync.replaceVisibleAgentIds("workspace", ["agent-a"]);
+  world.takePendingMembership().succeed();
+  const stale = await world.nextFetch("agent-a");
+
+  world.sync.setConnected(true, 5);
+  stale.respond({ hasNewer: true, seq: 8 });
+  (await soon(world.nextMembership(), "a resubscription")).succeed();
+  const fresh = await soon(world.nextFetch("agent-a"), "a fresh catch-up");
+  expect(fresh.request).toEqual({ direction: "tail", limit: 40, projection: "projected" });
+  world.expectNoPendingFetch();
+  fresh.respond({ hasNewer: false });
+  await vi.waitFor(() => expect(world.sync.getAgentTimelineStatus("agent-a")).toBe("ready"));
+});
+
+test("an overflow tail that finishes after a reconnect leaves the newer catch-up in charge", async () => {
+  const world = new TimelineWorld();
+  world.cursors.set("agent-a", { epoch: "epoch-agent-a", endSeq: 42 });
+  world.sync.setConnected(true);
+  world.sync.replaceVisibleAgentIds("workspace", ["agent-a"]);
+  (await world.nextMembership()).succeed();
+  (await world.nextFetch("agent-a")).respond({ hasNewer: true, seq: 82 });
+  const staleTail = await world.nextFetch("agent-a");
+  expect(staleTail.request.direction).toBe("tail");
+
+  world.sync.setConnected(false);
+  world.sync.setConnected(true);
+  (await world.nextMembership()).succeed();
+  const resume = await world.nextFetch("agent-a");
+  expect(resume.request.direction).toBe("after");
+
+  staleTail.respond({ hasNewer: false });
+  resume.respond({ hasNewer: true, seq: 90 });
+
+  // The newer catch-up still owns the agent, so its own overflow falls back to the latest tail.
+  const fallback = await soon(world.nextFetch("agent-a"), "the newer catch-up's tail fallback");
+  expect(fallback.request).toEqual({ direction: "tail", limit: 40, projection: "projected" });
+  fallback.respond({ hasNewer: false });
+  await vi.waitFor(() => expect(world.sync.getAgentTimelineStatus("agent-a")).toBe("ready"));
+});
+
+test("a gap reported during an overflow tail waits for it, then is recovered", async () => {
+  const world = new TimelineWorld();
+  world.cursors.set("agent-a", { epoch: "epoch-agent-a", endSeq: 42 });
+  world.sync.setConnected(true);
+  world.sync.replaceVisibleAgentIds("workspace", ["agent-a"]);
+  (await world.nextMembership()).succeed();
+  (await world.nextFetch("agent-a")).respond({ hasNewer: true, seq: 82 });
+  const tail = await world.nextFetch("agent-a");
+  expect(tail.request.direction).toBe("tail");
+
+  world.sync.recoverGap("agent-a", { epoch: "epoch-agent-a", endSeq: 90 });
+  world.expectNoPendingFetch();
+  tail.respond({ hasNewer: false });
+
+  const recovery = await soon(world.nextFetch("agent-a"), "the parked gap recovery");
+  expect(recovery.request).toEqual({
+    direction: "after",
+    cursor: { epoch: "epoch-agent-a", seq: 90 },
+    limit: 40,
+    projection: "projected",
+  });
+  recovery.respond({ hasNewer: false });
+  await vi.waitFor(() => expect(world.sync.getAgentTimelineStatus("agent-a")).toBe("ready"));
 });

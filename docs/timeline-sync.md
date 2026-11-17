@@ -134,7 +134,11 @@ The app chooses one delivery policy from `server_info.features.selectiveAgentTim
   they all remain subscribed and no hidden agent does. Switching and app backgrounding preserve
   this connection-scoped hot set, so returning to an agent still covered by it needs no catch-up.
   Losing window keyboard focus does not make a selected pane invisible. Disconnecting clears hidden
-  hot agents; reconnect restores the currently visible set before authoritative catch-up. Revisiting
+  hot agents; reconnect restores the currently visible set before authoritative catch-up.
+  The daemon keeps subscriptions per socket, so a new socket starts with none. The sync therefore
+  keys reconnects on the host runtime's connection epoch, not on seeing a disconnect: a new epoch
+  while connected resets it as a disconnect followed by a connect. A React boolean can go
+  `true → true` across a reconnect. Revisiting
   an evicted retained timeline displays its cached state immediately while authoritative catch-up
   advances it to the current tail.
 - Legacy daemons keep globally streaming agent timelines. Visibility still triggers the existing

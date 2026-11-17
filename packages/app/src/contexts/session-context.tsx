@@ -702,11 +702,14 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     const initialDeliveryMode = getTimelineDeliveryMode(
       client.getLastServerInfoMessage()?.features?.selectiveAgentTimeline,
     );
+    const hostRuntime = getHostRuntimeStore();
+    const initialSnapshot = hostRuntime.getSnapshot(serverId);
     const sync = createViewedTimelineSync({
       initialDeliveryMode,
-      // A connection switch replaces the client while the host stays online, so the
-      // isConnected effect below never fires for this sync. Seed it from the runtime.
-      initialConnected: isHostRuntimeConnected(getHostRuntimeStore().getSnapshot(serverId)),
+      // A connection switch replaces the client while the host stays online, so this sync may
+      // never see a connectivity transition. Seed it from the runtime.
+      initialConnected: isHostRuntimeConnected(initialSnapshot),
+      initialConnectionEpoch: initialSnapshot?.connectionEpoch,
       setSubscription: (agentIds) => client.setAgentTimelineSubscription(agentIds),
       readCursor: (agentId) => {
         const timeline = selectAgentTimelineState(
@@ -770,8 +773,18 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     viewedTimelineSyncRef.current = sync;
     setViewedTimelineSync(serverId, sync);
     sync.setActive(getIsAppVisible(appStateRef.current));
+    // Follow the transport itself, not a React boolean: a reconnect that React commits without
+    // a `false` in between still carries a new connection epoch, and the daemon gave the new
+    // socket no timeline subscription.
+    const unsubscribeConnection = hostRuntime.subscribe(serverId, () => {
+      const snapshot = hostRuntime.getSnapshot(serverId);
+      // A replacement client gets its own sync from this effect.
+      if (snapshot?.client !== client) return;
+      sync.setConnected(isHostRuntimeConnected(snapshot), snapshot.connectionEpoch);
+    });
 
     return () => {
+      unsubscribeConnection();
       if (viewedTimelineSyncRef.current === sync) {
         viewedTimelineSyncRef.current = null;
       }
@@ -779,10 +792,6 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       sync.dispose();
     };
   }, [client, serverId, setInitializingAgents, setViewedTimelineSync]);
-
-  useEffect(() => {
-    viewedTimelineSyncRef.current?.setConnected(isConnected);
-  }, [isConnected]);
 
   // Daemon message handlers - directly update Zustand store
   useEffect(() => {

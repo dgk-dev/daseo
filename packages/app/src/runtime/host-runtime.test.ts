@@ -149,7 +149,10 @@ class FakeDaemonClient {
     });
   }
 
-  ensureConnected(): void {
+  public ensureConnectedCalls: Array<{ verify?: boolean } | undefined> = [];
+
+  ensureConnected(options?: { verify?: boolean }): void {
+    this.ensureConnectedCalls.push(options);
     if (this.state.status !== "connected") {
       this.setConnectionState({ status: "connected" });
     }
@@ -1605,6 +1608,88 @@ describe("background suspend (Daseo delta 86)", () => {
     controller.resume();
 
     expect(controller.getSnapshot().connectionStatus).toBe("connecting");
+  });
+
+  it("cycles the same client once: a new connection epoch and a fresh directory bootstrap", async () => {
+    const host = makeHost({ serverId: "srv_cycle", connections: [directConnection] });
+    const client = new FakeDaemonClient();
+    client.setConnectionState({ status: "connected" });
+    const store = new HostRuntimeStore({
+      deps: {
+        createClient: () => client as unknown as DaemonClient,
+        connectToDaemon: async () => ({
+          client: client as unknown as DaemonClient,
+          serverId: host.serverId,
+          hostname: null,
+        }),
+        getClientId: async () => "cid_test_runtime",
+      },
+    });
+    store.syncHosts([host]);
+    await client.waitForFetches(1);
+    await waitForDirectoryReady(store, host.serverId);
+    const before = store.getSnapshot(host.serverId)!;
+    const eventsBefore = client.lifecycleEvents.length;
+
+    store.cycleConnections();
+
+    const after = store.getSnapshot(host.serverId)!;
+    expect(client.lifecycleEvents.slice(eventsBefore)).toEqual(["suspend"]);
+    expect(client.closeCalls).toBe(0);
+    expect(after).toMatchObject({
+      connectionStatus: "online",
+      client,
+      clientGeneration: before.clientGeneration,
+      connectionEpoch: before.connectionEpoch + 1,
+    });
+    expect(store.isBackgroundSuspended()).toBe(false);
+    await client.waitForFetches(2);
+    expect(client.fetchAgentsCalls[1]?.subscribe?.subscriptionId).toBe(`app:${host.serverId}`);
+    store.syncHosts([]);
+  });
+
+  it("asks connected clients for a foreground liveness check, never while suspended", async () => {
+    const client = new FakeDaemonClient();
+    const controller = await onlineController(client);
+    client.ensureConnectedCalls = [];
+
+    controller.ensureConnected({ verify: true });
+    controller.suspend();
+    controller.ensureConnected({ verify: true });
+    controller.cycleConnection();
+
+    expect(client.ensureConnectedCalls).toEqual([{ verify: true }]);
+    expect(controller.getSnapshot().connectionStatus).toBe("idle");
+    await controller.stop();
+  });
+
+  it("does nothing on cycle or verify while the app is background-suspended", async () => {
+    const host = makeHost({ serverId: "srv_suspended", connections: [directConnection] });
+    const client = new FakeDaemonClient();
+    client.setConnectionState({ status: "connected" });
+    const store = new HostRuntimeStore({
+      deps: {
+        createClient: () => client as unknown as DaemonClient,
+        connectToDaemon: async () => ({
+          client: client as unknown as DaemonClient,
+          serverId: host.serverId,
+          hostname: null,
+        }),
+        getClientId: async () => "cid_test_runtime",
+      },
+    });
+    store.syncHosts([host]);
+    await client.waitForFetches(1);
+    store.setBackgroundSuspended(true);
+    client.ensureConnectedCalls = [];
+
+    store.cycleConnections();
+    store.verifyConnections();
+
+    expect(client.ensureConnectedCalls).toEqual([]);
+    expect(client.suspendCalls).toBe(1);
+    expect(store.getSnapshot(host.serverId)?.connectionStatus).toBe("idle");
+    store.syncHosts([]);
   });
 
   it("suspends and resumes every host, re-bootstrapping directories on resume", async () => {

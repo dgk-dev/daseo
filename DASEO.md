@@ -1669,8 +1669,9 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       RN 0.81.5, Expo 54, Reanimated 4.3, and the existing Android orchestrator hunks). Regression
       test: `packages/app/src/mobile-panels/rngh-mount-reactions.test.tsx` reproduces the
       commit order with the real `useMountReactions` and fails without the guard.
-    - **Background suspend.** 30 s after the native app stops being visible (AppState not
-      `active`), every host connection is suspended: `DaemonClient.suspend()` drops the
+    - **Background suspend.** After 30 s out of view (AppState not `active`), counted in awake,
+      unfrozen time by the native timer, every host connection is suspended (a phone that sleeps
+      or freezes the app first never fires it; delta 128 covers that return): `DaemonClient.suspend()` drops the
       transport and stops reconnecting but keeps the client, its listeners and subscriptions;
       the host reads `idle` (not offline or error, so no reconnect toast and no error state).
       Showing the app again resumes at once with `ensureConnected()`, and the host's normal
@@ -3142,6 +3143,14 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
      - **Key files:** `packages/desktop/src/features/browser-automation/{page-dialogs,page-dialog-hook,ipc}.ts`, `packages/desktop/src/features/browser-webviews/popup-targets.ts`, `packages/desktop/src/main.ts`, `packages/desktop/src/preload.ts`, `packages/app/src/desktop/browser/{page-dialogs.ts,panel.tsx}`, `packages/app/src/desktop/browser/pane/{index,page-dialog-card}.electron.tsx`, `packages/app/src/desktop/browser/automation/handler.ts`; tests next to each, capture harness group `dialogs`.
      - **Not changed:** the alert, confirm, and prompt policy, the 60 s agent deadline, what an agent sees in tool results, the phone. The card has no X: a dialog is answered OK or Cancel.
 
+128. **An open chat is current again within seconds of returning to the app** — the owner's report on 2026-11-18 (Fold 7, 0.5.130, relay): after the delta 86 optimizations an open chat sometimes showed an old state until the app was killed or the chat reopened. The daemon log (2026-11-09..18) had 140 of 1,182 phone sockets ended by the daemon as dead (1006 after an expired lease), sockets the phone never closed. Not reproduced on the device (no adb that day); the three causes below are proven in code and logs.
+     - **Starved grace timer.** Delta 86's timer is a main-looper `postDelayed`, which counts `uptimeMillis` (stops in deep sleep) and does not run while the process is frozen, so the suspend often never fired and nothing checked the socket on return. The controller now records the wall clock when the app leaves. Back after at least the grace with no suspend fired and no hold: every host connection is cycled once (`cycleConnections`: suspend then resume on the same client, the normal online recovery, no memory release). A queued timer event that lands after the return is ignored by generation, in either order: one disconnect, one reconnect, never a suspend left standing while visible. A hold (dictation, voice) still never cuts the connection.
+     - **Foreground liveness (upstream #8651 `412550c36` and #9086 `f539ccf1c`, hand-ported).** Every other return to visible on native runs a fresh liveness cycle (`ensureConnected({ verify: true })`): two 5 s windows, any validated inbound frame proves the socket, otherwise teardown and an immediate reconnect; a heartbeat probe that straddled the suspension and misses from before it do not count; a window whose timer fired late on the wall clock spanned another suspension and is discarded; latency measurements wait for the next pong with their own deadline. Not a cherry-pick: the fork has neither upstream's `verify` path (#4863, not adopted) nor the chunked transport (#8302), so "chunk progress" is any validated frame here and upstream's tests were ported on that rule. Two guards their tests need came along: frames from a replaced transport are ignored, and a connect attempt clears an armed backoff retry (it used to replace the connection it had just opened). Nothing runs while suspended; web and Electron are unchanged (`background-suspend/index.ts` stays a no-op).
+     - **Timeline subscription follows the transport.** The viewed-timeline sync was told about connectivity by a React effect on a boolean; a drop and reconnect committed without a `false` in between kept the old socket's acknowledged membership, and the daemon forwards no `agent_stream` to a socket that never subscribed. The session context now subscribes to the host runtime directly and passes the connection epoch; a new epoch while connected resets the sync as a disconnect followed by a connect. Delta 47 fixed only the replaced-client variant.
+     - **Overflow fallback.** A catch-up that falls back to the latest tail is a running tail while it waits, so a gap reported meanwhile parks behind it; when the tail returns it re-checks ownership (a reconnect during it owns the state) and drains the parked request like an ordinary completion.
+     - **Key files:** `packages/app/src/runtime/background-suspend/{controller,index.native}.ts`, `packages/app/src/runtime/host-runtime.ts` (`cycleConnections`, `verifyConnections`), `packages/client/src/daemon-client.ts`, `packages/app/src/timeline/viewed-timeline-sync.ts`, `packages/app/src/contexts/session-context.tsx`; tests next to each.
+     - **Not changed:** the 30 s grace, the five-chat hot set, the 20-chat disk cache, the 10 s / 15 s heartbeat cadence, the daemon lease, the protocol, any visible UI. Known limit kept from upstream: a single frame that takes longer than both foreground windows to arrive is torn down.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including
@@ -3414,6 +3423,11 @@ dependency, and no protocol break):
   15's path). #9079 closing an agent tab keeps its unsent text and attachments; only agent
   deletion clears the draft (hand-port into Daseo's agent-directory-sync). #9015 a mouse click on
   Send gives focus back to the composer; touch layouts keep the keyboard dismissed (port).
+
+Adopted with delta 128 (2026-11-18), hand-ported: #8651 (`412550c36`) and #9086 (`f539ccf1c`),
+the foreground liveness cycle, on the fork's transport without upstream's chunked transport or
+#4863's `verify` path; the backoff-retry clear in `attemptConnect` came from upstream's own code
+for the same tests. Upstream's tests are carried, chunk frames read as any validated frame.
 
 Reviewed for 0.5.125 and deliberately not adopted: #8485 (Daseo's markdown-it 10 already lets a
 table interrupt a paragraph; upstream's 8 cases kept as a guard test) and #8453 (Daseo has no path

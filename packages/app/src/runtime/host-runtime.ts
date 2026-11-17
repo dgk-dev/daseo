@@ -810,6 +810,19 @@ export class HostRuntimeController {
     return this.suspended;
   }
 
+  /**
+   * Drops the active connection and opens it again on the same client, with the normal online
+   * recovery (directory bootstrap, timeline catch-up on the new connection epoch). For an app
+   * shown again after its background suspend should have run but never did.
+   */
+  cycleConnection(): void {
+    if (this.suspended) {
+      return;
+    }
+    this.suspend();
+    this.resume();
+  }
+
   private startProbeInterval(): void {
     if (!this.started || !this.autoProbe || this.probeIntervalHandle) {
       return;
@@ -838,8 +851,11 @@ export class HostRuntimeController {
     });
   }
 
-  ensureConnected(): void {
-    this.activeClient?.ensureConnected();
+  ensureConnected(options?: { verify?: boolean }): void {
+    if (this.suspended) {
+      return;
+    }
+    this.activeClient?.ensureConnected(options);
   }
 
   markAgentDirectorySyncLoading(): void {
@@ -2757,6 +2773,29 @@ export class HostRuntimeStore {
 
   isBackgroundSuspended(): boolean {
     return this.backgroundSuspended;
+  }
+
+  /** Daseo: see `BackgroundSuspendTarget.cycleConnections`. */
+  cycleConnections(): void {
+    if (this.backgroundSuspended) {
+      return;
+    }
+    for (const controller of this.controllers.values()) {
+      controller.cycleConnection();
+    }
+  }
+
+  /**
+   * Daseo: the app is visible again after a short absence. A socket that died while the OS had
+   * JS paused still reads `connected`; a fresh liveness check replaces it within seconds.
+   */
+  verifyConnections(): void {
+    if (this.backgroundSuspended) {
+      return;
+    }
+    for (const controller of this.controllers.values()) {
+      controller.ensureConnected({ verify: true });
+    }
   }
 
   ensureConnectedAll(): void {

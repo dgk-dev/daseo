@@ -1,6 +1,7 @@
 import {
   planTimelineCatchUpAfter,
   planTimelineResumeFetch,
+  planTimelineTailFetch,
   type ProjectedTimelineForwardFetchPlan,
 } from "./timeline-sync-plan";
 
@@ -12,6 +13,8 @@ interface TimelinePageResult {
 interface ViewedTimelineSyncPorts {
   initialDeliveryMode: TimelineDeliveryMode;
   initialConnected: boolean;
+  /** The host runtime's connection epoch when the sync is created; see `setConnected`. */
+  initialConnectionEpoch?: number;
   setSubscription(agentIds: string[]): Promise<void>;
   readCursor(agentId: string): { epoch: string; endSeq: number } | undefined;
   fetchPage(
@@ -35,7 +38,13 @@ export interface ViewedTimelineUiBridge {
 
 export interface ViewedTimelineSync extends ViewedTimelineUiBridge {
   setActive(active: boolean): void;
-  setConnected(connected: boolean): void;
+  /**
+   * `connectionEpoch` identifies the transport (the host runtime bumps it on every transition to
+   * online). A new epoch while already connected is a reconnect whose disconnect was never
+   * observed: the daemon gave the new socket no timeline subscription, so the sync resets as for
+   * a disconnect followed by a connect.
+   */
+  setConnected(connected: boolean, connectionEpoch?: number): void;
   setDeliveryMode(mode: TimelineDeliveryMode): void;
   recoverGap(agentId: string, cursor: { epoch: string; endSeq: number }): void;
   dispose(): void;
@@ -119,6 +128,7 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
   const listeners = new Set<() => void>();
   let active = true;
   let connected = ports.initialConnected;
+  let connectionEpoch = ports.initialConnectionEpoch;
   let deliveryMode = ports.initialDeliveryMode;
   let disposed = false;
   let desired: string[] = [];
@@ -189,6 +199,16 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
     pendingCatchUps.delete(agentId);
   };
 
+  const completeCatchUp = (agentId: string, generation: number) => {
+    catchUps.set(agentId, { generation, status: "complete" });
+    const pendingCatchUp = pendingCatchUps.get(agentId);
+    if (pendingCatchUp) {
+      startCatchUp(agentId, { request: pendingCatchUp, supersede: true });
+      return;
+    }
+    setVisibilityCatchUpReady(agentId);
+  };
+
   const fetchUntilCurrent = async (
     agentId: string,
     generation: number,
@@ -202,9 +222,13 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
       if (!ownsCatchUp(agentId, generation)) return;
       if (page.hasNewer && page.endCursor) {
         if (fallbackToLatestTailOnOverflow) {
+          // From here this catch-up is a running tail: a gap reported meanwhile parks behind it.
+          const running = catchUps.get(agentId);
+          if (running) catchUps.set(agentId, { ...running, request: planTimelineTailFetch() });
           await ports.fetchLatestTail(agentId);
-          catchUps.set(agentId, { generation, status: "complete" });
-          setVisibilityCatchUpReady(agentId);
+          // A disconnect or a newer catch-up during the tail owns the state now.
+          if (!ownsCatchUp(agentId, generation)) return;
+          completeCatchUp(agentId, generation);
           return;
         }
         await fetchUntilCurrent(
@@ -218,13 +242,7 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
       if (page.hasNewer) {
         throw new Error(`Timeline page for ${agentId} hasNewer without an end cursor`);
       }
-      catchUps.set(agentId, { generation, status: "complete" });
-      const pendingCatchUp = pendingCatchUps.get(agentId);
-      if (pendingCatchUp) {
-        startCatchUp(agentId, { request: pendingCatchUp, supersede: true });
-        return;
-      }
-      setVisibilityCatchUpReady(agentId);
+      completeCatchUp(agentId, generation);
     } catch (error) {
       if (catchUps.get(agentId)?.generation === generation) {
         const nextRetryDelayMs = getNextRetryDelayMs(catchUps.get(agentId)?.retryDelayMs);
@@ -433,6 +451,30 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
     void reconcileMembership();
   };
 
+  const markDisconnected = () => {
+    connected = false;
+    const visible = active ? visibleAgentIds() : [];
+    recentlyViewedAgentIds = visible;
+    commitDesiredMembership(visible, { resetCatchUpStatus: true });
+    cancelMembershipRetry?.();
+    cancelMembershipRetry = null;
+    membershipRetryDelayMs = undefined;
+    acknowledged = [];
+    membershipGeneration += 1;
+    for (const agentId of desired) cancelCatchUp(agentId);
+  };
+
+  const markConnected = () => {
+    connected = true;
+    membershipGeneration += 1;
+    if (deliveryMode === "legacy") {
+      acknowledged = desired;
+      startAcknowledgedCatchUps();
+    } else {
+      void reconcileMembership();
+    }
+  };
+
   const publishVisibleMembership = () => {
     const visible = visibleAgentIds();
     if (!connected || deliveryMode !== "selective") {
@@ -467,28 +509,22 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
       active = nextActive;
       publishVisibleMembership();
     },
-    setConnected(nextConnected) {
-      if (connected === nextConnected) return;
-      connected = nextConnected;
-      if (!connected) {
-        const visible = active ? visibleAgentIds() : [];
-        recentlyViewedAgentIds = visible;
-        commitDesiredMembership(visible, { resetCatchUpStatus: true });
-        cancelMembershipRetry?.();
-        cancelMembershipRetry = null;
-        membershipRetryDelayMs = undefined;
-        acknowledged = [];
-        membershipGeneration += 1;
-        for (const agentId of desired) cancelCatchUp(agentId);
+    setConnected(nextConnected, nextConnectionEpoch) {
+      const transportReplaced =
+        connected &&
+        nextConnected &&
+        nextConnectionEpoch !== undefined &&
+        connectionEpoch !== undefined &&
+        nextConnectionEpoch !== connectionEpoch;
+      if (nextConnectionEpoch !== undefined) connectionEpoch = nextConnectionEpoch;
+      if (transportReplaced) {
+        markDisconnected();
+        markConnected();
         return;
       }
-      membershipGeneration += 1;
-      if (deliveryMode === "legacy") {
-        acknowledged = desired;
-        startAcknowledgedCatchUps();
-      } else {
-        void reconcileMembership();
-      }
+      if (connected === nextConnected) return;
+      if (nextConnected) markConnected();
+      else markDisconnected();
     },
     setDeliveryMode(nextMode) {
       if (deliveryMode === nextMode) return;
