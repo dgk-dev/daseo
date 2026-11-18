@@ -1428,6 +1428,10 @@ async function createWindow(
     webPreferences.allowRunningInsecureContent = false;
     // Delta 93: see getBrowserPopupWindowOptions.
     webPreferences.disableDialogs = true;
+    // Delta 130: a guest is transparent by default, so a page that leaves its canvas to the
+    // browser showed the app's dark surface behind its own text colour. Opaque paints the
+    // canvas in the page's colour scheme, as Chrome does.
+    webPreferences.transparent = false;
     disableFocusOnNavigation(webPreferences);
     delete webPreferences.preload;
     delete params.preload;
