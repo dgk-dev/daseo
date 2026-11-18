@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve as resolveFsPath } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
+import { compileFunction } from "node:vm";
 import { z } from "zod";
 import {
   BROWSER_AUTOMATION_READ_DEFAULT_MAX_CHARS,
@@ -219,8 +220,11 @@ const BROWSER_TOOL_PARAMETER_GUIDES: Record<string, BrowserToolParameterGuide> =
     },
   },
   browser_find: { hints: { text: "name", query: "name" } },
+  browser_evaluate: { hints: { script: "function" } },
   browser_wait: {
     hints: {
+      function: "script",
+      condition: "script",
       loadState: "load (load or networkidle)",
       waitUntil: "load (load or networkidle)",
       urlIncludes: "url (any part of the URL)",
@@ -275,23 +279,72 @@ function strictBrowserInput<Shape extends z.ZodRawShape>(toolName: string, shape
   });
 }
 
+/** A converter's answer when the value has no form the real parameter accepts. */
+const NO_EQUIVALENT = Symbol("no equivalent");
+
 interface BrowserParameterAlias {
   alias: string;
   parameter: string;
+  /** Turns the alias value into the parameter's form, or NO_EQUIVALENT to keep the refusal. */
   convert?: (value: unknown) => unknown;
 }
 
+/** Whether source compiles as a function body. It is compiled only, never called. */
+function compiles(source: string): boolean {
+  try {
+    compileFunction(source);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Wraps an `expression`, `script`, or `code` value so browser_evaluate, which runs a
- * function, gets one: an expression's value is returned, and source that is itself a
- * function is called with the same arguments (the ref element first).
+ * The source an `expression`, `script`, or `code` value means, decided by parsing:
+ * an expression (or a function source, which is one), else a function body with
+ * statements such as `return`. Neither: no equivalent, so the strict refusal and its
+ * hint answer as before.
+ */
+function scriptSourceForm(value: unknown): { kind: "expression" | "body"; source: string } | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const expression = value.trim().replace(/;+$/, "");
+  if (expression && compiles(`return (async (...args) => (${expression}\n));`)) {
+    return { kind: "expression", source: expression };
+  }
+  if (compiles(`return (async (...args) => {\n${value}\n});`)) {
+    return { kind: "body", source: value };
+  }
+  return null;
+}
+
+/**
+ * browser_evaluate runs a function. An expression's value is returned, a function
+ * source is called with the same arguments (the ref element first), and a body runs
+ * as the function's body (its `return` is the result; without one the result is
+ * undefined).
  */
 function evaluateFunctionFromAlias(value: unknown): unknown {
-  if (typeof value !== "string") {
-    return value;
+  const form = scriptSourceForm(value);
+  if (!form) {
+    return typeof value === "string" ? NO_EQUIVALENT : value;
   }
-  const source = value.trim().replace(/;+$/, "");
-  return `async (...args) => {\n  const value = (${source}\n  );\n  return typeof value === "function" ? value(...args) : value;\n}`;
+  return form.kind === "expression"
+    ? `async (...args) => {\n  const value = (${form.source}\n  );\n  return typeof value === "function" ? value(...args) : value;\n}`
+    : `async (...args) => {\n${form.source}\n}`;
+}
+
+/**
+ * browser_wait's script is an expression or a function source; the page calls a
+ * function and awaits the result. A body becomes an async function the page calls.
+ */
+function waitScriptFromAlias(value: unknown): unknown {
+  const form = scriptSourceForm(value);
+  if (!form) {
+    return typeof value === "string" ? NO_EQUIVALENT : value;
+  }
+  return form.kind === "expression" ? form.source : `async () => {\n${form.source}\n}`;
 }
 
 // Names with one meaning, renamed to the real parameter before validation (delta 129).
@@ -311,8 +364,8 @@ const BROWSER_PARAMETER_ALIASES: Record<string, BrowserParameterAlias[]> = {
     { alias: "timeout", parameter: "timeoutMs" },
     { alias: "time", parameter: "timeoutMs" },
     { alias: "timeMs", parameter: "timeoutMs" },
-    { alias: "function", parameter: "script" },
-    { alias: "condition", parameter: "script" },
+    { alias: "function", parameter: "script", convert: waitScriptFromAlias },
+    { alias: "condition", parameter: "script", convert: waitScriptFromAlias },
   ],
   browser_logs: [{ alias: "limit", parameter: "maxEntries" }],
   browser_network: [{ alias: "limit", parameter: "maxEntries" }],
@@ -341,7 +394,11 @@ export function normalizeBrowserToolInput(toolName: string, input: unknown): unk
     }
     const value = normalized[alias];
     if (!(parameter in normalized)) {
-      normalized[parameter] = convert ? convert(value) : value;
+      const converted = convert ? convert(value) : value;
+      if (converted === NO_EQUIVALENT) {
+        continue;
+      }
+      normalized[parameter] = converted;
       sentValues.set(parameter, value);
       delete normalized[alias];
       continue;

@@ -1,3 +1,4 @@
+import { runInNewContext } from "node:vm";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
@@ -1809,6 +1810,37 @@ describe("executeAutomationCommand", () => {
       ok: true,
       result: { command: "wait", browserId: BROWSER_A, matched: "text" },
     });
+  });
+
+  // Delta 129: the daemon passes browser_wait's `function` and `condition` aliases on as
+  // script; this runs the real page script, so both an expression and a function source
+  // (and the async function a body becomes) are evaluated, not only renamed.
+  test("wait script accepts an expression, a function source, or an async function body", async () => {
+    for (const [script, readyState, matched] of [
+      ["document.readyState === 'complete'", "complete", true],
+      ["() => document.readyState === 'complete'", "complete", true],
+      ["async () => {\nreturn document.readyState === 'complete'\n}", "complete", true],
+      ["() => document.readyState === 'complete'", "loading", false],
+      ["document.readyState === 'complete'", "loading", false],
+    ] as const) {
+      const browser = new BrowserAutomationHarness();
+      const tabScript = browser.tab.executeJavaScript.bind(browser.tab);
+      browser.tab.executeJavaScript = async (code: string) =>
+        code.includes("__PASEO_BROWSER_WAIT_SCRIPT__")
+          ? runInNewContext(code, { document: { readyState } })
+          : tabScript(code);
+
+      const result = await browser.execute({
+        command: "wait",
+        args: { browserId: BROWSER_A, script, timeoutMs: 1 },
+      });
+
+      expect(result, `${script} with readyState ${readyState}`).toMatchObject(
+        matched
+          ? { ok: true, result: { command: "wait", browserId: BROWSER_A, matched: "script" } }
+          : { ok: false, error: { code: "browser_timeout" } },
+      );
+    }
   });
 
   test("wait returns a retryable timeout when text never appears", async () => {

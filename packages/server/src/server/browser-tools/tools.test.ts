@@ -3115,8 +3115,56 @@ describe("argument aliases and refusal guidance (delta 129)", () => {
       await expect(run("() => 3")).resolves.toBe(3);
       await expect(run("(element) => element.id", { id: "submit" })).resolves.toBe("submit");
       await expect(run("async () => { return 5; }")).resolves.toBe(5);
+      // Statements run as the function's body.
+      await expect(run("return 'title'")).resolves.toBe("title");
+      await expect(run("const a = 1; return a + 1")).resolves.toBe(2);
+      await expect(run("const [element] = args; return element.id;", { id: "x" })).resolves.toBe(
+        "x",
+      );
+      // Two expression statements are a body without return: the result is undefined.
+      await expect(run("'title'; 1 + 1")).resolves.toBeUndefined();
     });
   }
+
+  test("a script alias that parses neither as an expression nor as a body keeps the refusal and its hint", () => {
+    const harness = new BrowserToolHarness();
+    const message = (tool: string, input: Record<string, unknown>) =>
+      harness
+        .validate(tool, { browserId: BROWSER_ID, ...input })
+        .error?.issues.find((issue) => issue.code === "unrecognized_keys")?.message;
+
+    expect(message("browser_evaluate", { expression: "document.title ===" })).toBe(
+      'browser_evaluate does not take "expression". Use expression → function. Parameters: function, ref, browserId, dialog, promptText.',
+    );
+    expect(message("browser_evaluate", { script: "return (" })).toBe(
+      'browser_evaluate does not take "script". Use script → function. Parameters: function, ref, browserId, dialog, promptText.',
+    );
+    expect(message("browser_evaluate", { code: "if (" })).toContain("Use code → function.");
+    expect(message("browser_wait", { condition: "document.readyState ===" })).toContain(
+      'browser_wait does not take "condition". Use condition → script.',
+    );
+    expect(message("browser_wait", { function: "() => {" })).toContain("Use function → script.");
+  });
+
+  test("browser_wait function and condition keep an expression or function source and wrap a body", () => {
+    const harness = new BrowserToolHarness();
+    const script = (input: Record<string, unknown>) =>
+      (
+        harness.validate("browser_wait", { browserId: BROWSER_ID, ...input }).data as {
+          script?: string;
+        }
+      ).script;
+
+    expect(script({ function: "() => document.readyState === 'complete'" })).toBe(
+      "() => document.readyState === 'complete'",
+    );
+    expect(script({ condition: "document.readyState === 'complete';" })).toBe(
+      "document.readyState === 'complete'",
+    );
+    expect(script({ condition: "return document.readyState === 'complete'" })).toBe(
+      "async () => {\nreturn document.readyState === 'complete'\n}",
+    );
+  });
 
   test("browser_evaluate takes two aliases that agree and refuses two that disagree", () => {
     const harness = new BrowserToolHarness();
