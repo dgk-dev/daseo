@@ -3495,7 +3495,17 @@ adopted separately above), #8735 (fewer full agent scans).
   regenerates embedded config during Gradle, so setting the variant only for prebuild is unsafe.
   The command checks native and embedded package/version/name, direct FCM, source commit and
   the stable APK signer before accepting the artifact. `npm run test:daseo:release` covers these
-  contracts and real repeated skill installation. Artifacts live in
+  contracts and real repeated skill installation.
+  The same command decides where the Gradle build runs and prints
+  `execution: mac|github (reason; free %, level)`: at macOS memory pressure level 2 or more, or
+  under 45% free memory (`kern.memorystatus_level`), or when that signal cannot be read, it
+  dispatches `daseo-android-apk-poc.yml` on `dgk-dev/daseo` for HEAD (which must already be on the
+  fork), watches it with `gh run watch`, downloads the artifact to the Mac build's APK path, and
+  runs the same identity and signer checks; otherwise it builds on the Mac (about 2 minutes, java
+  3.5-6.9 GiB; GitHub takes 13-17 minutes). `--local` or `--github` forces a route, `--dry-run`
+  prints the decision only. The final JSON line carries `builtBy` for the release manifest. Do not
+  run Gradle by hand to get around it: the Mac builds it replaced showed up in five memory pressure
+  snapshots on 2026-11-14..16. Artifacts live in
   `~/paseo-builds/`, served at `https://mac.tail29eaf5.ts.net/`; install over Wi-Fi ADB
   (`phone install`) when available.
 - The Mac bundle embeds its exact source commit; the release manifest records source commits and

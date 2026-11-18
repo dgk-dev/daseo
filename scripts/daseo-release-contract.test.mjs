@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { assertAndroidIdentity } from "./build-daseo-android.mjs";
+import { assertAndroidIdentity, chooseAndroidBuildRoute } from "./build-daseo-android.mjs";
 import { assertVersionOnly, expectedVersionManifest } from "./stage-release-version.mjs";
 import { syncSkills } from "../packages/desktop/src/integrations/skills/sync.ts";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -74,4 +74,22 @@ test("bundled manual-only skills survive two real installation syncs", async () 
   } finally {
     await rm(home, { recursive: true, force: true });
   }
+});
+test("APK builds leave the Mac when its memory is tight", () => {
+  const mac = (freePercent, pressureLevel, args = []) =>
+    chooseAndroidBuildRoute({ platform: "darwin", args, memory: { freePercent, pressureLevel } })
+      .route;
+  assert.equal(mac(60, 1), "mac");
+  assert.equal(mac(45, 1), "mac");
+  assert.equal(mac(44, 1), "github");
+  assert.equal(mac(70, 2), "github");
+  assert.equal(mac(70, 4), "github");
+  assert.equal(
+    chooseAndroidBuildRoute({ platform: "darwin", args: [], memory: {} }).route,
+    "github",
+  );
+  assert.equal(mac(20, 4, ["--local"]), "mac");
+  assert.equal(mac(90, 1, ["--github"]), "github");
+  assert.throws(() => mac(90, 1, ["--local", "--github"]));
+  assert.equal(chooseAndroidBuildRoute({ platform: "linux", args: [], memory: {} }).route, "mac");
 });
