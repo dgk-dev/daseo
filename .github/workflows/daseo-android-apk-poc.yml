@@ -28,9 +28,11 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # The APK build needs neither Electron nor ONNX Runtime binaries.
+  # The APK build needs neither Electron nor ONNX Runtime's CUDA binaries. onnxruntime-node's
+  # install script reads ONNXRUNTIME_NODE_INSTALL_CUDA (not ONNXRUNTIME_NODE_INSTALL); without it a
+  # Linux x64 runner downloads the GPU tarball, which returned 404 on 2026-11-18 and failed npm ci.
   ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
-  ONNXRUNTIME_NODE_INSTALL: skip
+  ONNXRUNTIME_NODE_INSTALL_CUDA: skip
 
 jobs:
   build:
