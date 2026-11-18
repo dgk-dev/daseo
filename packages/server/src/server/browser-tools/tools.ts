@@ -3,6 +3,7 @@ import { STATUS_CODES } from "node:http";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve as resolveFsPath } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import {
   BROWSER_AUTOMATION_READ_DEFAULT_MAX_CHARS,
@@ -86,7 +87,15 @@ const BrowserHttpUrlInputSchema = z
     return normalized;
   });
 // `@f1e3`: a ref inside a cross-origin iframe (Daseo delta 110).
-const BrowserRefInputSchema = z.string().regex(/^@(?:f\d+)?e\d+$/);
+// A missing ref says where refs come from (delta 129); error maps do not reach the advertised schema.
+const BrowserRefInputSchema = z
+  .string({
+    error: (issue) =>
+      issue.input === undefined
+        ? "Required: a ref (like @e12) from browser_snapshot or browser_find (role, name) of the same tab."
+        : undefined,
+  })
+  .regex(/^@(?:f\d+)?e\d+$/);
 const BrowserClickButtonInputSchema = z.enum(["left", "right", "middle"]);
 const BrowserClickModifierInputSchema = z.enum(["Alt", "Control", "Meta", "Shift"]);
 const MAX_BROWSER_WAIT_MS = 30_000;
@@ -178,22 +187,84 @@ const BROWSER_PARAMETER_HINTS: Record<string, string> = {
   uid: "ref",
 };
 
+const ELEMENT_REF_NEXT_STEP =
+  "This tool takes a ref from browser_snapshot or browser_find, not a selector, text, or coordinates; call browser_find (role, name) first.";
+
+interface BrowserToolParameterGuide {
+  /** Per-tool hints; null drops a general hint that is wrong for this tool. */
+  hints?: Record<string, string | null>;
+  /** A sentence appended when any of keys was sent. */
+  nextStep?: { keys: string[]; sentence: string };
+}
+
+function elementRefGuide(keys: string[], extraHints: Record<string, string> = {}) {
+  return {
+    hints: { ...Object.fromEntries(keys.map((key) => [key, null])), ...extraHints },
+    nextStep: { keys, sentence: ELEMENT_REF_NEXT_STEP },
+  } satisfies BrowserToolParameterGuide;
+}
+
+// Names with no equivalent that agents sent in the 2026-11-04..18 Pi sessions (delta 129).
+const BROWSER_TOOL_PARAMETER_GUIDES: Record<string, BrowserToolParameterGuide> = {
+  browser_click: elementRefGuide(["selector", "text", "x", "y"]),
+  browser_hover: elementRefGuide(["selector", "text", "x", "y"]),
+  browser_fill: elementRefGuide(["selector", "x", "y"], { text: "value" }),
+  browser_select: elementRefGuide(["selector", "x", "y"], { text: "value" }),
+  browser_type: {
+    hints: { selector: null, x: null, y: null },
+    nextStep: {
+      keys: ["selector", "x", "y"],
+      sentence:
+        "browser_type takes a ref from browser_snapshot or browser_find, not a selector or coordinates; call browser_find (role, name) first, or leave ref out to type into the focused element.",
+    },
+  },
+  browser_find: { hints: { text: "name", query: "name" } },
+  browser_wait: {
+    hints: {
+      loadState: "load (load or networkidle)",
+      waitUntil: "load (load or networkidle)",
+      urlIncludes: "url (any part of the URL)",
+    },
+  },
+  browser_scroll: {
+    nextStep: {
+      keys: ["x", "y", "direction", "amount"],
+      sentence:
+        "browser_scroll moves by deltaX and deltaY in CSS pixels (positive deltaY scrolls down, negative up); pass ref to scroll with the pointer over one element.",
+    },
+  },
+  browser_snapshot: {
+    hints: {
+      scope: "ref (one element's subtree; browser_read takes scope)",
+      maxNodes: "interactive (only elements with refs)",
+    },
+  },
+};
+
 function unknownBrowserParameterError(toolName: string, allowed: string[]) {
   return (issue: { code?: string; keys?: PropertyKey[] }): string | undefined => {
     if (issue.code !== "unrecognized_keys") {
       return undefined;
     }
+    // Read at refusal time: schemas built above this table call strictBrowserInput at load.
+    const guide = BROWSER_TOOL_PARAMETER_GUIDES[toolName];
     const unknown = (issue.keys ?? []).map(String);
     const hints = unknown
       .map((key) => {
-        const hint = BROWSER_PARAMETER_HINTS[key];
+        const toolHint = guide?.hints?.[key];
+        const hint = toolHint === undefined ? BROWSER_PARAMETER_HINTS[key] : toolHint;
         return hint && !allowed.includes(key) ? `${key} → ${hint}` : null;
       })
       .filter(Boolean);
+    const nextStep =
+      guide?.nextStep && unknown.some((key) => guide.nextStep?.keys.includes(key))
+        ? guide.nextStep.sentence
+        : null;
     return [
       `${toolName} does not take ${unknown.map((key) => JSON.stringify(key)).join(", ")}.`,
       ...(hints.length > 0 ? [`Use ${hints.join("; ")}.`] : []),
       `Parameters: ${allowed.join(", ") || "none"}.`,
+      ...(nextStep ? [nextStep] : []),
     ].join(" ");
   };
 }
@@ -202,6 +273,85 @@ function strictBrowserInput<Shape extends z.ZodRawShape>(toolName: string, shape
   return z.strictObject(shape, {
     error: unknownBrowserParameterError(toolName, Object.keys(shape)),
   });
+}
+
+interface BrowserParameterAlias {
+  alias: string;
+  parameter: string;
+  convert?: (value: unknown) => unknown;
+}
+
+/**
+ * Wraps an `expression`, `script`, or `code` value so browser_evaluate, which runs a
+ * function, gets one: an expression's value is returned, and source that is itself a
+ * function is called with the same arguments (the ref element first).
+ */
+function evaluateFunctionFromAlias(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+  const source = value.trim().replace(/;+$/, "");
+  return `async (...args) => {\n  const value = (${source}\n  );\n  return typeof value === "function" ? value(...args) : value;\n}`;
+}
+
+// Names with one meaning, renamed to the real parameter before validation (delta 129).
+// Each refusal cost a model turn: 467 in 14 days, almost all of them one of these.
+const BROWSER_PARAMETER_ALIASES: Record<string, BrowserParameterAlias[]> = {
+  browser_find: [
+    { alias: "text", parameter: "name" },
+    { alias: "query", parameter: "name" },
+  ],
+  browser_evaluate: [
+    { alias: "fn", parameter: "function" },
+    { alias: "expression", parameter: "function", convert: evaluateFunctionFromAlias },
+    { alias: "script", parameter: "function", convert: evaluateFunctionFromAlias },
+    { alias: "code", parameter: "function", convert: evaluateFunctionFromAlias },
+  ],
+  browser_wait: [
+    { alias: "timeout", parameter: "timeoutMs" },
+    { alias: "time", parameter: "timeoutMs" },
+    { alias: "timeMs", parameter: "timeoutMs" },
+    { alias: "function", parameter: "script" },
+    { alias: "condition", parameter: "script" },
+  ],
+  browser_logs: [{ alias: "limit", parameter: "maxEntries" }],
+  browser_network: [{ alias: "limit", parameter: "maxEntries" }],
+  browser_screenshot: [
+    { alias: "path", parameter: "savePath" },
+    { alias: "filename", parameter: "savePath" },
+  ],
+  browser_snapshot: [{ alias: "interactiveOnly", parameter: "interactive" }],
+};
+
+/**
+ * Renames each alias to its parameter when the parameter is absent, and drops an alias
+ * that repeats the value already given. An alias that disagrees with the parameter (or
+ * with another alias) stays, so strict validation refuses the call as before.
+ */
+export function normalizeBrowserToolInput(toolName: string, input: unknown): unknown {
+  const aliases = BROWSER_PARAMETER_ALIASES[toolName];
+  if (!aliases || typeof input !== "object" || input === null || Array.isArray(input)) {
+    return input;
+  }
+  const normalized: Record<string, unknown> = { ...(input as Record<string, unknown>) };
+  const sentValues = new Map<string, unknown>();
+  for (const { alias, parameter, convert } of aliases) {
+    if (!(alias in normalized)) {
+      continue;
+    }
+    const value = normalized[alias];
+    if (!(parameter in normalized)) {
+      normalized[parameter] = convert ? convert(value) : value;
+      sentValues.set(parameter, value);
+      delete normalized[alias];
+      continue;
+    }
+    const sent = sentValues.has(parameter) ? sentValues.get(parameter) : normalized[parameter];
+    if (isDeepStrictEqual(sent, value)) {
+      delete normalized[alias];
+    }
+  }
+  return normalized;
 }
 
 function countWaitConditions(input: {
@@ -259,6 +409,9 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
           config.inputSchema && !(config.inputSchema instanceof z.ZodType)
             ? strictBrowserInput(name, config.inputSchema)
             : config.inputSchema,
+        ...(BROWSER_PARAMETER_ALIASES[name]
+          ? { normalizeInput: (input: unknown) => normalizeBrowserToolInput(name, input) }
+          : {}),
       },
       handler,
     );
@@ -1049,7 +1202,12 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
         "Capture a Paseo browser tab's requests and responses to learn the site's own API calls (method, URL, payload) and call them directly instead of scraping. Call with action start, trigger the page action, then list to look or export to keep or convert; stop when done (it discards the capture). Capture is per tab and off until started; start clears earlier entries. list returns completed requests oldest first with a cursor: pass it as since to read only newer ones. Filter with urlIncludes, method, and resourceType (xhr, fetch, document, other); includeBodies adds response bodies, includeRequestBodies request payloads (each capped at 64 KB), and includeResponseHeaders response headers. Cookie and Authorization values and password or one-time-code form fields read <redacted>. export writes the capture as one sanitized HAR 1.2 file (credentials, tokens, and JWTs replaced with <redacted-N> placeholders; API response bodies whole up to 2 MB each, kept across navigations; WebSocket frames) on the machine that runs the Daseo desktop app, to path (relative paths resolve against the agent's cwd; ~/ is the home directory; default ~/Downloads/Daseo/network-<host>-<time>.har) and returns the path and a summary; the capture keeps running. export takes the same filters, bodies (api, the default, or none), and overwrite to replace an existing file. Use browserId from browser_new_tab or browser_list_tabs.",
       inputSchema: {
         browserId: BrowserAutomationBrowserIdSchema,
-        action: z.enum([...BrowserAutomationNetworkActionSchema.options, "export"]),
+        action: z.enum([...BrowserAutomationNetworkActionSchema.options, "export"], {
+          error: (issue) =>
+            issue.input === undefined
+              ? `Required: action, one of ${[...BrowserAutomationNetworkActionSchema.options, "export"].join(", ")}; start a capture first, then list or export it, and stop when done.`
+              : undefined,
+        }),
         urlIncludes: z.string().min(1).optional(),
         method: z.string().min(1).optional(),
         resourceType: BrowserAutomationNetworkResourceTypeSchema.optional(),
@@ -1146,7 +1304,14 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
       description:
         "Evaluate a JavaScript function in a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; when ref is provided (from browser_snapshot or browser_find), the resolved element is passed as the first argument. Page dialogs: an alert is accepted on its own and reported; a confirm or prompt is held open and the result says so (openDialog), answer it with browser_handle_dialog, or pass dialog accept or dismiss (with promptText for a prompt) to answer one this call raises at once. Never override window.confirm or window.prompt. A function stopped by a held dialog returns no value.",
       inputSchema: {
-        function: z.string().min(1),
+        function: z
+          .string({
+            error: (issue) =>
+              issue.input === undefined
+                ? "Required: function, JavaScript source such as () => document.title; with ref, the element is its first argument."
+                : undefined,
+          })
+          .min(1),
         ref: BrowserRefInputSchema.optional(),
         browserId: BrowserAutomationBrowserIdSchema,
         ...BrowserDialogPreArmInputSchema,

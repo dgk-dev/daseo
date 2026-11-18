@@ -16,6 +16,12 @@ export interface PaseoToolConfig {
   description?: string;
   inputSchema?: z.ZodRawShape | z.ZodType;
   outputSchema?: z.ZodRawShape;
+  /**
+   * Rewrites a call's raw arguments before inputSchema validates them, for argument
+   * names agents commonly send in place of the real ones. It never changes what
+   * tools/list advertises; inputSchema stays the only contract.
+   */
+  normalizeInput?: (input: unknown) => unknown;
 }
 
 export interface PaseoToolDefinition extends PaseoToolConfig {

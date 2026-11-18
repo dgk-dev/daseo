@@ -593,13 +593,14 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     if (!inputSchema) {
       return input;
     }
+    const normalizedInput = tool.normalizeInput ? tool.normalizeInput(input) : input;
     const schema =
       typeof inputSchema === "object" &&
       inputSchema !== null &&
       typeof (inputSchema as { safeParseAsync?: unknown }).safeParseAsync === "function"
         ? (inputSchema as z.ZodType)
         : z.object(inputSchema as z.ZodRawShape).passthrough();
-    return schema.parseAsync(input);
+    return schema.parseAsync(normalizedInput);
   };
 
   const tools = new Map<string, PaseoToolDefinition>();
@@ -615,6 +616,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       description: config.description ?? name,
       inputSchema: config.inputSchema,
       outputSchema: config.outputSchema,
+      ...(config.normalizeInput ? { normalizeInput: config.normalizeInput } : {}),
       handler: handler as PaseoToolDefinition["handler"],
     });
   };

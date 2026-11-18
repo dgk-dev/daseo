@@ -957,6 +957,81 @@ describe("browser MCP tools", () => {
     }
   });
 
+  it("renames browser argument aliases before the MCP schema check without changing tools/list (delta 129)", async () => {
+    const browserId = "11111111-1111-4111-8111-111111111111";
+    const broker = new FakeBrowserToolsBroker({
+      requestId: "req-browser-find",
+      ok: true,
+      result: { command: "find", browserId, matches: [], total: 0 },
+    });
+    const server = await createAgentMcpServer({
+      agentManager: new BoundaryAgentManagerFake() as AgentManager,
+      agentStorage: new BoundaryAgentStorageFake() as AgentStorage,
+      providerSnapshotManager:
+        new BoundaryProviderSnapshotManagerFake() as unknown as ProviderSnapshotManager,
+      browserToolsEnabled: true,
+      browserToolsBroker: broker as BrowserToolsBroker,
+      callerAgentId: "agent-1",
+      logger,
+    });
+    const client = await connectInMemoryMcpClient(server);
+
+    try {
+      const find = await client.callTool({
+        name: "browser_find",
+        arguments: { browserId, text: "Sign in" },
+      });
+      const evaluate = await client.callTool({
+        name: "browser_evaluate",
+        arguments: { browserId, expression: "document.title" },
+      });
+      const click = await client.callTool({
+        name: "browser_click",
+        arguments: { browserId, selector: "#buy" },
+      });
+      const conflict = await client.callTool({
+        name: "browser_find",
+        arguments: { browserId, text: "Sign in", name: "Buy" },
+      });
+
+      expect(find.isError).not.toBe(true);
+      expect(evaluate.isError).not.toBe(true);
+      expect(broker.calls.map((call) => call.command)).toEqual([
+        { command: "find", args: { browserId, name: "Sign in", exact: false, limit: 10 } },
+        {
+          command: "evaluate",
+          args: {
+            browserId,
+            function:
+              'async (...args) => {\n  const value = (document.title\n  );\n  return typeof value === "function" ? value(...args) : value;\n}',
+          },
+        },
+      ]);
+      expect(click.isError).toBe(true);
+      expect(expectSingleTextContent(click)).toContain(
+        "This tool takes a ref from browser_snapshot or browser_find, not a selector, text, or coordinates; call browser_find (role, name) first.",
+      );
+      expect(conflict.isError).toBe(true);
+      expect(expectSingleTextContent(conflict)).toContain(
+        'browser_find does not take \\"text\\". Use text → name.',
+      );
+
+      const listed = await client.listTools();
+      const findSchema = listed.tools.find((tool) => tool.name === "browser_find")?.inputSchema;
+      expect(Object.keys(findSchema?.properties ?? {})).toEqual([
+        "browserId",
+        "role",
+        "name",
+        "exact",
+        "limit",
+      ]);
+      expect(findSchema).toHaveProperty("additionalProperties", false);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
   it("does not register browser tools when browser tools are disabled", async () => {
     const { agentManager, agentStorage, spies } = createTestDeps();
     spies.agentManager.getAgent.mockReturnValue({

@@ -6,6 +6,7 @@ import { z } from "zod";
 import type { BrowserToolsBroker, BrowserToolsExecuteInput } from "./broker.js";
 import type { BrowserToolsResponsePayload } from "./errors.js";
 import { registerBrowserTools, type RegisterBrowserToolsOptions } from "./tools.js";
+import { serializePaseoToolInputParameters } from "../agent/tools/paseo-tool-serialization.js";
 import type {
   PaseoToolConfig,
   PaseoToolExecutionContext,
@@ -70,13 +71,20 @@ class BrowserToolHarness {
     });
   }
 
+  /** Validates as the tool catalog does: normalizeInput first, then the input schema. */
   public validate(name: string, input: unknown) {
-    return schemaFor(this.get(name).config.inputSchema).safeParse(input);
+    const { config } = this.get(name);
+    return schemaFor(config.inputSchema).safeParse(normalizedInput(config, input));
   }
 
   public async execute(name: string, input: unknown): Promise<PaseoToolResult> {
-    const parsed = schemaFor(this.get(name).config.inputSchema).parse(input);
-    return this.get(name).handler(parsed, {});
+    const { config, handler } = this.get(name);
+    const parsed = schemaFor(config.inputSchema).parse(normalizedInput(config, input));
+    return handler(parsed, {});
+  }
+
+  public config(name: string): PaseoToolConfig {
+    return this.get(name).config;
   }
 
   public toolNames(): string[] {
@@ -101,6 +109,10 @@ function takesParameter(validated: z.ZodSafeParseResult<unknown>, parameter: str
   if (validated.success) return true;
   const unknown = `does not take "${parameter}"`;
   return !validated.error.issues.some((issue) => issue.message.includes(unknown));
+}
+
+function normalizedInput(config: PaseoToolConfig, input: unknown): unknown {
+  return config.normalizeInput ? config.normalizeInput(input) : input;
 }
 
 function schemaFor(inputSchema: PaseoToolConfig["inputSchema"]): z.ZodType {
@@ -1081,14 +1093,17 @@ describe("registerBrowserTools", () => {
   test("rejects unknown parameters and names the right one", () => {
     const harness = new BrowserToolHarness();
 
+    // An alias that disagrees with the real parameter is refused and named.
     const screenshot = harness.validate("browser_screenshot", {
       browserId: BROWSER_ID,
       path: "/tmp/shot.png",
+      savePath: "/tmp/other.png",
     });
     const wait = harness.validate("browser_wait", {
       browserId: BROWSER_ID,
       text: "Ready",
       timeout: 1000,
+      timeoutMs: 2000,
     });
 
     expect(screenshot.success).toBe(false);
@@ -2915,3 +2930,349 @@ describe("registerBrowserTools", () => {
     ).toBe(true);
   });
 });
+
+describe("argument aliases and refusal guidance (delta 129)", () => {
+  const ALIAS_CASES: Array<{
+    tool: string;
+    base: Record<string, unknown>;
+    alias: string;
+    parameter: string;
+    value: unknown;
+    other: unknown;
+  }> = [
+    {
+      tool: "browser_find",
+      base: {},
+      alias: "text",
+      parameter: "name",
+      value: "Sign in",
+      other: "Buy",
+    },
+    {
+      tool: "browser_find",
+      base: {},
+      alias: "query",
+      parameter: "name",
+      value: "Sign in",
+      other: "Buy",
+    },
+    {
+      tool: "browser_evaluate",
+      base: {},
+      alias: "fn",
+      parameter: "function",
+      value: "() => document.title",
+      other: "() => 1",
+    },
+    {
+      tool: "browser_wait",
+      base: { text: "Ready" },
+      alias: "timeout",
+      parameter: "timeoutMs",
+      value: 1000,
+      other: 2000,
+    },
+    {
+      tool: "browser_wait",
+      base: { text: "Ready" },
+      alias: "time",
+      parameter: "timeoutMs",
+      value: 1000,
+      other: 2000,
+    },
+    {
+      tool: "browser_wait",
+      base: { text: "Ready" },
+      alias: "timeMs",
+      parameter: "timeoutMs",
+      value: 1000,
+      other: 2000,
+    },
+    {
+      tool: "browser_wait",
+      base: {},
+      alias: "function",
+      parameter: "script",
+      value: "() => window.ready",
+      other: "() => 1",
+    },
+    {
+      tool: "browser_wait",
+      base: {},
+      alias: "condition",
+      parameter: "script",
+      value: "window.ready",
+      other: "1",
+    },
+    {
+      tool: "browser_logs",
+      base: {},
+      alias: "limit",
+      parameter: "maxEntries",
+      value: 20,
+      other: 30,
+    },
+    {
+      tool: "browser_network",
+      base: { action: "list" },
+      alias: "limit",
+      parameter: "maxEntries",
+      value: 20,
+      other: 30,
+    },
+    {
+      tool: "browser_screenshot",
+      base: {},
+      alias: "path",
+      parameter: "savePath",
+      value: "/tmp/a.png",
+      other: "/tmp/b.png",
+    },
+    {
+      tool: "browser_screenshot",
+      base: {},
+      alias: "filename",
+      parameter: "savePath",
+      value: "a.png",
+      other: "b.png",
+    },
+    {
+      tool: "browser_snapshot",
+      base: {},
+      alias: "interactiveOnly",
+      parameter: "interactive",
+      value: true,
+      other: false,
+    },
+  ];
+
+  for (const { tool, base, alias, parameter, value, other } of ALIAS_CASES) {
+    test(`${tool} ${alias} → ${parameter}: alias only, real only, both equal, both different`, () => {
+      const harness = new BrowserToolHarness();
+      const input = { browserId: BROWSER_ID, ...base };
+
+      const aliasOnly = harness.validate(tool, { ...input, [alias]: value });
+      expect(aliasOnly.success).toBe(true);
+      expect(aliasOnly.data).toMatchObject({ [parameter]: value });
+      expect(aliasOnly.data).not.toHaveProperty(alias);
+
+      expect(harness.validate(tool, { ...input, [parameter]: value }).data).toEqual(
+        harness.validate(tool, { ...input, [alias]: value }).data,
+      );
+
+      const bothEqual = harness.validate(tool, { ...input, [alias]: value, [parameter]: value });
+      expect(bothEqual.success).toBe(true);
+      expect(bothEqual.data).not.toHaveProperty(alias);
+
+      const bothDifferent = harness.validate(tool, {
+        ...input,
+        [alias]: value,
+        [parameter]: other,
+      });
+      expect(bothDifferent.success).toBe(false);
+      expect(bothDifferent.error?.issues[0]?.message).toContain(`does not take "${alias}"`);
+    });
+  }
+
+  test("browser_find text reaches the host as name", async () => {
+    const harness = new BrowserToolHarness();
+    harness.broker.setResponse({
+      requestId: "req-find",
+      ok: true,
+      result: { command: "find", browserId: BROWSER_ID, matches: [], total: 0 },
+    });
+
+    await harness.execute("browser_find", { browserId: BROWSER_ID, text: "Sign in" });
+
+    expect(harness.broker.calls[0]?.command).toEqual({
+      command: "find",
+      args: { browserId: BROWSER_ID, name: "Sign in", exact: false, limit: 10 },
+    });
+  });
+
+  for (const alias of ["expression", "script", "code"]) {
+    test(`browser_evaluate ${alias} becomes a function that returns the expression or calls the function`, async () => {
+      const harness = new BrowserToolHarness();
+      const run = async (source: string, ...args: unknown[]): Promise<unknown> => {
+        const parsed = harness.validate("browser_evaluate", {
+          browserId: BROWSER_ID,
+          [alias]: source,
+        });
+        expect(parsed.success).toBe(true);
+        const functionSource = (parsed.data as { function: string }).function;
+        // The same check the desktop host runs before inlining the source.
+        const userFunction = new Function(`return (${functionSource}\n);`)() as (
+          ...callArgs: unknown[]
+        ) => Promise<unknown>;
+        expect(typeof userFunction).toBe("function");
+        return userFunction(...args);
+      };
+
+      await expect(run("1 + 1")).resolves.toBe(2);
+      await expect(run("(() => { const a = 2; return a * 3; })()")).resolves.toBe(6);
+      await expect(run("'done';")).resolves.toBe("done");
+      await expect(run("await Promise.resolve(4)")).resolves.toBe(4);
+      await expect(run("() => 3")).resolves.toBe(3);
+      await expect(run("(element) => element.id", { id: "submit" })).resolves.toBe("submit");
+      await expect(run("async () => { return 5; }")).resolves.toBe(5);
+    });
+  }
+
+  test("browser_evaluate takes two aliases that agree and refuses two that disagree", () => {
+    const harness = new BrowserToolHarness();
+    expect(
+      harness.validate("browser_evaluate", {
+        browserId: BROWSER_ID,
+        expression: "document.title",
+        script: "document.title",
+      }).success,
+    ).toBe(true);
+    const disagree = harness.validate("browser_evaluate", {
+      browserId: BROWSER_ID,
+      expression: "document.title",
+      script: "location.href",
+    });
+    expect(disagree.success).toBe(false);
+    expect(disagree.error?.issues[0]?.message).toContain('does not take "script"');
+  });
+
+  const ELEMENT_SENTENCE =
+    "This tool takes a ref from browser_snapshot or browser_find, not a selector, text, or coordinates; call browser_find (role, name) first.";
+
+  test("element tools answer a selector, text, or coordinates with where refs come from", () => {
+    const harness = new BrowserToolHarness();
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ["browser_click", { selector: "#buy" }],
+      ["browser_click", { text: "Buy" }],
+      ["browser_click", { x: 10, y: 20 }],
+      ["browser_hover", { selector: ".menu" }],
+      ["browser_hover", { text: "Menu" }],
+      ["browser_fill", { selector: "#email", value: "a@b.c" }],
+      ["browser_select", { selector: "#size", value: "M" }],
+    ];
+    for (const [tool, input] of cases) {
+      const message = harness
+        .validate(tool, { browserId: BROWSER_ID, ...input })
+        .error?.issues.find((issue) => issue.code === "unrecognized_keys")?.message;
+      expect(message, `${tool} ${JSON.stringify(input)}`).toMatch(
+        new RegExp(
+          `^${tool} does not take .*\\. Parameters: .*\\. ${escapeRegExp(ELEMENT_SENTENCE)}$`,
+        ),
+      );
+      expect(message).not.toContain("or interactive");
+    }
+
+    const fillText = harness.validate("browser_fill", {
+      browserId: BROWSER_ID,
+      ref: "@e1",
+      text: "a",
+    });
+    expect(
+      fillText.error?.issues.find((issue) => issue.code === "unrecognized_keys")?.message,
+    ).toBe(
+      'browser_fill does not take "text". Use text → value. Parameters: ref, value, browserId, snapshot.',
+    );
+
+    const typeSelector = harness.validate("browser_type", {
+      browserId: BROWSER_ID,
+      selector: "#q",
+      text: "hello",
+    });
+    expect(typeSelector.error?.issues[0]?.message).toContain(
+      "browser_type takes a ref from browser_snapshot or browser_find, not a selector or coordinates; call browser_find (role, name) first, or leave ref out to type into the focused element.",
+    );
+    expect(harness.validate("browser_type", { browserId: BROWSER_ID, text: "hello" }).success).toBe(
+      true,
+    );
+  });
+
+  test("wait, scroll, and snapshot name their real parameters", () => {
+    const harness = new BrowserToolHarness();
+    const message = (tool: string, input: Record<string, unknown>) =>
+      harness.validate(tool, { browserId: BROWSER_ID, ...input }).error?.issues[0]?.message;
+
+    expect(message("browser_wait", { loadState: "networkidle" })).toContain(
+      "Use loadState → load (load or networkidle).",
+    );
+    expect(message("browser_wait", { urlIncludes: "/done" })).toContain(
+      "Use urlIncludes → url (any part of the URL).",
+    );
+    for (const input of [{ x: 0, y: 400 }, { direction: "down" }, { amount: 3 }]) {
+      expect(message("browser_scroll", input)).toMatch(
+        /browser_scroll moves by deltaX and deltaY in CSS pixels \(positive deltaY scrolls down, negative up\); pass ref to scroll with the pointer over one element\.$/,
+      );
+    }
+    expect(message("browser_snapshot", { scope: "main" })).toContain(
+      "Use scope → ref (one element's subtree; browser_read takes scope).",
+    );
+    expect(message("browser_snapshot", { maxNodes: 50 })).toContain(
+      "Use maxNodes → interactive (only elements with refs).",
+    );
+  });
+
+  test("other unknown parameters are refused exactly as before", () => {
+    const harness = new BrowserToolHarness();
+    const message = (tool: string, input: Record<string, unknown>) =>
+      harness.validate(tool, { browserId: BROWSER_ID, ...input }).error?.issues[0]?.message;
+
+    expect(message("browser_click", { ref: "@e1", force: true })).toBe(
+      'browser_click does not take "force". Parameters: ref, browserId, button, doubleClick, modifiers, dialog, promptText, snapshot.',
+    );
+    expect(message("browser_read", { text: "x" })).toBe(
+      'browser_read does not take "text". Parameters: browserId, scope, ref, links, maxChars.',
+    );
+    expect(message("browser_snapshot", { selector: "main" })).toBe(
+      'browser_snapshot does not take "selector". Use selector → ref (from browser_find) or interactive. Parameters: browserId, ref, interactive.',
+    );
+    expect(message("browser_find", { name: "a", filter: "b" })).toBe(
+      'browser_find does not take "filter". Use filter → ref or interactive. Parameters: browserId, role, name, exact, limit.',
+    );
+  });
+
+  test("a missing ref, function, or action says what to pass", () => {
+    const harness = new BrowserToolHarness();
+    const missing = (tool: string, input: Record<string, unknown>, field: string) =>
+      harness
+        .validate(tool, { browserId: BROWSER_ID, ...input })
+        .error?.issues.find((issue) => issue.path[0] === field)?.message;
+
+    for (const tool of ["browser_click", "browser_hover"]) {
+      expect(missing(tool, {}, "ref")).toBe(
+        "Required: a ref (like @e12) from browser_snapshot or browser_find (role, name) of the same tab.",
+      );
+    }
+    expect(missing("browser_fill", { value: "x" }, "ref")).toBe(
+      "Required: a ref (like @e12) from browser_snapshot or browser_find (role, name) of the same tab.",
+    );
+    expect(missing("browser_click", { ref: "button" }, "ref")).not.toContain("Required");
+    expect(missing("browser_evaluate", {}, "function")).toBe(
+      "Required: function, JavaScript source such as () => document.title; with ref, the element is its first argument.",
+    );
+    expect(missing("browser_network", {}, "action")).toBe(
+      "Required: action, one of start, stop, list, export; start a capture first, then list or export it, and stop when done.",
+    );
+    expect(missing("browser_network", { action: "begin" }, "action")).not.toContain("Required");
+  });
+
+  test("tools/list schemas do not advertise the aliases and stay strict", () => {
+    const harness = new BrowserToolHarness();
+    for (const name of harness.toolNames()) {
+      const schema = serializePaseoToolInputParameters({
+        name,
+        description: name,
+        inputSchema: harness.config(name).inputSchema,
+        handler: async () => ({ content: [] }),
+      }) as { properties?: Record<string, unknown>; additionalProperties?: unknown };
+      expect(schema.additionalProperties, name).toBe(false);
+      for (const { tool, alias } of ALIAS_CASES) {
+        if (tool === name && alias !== "function") {
+          expect(Object.keys(schema.properties ?? {}), name).not.toContain(alias);
+        }
+      }
+    }
+  });
+});
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
