@@ -652,12 +652,13 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     The newest Luna in the roster (matched by family name, highest version wins, so
     `gpt-6.1-luna` or `gpt-7-luna` is picked up without a code change) at `low` now leads the
     metadata model list. A user prompt to a top-level agent
-    (its create prompt or a later message) names an untitled workspace, and re-evaluates an
-    auto title: prompts under 12 characters and prompts within 3 minutes of the last check are
-    skipped, the model is told to keep the title unless the task clearly changed, and it sees
-    the last 4 prompts. The persisted `titleSource` marks `auto` and `manual` titles; a rename
-    sets `manual` and locks the title, clearing it unlocks, and legacy or prompt-derived titles
-    (null source) are never touched. Metadata agents run in `$TMPDIR/daseo-metadata`, so they
+    (its create prompt or a later message) names an untitled workspace, once: a workspace that
+    has a title is never renamed from a later prompt (2026-11-19, David-Daniel: a small later
+    request renamed the session and he could no longer tell which session it was; until then an
+    auto title was re-evaluated on prompts of 12+ characters at most every 3 minutes). The
+    persisted `titleSource` marks `auto` and `manual` titles; a rename sets `manual`, clearing
+    the title lets the next prompt name it again, and legacy or prompt-derived titles (null
+    source) are never touched. Metadata agents run in `$TMPDIR/daseo-metadata`, so they
     skip repository instructions and never feed the home-directory personal-memory extension.
     Key files: `packages/server/src/server/workspace-title-generator.ts`,
     `packages/server/src/server/workspace-auto-name.ts`.

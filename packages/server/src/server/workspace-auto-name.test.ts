@@ -176,42 +176,27 @@ test("manual and legacy titles are never re-evaluated", async () => {
   expect(harness.workspace().title).toBe("[HYM 아침 전수점검]");
 });
 
-test("auto titles change only on a long prompt after the interval, and keep wins", async () => {
+test("an auto title is never changed by a later prompt", async () => {
   const harness = createPromptHarness();
-  harness.rename("Daseo 세션 자동 이름", "auto");
-
-  harness.autoName.scheduleForPrompt({ workspaceId: "workspace-prompt", prompt: "진행" });
-  await harness.settled();
-  expect(harness.calls).toHaveLength(0);
-
-  harness.nextResult({ keep: true, title: null });
+  harness.nextResult({ keep: false, title: "Daseo 세션 자동 이름" });
   harness.autoName.scheduleForPrompt({
     workspaceId: "workspace-prompt",
-    prompt: "이름 생성 모델을 Luna 말고 다른 걸로도 테스트해볼까",
+    prompt: "세션 이름 고쳐줘",
   });
   await harness.settled();
   expect(harness.calls).toHaveLength(1);
-  expect(harness.calls[0]?.currentTitle).toBe("Daseo 세션 자동 이름");
-  expect(harness.workspace().title).toBe("Daseo 세션 자동 이름");
 
   harness.nextResult({ keep: false, title: "HYM 결제 페이지 버그" });
+  harness.advance(60 * 60 * 1000);
   harness.autoName.scheduleForPrompt({
     workspaceId: "workspace-prompt",
     prompt: "이제 HYM 결제 페이지 버그 좀 봐줘 500 에러 나",
   });
   await harness.settled();
-  expect(harness.calls).toHaveLength(1);
 
-  harness.advance(3 * 60 * 1000);
-  harness.autoName.scheduleForPrompt({
-    workspaceId: "workspace-prompt",
-    prompt: "HYM 결제 페이지 500 에러 로그 다시 확인해줘",
-  });
-  await harness.settled();
-  expect(harness.calls).toHaveLength(2);
-  expect(harness.calls[1]?.recentPrompts).toHaveLength(4);
+  expect(harness.calls).toHaveLength(1);
   expect(harness.workspace()).toMatchObject({
-    title: "HYM 결제 페이지 버그",
+    title: "Daseo 세션 자동 이름",
     titleSource: "auto",
   });
 });

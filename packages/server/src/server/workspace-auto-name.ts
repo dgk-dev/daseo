@@ -28,11 +28,9 @@ type WorkspaceTitleGenerator = (
   options: GenerateWorkspaceTitleOptions,
 ) => Promise<GeneratedWorkspaceTitle | null>;
 
-// Daseo: follow-up prompts re-evaluate an auto title. Short replies such as
-// approvals never move the topic, and a minimum interval bounds the cost of
-// spawning a metadata agent while the user is actively chatting.
-const RETITLE_MIN_PROMPT_CHARS = 12;
-const RETITLE_MIN_INTERVAL_MS = 3 * 60 * 1000;
+// Daseo: a workspace is named once, from the prompt that finds it untitled, and keeps
+// that title (2026-11-19: a later small request renamed the session and its owner could
+// no longer tell which session it was). Only a rename by hand changes it afterwards.
 const RETITLE_RECENT_PROMPTS = 4;
 
 interface PromptTitleState {
@@ -94,10 +92,10 @@ export class WorkspaceAutoName {
   }
 
   /**
-   * Daseo: name or rename a workspace from a user prompt sent to an agent that
-   * already lives in it. Covers the empty-workspace launch (the first agent is
-   * created inside an existing untitled workspace) and topic changes later in
-   * the session. Manual and legacy titles are never touched.
+   * Daseo: name an untitled workspace from a user prompt sent to an agent that
+   * already lives in it (the empty-workspace launch: the first agent is created
+   * inside an existing untitled workspace). A workspace that has a title, auto,
+   * manual or legacy, is never renamed from a prompt.
    */
   scheduleForPrompt(input: { workspaceId: string; prompt: string }): void {
     const prompt = input.prompt.trim();
@@ -144,17 +142,12 @@ export class WorkspaceAutoName {
     if (currentTitle !== null && workspace.titleSource !== "auto") {
       return;
     }
-    const latest = state.recentPrompts.at(-1) ?? "";
-    const now = this.now();
+    // Already named (by an earlier prompt or the first-agent path): the title stays.
     if (currentTitle !== null) {
-      if (latest.length < RETITLE_MIN_PROMPT_CHARS) {
-        return;
-      }
-      if (now - state.lastEvaluatedAt < RETITLE_MIN_INTERVAL_MS) {
-        return;
-      }
+      this.promptStates.delete(workspaceId);
+      return;
     }
-    state.lastEvaluatedAt = now;
+    state.lastEvaluatedAt = this.now();
     const generated = await this.generateWorkspaceTitle({
       agentManager: this.agentManager,
       cwd: workspace.cwd,
