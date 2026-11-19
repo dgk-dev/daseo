@@ -198,6 +198,8 @@ import { DownloadTokenStore } from "./file-download/token-store.js";
 import type { PreviewLinkService } from "./file-preview/service.js";
 import { SidebarOrderSessionChannel } from "./sidebar-order/sidebar-order-session-channel.js";
 import type { SidebarOrderStore } from "./sidebar-order/sidebar-order-store.js";
+import type { SlackScheduledReader } from "./slack-scheduled/slack-scheduled-reader.js";
+import { handleScheduleSlackListRequest } from "./slack-scheduled/slack-scheduled-session.js";
 import type { PushNotifications } from "./push/index.js";
 import {
   archivePersistedWorkspaceRecord,
@@ -500,6 +502,8 @@ export interface SessionOptions {
   historySearch?: HistorySearchService | null;
   /** Daseo delta 133: the sidebar order shared by every device; absent answers nothing. */
   sidebarOrderStore?: SidebarOrderStore | null;
+  /** Daseo delta 135: scheduled Slack messages for the Schedules screen; absent answers an error. */
+  slackScheduledReader?: SlackScheduledReader | null;
   pushNotifications: PushNotifications;
   paseoHome: string;
   worktreesRoot?: string;
@@ -791,6 +795,7 @@ export class Session {
   private readonly workspaceAutoName: WorkspaceAutoName;
   private readonly historySearch: HistorySearchService | null | undefined;
   private readonly sidebarOrder: SidebarOrderSessionChannel;
+  private readonly slackScheduledReader: SlackScheduledReader | null | undefined;
   private readonly gitMutation: GitMutationService;
   private readonly workspaceProvisioning: WorkspaceProvisioningService;
   private readonly workspaceRecovery: WorkspaceRecoveryService;
@@ -875,6 +880,7 @@ export class Session {
       previewLinks,
       historySearch,
       sidebarOrderStore,
+      slackScheduledReader,
       pushNotifications,
       paseoHome,
       worktreesRoot,
@@ -953,6 +959,7 @@ export class Session {
       logger: this.sessionLogger,
     });
     this.historySearch = historySearch;
+    this.slackScheduledReader = slackScheduledReader;
     this.sidebarOrder = new SidebarOrderSessionChannel({
       store: sidebarOrderStore,
       emit: (msg) => this.emit(msg),
@@ -2636,6 +2643,13 @@ export class Session {
         return this.scheduleSession.handleScheduleRunOnceRequest(msg);
       case "schedule/update":
         return this.scheduleSession.handleScheduleUpdateRequest(msg);
+      case "schedule.slack.list.request":
+        return handleScheduleSlackListRequest({
+          reader: this.slackScheduledReader,
+          request: msg,
+          emit: (message) => this.emit(message),
+          logger: this.sessionLogger,
+        });
       default:
         return undefined;
     }

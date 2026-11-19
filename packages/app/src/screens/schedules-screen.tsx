@@ -16,11 +16,13 @@ import { HostFilter } from "@/components/hosts/host-filter";
 import { ALL_HOSTS_OPTION_ID } from "@/components/hosts/host-picker";
 import { ScheduleFormSheet } from "@/components/schedules/schedule-form-sheet";
 import { SchedulesTable, type ScheduleRowView } from "@/components/schedules/schedules-table";
+import { SlackScheduledList } from "@/components/schedules/slack-scheduled-list";
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { useAggregatedAgents } from "@/hooks/use-aggregated-agents";
 import { useProjects } from "@/hooks/use-projects";
+import { useSlackScheduled, type UseSlackScheduledResult } from "@/hooks/use-slack-scheduled";
 import {
   useSchedules,
   type AggregateLoadState,
@@ -45,9 +47,17 @@ type FormState =
   | { mode: "create" }
   | { mode: "edit"; serverId: string; schedule: ScheduleSummary };
 
-const STATUS_FILTER_OPTIONS: { value: ScheduleBucket; label: string; testID: string }[] = [
+// Daseo delta 135: "slack" lists scheduled Slack messages (read-only) instead of schedules.
+type ScheduleStatusFilter = ScheduleBucket | "slack";
+
+const STATUS_FILTER_OPTIONS: { value: ScheduleStatusFilter; label: string; testID: string }[] = [
   { value: "runnable", label: "Active", testID: "schedules-filter-active" },
   { value: "ended", label: "Ended", testID: "schedules-filter-ended" },
+];
+
+const STATUS_FILTER_OPTIONS_WITH_SLACK: typeof STATUS_FILTER_OPTIONS = [
+  ...STATUS_FILTER_OPTIONS,
+  { value: "slack", label: "Slack", testID: "schedules-filter-slack" },
 ];
 
 const EMPTY_SCHEDULES: AggregatedSchedule[] = [];
@@ -93,7 +103,14 @@ function SchedulesScreenContent(): ReactElement {
 
   const [form, setForm] = useState<FormState>({ mode: "closed" });
   const [selectedHost, setSelectedHost] = useState(ALL_HOSTS_OPTION_ID);
-  const [statusFilter, setStatusFilter] = useState<ScheduleBucket>("runnable");
+  const [statusFilter, setStatusFilter] = useState<ScheduleStatusFilter>("runnable");
+  const slackScheduled = useSlackScheduled(statusFilter === "slack");
+
+  useEffect(() => {
+    if (statusFilter === "slack" && !slackScheduled.supported) {
+      setStatusFilter("runnable");
+    }
+  }, [slackScheduled.supported, statusFilter]);
 
   useEffect(() => {
     if (
@@ -173,6 +190,8 @@ function SchedulesScreenContent(): ReactElement {
         showLoadError={showLoadError}
         statusFilter={statusFilter}
         onStatusFilterChange={setStatusFilter}
+        slackScheduled={slackScheduled}
+        singleHost={hosts.length <= 1}
         showHostFilter={showHostFilter}
         hosts={hosts}
         selectedHost={selectedHost}
@@ -199,6 +218,8 @@ function SchedulesScreenBody({
   showLoadError,
   statusFilter,
   onStatusFilterChange,
+  slackScheduled,
+  singleHost,
   showHostFilter,
   hosts,
   selectedHost,
@@ -211,8 +232,10 @@ function SchedulesScreenBody({
   loadState: AggregateLoadState<AggregatedSchedule>;
   hostErrors: ScheduleHostError[];
   showLoadError: boolean;
-  statusFilter: ScheduleBucket;
-  onStatusFilterChange: (value: ScheduleBucket) => void;
+  statusFilter: ScheduleStatusFilter;
+  onStatusFilterChange: (value: ScheduleStatusFilter) => void;
+  slackScheduled: UseSlackScheduledResult;
+  singleHost: boolean;
   showHostFilter: boolean;
   hosts: ReturnType<typeof useHosts>;
   selectedHost: string;
@@ -252,7 +275,18 @@ function SchedulesScreenBody({
   }
 
   let schedulesContent: ReactElement;
-  if (rows.length > 0) {
+  if (statusFilter === "slack") {
+    schedulesContent = (
+      <SlackScheduledList
+        data={slackScheduled.data}
+        isLoading={slackScheduled.isLoading}
+        isError={slackScheduled.isError}
+        serverId={selectedHost === ALL_HOSTS_OPTION_ID ? null : selectedHost}
+        singleHost={singleHost}
+        onRetry={slackScheduled.refetch}
+      />
+    );
+  } else if (rows.length > 0) {
     schedulesContent = <SchedulesTable rows={rows} onEditSchedule={onEdit} />;
   } else if (statusFilter === "ended") {
     schedulesContent = <SchedulesEndedEmptyState />;
@@ -280,7 +314,9 @@ function SchedulesScreenBody({
             size="sm"
             value={statusFilter}
             onValueChange={onStatusFilterChange}
-            options={STATUS_FILTER_OPTIONS}
+            options={
+              slackScheduled.supported ? STATUS_FILTER_OPTIONS_WITH_SLACK : STATUS_FILTER_OPTIONS
+            }
             testID="schedules-status-filter"
           />
         </View>
@@ -301,7 +337,9 @@ function SchedulesScreenBody({
         keyboardShouldPersistTaps="handled"
         testID="schedules-list"
       >
-        {hostErrors.length > 0 ? <ScheduleHostErrorsBanner errors={hostErrors} /> : null}
+        {hostErrors.length > 0 && statusFilter !== "slack" ? (
+          <ScheduleHostErrorsBanner errors={hostErrors} />
+        ) : null}
         {schedulesContent}
       </ScrollView>
     </View>

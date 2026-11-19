@@ -2528,6 +2528,14 @@ export const SidebarOrderSetRequestSchema = z.object({
   requestId: z.string(),
 });
 
+// Daseo delta 135: read-only list of the Slack messages agents scheduled through pi-local
+// `slack_post postAt`, for the Schedules screen's Slack filter. The daemon reads them from
+// pi-local's own record; the request takes no arguments, so a client cannot point it elsewhere.
+export const ScheduleSlackListRequestSchema = z.object({
+  type: z.literal("schedule.slack.list.request"),
+  requestId: z.string(),
+});
+
 export const WorkspaceClearAttentionRequestSchema = z.object({
   type: z.literal("workspace.clear_attention.request"),
   workspaceId: z.union([z.string(), z.array(z.string())]),
@@ -3175,6 +3183,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   WorkspaceDiscardEmptyRequestSchema,
   SidebarOrderGetRequestSchema,
   SidebarOrderSetRequestSchema,
+  ScheduleSlackListRequestSchema,
   FileExplorerRequestSchema,
   FileSubscribeRequestSchema,
   FileUnsubscribeRequestSchema,
@@ -3409,6 +3418,8 @@ export const ServerInfoStatusPayloadSchema = z
         discardEmptyWorkspace: z.boolean().optional(),
         // Local fork (delta 133): sidebar.order.* keeps one sidebar order for every device.
         sidebarOrderSync: z.boolean().optional(),
+        // Local fork (delta 135): schedule.slack.list lists scheduled Slack messages, read-only.
+        slackScheduledList: z.boolean().optional(),
         // Local fork (delta 75): fs.preview_link.create.request issues tailnet preview links;
         // true only when the host has a preview base URL configured.
         previewLinks: z.boolean().optional(),
@@ -4616,6 +4627,38 @@ export const SidebarOrderSetResponseSchema = z.object({
   payload: z.object({
     requestId: z.string(),
     order: SidebarOrderSchema.nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
+// Daseo delta 135: one scheduled Slack message. status and as stay open strings so a later value
+// does not break an older app (known: scheduled | sent | cancelled | failed | replaced |
+// unverified, me | bot). firstLine is the message's first line cut to 80 characters; the full
+// text is never sent. postAt is Unix seconds, createdAt and resolvedAt are milliseconds.
+export const SlackScheduledEntrySchema = z.object({
+  id: z.string(),
+  as: z.string(),
+  toLabel: z.string(),
+  channel: z.string(),
+  postAt: z.number(),
+  firstLine: z.string(),
+  status: z.string(),
+  createdAt: z.number(),
+  resolvedAt: z.number().nullable().optional(),
+  permalink: z.string().nullable().optional(),
+  error: z.string().nullable().optional(),
+  replacedBy: z.string().nullable().optional(),
+});
+
+export const ScheduleSlackListResponseSchema = z.object({
+  type: z.literal("schedule.slack.list.response"),
+  payload: z.object({
+    requestId: z.string(),
+    entries: z.array(SlackScheduledEntrySchema),
+    // "command" (checked against Slack) or "file" (the record as written); open for later values.
+    source: z.string().nullable(),
+    fetchedAt: z.number().nullable(),
+    warning: z.string().nullable(),
     error: z.string().nullable(),
   }),
 });
@@ -6552,6 +6595,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   SidebarOrderGetResponseSchema,
   SidebarOrderSetResponseSchema,
   SidebarOrderUpdateMessageSchema,
+  ScheduleSlackListResponseSchema,
   SendAgentMessageResponseMessageSchema,
   AgentCommandReceiptGetResponseMessageSchema,
   AgentCommandReceiptResolveResponseMessageSchema,
@@ -7105,6 +7149,7 @@ export type ArchiveWorkspaceRequest = z.infer<typeof ArchiveWorkspaceRequestSche
 export type WorkspaceClearAttentionRequest = z.infer<typeof WorkspaceClearAttentionRequestSchema>;
 export type WorkspaceDiscardEmptyResponse = z.infer<typeof WorkspaceDiscardEmptyResponseSchema>;
 export type SidebarOrder = z.infer<typeof SidebarOrderSchema>;
+export type SlackScheduledEntry = z.infer<typeof SlackScheduledEntrySchema>;
 export type FileExplorerRequest = z.infer<typeof FileExplorerRequestSchema>;
 export type FileExplorerResponse = z.infer<typeof FileExplorerResponseSchema>;
 export type FileVersion = z.infer<typeof FileVersionSchema>;

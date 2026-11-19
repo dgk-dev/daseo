@@ -2598,6 +2598,19 @@ export class DaemonClient {
     return payload.order;
   }
 
+  /**
+   * Daseo delta 135: the Slack messages agents scheduled (and their outcomes), read-only. Send
+   * only when server_info.features.slackScheduledList is true.
+   */
+  async listSlackScheduled(): Promise<
+    Extract<SessionOutboundMessage, { type: "schedule.slack.list.response" }>["payload"]
+  > {
+    return this.sendCorrelatedSessionRequest({
+      message: { type: "schedule.slack.list.request" },
+      responseType: "schedule.slack.list.response",
+    });
+  }
+
   /** Daseo delta 133: stores the whole sidebar order; other connected devices get it pushed. */
   async setSidebarOrder(order: SidebarOrder): Promise<SidebarOrder> {
     const payload = await this.sendCorrelatedSessionRequest({

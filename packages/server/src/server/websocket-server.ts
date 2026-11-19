@@ -15,6 +15,7 @@ import type { ScheduleService } from "./schedule/service.js";
 import type { CheckoutDiffManager, CheckoutDiffMetrics } from "./checkout-diff-manager.js";
 import type { DaemonConfigStore, MutableDaemonConfig } from "./daemon-config-store.js";
 import { SidebarOrderStore } from "./sidebar-order/sidebar-order-store.js";
+import { SlackScheduledReader } from "./slack-scheduled/slack-scheduled-reader.js";
 import {
   type ServerInfoStatusPayload,
   type SessionInboundMessage,
@@ -640,6 +641,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly previewLinks: PreviewLinkService | null;
   // Daseo delta 133: the sidebar order every device shows.
   private readonly sidebarOrderStore: SidebarOrderStore;
+  private readonly slackScheduledReader: SlackScheduledReader;
   // Daseo delta 79: History content search; null when this runtime cannot host it.
   private readonly historySearch: HistorySearchService | null | undefined;
   private readonly clientDebugRegistrations = new Map<string, () => void>();
@@ -781,6 +783,7 @@ export class VoiceAssistantWebSocketServer {
       filePath: join(paseoHome, "sidebar-order.json"),
       logger: this.logger,
     });
+    this.slackScheduledReader = new SlackScheduledReader({ logger: this.logger });
     this.attachBrowserHostStallPush();
 
     this.agentManager.setAgentAttentionCallback((params) => {
@@ -1454,6 +1457,7 @@ export class VoiceAssistantWebSocketServer {
       previewLinks: this.previewLinks,
       historySearch: this.historySearch,
       sidebarOrderStore: this.sidebarOrderStore,
+      slackScheduledReader: this.slackScheduledReader,
       pushNotifications: this.pushNotifications,
       paseoHome: this.paseoHome,
       worktreesRoot: this.worktreesRoot,
@@ -1665,6 +1669,8 @@ export class VoiceAssistantWebSocketServer {
         discardEmptyWorkspace: true,
         // Local fork (delta 133): sidebar.order.* keeps one sidebar order for every device.
         sidebarOrderSync: true,
+        // Local fork (delta 135): schedule.slack.list lists scheduled Slack messages, read-only.
+        slackScheduledList: true,
         // Local fork (delta 75): tailnet preview links, only when a base URL is configured.
         previewLinks: this.previewLinks?.isConfigured() === true,
         // Local fork (delta 90): links in agent answers resolve through fs.path.resolve.request.
