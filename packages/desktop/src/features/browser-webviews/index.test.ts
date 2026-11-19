@@ -23,10 +23,14 @@ class FakeRenderer {
 
 class FakeBrowserGuest {
   public readonly backgroundThrottlingCalls: boolean[] = [];
+  public readonly cdpCommands: Array<{ command: string; params?: Record<string, unknown> }> = [];
   public readonly debugger = {
     isAttached: () => true,
     attach: () => {},
-    sendCommand: async () => ({}),
+    sendCommand: async (command: string, params?: Record<string, unknown>) => {
+      this.cdpCommands.push({ command, params });
+      return {};
+    },
   };
   private destroyedListener: (() => void) | null = null;
   private destroyed = false;
@@ -306,6 +310,57 @@ describe("browser webview attachment", () => {
     } finally {
       hold.mockRestore();
       unregisterPaseoBrowser("browser-shown");
+    }
+  });
+
+  test("emulates focus for an awake tab off screen, real focus while presented (delta 134)", async () => {
+    const lifecycle = getPaseoBrowserTabLifecycle();
+    const hold = vi.spyOn(lifecycle, "hold").mockReturnValue(() => {});
+    const profileSession = {};
+    const renderer = new FakeRenderer(51);
+    const guest = new FakeBrowserGuest(801, renderer, profileSession);
+    const focusEmulation = () =>
+      guest.cdpCommands
+        .filter((entry) => entry.command === "Emulation.setFocusEmulationEnabled")
+        .map((entry) => entry.params?.enabled);
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+    try {
+      preparePaseoBrowserWebContents(guest, { discardable: false });
+      await settle();
+      // Awake, but where it shows is not known yet: nothing is sent.
+      expect(focusEmulation()).toEqual([]);
+
+      registerAttachedPaseoBrowser({
+        browserId: "browser-focus",
+        workspaceId: "workspace-focus",
+        webContentsId: guest.id,
+        sender: renderer,
+        profileSession,
+        findWebContents: () => guest,
+      });
+      await settle();
+      expect(focusEmulation()).toEqual([true]);
+
+      setPaseoBrowserPresented({
+        hostWebContentsId: 51,
+        browserId: "browser-focus",
+        presented: true,
+      });
+      await settle();
+      expect(focusEmulation()).toEqual([true, false]);
+
+      setPaseoBrowserPresented({
+        hostWebContentsId: 51,
+        browserId: "browser-focus",
+        presented: false,
+      });
+      await settle();
+      expect(focusEmulation()).toEqual([true, false, true]);
+      expect(guest.backgroundThrottlingCalls).toEqual([false]);
+    } finally {
+      hold.mockRestore();
+      guest.destroy();
+      unregisterPaseoBrowser("browser-focus");
     }
   });
 });

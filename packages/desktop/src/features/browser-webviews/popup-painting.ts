@@ -20,28 +20,41 @@
  * parked; a presented popup is really on screen and keeps real focus and blur. When the lifecycle
  * lets the popup idle (throttled, then frozen) the hold is released and the page sleeps like a
  * background page in Chrome.
+ *
+ * Daseo delta 134: plain browser tabs take the same hold while they are awake and not on screen.
+ * A page in a tab nobody looks at has no window focus, so `document.hasFocus()` stays false and
+ * pages that gate a button on focus (Claude's OAuth "Authorize", an anti-clickjacking check) never
+ * enable it for an agent. Under the hold the page reports focus and visibility as a tab being
+ * recorded does. A tab a pane presents keeps real focus and blur; a tab counts as presented until
+ * main learns otherwise, so a tab the person opens is never held on its way onto the screen.
  */
-export interface PopupPaintHoldPort {
-  /** CDP `Emulation.setFocusEmulationEnabled` on the popup's own debugger session. */
+export interface FocusEmulationHoldPort {
+  /** CDP `Emulation.setFocusEmulationEnabled` on the target's own debugger session. */
   setFocusEmulation(enabled: boolean): Promise<void>;
 }
 
-export function shouldHoldPopupPainting(input: { awake: boolean; presented: boolean }): boolean {
+export function shouldHoldFocusEmulation(input: { awake: boolean; presented: boolean }): boolean {
   return input.awake && !input.presented;
 }
 
-export class PopupPaintHold {
+export class FocusEmulationHold {
   private awake = false;
-  private presented = false;
-  /** What the page was last told; null when unknown (never told, failed, or debugger detached). */
-  private applied: boolean | null = null;
+  private presented: boolean;
+  /**
+   * What the page was last told; null when unknown (a command failed). A debugger session starts
+   * without focus emulation, so a new hold and a lost session both start from false.
+   */
+  private applied: boolean | null = false;
   private chain: Promise<void> = Promise.resolve();
   private disposed = false;
 
   public constructor(
-    private readonly port: PopupPaintHoldPort,
+    private readonly port: FocusEmulationHoldPort,
     private readonly onError: (error: unknown) => void = () => {},
-  ) {}
+    options: { initiallyPresented?: boolean } = {},
+  ) {
+    this.presented = options.initiallyPresented ?? false;
+  }
 
   /** The tab lifecycle's "background throttling off" (active) or "on" (throttled, frozen). */
   public setAwake(awake: boolean): void {
@@ -49,15 +62,18 @@ export class PopupPaintHold {
     this.sync();
   }
 
-  /** The popup's native view is shown in the app window (true) or parked (false). */
+  /** The target is shown in the app window (true), or parked or in no pane (false). */
   public setPresented(presented: boolean): void {
     this.presented = presented;
     this.sync();
   }
 
-  /** The debugger session that held the emulation is gone; apply the current state again. */
+  /**
+   * The debugger session is gone, and with it any emulation it held. Only a hold that is still
+   * wanted is sent again, so a target whose renderer is ending (a discarded tab) is not attached.
+   */
   public invalidate(): void {
-    this.applied = null;
+    this.applied = false;
     this.sync();
   }
 
@@ -76,7 +92,7 @@ export class PopupPaintHold {
 
   private sync(): void {
     if (this.disposed) return;
-    const desired = shouldHoldPopupPainting({ awake: this.awake, presented: this.presented });
+    const desired = shouldHoldFocusEmulation({ awake: this.awake, presented: this.presented });
     if (desired === this.applied) return;
     this.applied = desired;
     this.chain = this.chain.then(() => this.apply(desired));
