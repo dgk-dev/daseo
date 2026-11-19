@@ -11,6 +11,7 @@ import type { AgentManager, ManagedAgent, OutOfBandOutcome } from "./agent-manag
 import type { AgentStorage } from "./agent-storage.js";
 import { ensureAgentLoaded } from "./agent-loading.js";
 import { archiveAgentCommand } from "./lifecycle-command.js";
+import type { JournalHeldFinishNotice } from "./restart-recovery.js";
 import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
 
 export type AgentUnarchiveController = Pick<AgentManager, "notifyAgentState" | "unarchiveSnapshot">;
@@ -475,6 +476,8 @@ export function finishReportHash(message: string): string {
 interface LiveFinishWatcher {
   readonly childAgentId: string;
   readonly callerAgentId: string;
+  /** Delta 131: a research worker; its normal finish may be held in its caller's batch. */
+  readonly archiveOnFinish: boolean;
   /** The caller asked for the child's next finish again (send_agent_prompt with notifyOnFinish). */
   refresh(requireParentOwnership: boolean): void;
   /** When this watch stops holding its caller's own finish; null when it does not hold it. */
@@ -504,6 +507,8 @@ interface FinishWatchRegistry {
    * that stopped before its last notice was sent keeps holding the caller until it is sent.
    */
   holdingCaller: Set<LiveFinishWatcher>;
+  /** Delta 131: held finish notices of archiveOnFinish children, per caller. */
+  batches: Map<string, FinishBatch>;
 }
 
 /** One registry per agent manager: the daemon has one, and each test builds its own. */
@@ -512,7 +517,7 @@ const finishWatchRegistries = new WeakMap<AgentManager, FinishWatchRegistry>();
 function finishWatchRegistry(agentManager: AgentManager): FinishWatchRegistry {
   let registry = finishWatchRegistries.get(agentManager);
   if (!registry) {
-    registry = { live: new Map(), holdingCaller: new Set() };
+    registry = { live: new Map(), holdingCaller: new Set(), batches: new Map() };
     finishWatchRegistries.set(agentManager, registry);
   }
   return registry;
@@ -664,6 +669,14 @@ export interface FinishWatcherJournal {
     state?: FinishWatchState,
   ): void;
   removeWatcher(childAgentId: string, callerAgentId: string): void;
+  /** Delta 131: keep a held finish notice, with its report, until it is delivered. */
+  holdFinishNotice(callerAgentId: string, notice: JournalHeldFinishNotice): void;
+  releaseHeldFinishNotices(
+    callerAgentId: string,
+    notices: Array<Pick<JournalHeldFinishNotice, "childAgentId" | "heldAt">>,
+  ): void;
+  /** Write pending changes now; a held notice is on disk before its child is archived. */
+  flush(): Promise<void>;
   isFrozen(): boolean;
 }
 
@@ -755,6 +768,247 @@ async function composeAndSendFinishNotification(
 }
 
 /**
+ * Local fork (DASEO.md delta 131): a lead that starts N research workers (children created with
+ * notifyOnFinish and archiveOnFinish) was woken N times, each wake a full request on its large
+ * context, and the early wakes only produced a one-line status (2026-11-15..19: 969 Fable lead
+ * turns, 12.6% of Fable lead usage). A worker's normal finish is now held while other
+ * archiveOnFinish children of the same caller are still pending, and the held notices go out as
+ * one message when the last of them finishes, or FINISH_BATCH_MAX_HOLD_MS after the first was
+ * held. Errors, permission requests, stall and review notices still go out at once. A held worker
+ * is archived as soon as its notice (with its report) is in the restart journal, so the sub-agent
+ * list looks as it did when each notice went out at once; restart recovery delivers what a
+ * restart left held.
+ */
+export const FINISH_BATCH_MAX_HOLD_MS = 10 * 60_000;
+const FINISH_BATCH_RETRY_MS = 60_000;
+
+interface HeldFinishNotice {
+  childAgentId: string;
+  title: string;
+  message: string | null;
+  heldAt: number;
+  /** Releases the caller's own finish hold (delta 106); absent for a notice restored at start. */
+  releaseCaller?: () => void;
+}
+
+interface FinishBatch {
+  readonly callerAgentId: string;
+  held: HeldFinishNotice[];
+  /** Children that finished and are deciding between holding and delivering (an async read). */
+  arriving: Set<string>;
+  deadlineTimer: ReturnType<typeof setTimeout> | null;
+  retryTimer: ReturnType<typeof setTimeout> | null;
+  delivering: boolean;
+  agentStorage: AgentStorage;
+  logger: Logger;
+}
+
+interface FinishBatchDeps {
+  agentManager: AgentManager;
+  agentStorage: AgentStorage;
+  logger: Logger;
+}
+
+function finishBatchFor(deps: FinishBatchDeps, callerAgentId: string): FinishBatch {
+  const registry = finishWatchRegistry(deps.agentManager);
+  let batch = registry.batches.get(callerAgentId);
+  if (!batch) {
+    batch = {
+      callerAgentId,
+      held: [],
+      arriving: new Set(),
+      deadlineTimer: null,
+      retryTimer: null,
+      delivering: false,
+      agentStorage: deps.agentStorage,
+      logger: deps.logger,
+    };
+    registry.batches.set(callerAgentId, batch);
+  }
+  return batch;
+}
+
+/** archiveOnFinish children of `callerAgentId` that have not finished yet, besides `exceptChild`. */
+function pendingFinishSiblings(
+  agentManager: AgentManager,
+  callerAgentId: string,
+  exceptChildAgentId: string | null,
+): number {
+  const registry = finishWatchRegistry(agentManager);
+  let count = 0;
+  for (const watcher of registry.live.values()) {
+    if (
+      watcher.callerAgentId === callerAgentId &&
+      watcher.archiveOnFinish &&
+      watcher.childAgentId !== exceptChildAgentId
+    ) {
+      count += 1;
+    }
+  }
+  for (const childAgentId of registry.batches.get(callerAgentId)?.arriving ?? []) {
+    if (childAgentId !== exceptChildAgentId) count += 1;
+  }
+  return count;
+}
+
+function dropBatchIfIdle(agentManager: AgentManager, batch: FinishBatch): void {
+  if (batch.held.length > 0 || batch.arriving.size > 0 || batch.delivering) return;
+  if (batch.deadlineTimer) clearTimeout(batch.deadlineTimer);
+  if (batch.retryTimer) clearTimeout(batch.retryTimer);
+  batch.deadlineTimer = null;
+  batch.retryTimer = null;
+  const registry = finishWatchRegistry(agentManager);
+  if (registry.batches.get(batch.callerAgentId) === batch) {
+    registry.batches.delete(batch.callerAgentId);
+  }
+}
+
+function armBatchDeadline(agentManager: AgentManager, batch: FinishBatch): void {
+  if (batch.deadlineTimer || batch.held.length === 0) return;
+  const firstHeldAt = Math.min(...batch.held.map((notice) => notice.heldAt));
+  batch.deadlineTimer = setTimeout(
+    () => {
+      batch.deadlineTimer = null;
+      void deliverFinishBatch(agentManager, batch);
+    },
+    Math.max(0, firstHeldAt + FINISH_BATCH_MAX_HOLD_MS - Date.now()),
+  );
+  batch.deadlineTimer.unref?.();
+}
+
+/** Deliver the held notices once no sibling is pending any more. */
+function recheckFinishBatch(agentManager: AgentManager, callerAgentId: string): void {
+  const batch = finishWatchRegistry(agentManager).batches.get(callerAgentId);
+  if (!batch) return;
+  if (batch.held.length === 0) {
+    dropBatchIfIdle(agentManager, batch);
+    return;
+  }
+  if (batch.delivering || pendingFinishSiblings(agentManager, callerAgentId, null) > 0) return;
+  void deliverFinishBatch(agentManager, batch);
+}
+
+function addHeldNotice(
+  agentManager: AgentManager,
+  batch: FinishBatch,
+  notice: HeldFinishNotice,
+): void {
+  batch.held.push(notice);
+  finishWatcherJournal?.holdFinishNotice(batch.callerAgentId, {
+    childAgentId: notice.childAgentId,
+    title: notice.title,
+    message: notice.message,
+    heldAt: new Date(notice.heldAt).toISOString(),
+  });
+  armBatchDeadline(agentManager, batch);
+}
+
+function formatFinishBatchBody(notices: HeldFinishNotice[], stillPending: number): string {
+  const bodies = notices.map((notice) =>
+    formatFinishNotificationBody({
+      childAgentId: notice.childAgentId,
+      title: notice.title,
+      reason: "finished",
+      lastAssistantMessage: notice.message,
+    }),
+  );
+  if (notices.length === 1 && stillPending === 0) return bodies[0]!;
+  let header = `${notices.length} of your sub-agents created with archiveOnFinish finished. Daseo held their finish notices so they reach you in one message; they follow in finish order.`;
+  if (stillPending > 0) {
+    header += ` ${stillPending} more ${stillPending === 1 ? "is" : "are"} still working; ${
+      stillPending === 1 ? "its notice follows" : "their notices follow together"
+    } when ${stillPending === 1 ? "it finishes" : "they finish"}, or ${
+      FINISH_BATCH_MAX_HOLD_MS / 60_000
+    } minutes after the first of them is held.`;
+  }
+  return [header, ...bodies].join("\n\n");
+}
+
+async function deliverFinishBatch(agentManager: AgentManager, batch: FinishBatch): Promise<void> {
+  if (batch.delivering || batch.held.length === 0) return;
+  // Shutting down: the journal keeps the notices for the next start.
+  if (finishWatcherJournal?.isFrozen()) return;
+  batch.delivering = true;
+  if (batch.deadlineTimer) clearTimeout(batch.deadlineTimer);
+  if (batch.retryTimer) clearTimeout(batch.retryTimer);
+  batch.deadlineTimer = null;
+  batch.retryTimer = null;
+  const notices = batch.held.slice();
+  const { callerAgentId, agentStorage, logger } = batch;
+  let settled = false;
+  try {
+    const callerRecord = await agentStorage.get(callerAgentId);
+    if (!callerRecord || callerRecord.archivedAt) {
+      logger.info(
+        { callerAgentId, children: notices.map((notice) => notice.childAgentId) },
+        "finish_batch.caller_gone",
+      );
+    } else {
+      const stillPending = pendingFinishSiblings(agentManager, callerAgentId, null);
+      await sendPromptToAgent({
+        agentManager,
+        agentStorage,
+        agentId: callerAgentId,
+        prompt: formatSystemNotificationPrompt(formatFinishBatchBody(notices, stillPending)),
+        unarchive: false,
+        logger,
+      });
+      logger.info(
+        { callerAgentId, delivered: notices.length, stillPending },
+        "finish_batch.delivered",
+      );
+    }
+    settled = true;
+  } catch (error) {
+    logger.error({ err: error, callerAgentId }, "Failed to deliver held finish notices");
+  } finally {
+    batch.delivering = false;
+  }
+  if (!settled) {
+    batch.retryTimer = setTimeout(() => {
+      batch.retryTimer = null;
+      void deliverFinishBatch(agentManager, batch);
+    }, FINISH_BATCH_RETRY_MS);
+    batch.retryTimer.unref?.();
+    return;
+  }
+  batch.held = batch.held.filter((notice) => !notices.includes(notice));
+  finishWatcherJournal?.releaseHeldFinishNotices(
+    callerAgentId,
+    notices.map((notice) => ({
+      childAgentId: notice.childAgentId,
+      heldAt: new Date(notice.heldAt).toISOString(),
+    })),
+  );
+  for (const notice of notices) notice.releaseCaller?.();
+  // Notices held while this one was on its way start their own deadline.
+  armBatchDeadline(agentManager, batch);
+  recheckFinishBatch(agentManager, callerAgentId);
+}
+
+/**
+ * Restart recovery (delta 131): put notices a restart left held back in their caller's batch. They
+ * go out with their siblings' notices, at once when no sibling is pending, and at the latest
+ * FINISH_BATCH_MAX_HOLD_MS after they were first held.
+ */
+export function restoreHeldFinishNotices(
+  params: FinishBatchDeps & { callerAgentId: string; notices: JournalHeldFinishNotice[] },
+): void {
+  const batch = finishBatchFor(params, params.callerAgentId);
+  for (const notice of params.notices) {
+    const heldAt = Date.parse(notice.heldAt);
+    if (typeof notice.childAgentId !== "string" || !Number.isFinite(heldAt)) continue;
+    addHeldNotice(params.agentManager, batch, {
+      childAgentId: notice.childAgentId,
+      title: typeof notice.title === "string" ? notice.title : notice.childAgentId,
+      message: typeof notice.message === "string" ? notice.message : null,
+      heldAt,
+    });
+  }
+  recheckFinishBatch(params.agentManager, params.callerAgentId);
+}
+
+/**
  * Watch `childAgentId` for `callerAgentId` (DASEO.md deltas 29, 44, 54, 80, 103, 106).
  *
  * | Child event                                              | Notice to the caller             |
@@ -843,6 +1097,7 @@ function startFinishWatcher(params: SetupFinishNotificationParams): void {
   const watcher: LiveFinishWatcher = {
     childAgentId,
     callerAgentId,
+    archiveOnFinish,
     refresh,
     holdsCallerUntil,
     recheckHold,
@@ -865,6 +1120,8 @@ function startFinishWatcher(params: SetupFinishNotificationParams): void {
     clearHoldTimer();
     unsubscribe?.();
     if (registry.live.get(key) === watcher) registry.live.delete(key);
+    // Delta 131: a sibling that stops pending (finished, errored, closed) may complete the batch.
+    if (archiveOnFinish) queueMicrotask(() => recheckFinishBatch(agentManager, callerAgentId));
   }
 
   function journalState(): void {
@@ -1118,26 +1375,72 @@ function startFinishWatcher(params: SetupFinishNotificationParams): void {
     finishWatcherJournal?.removeWatcher(childAgentId, callerAgentId);
   }
 
+  /**
+   * Delta 131: hold this finish in the caller's batch when other archiveOnFinish children of the
+   * caller are pending or already held. Returns false when it must go out at once as before.
+   */
+  async function holdFinishInBatch(batch: FinishBatch, message: string | null): Promise<boolean> {
+    const othersPending = pendingFinishSiblings(agentManager, callerAgentId, childAgentId);
+    if (othersPending === 0 && batch.held.length === 0) return false;
+    // Shutting down: the watcher's journal entry stays and the next start delivers this finish.
+    if (finishWatcherJournal?.isFrozen()) return true;
+    const [callerRecord, childRecord] = await Promise.all([
+      agentStorage.get(callerAgentId),
+      agentStorage.get(childAgentId),
+    ]);
+    // A caller that is gone or does not own this child gets today's single-notice handling.
+    if (!callerRecord || callerRecord.archivedAt) return false;
+    if (getParentAgentIdFromLabels(childRecord?.labels) !== callerAgentId) return false;
+    addHeldNotice(agentManager, batch, {
+      childAgentId,
+      title: childRecord?.title ?? childAgentId,
+      message,
+      heldAt: Date.now(),
+      releaseCaller,
+    });
+    batch.arriving.delete(childAgentId);
+    finishWatcherJournal?.removeWatcher(childAgentId, callerAgentId);
+    logger.info({ childAgentId, callerAgentId, othersPending }, "finish_batch.held");
+    recheckFinishBatch(agentManager, callerAgentId);
+    // The report is in the journal before the child, and its last message, leave the manager.
+    await finishWatcherJournal?.flush();
+    await archiveFinishedChild({ agentManager, agentStorage, childAgentId, logger });
+    return true;
+  }
+
   /** archiveOnFinish (delta 103): the first finish is the last notice, then the child is archived. */
   function finishArchiveOnFinishChild(): void {
     if (stopped) return;
+    // Delta 131: counted as pending until it has decided, so a sibling cannot deliver without it.
+    const batch = finishBatchFor({ agentManager, agentStorage, logger }, callerAgentId);
+    batch.arriving.add(childAgentId);
     stop();
+    const leaveArrival = () => {
+      if (!batch.arriving.delete(childAgentId)) return;
+      recheckFinishBatch(agentManager, callerAgentId);
+    };
     if (reportedReview === null) {
       enqueue("finished", async () => {
+        let heldInBatch = false;
         try {
-          await notify("finished", true, { archiveAfter: true });
+          const message = await agentManager.getLastAssistantMessage(childAgentId);
+          heldInBatch = await holdFinishInBatch(batch, message);
+          if (!heldInBatch) await notify("finished", true, { archiveAfter: true, message });
         } finally {
-          releaseCaller();
+          leaveArrival();
+          if (!heldInBatch) releaseCaller();
         }
       });
       return;
     }
     // After a review notice: deliver the final idle only when the child said something new.
     enqueue("finished", async () => {
+      let heldInBatch = false;
       try {
         const message = await agentManager.getLastAssistantMessage(childAgentId);
         if (isNewReport(message)) {
-          await notify("finished", true, { archiveAfter: true, message });
+          heldInBatch = await holdFinishInBatch(batch, message);
+          if (!heldInBatch) await notify("finished", true, { archiveAfter: true, message });
           return;
         }
         finishWatcherJournal?.removeWatcher(childAgentId, callerAgentId);
@@ -1146,7 +1449,8 @@ function startFinishWatcher(params: SetupFinishNotificationParams): void {
           await archiveFinishedChild({ agentManager, agentStorage, childAgentId, logger });
         }
       } finally {
-        releaseCaller();
+        leaveArrival();
+        if (!heldInBatch) releaseCaller();
       }
     });
   }

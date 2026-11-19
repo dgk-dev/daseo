@@ -45,11 +45,28 @@ export interface JournalWatcherEntry {
   lastReportHash?: string | null;
 }
 
+/**
+ * Delta 131: a research worker's finish notice held for its caller until its siblings finish. The
+ * worker is archived once this entry is written, so the entry carries the report itself.
+ */
+export interface JournalHeldFinishNotice {
+  childAgentId: string;
+  title: string;
+  message: string | null;
+  heldAt: string;
+}
+
+function heldNoticeKey(notice: Pick<JournalHeldFinishNotice, "childAgentId" | "heldAt">): string {
+  return `${notice.childAgentId}@${notice.heldAt}`;
+}
+
 export interface RecoveryJournal {
   version: 1;
   writtenAt: string;
   agents: Record<string, JournalAgentEntry>;
   watchers: Record<string, JournalWatcherEntry>;
+  /** Delta 131: held finish notices per caller agent, in finish order. Absent before delta 131. */
+  heldFinishNotices?: Record<string, JournalHeldFinishNotice[]>;
   /** Last automatic recovery notice per agent, carried across restarts for the cooldown. */
   recoveredAt: Record<string, string>;
 }
@@ -74,7 +91,14 @@ export interface RecoveryNotice {
 }
 
 function emptyJournal(now: Date): RecoveryJournal {
-  return { version: 1, writtenAt: now.toISOString(), agents: {}, watchers: {}, recoveredAt: {} };
+  return {
+    version: 1,
+    writtenAt: now.toISOString(),
+    agents: {},
+    watchers: {},
+    heldFinishNotices: {},
+    recoveredAt: {},
+  };
 }
 
 function parseJournal(value: unknown): RecoveryJournal | null {
@@ -86,6 +110,10 @@ function parseJournal(value: unknown): RecoveryJournal | null {
     writtenAt: raw.writtenAt,
     agents: raw.agents && typeof raw.agents === "object" ? raw.agents : {},
     watchers: raw.watchers && typeof raw.watchers === "object" ? raw.watchers : {},
+    heldFinishNotices:
+      raw.heldFinishNotices && typeof raw.heldFinishNotices === "object"
+        ? raw.heldFinishNotices
+        : {},
     recoveredAt: raw.recoveredAt && typeof raw.recoveredAt === "object" ? raw.recoveredAt : {},
   };
 }
@@ -197,6 +225,33 @@ export class RestartRecoveryJournal {
     if (this.frozen) return;
     if (this.journal.watchers[childAgentId]?.callerAgentId !== callerAgentId) return;
     delete this.journal.watchers[childAgentId];
+    this.schedule();
+  }
+
+  /** Delta 131: record a finish notice held for `callerAgentId` (appended in finish order). */
+  holdFinishNotice(callerAgentId: string, notice: JournalHeldFinishNotice): void {
+    if (this.frozen) return;
+    const held = (this.journal.heldFinishNotices ??= {});
+    const list = held[callerAgentId] ?? [];
+    if (list.some((entry) => heldNoticeKey(entry) === heldNoticeKey(notice))) return;
+    held[callerAgentId] = [...list, notice];
+    this.schedule();
+  }
+
+  /** Delta 131: forget held notices once they were delivered (or can never be). */
+  releaseHeldFinishNotices(
+    callerAgentId: string,
+    notices: Array<Pick<JournalHeldFinishNotice, "childAgentId" | "heldAt">>,
+  ): void {
+    if (this.frozen) return;
+    const held = this.journal.heldFinishNotices;
+    const list = held?.[callerAgentId];
+    if (!held || !list) return;
+    const released = new Set(notices.map(heldNoticeKey));
+    const remaining = list.filter((entry) => !released.has(heldNoticeKey(entry)));
+    if (remaining.length === list.length) return;
+    if (remaining.length > 0) held[callerAgentId] = remaining;
+    else delete held[callerAgentId];
     this.schedule();
   }
 

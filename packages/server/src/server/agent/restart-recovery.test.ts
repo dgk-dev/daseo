@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import pino from "pino";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import {
   formatRecoveryNotice,
@@ -11,6 +11,7 @@ import {
   RestartRecoveryJournal,
 } from "./restart-recovery.js";
 import { runRestartRecovery } from "./restart-recovery-runner.js";
+import { ARCHIVE_ON_FINISH_LABEL, setFinishWatcherJournal } from "./agent-prompt.js";
 
 const logger = pino({ level: "silent" });
 
@@ -234,5 +235,160 @@ describe("runRestartRecovery", () => {
     // The fake manager cannot load an agent: a load attempt would have made this "skipped".
     expect(result).toMatchObject({ notified: [], rearmed: ["child"], delivered: [] });
     expect(prompts).toEqual([]);
+  });
+});
+
+describe("held finish notices across a restart (delta 131)", () => {
+  type Listener = (event: unknown) => void;
+
+  /** A lead and research workers under a fake manager that records prompts and archives. */
+  function fanOutFakes(workers: Record<string, { running: boolean; message: string }>) {
+    const prompts: Array<{ agentId: string; prompt: string }> = [];
+    const listeners = new Set<{ agentId: string | null; callback: Listener }>();
+    const archiveLabel = { [ARCHIVE_ON_FINISH_LABEL]: "true" };
+    const agents = new Map<string, Record<string, unknown>>();
+    agents.set("lead", {
+      id: "lead",
+      lifecycle: "idle",
+      labels: {},
+      pendingPermissions: new Map(),
+    });
+    for (const [id, worker] of Object.entries(workers)) {
+      agents.set(id, {
+        id,
+        lifecycle: worker.running ? "running" : "idle",
+        labels: archiveLabel,
+        pendingPermissions: new Map(),
+        pendingBackgroundWaits: 0,
+      });
+    }
+    const agentStorage = {
+      get: async (id: string) => {
+        if (id === "lead") return { id, title: "Lead", labels: {}, archivedAt: null };
+        if (!workers[id]) return null;
+        return {
+          id,
+          title: id,
+          labels: { ...archiveLabel, "paseo.parent-agent-id": "lead" },
+          archivedAt: null,
+        };
+      },
+    };
+    function startRun(agentId: string, prompt: string) {
+      prompts.push({ agentId, prompt });
+      return (async function* noop() {})();
+    }
+    const agentManager = {
+      waitForAgentClose: async () => undefined,
+      getAgent: (id: string) => agents.get(id),
+      getLastAssistantMessage: async (id: string) => workers[id]?.message ?? null,
+      subscribe: (callback: Listener, options?: { agentId?: string }) => {
+        const listener = { agentId: options?.agentId ?? null, callback };
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      tryRunOutOfBand: () => false,
+      trySteerAgentRun: async () => false,
+      hasInFlightRun: () => false,
+      streamAgent: startRun,
+      replaceAgentRun: async (agentId: string, prompt: string) => startRun(agentId, prompt),
+      clearAgentAttention: async () => undefined,
+      archiveAgent: async () => ({ archivedAt: "2026-11-19T00:00:00.000Z" }),
+    };
+    const promptsTo = (agentId: string) => prompts.filter((prompt) => prompt.agentId === agentId);
+    function finish(id: string): void {
+      const agent = agents.get(id)!;
+      agent.lifecycle = "idle";
+      for (const listener of listeners) {
+        if (listener.agentId === null || listener.agentId === id) {
+          listener.callback({ type: "agent_state", agent });
+        }
+      }
+    }
+    return { prompts, promptsTo, agentStorage, agentManager, finish };
+  }
+
+  async function journalHolding(paseoHome: string, now: Date) {
+    const journal = new RestartRecoveryJournal({ paseoHome, logger, now: () => now });
+    journal.holdFinishNotice("lead", {
+      childAgentId: "worker-1",
+      title: "worker-1",
+      message: "Report one",
+      heldAt: now.toISOString(),
+    });
+    journal.freeze([]);
+    const next = new RestartRecoveryJournal({ paseoHome, logger, now: () => now });
+    return { previous: await next.takePrevious(), next };
+  }
+
+  test("a notice held at shutdown reaches the lead after the start, with its report", async () => {
+    const now = new Date();
+    const { previous, next } = await journalHolding(home(), now);
+    expect(previous?.heldFinishNotices?.lead).toHaveLength(1);
+    const { prompts, agentStorage, agentManager } = fanOutFakes({});
+    setFinishWatcherJournal(next);
+    try {
+      const result = await runRestartRecovery({
+        journal: next,
+        agentManager: agentManager as never,
+        agentStorage: agentStorage as never,
+        logger,
+        now: () => now,
+        previous,
+      });
+      expect(result.heldRestored).toEqual(["lead"]);
+      await vi.waitFor(() => expect(prompts).toHaveLength(1));
+      expect(prompts[0]!.agentId).toBe("lead");
+      expect(prompts[0]!.prompt).toContain("Agent worker-1 (worker-1) finished.");
+      expect(prompts[0]!.prompt).toContain("<agent-response>\nReport one\n</agent-response>");
+    } finally {
+      setFinishWatcherJournal(null);
+    }
+  });
+
+  test("a held notice waits after the start for a sibling the restart interrupted, then both arrive together", async () => {
+    const now = new Date();
+    const paseoHome = home();
+    const { previous, next } = await journalHolding(paseoHome, now);
+    previous!.agents["worker-2"] = { running: true, updatedAt: now.toISOString() };
+    previous!.watchers["worker-2"] = {
+      callerAgentId: "lead",
+      requireParentOwnership: true,
+      createdAt: now.toISOString(),
+      finishOwed: true,
+      lastReportHash: null,
+    };
+    const { prompts, promptsTo, agentStorage, agentManager, finish } = fanOutFakes({
+      "worker-2": { running: true, message: "Report two" },
+    });
+    setFinishWatcherJournal(next);
+    try {
+      const result = await runRestartRecovery({
+        journal: next,
+        agentManager: agentManager as never,
+        agentStorage: agentStorage as never,
+        logger,
+        now: () => now,
+        previous,
+      });
+      expect(result).toMatchObject({ rearmed: ["worker-2"], heldRestored: ["lead"] });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      // Only worker-2's own recovery notice went out; the lead still waits.
+      expect(prompts.map((prompt) => prompt.agentId)).toEqual(["worker-2"]);
+      // The new journal keeps the held notice for another restart.
+      await next.flush();
+      const onDisk = JSON.parse(readFileSync(next.filePath, "utf8"));
+      expect(onDisk.heldFinishNotices.lead).toHaveLength(1);
+
+      finish("worker-2");
+      await vi.waitFor(() => expect(promptsTo("lead")).toHaveLength(1));
+      const notice = prompts.find((prompt) => prompt.agentId === "lead")!.prompt;
+      expect(notice).toContain("2 of your sub-agents created with archiveOnFinish finished.");
+      expect(notice.indexOf("Report one")).toBeLessThan(notice.indexOf("Report two"));
+      await next.flush();
+      expect(JSON.parse(readFileSync(next.filePath, "utf8")).heldFinishNotices).toEqual({});
+    } finally {
+      setFinishWatcherJournal(null);
+    }
   });
 });

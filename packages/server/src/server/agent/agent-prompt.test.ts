@@ -7,6 +7,7 @@ import { AgentStorage } from "./agent-storage.js";
 import {
   ARCHIVE_ON_FINISH_LABEL,
   archiveAfterFirstTurn,
+  FINISH_BATCH_MAX_HOLD_MS,
   callerReadsNextTurn,
   FINISH_WATCH_STALL_CHECK_MS,
   FINISH_WATCH_STALL_MS,
@@ -789,6 +790,11 @@ describe("finish watcher journal (delta 44)", () => {
         calls.push(`add ${child}->${caller}${suffix}`);
       },
       removeWatcher: (child: string, caller: string) => calls.push(`remove ${child}->${caller}`),
+      holdFinishNotice: (caller: string, notice: { childAgentId: string }) =>
+        calls.push(`hold ${notice.childAgentId}->${caller}`),
+      releaseHeldFinishNotices: (caller: string, notices: Array<{ childAgentId: string }>) =>
+        calls.push(`release ${notices.map((notice) => notice.childAgentId).join(",")}->${caller}`),
+      flush: async () => undefined,
       isFrozen: () => journal.frozen,
     };
     return { journal, calls };
@@ -1168,6 +1174,8 @@ describe("a watch lasts as long as the parent-child relation (delta 106)", () =>
 });
 
 interface AgentTree {
+  /** Parent prompts and archives in the order they happened (`prompt <to>`, `archive <id>`). */
+  events(): string[];
   watch(childAgentId: string, callerAgentId: string): void;
   run(agentId: string): void;
   idle(agentId: string, message: string | null, pendingBackgroundWaits?: number): void;
@@ -1178,7 +1186,15 @@ interface AgentTree {
 }
 
 /** Several agents under one fake manager: a lead, its implementer, the implementer's critic. */
-function createAgentTree(parents: Record<string, string | null>): AgentTree {
+function createAgentTree(
+  parents: Record<string, string | null>,
+  treeOptions?: { archiveOnFinish?: string[] },
+): AgentTree {
+  const events: string[] = [];
+  const archivedAt = new Map<string, string>();
+  const archiveOnFinish = new Set(treeOptions?.archiveOnFinish ?? []);
+  const labelsOf = (agentId: string): Record<string, string> =>
+    archiveOnFinish.has(agentId) ? { [ARCHIVE_ON_FINISH_LABEL]: "true" } : {};
   const subscribers = new Set<{
     callback: (event: AgentManagerEvent) => void;
     agentId: string | null;
@@ -1195,7 +1211,7 @@ function createAgentTree(parents: Record<string, string | null>): AgentTree {
     Reflect.set(agent, "config", { title: agentId });
     Reflect.set(agent, "pendingPermissions", new Map());
     Reflect.set(agent, "pendingBackgroundWaits", 0);
-    Reflect.set(agent, "labels", {});
+    Reflect.set(agent, "labels", labelsOf(agentId));
     agents.set(agentId, agent);
   }
 
@@ -1210,6 +1226,7 @@ function createAgentTree(parents: Record<string, string | null>): AgentTree {
 
   function startRun(agentId: string, prompt: string) {
     prompts.push({ to: agentId, text: prompt });
+    events.push(`prompt ${agentId}`);
     inFlight.add(agentId);
     return (async function* noop() {})();
   }
@@ -1225,8 +1242,15 @@ function createAgentTree(parents: Record<string, string | null>): AgentTree {
       return () => subscribers.delete(subscriber);
     },
   );
+  // Like the real manager, an archived agent's last message is no longer readable here.
   Reflect.set(agentManager, "getLastAssistantMessage", async (agentId: string) => {
-    return messages.get(agentId) ?? null;
+    return archivedAt.has(agentId) ? null : (messages.get(agentId) ?? null);
+  });
+  Reflect.set(agentManager, "clearAgentAttention", async () => undefined);
+  Reflect.set(agentManager, "archiveAgent", async (agentId: string) => {
+    archivedAt.set(agentId, "2026-11-19T00:00:00.000Z");
+    events.push(`archive ${agentId}`);
+    return { archivedAt: archivedAt.get(agentId) };
   });
   Reflect.set(agentManager, "tryRunOutOfBand", () => false);
   Reflect.set(agentManager, "trySteerAgentRun", async () => false);
@@ -1242,12 +1266,15 @@ function createAgentTree(parents: Record<string, string | null>): AgentTree {
     const parent = parentOf.get(agentId);
     return {
       title: agentId,
-      labels: parent ? { "paseo.parent-agent-id": parent } : {},
-      archivedAt: null,
+      labels: { ...labelsOf(agentId), ...(parent ? { "paseo.parent-agent-id": parent } : {}) },
+      archivedAt: archivedAt.get(agentId) ?? null,
     };
   });
 
   const tree: AgentTree = {
+    events() {
+      return events;
+    },
     watch(childAgentId, callerAgentId) {
       setupFinishNotification({
         agentManager,
@@ -1385,5 +1412,179 @@ describe("a child waiting on its own sub-agents is not finished (delta 106)", ()
     tree.turn("implementer", "The critic failed; I reviewed the screens myself. Done.");
     await vi.waitFor(() => expect(tree.promptsTo("lead")).toHaveLength(1));
     expect(tree.promptsTo("lead")[0]).toContain("reviewed the screens myself");
+  });
+});
+
+describe("one finish notice per research fan-out (delta 131)", () => {
+  const flush = async () => {
+    for (let index = 0; index < 5; index += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  };
+
+  /** A lead that started `count` research workers (notifyOnFinish and archiveOnFinish). */
+  function fanOut(count: number): AgentTree {
+    const workers = Array.from({ length: count }, (_, index) => `worker-${index + 1}`);
+    const tree = createAgentTree(
+      { lead: null, ...Object.fromEntries(workers.map((worker) => [worker, "lead"])) },
+      { archiveOnFinish: workers },
+    );
+    for (const worker of workers) {
+      tree.watch(worker, "lead");
+      tree.run(worker);
+    }
+    return tree;
+  }
+
+  function expectFinishedInOrder(notice: string, workers: string[]): void {
+    const positions = workers.map((worker) =>
+      notice.indexOf(`Agent ${worker} (${worker}) finished.`),
+    );
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+  }
+
+  test("three workers finishing at different times reach the lead as one message, in finish order", async () => {
+    const tree = fanOut(3);
+    tree.idle("worker-2", "Report two");
+    await flush();
+    tree.idle("worker-1", "Report one");
+    await flush();
+    expect(tree.promptsTo("lead")).toEqual([]);
+    // A held worker leaves the sub-agent list at once; its report is kept for the lead.
+    expect(tree.events()).toEqual(["archive worker-2", "archive worker-1"]);
+
+    tree.idle("worker-3", "Report three");
+    await vi.waitFor(() => expect(tree.promptsTo("lead")).toHaveLength(1));
+    await flush();
+    expect(tree.promptsTo("lead")).toHaveLength(1);
+    expect(tree.events()).toContain("archive worker-3");
+
+    const notice = tree.promptsTo("lead")[0]!;
+    expect(isSystemInjectedEnvelope(notice)).toBe(true);
+    expect(notice.match(/<paseo-system>/g)).toHaveLength(1);
+    expect(notice).toContain(
+      "3 of your sub-agents created with archiveOnFinish finished. Daseo held their finish notices so they reach you in one message; they follow in finish order.",
+    );
+    expect(notice).not.toContain("still working");
+    expectFinishedInOrder(notice, ["worker-2", "worker-1", "worker-3"]);
+    for (const report of ["Report one", "Report two", "Report three"]) {
+      expect(notice).toContain(`<agent-response>\n${report}\n</agent-response>`);
+    }
+  });
+
+  test("an error is delivered at once and the other workers still arrive together", async () => {
+    const tree = fanOut(3);
+    tree.idle("worker-1", "Report one");
+    await flush();
+    tree.fail("worker-2");
+    await vi.waitFor(() => expect(tree.promptsTo("lead")).toHaveLength(1));
+    expect(tree.promptsTo("lead")[0]).toContain("Agent worker-2 (worker-2) errored.");
+    expect(tree.promptsTo("lead")[0]).not.toContain("Report one");
+    await flush();
+    expect(tree.promptsTo("lead")).toHaveLength(1);
+
+    tree.idle("worker-3", "Report three");
+    await vi.waitFor(() => expect(tree.promptsTo("lead")).toHaveLength(2));
+    const batch = tree.promptsTo("lead")[1]!;
+    expect(batch).toContain("2 of your sub-agents created with archiveOnFinish finished.");
+    expectFinishedInOrder(batch, ["worker-1", "worker-3"]);
+    expect(batch).not.toContain("worker-2");
+  });
+
+  test("held notices go out 10 minutes after the first was held; the rest keep batching", async () => {
+    vi.useFakeTimers();
+    try {
+      const tree = fanOut(3);
+      tree.idle("worker-1", "Report one");
+      await vi.advanceTimersByTimeAsync(FINISH_BATCH_MAX_HOLD_MS - 1_000);
+      expect(tree.promptsTo("lead")).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(tree.promptsTo("lead")).toHaveLength(1);
+      const first = tree.promptsTo("lead")[0]!;
+      expect(first).toContain("1 of your sub-agents created with archiveOnFinish finished.");
+      expect(first).toContain("2 more are still working; their notices follow together");
+      expect(first).toContain("Report one");
+
+      tree.idle("worker-2", "Report two");
+      await vi.advanceTimersByTimeAsync(10);
+      expect(tree.promptsTo("lead")).toHaveLength(1);
+      tree.idle("worker-3", "Report three");
+      await vi.advanceTimersByTimeAsync(10);
+      expect(tree.promptsTo("lead")).toHaveLength(2);
+      const second = tree.promptsTo("lead")[1]!;
+      expectFinishedInOrder(second, ["worker-2", "worker-3"]);
+      expect(second).not.toContain("Report one");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a single worker is delivered at once as before, then archived", async () => {
+    const tree = fanOut(1);
+    tree.idle("worker-1", "Only report");
+    await vi.waitFor(() => expect(tree.events()).toEqual(["prompt lead", "archive worker-1"]));
+    expect(tree.promptsTo("lead")).toEqual([
+      formatSystemNotificationPrompt(
+        "Agent worker-1 (worker-1) finished.\n\n<agent-response>\nOnly report\n</agent-response>",
+      ),
+    ]);
+  });
+
+  test("a held notice is journaled before its worker is archived, and released once delivered", async () => {
+    const calls: string[] = [];
+    const journal = {
+      frozen: false,
+      addWatcher: () => undefined,
+      removeWatcher: (child: string, caller: string) => calls.push(`remove ${child}->${caller}`),
+      holdFinishNotice: (
+        caller: string,
+        notice: { childAgentId: string; message: string | null },
+      ) => calls.push(`hold ${notice.childAgentId}->${caller}: ${notice.message}`),
+      releaseHeldFinishNotices: (caller: string, notices: Array<{ childAgentId: string }>) =>
+        calls.push(`release ${notices.map((notice) => notice.childAgentId).join(",")}->${caller}`),
+      flush: async () => {
+        calls.push("flush");
+      },
+      isFrozen: () => journal.frozen,
+    };
+    setFinishWatcherJournal(journal);
+    try {
+      const tree = fanOut(2);
+      tree.idle("worker-1", "Report one");
+      await vi.waitFor(() => expect(tree.events()).toEqual(["archive worker-1"]));
+      expect(calls).toEqual(["hold worker-1->lead: Report one", "remove worker-1->lead", "flush"]);
+
+      tree.idle("worker-2", "Report two");
+      await vi.waitFor(() => expect(tree.promptsTo("lead")).toHaveLength(1));
+      await vi.waitFor(() => expect(calls).toContain("release worker-1,worker-2->lead"));
+    } finally {
+      setFinishWatcherJournal(null);
+    }
+  });
+
+  test("while the daemon shuts down a finish is neither held nor archived; the watcher entry stays", async () => {
+    const calls: string[] = [];
+    const journal = {
+      frozen: true,
+      addWatcher: () => undefined,
+      removeWatcher: (child: string, caller: string) => calls.push(`remove ${child}->${caller}`),
+      holdFinishNotice: (caller: string, notice: { childAgentId: string }) =>
+        calls.push(`hold ${notice.childAgentId}->${caller}`),
+      releaseHeldFinishNotices: () => undefined,
+      flush: async () => undefined,
+      isFrozen: () => journal.frozen,
+    };
+    setFinishWatcherJournal(journal);
+    try {
+      const tree = fanOut(2);
+      tree.idle("worker-1", "Report one");
+      await flush();
+      expect(tree.events()).toEqual([]);
+      expect(calls).toEqual([]);
+    } finally {
+      setFinishWatcherJournal(null);
+    }
   });
 });

@@ -12,6 +12,7 @@ import {
   deliverFinishNotification,
   finishReportHash,
   formatSystemNotificationPrompt,
+  restoreHeldFinishNotices,
   sendPromptToAgent,
   setupFinishNotification,
 } from "./agent-prompt.js";
@@ -172,6 +173,8 @@ export interface RestartRecoveryResult {
   notified: string[];
   rearmed: string[];
   delivered: string[];
+  /** Delta 131: callers whose held finish notices were put back in their batch. */
+  heldRestored: string[];
   skippedStale: boolean;
 }
 
@@ -186,6 +189,7 @@ export async function runRestartRecovery(
     notified: [],
     rearmed: [],
     delivered: [],
+    heldRestored: [],
     skippedStale: false,
   };
   const previous = deps.previous;
@@ -210,6 +214,26 @@ export async function runRestartRecovery(
     if (outcome === "delivered") result.delivered.push(childAgentId);
   }
 
+  // Delta 131: after the watchers, so siblings still working keep the batch open.
+  for (const [callerAgentId, notices] of Object.entries(previous.heldFinishNotices ?? {})) {
+    if (!Array.isArray(notices) || notices.length === 0) continue;
+    try {
+      const caller = await deps.agentStorage.get(callerAgentId);
+      // The workers were archived when their notices were held; nothing else is owed.
+      if (!caller || caller.archivedAt) continue;
+      restoreHeldFinishNotices({
+        agentManager: deps.agentManager,
+        agentStorage: deps.agentStorage,
+        callerAgentId,
+        notices,
+        logger: deps.logger,
+      });
+      result.heldRestored.push(callerAgentId);
+    } catch (error) {
+      deps.logger.error({ err: error, callerAgentId }, "restart_recovery.held_notices_failed");
+    }
+  }
+
   for (const notice of lostById.values()) {
     if (await deliverRecoveryNotice(deps, notice)) result.notified.push(notice.agentId);
   }
@@ -218,6 +242,7 @@ export async function runRestartRecovery(
       notified: result.notified.length,
       rearmed: result.rearmed.length,
       delivered: result.delivered.length,
+      heldRestored: result.heldRestored.length,
     },
     "restart_recovery.done",
   );
