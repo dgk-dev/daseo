@@ -54,7 +54,10 @@ export function reducePageDialogs(
   if (!existing || (event.dialogId !== undefined && existing.dialog.id !== event.dialogId)) {
     return current;
   }
-  const { [event.browserId]: _closed, ...rest } = current;
+  // The key is a local name on purpose: with a member expression here the production Babel
+  // build drops the key and removes nothing (delta 132).
+  const closedBrowserId = event.browserId;
+  const { [closedBrowserId]: _closed, ...rest } = current;
   return rest;
 }
 

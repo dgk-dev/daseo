@@ -29,7 +29,10 @@ export function reducePasskeyChoices(
   if (!existing || (event.choiceId !== undefined && existing.id !== event.choiceId)) {
     return current;
   }
-  const { [event.browserId]: _closed, ...rest } = current;
+  // The key is a local name on purpose: with a member expression here the production Babel
+  // build drops the key and removes nothing (delta 132).
+  const closedBrowserId = event.browserId;
+  const { [closedBrowserId]: _closed, ...rest } = current;
   return rest;
 }
 

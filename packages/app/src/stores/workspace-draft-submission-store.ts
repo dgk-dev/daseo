@@ -96,7 +96,10 @@ export const useWorkspaceDraftSubmissionStore = create<WorkspaceDraftSubmissionS
         if (!matchesPendingSubmission(state.pendingByDraftId[input.draftId], input)) {
           return state;
         }
-        const { [input.draftId]: _removed, ...rest } = state.pendingByDraftId;
+        // A local name, not a member expression: the production Babel build drops the latter
+        // and removes nothing (delta 132).
+        const consumedDraftId = input.draftId;
+        const { [consumedDraftId]: _removed, ...rest } = state.pendingByDraftId;
         return { pendingByDraftId: rest };
       });
       return pending;

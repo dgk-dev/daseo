@@ -3173,6 +3173,12 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
      - **Key files:** `packages/server/src/server/agent/{agent-prompt,restart-recovery,restart-recovery-runner}.ts`; tests in `agent-prompt.test.ts` (describe "one finish notice per research fan-out (delta 131)") and `restart-recovery.test.ts` (describe "held finish notices across a restart (delta 131)").
      - **Not changed:** implementer notices, `wait_for` wakes, heartbeat and schedule notices, the app UI, the tools' arguments and texts, the wire protocol.
 
+132. **A closed page dialog's card leaves the pane** — the owner's report on 2026-11-19: the card stayed after OK, and every further press said "This message was already closed". `main.log` that day: two dialogs answered (one by the person, one by an agent's next command), then four `answer-missed no_dialog` presses on the same tabs.
+     - **Cause.** `const { [event.browserId]: _closed, ...rest } = current` in the pane's dialog store. `babel-preset-expo` compiles a rest pattern whose computed key is a member expression and whose binding is unused to `_objectWithoutPropertiesLoose(current, [_temp].map(_toPropertyKey))` and drops the `_temp = event.browserId` assignment, so the shipped bundle removed the key `"undefined"`: nothing. Vitest does not run that transform, so the store's tests passed. With a plain identifier as the key there is no temporary and the output is right.
+     - **Fix.** The key is read into a local name first in `packages/app/src/desktop/browser/page-dialogs.ts` and `passkey-choices.ts` (the passkey account card had the same defect) and in `consumePending` of `packages/app/src/stores/workspace-draft-submission-store.ts` (a consumed draft submission stayed pending). Checked by compiling the three files with the app's Babel config in production mode.
+     - **Rule.** Do not write `{ [a.b]: _unused, ...rest }` in `packages/app`; name the key first. To find shipped cases: in the exported bundle, `_objectWithoutProperties…(x, [v].map(…))` where `v` is declared and never assigned.
+     - **Not changed:** the same miscompile in `@react-navigation/core` `clearOptions` (a removed route's options stay in memory); the Babel preset itself.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including
