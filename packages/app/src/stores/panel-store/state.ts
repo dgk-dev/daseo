@@ -30,7 +30,7 @@ export const DEFAULT_NATIVE_SIDEBAR_WIDTH = 260;
 export function defaultSidebarWidth(isWeb: boolean): number {
   return isWeb ? DEFAULT_SIDEBAR_WIDTH : DEFAULT_NATIVE_SIDEBAR_WIDTH;
 }
-export const MIN_SIDEBAR_WIDTH = 200;
+export const MIN_SIDEBAR_WIDTH = 160;
 export const MAX_SIDEBAR_WIDTH = 600;
 
 export const DEFAULT_EXPLORER_SIDEBAR_WIDTH = 400;

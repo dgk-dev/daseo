@@ -149,9 +149,10 @@ test.describe("Sidebar workspace list", () => {
     }
   });
 
-  // Daseo delta 113: a session's status icon starts where its project's `~/name` starts, and its
-  // title sits one icon step further right, so no child sticks out left of its parent.
-  test("workspace rows step in one icon column under their project header", async ({ page }) => {
+  // Daseo delta 113, amended 2026-11-19: rows under a project header no longer step in. The
+  // session's status icon sits in the header's own leading column, left of the `~/name` text,
+  // so no width is spent on indentation.
+  test("workspace rows sit flush under their project header", async ({ page }) => {
     const workspace = await seedWorkspace({ repoPrefix: "sidebar-workspace-hierarchy-" });
 
     try {
@@ -170,8 +171,8 @@ test.describe("Sidebar workspace list", () => {
       expect(headerTextX).not.toBeNull();
       expect(iconBox).not.toBeNull();
       expect(titleX).not.toBeNull();
-      expect(Math.abs((iconBox?.x ?? 0) - (headerTextX ?? 0))).toBeLessThanOrEqual(2);
-      expect(titleX ?? 0).toBeGreaterThan(headerTextX ?? 0);
+      expect(iconBox?.x ?? 0).toBeLessThan(headerTextX ?? 0);
+      expect(titleX ?? 0).toBeGreaterThan(iconBox?.x ?? 0);
     } finally {
       await workspace.cleanup();
     }
