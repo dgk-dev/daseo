@@ -14,6 +14,14 @@ interface SidebarOrderStoreState {
   setPinnedWorkspaceOrder: (keys: string[]) => void;
   getWorkspaceOrder: (projectViewKey: string) => string[];
   setWorkspaceOrder: (projectViewKey: string, keys: string[]) => void;
+  /** Daseo delta 133: takes the whole order the daemon keeps for every device. */
+  replaceOrder: (order: SidebarOrderSnapshot) => void;
+}
+
+export interface SidebarOrderSnapshot {
+  projectOrder: string[];
+  pinnedWorkspaceOrder: string[];
+  workspaceOrderByProject: Record<string, string[]>;
 }
 
 interface SidebarOrderPersistedState {
@@ -146,6 +154,13 @@ export const useSidebarOrderStore = create<SidebarOrderStoreState>()(
         const scope = projectViewKey.trim();
         if (!scope) return [];
         return get().workspaceOrderByProject[scope] ?? [];
+      },
+      replaceOrder: (order) => {
+        set({
+          projectOrder: normalizeKeys(order.projectOrder),
+          pinnedWorkspaceOrder: normalizeKeys(order.pinnedWorkspaceOrder),
+          workspaceOrderByProject: normalizeWorkspaceOrderByProject(order.workspaceOrderByProject),
+        });
       },
       setWorkspaceOrder: (projectViewKey, keys) => {
         const scope = projectViewKey.trim();

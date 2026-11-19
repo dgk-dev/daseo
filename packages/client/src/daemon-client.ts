@@ -111,6 +111,7 @@ import type {
   WorkspaceCreateRequest,
   WorkspaceRecoveryState,
   PluginListItem,
+  SidebarOrder,
 } from "@getpaseo/protocol/messages";
 import type {
   AgentPermissionRequest,
@@ -275,6 +276,10 @@ export type DaemonEvent =
   | {
       type: "project.update";
       payload: Extract<SessionOutboundMessage, { type: "project.update" }>["payload"];
+    }
+  | {
+      type: "sidebar.order.update";
+      payload: Extract<SessionOutboundMessage, { type: "sidebar.order.update" }>["payload"];
     }
   | {
       type: "workspace_setup_progress";
@@ -2579,6 +2584,30 @@ export class DaemonClient {
       responseType: "workspace.discard_empty.response",
     });
     return { discarded: payload.discarded, reason: payload.reason };
+  }
+
+  /**
+   * Daseo delta 133: the sidebar order the daemon keeps for every device, or null when none is
+   * stored yet. Also subscribes this connection to `sidebar.order.update`.
+   */
+  async getSidebarOrder(): Promise<SidebarOrder | null> {
+    const payload = await this.sendCorrelatedSessionRequest({
+      message: { type: "sidebar.order.get.request" },
+      responseType: "sidebar.order.get.response",
+    });
+    return payload.order;
+  }
+
+  /** Daseo delta 133: stores the whole sidebar order; other connected devices get it pushed. */
+  async setSidebarOrder(order: SidebarOrder): Promise<SidebarOrder> {
+    const payload = await this.sendCorrelatedSessionRequest({
+      message: { type: "sidebar.order.set.request", order },
+      responseType: "sidebar.order.set.response",
+    });
+    if (payload.error !== null || payload.order === null) {
+      throw new Error(payload.error ?? "Sidebar order was not stored");
+    }
+    return payload.order;
   }
 
   async archiveWorkspace(
@@ -6617,6 +6646,8 @@ export class DaemonClient {
         };
       case "project.update":
         return { type: "project.update", payload: msg.payload };
+      case "sidebar.order.update":
+        return { type: "sidebar.order.update", payload: msg.payload };
       case "workspace_setup_progress":
         return {
           type: "workspace_setup_progress",

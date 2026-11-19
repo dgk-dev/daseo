@@ -2507,6 +2507,27 @@ export const WorkspaceDiscardEmptyRequestSchema = z.object({
   requestId: z.string(),
 });
 
+// Daseo delta 133: the sidebar order (projects, pinned rows, sessions within a project) is kept
+// by the daemon so every connected device shows the same order. The keys are the app's own
+// sidebar keys; the daemon stores them without interpreting them. A get also subscribes the
+// session to sidebar.order.update, so only clients that asked receive the push.
+export const SidebarOrderSchema = z.object({
+  projectOrder: z.array(z.string()),
+  pinnedWorkspaceOrder: z.array(z.string()),
+  workspaceOrderByProject: z.record(z.string(), z.array(z.string())),
+});
+
+export const SidebarOrderGetRequestSchema = z.object({
+  type: z.literal("sidebar.order.get.request"),
+  requestId: z.string(),
+});
+
+export const SidebarOrderSetRequestSchema = z.object({
+  type: z.literal("sidebar.order.set.request"),
+  order: SidebarOrderSchema,
+  requestId: z.string(),
+});
+
 export const WorkspaceClearAttentionRequestSchema = z.object({
   type: z.literal("workspace.clear_attention.request"),
   workspaceId: z.union([z.string(), z.array(z.string())]),
@@ -3152,6 +3173,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   WorkspaceCreateRequestSchema,
   WorkspaceClearAttentionRequestSchema,
   WorkspaceDiscardEmptyRequestSchema,
+  SidebarOrderGetRequestSchema,
+  SidebarOrderSetRequestSchema,
   FileExplorerRequestSchema,
   FileSubscribeRequestSchema,
   FileUnsubscribeRequestSchema,
@@ -3384,6 +3407,8 @@ export const ServerInfoStatusPayloadSchema = z
         clientDiagnostics: z.boolean().optional(),
         // Local fork (delta 70): workspace.discard_empty.request deletes a workspace nobody used.
         discardEmptyWorkspace: z.boolean().optional(),
+        // Local fork (delta 133): sidebar.order.* keeps one sidebar order for every device.
+        sidebarOrderSync: z.boolean().optional(),
         // Local fork (delta 75): fs.preview_link.create.request issues tailnet preview links;
         // true only when the host has a preview base URL configured.
         previewLinks: z.boolean().optional(),
@@ -4574,6 +4599,33 @@ export const WorkspaceDiscardEmptyResponseSchema = z.object({
      * error text. Daemons before Daseo delta 114 also send main_checkout.
      */
     reason: z.string().nullable(),
+  }),
+});
+
+// Daseo delta 133. order is null when no client has stored one yet.
+export const SidebarOrderGetResponseSchema = z.object({
+  type: z.literal("sidebar.order.get.response"),
+  payload: z.object({
+    requestId: z.string(),
+    order: SidebarOrderSchema.nullable(),
+  }),
+});
+
+export const SidebarOrderSetResponseSchema = z.object({
+  type: z.literal("sidebar.order.set.response"),
+  payload: z.object({
+    requestId: z.string(),
+    order: SidebarOrderSchema.nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
+// Daseo delta 133: pushed to every other session that sent sidebar.order.get.request after one
+// client stored a new order. The sender gets only its set response.
+export const SidebarOrderUpdateMessageSchema = z.object({
+  type: z.literal("sidebar.order.update"),
+  payload: z.object({
+    order: SidebarOrderSchema,
   }),
 });
 
@@ -6497,6 +6549,9 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   WorkspaceCreateResponseSchema,
   WorkspaceClearAttentionResponseSchema,
   WorkspaceDiscardEmptyResponseSchema,
+  SidebarOrderGetResponseSchema,
+  SidebarOrderSetResponseSchema,
+  SidebarOrderUpdateMessageSchema,
   SendAgentMessageResponseMessageSchema,
   AgentCommandReceiptGetResponseMessageSchema,
   AgentCommandReceiptResolveResponseMessageSchema,
@@ -7049,6 +7104,7 @@ export type ProjectGithubCloneProtocol = z.infer<typeof ProjectGithubCloneProtoc
 export type ArchiveWorkspaceRequest = z.infer<typeof ArchiveWorkspaceRequestSchema>;
 export type WorkspaceClearAttentionRequest = z.infer<typeof WorkspaceClearAttentionRequestSchema>;
 export type WorkspaceDiscardEmptyResponse = z.infer<typeof WorkspaceDiscardEmptyResponseSchema>;
+export type SidebarOrder = z.infer<typeof SidebarOrderSchema>;
 export type FileExplorerRequest = z.infer<typeof FileExplorerRequestSchema>;
 export type FileExplorerResponse = z.infer<typeof FileExplorerResponseSchema>;
 export type FileVersion = z.infer<typeof FileVersionSchema>;

@@ -196,6 +196,8 @@ import { HubExecutionController } from "./hub/execution-controller.js";
 import type { HubExecutionAgents } from "./hub/daemon-executions.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
 import type { PreviewLinkService } from "./file-preview/service.js";
+import { SidebarOrderSessionChannel } from "./sidebar-order/sidebar-order-session-channel.js";
+import type { SidebarOrderStore } from "./sidebar-order/sidebar-order-store.js";
 import type { PushNotifications } from "./push/index.js";
 import {
   archivePersistedWorkspaceRecord,
@@ -496,6 +498,8 @@ export interface SessionOptions {
   previewLinks?: PreviewLinkService | null;
   /** Daseo delta 79: History content search; absent keeps title-only search. */
   historySearch?: HistorySearchService | null;
+  /** Daseo delta 133: the sidebar order shared by every device; absent answers nothing. */
+  sidebarOrderStore?: SidebarOrderStore | null;
   pushNotifications: PushNotifications;
   paseoHome: string;
   worktreesRoot?: string;
@@ -786,6 +790,7 @@ export class Session {
   private readonly workspaceGitService: WorkspaceGitService;
   private readonly workspaceAutoName: WorkspaceAutoName;
   private readonly historySearch: HistorySearchService | null | undefined;
+  private readonly sidebarOrder: SidebarOrderSessionChannel;
   private readonly gitMutation: GitMutationService;
   private readonly workspaceProvisioning: WorkspaceProvisioningService;
   private readonly workspaceRecovery: WorkspaceRecoveryService;
@@ -869,6 +874,7 @@ export class Session {
       downloadTokenStore,
       previewLinks,
       historySearch,
+      sidebarOrderStore,
       pushNotifications,
       paseoHome,
       worktreesRoot,
@@ -947,6 +953,11 @@ export class Session {
       logger: this.sessionLogger,
     });
     this.historySearch = historySearch;
+    this.sidebarOrder = new SidebarOrderSessionChannel({
+      store: sidebarOrderStore,
+      emit: (msg) => this.emit(msg),
+      logger: this.sessionLogger,
+    });
     this.agentManager = agentManager;
     this.agentStorage = agentStorage;
     this.agentCommandReceiptStore = resolveAgentCommandReceiptStore({
@@ -2060,6 +2071,7 @@ export class Session {
       this.dispatchPluginMessage(msg) ??
       this.dispatchTerminalMessage(msg) ??
       this.dispatchScheduleMessage(msg) ??
+      this.sidebarOrder.handle(msg) ??
       this.dispatchMiscMessage(msg);
     if (promise) await promise;
   }
@@ -8110,6 +8122,7 @@ export class Session {
     this.unsubscribePluginChanges = null;
     this.unsubscribeWorkspaceMutations?.();
     this.unsubscribeWorkspaceMutations = null;
+    this.sidebarOrder.dispose();
     this.agentUpdates.dispose();
     this.directorySuggestions.dispose();
     await this.hubExecutionController?.cleanup();

@@ -14,6 +14,7 @@ import type { ProjectUpdate } from "./workspace-reconciliation-service.js";
 import type { ScheduleService } from "./schedule/service.js";
 import type { CheckoutDiffManager, CheckoutDiffMetrics } from "./checkout-diff-manager.js";
 import type { DaemonConfigStore, MutableDaemonConfig } from "./daemon-config-store.js";
+import { SidebarOrderStore } from "./sidebar-order/sidebar-order-store.js";
 import {
   type ServerInfoStatusPayload,
   type SessionInboundMessage,
@@ -637,6 +638,8 @@ export class VoiceAssistantWebSocketServer {
   // Daseo delta 68: apps that answer `client.debug.collect.request`, by client id.
   private readonly clientDebugBroker: ClientDebugBroker | null;
   private readonly previewLinks: PreviewLinkService | null;
+  // Daseo delta 133: the sidebar order every device shows.
+  private readonly sidebarOrderStore: SidebarOrderStore;
   // Daseo delta 79: History content search; null when this runtime cannot host it.
   private readonly historySearch: HistorySearchService | null | undefined;
   private readonly clientDebugRegistrations = new Map<string, () => void>();
@@ -774,6 +777,10 @@ export class VoiceAssistantWebSocketServer {
       filePath: join(paseoHome, "push-tokens.json"),
     });
     this.pushNotificationSender = pushNotificationSender ?? this.pushNotifications;
+    this.sidebarOrderStore = new SidebarOrderStore({
+      filePath: join(paseoHome, "sidebar-order.json"),
+      logger: this.logger,
+    });
     this.attachBrowserHostStallPush();
 
     this.agentManager.setAgentAttentionCallback((params) => {
@@ -1446,6 +1453,7 @@ export class VoiceAssistantWebSocketServer {
       downloadTokenStore: this.downloadTokenStore,
       previewLinks: this.previewLinks,
       historySearch: this.historySearch,
+      sidebarOrderStore: this.sidebarOrderStore,
       pushNotifications: this.pushNotifications,
       paseoHome: this.paseoHome,
       worktreesRoot: this.worktreesRoot,
@@ -1655,6 +1663,8 @@ export class VoiceAssistantWebSocketServer {
         // Local fork (delta 61): the app reports its own errors into daemon.log.
         clientDiagnostics: true,
         discardEmptyWorkspace: true,
+        // Local fork (delta 133): sidebar.order.* keeps one sidebar order for every device.
+        sidebarOrderSync: true,
         // Local fork (delta 75): tailnet preview links, only when a base URL is configured.
         previewLinks: this.previewLinks?.isConfigured() === true,
         // Local fork (delta 90): links in agent answers resolve through fs.path.resolve.request.

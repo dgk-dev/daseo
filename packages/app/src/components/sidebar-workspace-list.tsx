@@ -76,6 +76,7 @@ import {
   type SidebarWorkspacePlacement,
 } from "@/hooks/use-sidebar-workspaces-list";
 import { useSidebarOrderStore } from "@/stores/sidebar-order-store";
+import { sidebarOrderSync } from "@/stores/sidebar-order-sync";
 import { useSidebarViewStore } from "@/stores/sidebar-view-store";
 import { useShowShortcutBadges } from "@/hooks/use-show-shortcut-badges";
 import {
@@ -400,6 +401,11 @@ function getProjectWorkspaceRowStyle({
 }
 
 function noop() {}
+
+// Daseo delta 133: native lists re-render rows from props mid-drag, so an order pushed from another
+// device waits until the drag ends. Web lists keep their own copy while dragging and do not report
+// a drop that changes nothing, so they do not hold pushes.
+const beginSidebarOrderDrag = platformIsNative ? () => sidebarOrderSync.beginDrag() : undefined;
 
 const prBadgeStyles = StyleSheet.create((theme) => ({
   badge: {
@@ -1810,6 +1816,7 @@ function ProjectBlock({
             data={visibleWorkspaces}
             keyExtractor={workspaceKeyExtractor}
             renderItem={renderWorkspace}
+            onDragBegin={beginSidebarOrderDrag}
             onDragEnd={handleWorkspaceDragEnd}
             extraData={activeWorkspaceSelectionKey(activeWorkspaceSelection)}
             scrollEnabled={false}
@@ -1979,6 +1986,7 @@ export function SidebarWorkspaceList({
           reorderedVisibleKeys: reorderedWorkspaceKeys,
         })
       ) {
+        sidebarOrderSync.endDrag({ changed: false });
         return;
       }
 
@@ -1988,6 +1996,8 @@ export function SidebarWorkspaceList({
           reorderedVisibleKeys: reorderedWorkspaceKeys,
         }),
       );
+      sidebarOrderSync.publish();
+      sidebarOrderSync.endDrag({ changed: true });
     },
     [getPinnedWorkspaceOrder, setPinnedWorkspaceOrder],
   );
@@ -2235,6 +2245,7 @@ function ProjectModeList({
           reorderedVisibleKeys: reorderedProjectKeys,
         })
       ) {
+        sidebarOrderSync.endDrag({ changed: false });
         return;
       }
 
@@ -2244,6 +2255,8 @@ function ProjectModeList({
           reorderedVisibleKeys: reorderedProjectKeys,
         }),
       );
+      sidebarOrderSync.publish();
+      sidebarOrderSync.endDrag({ changed: true });
     },
     [getProjectOrder, setProjectOrder],
   );
@@ -2258,6 +2271,7 @@ function ProjectModeList({
           reorderedVisibleKeys: reorderedWorkspaceKeys,
         })
       ) {
+        sidebarOrderSync.endDrag({ changed: false });
         return;
       }
 
@@ -2268,6 +2282,8 @@ function ProjectModeList({
           reorderedVisibleKeys: reorderedWorkspaceKeys,
         }),
       );
+      sidebarOrderSync.publish();
+      sidebarOrderSync.endDrag({ changed: true });
     },
     [getWorkspaceOrder, setWorkspaceOrder],
   );
@@ -2421,6 +2437,7 @@ function ProjectModeList({
                 data={visiblePinnedChats}
                 keyExtractor={workspaceKeyExtractor}
                 renderItem={renderPinnedChat}
+                onDragBegin={beginSidebarOrderDrag}
                 onDragEnd={onPinnedWorkspaceReorder}
                 extraData={activeWorkspaceSelectionKey(activeWorkspaceSelection)}
                 scrollEnabled={false}
@@ -2458,6 +2475,7 @@ function ProjectModeList({
           data={unpinnedProjects}
           keyExtractor={projectViewKeyExtractor}
           renderItem={renderProject}
+          onDragBegin={beginSidebarOrderDrag}
           onDragEnd={handleProjectDragEnd}
           extraData={activeWorkspaceSelectionKey(activeWorkspaceSelection)}
           scrollEnabled={false}
