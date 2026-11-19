@@ -171,8 +171,12 @@ test.describe("Sidebar workspace list", () => {
       expect(headerTextX).not.toBeNull();
       expect(iconBox).not.toBeNull();
       expect(titleX).not.toBeNull();
-      expect(iconBox?.x ?? 0).toBeLessThan(headerTextX ?? 0);
+      // Delta 113 amended: no empty column in front of `~/name` or the session icon, so both
+      // start on one x; the title follows the icon, close to the sidebar's left edge (the desktop
+      // sidebar is pinned at x 0) so the sidebar can be narrow.
+      expect(Math.abs((iconBox?.x ?? 0) - (headerTextX ?? 0))).toBeLessThanOrEqual(2);
       expect(titleX ?? 0).toBeGreaterThan(iconBox?.x ?? 0);
+      expect(titleX ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(40);
     } finally {
       await workspace.cleanup();
     }

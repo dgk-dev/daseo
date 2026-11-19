@@ -1,4 +1,5 @@
 import {
+  SIDEBAR_ROW_INSET,
   SidebarSelectionPointer,
   sidebarSelectedTitleStyles,
 } from "@/components/sidebar/sidebar-selection-pointer";
@@ -115,7 +116,6 @@ import {
   SidebarWorkspaceTrailingActionBase,
   SidebarWorkspaceTrailingActionOverlay,
   SidebarWorkspaceTrailingActionSlot,
-  sidebarWorkspaceRowStyles,
 } from "@/components/sidebar/sidebar-workspace-row-content";
 import { useOpenKebabMenuVisibility } from "@/components/sidebar/use-open-kebab-menu-visibility";
 import { selectWorkspaceServiceSummary } from "@/components/sidebar/workspace-meta-row";
@@ -384,17 +384,14 @@ function getProjectWorkspaceRowStyle({
   isPressed,
   selected,
   isHovered,
-  inProject,
 }: {
   isDragging: boolean;
   isPressed: boolean;
   selected: boolean;
   isHovered: boolean;
-  inProject: boolean;
 }) {
   return [
     styles.workspaceRow,
-    inProject && sidebarWorkspaceRowStyles.rowInProject,
     selected && styles.sidebarRowSelected,
     isHovered && styles.workspaceRowHovered,
     isDragging && styles.workspaceRowDragging,
@@ -825,7 +822,6 @@ function NewWorkspaceGhostRow({
   const rowStyle = useCallback(
     ({ hovered = false, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
       styles.newWorkspaceGhostRow,
-      sidebarWorkspaceRowStyles.pointerlessRowInProject,
       hovered && !pressed && styles.newWorkspaceGhostRowHovered,
       pressed && styles.newWorkspaceGhostRowPressed,
     ],
@@ -978,16 +974,18 @@ function ProjectHeaderRow({
     <>
       <View style={styles.projectRowLeft}>
         <SidebarSelectionPointer selected={selected} />
-        <ProjectLeadingVisual
-          statusBucket={statusBucket}
-          backdrop={getSidebarRowBackdrop({ isDragging, isPressed, selected, isHovered })}
-          chevron={chevron}
-          showChevron={isHovered && chevron !== null}
-          isArchiving={isArchiving}
-        />
-
+        {/* Delta 113 amended: `~/name` leads the row so it starts on the session icons' x; the
+            chevron, status glyph, and archive spinner follow the name instead of holding an
+            empty column in front of it. */}
         <View style={styles.projectTitleGroup}>
           <ProjectRowTitle displayName={displayName} selected={selected} />
+          <ProjectLeadingVisual
+            statusBucket={statusBucket}
+            backdrop={getSidebarRowBackdrop({ isDragging, isPressed, selected, isHovered })}
+            chevron={chevron}
+            showChevron={isHovered && chevron !== null}
+            isArchiving={isArchiving}
+          />
         </View>
       </View>
       <ProjectRowTrailingActions
@@ -1149,9 +1147,6 @@ function WorkspaceRowInner({
           isPressed,
           selected,
           isHovered,
-          // Hoisted (pinned) rows lead with their project name because no project row contains
-          // them; every other row here sits under its project header.
-          inProject: !leadingProjectName,
         });
         const backdrop = getSidebarRowBackdrop({ isDragging, isPressed, selected, isHovered });
         return (
@@ -1828,7 +1823,6 @@ function ProjectBlock({
             <SidebarGroupToggleRow
               expanded={workspacesExpanded}
               onPress={toggleWorkspacesExpanded}
-              indent="project"
               testID={`sidebar-project-show-more-${project.viewKey}`}
             />
           ) : null}
@@ -2536,17 +2530,18 @@ const styles = StyleSheet.create((theme) => ({
   },
   workspaceListContainer: {},
   // Kept in step with `workspaceRow` above. It stands in a project's list where a workspace row
-  // would be, so it takes that row's geometry and both of its fills; its left padding comes from
-  // `pointerlessRowInProject`, which puts the `+` in the session rows' icon column.
+  // would be, so it takes that row's geometry and both of its fills; the shared row inset puts the
+  // `+` in the session rows' icon column and the same icon-to-label gap puts its label on their titles.
   newWorkspaceGhostRow: {
     minHeight: 36,
     marginBottom: theme.spacing[0.5],
     paddingVertical: theme.spacing[2],
+    paddingLeft: SIDEBAR_ROW_INSET,
     paddingRight: theme.spacing[3],
     borderRadius: theme.borderRadius.lg,
     flexDirection: "row",
     alignItems: "center",
-    gap: theme.spacing[2],
+    gap: theme.spacing[1],
     userSelect: "none",
   },
   newWorkspaceGhostRowHovered: {
@@ -2602,8 +2597,9 @@ const styles = StyleSheet.create((theme) => ({
     position: "relative",
     minHeight: 36,
     paddingVertical: theme.spacing[2],
-    // The selection pointer slot is always reserved, so selecting a row never moves its text.
-    paddingLeft: theme.spacing[1],
+    // The selection pointer is drawn inside this padding (delta 113 amended), so `~/name` starts
+    // on the same x as the session icons below and the sidebar's own entries above.
+    paddingLeft: SIDEBAR_ROW_INSET,
     paddingRight: theme.spacing[2],
     borderRadius: theme.borderRadius.lg,
     marginBottom: theme.spacing[1],
@@ -2730,7 +2726,7 @@ const styles = StyleSheet.create((theme) => ({
     minHeight: 36,
     marginBottom: theme.spacing[0.5],
     paddingVertical: theme.spacing[2],
-    paddingLeft: theme.spacing[1],
+    paddingLeft: SIDEBAR_ROW_INSET,
     paddingRight: theme.spacing[3],
     borderRadius: theme.borderRadius.lg,
     flexDirection: "column",

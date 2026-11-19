@@ -25,7 +25,6 @@ import { shouldRenderSyncedStatusLoader } from "@/utils/status-loader";
 import { StatusRing } from "@/components/status-ring";
 import { resolveSidebarWorkspacePrimaryLabel } from "@/components/sidebar/sidebar-workspace-title";
 import {
-  SIDEBAR_SELECTION_POINTER_WIDTH,
   SidebarSelectionPointer,
   sidebarSelectedTitleStyles,
 } from "@/components/sidebar/sidebar-selection-pointer";
@@ -310,34 +309,6 @@ function getStatusDotColorStyle(bucket: SidebarStateBucket) {
 }
 
 export const sidebarWorkspaceRowStyles = StyleSheet.create((theme) => ({
-  // How far a workspace row sits inside the group header above it — a project row or a
-  // status group header. Both groupings share this one indent, so every grouped workspace row
-  // in the sidebar sits on the same rail regardless of how the list is grouped. Pinned rows
-  // are not grouped and stay flush.
-  //
-  // It is row padding rather than a margin on the list, because the row's hover and selected
-  // backgrounds have to keep spanning the group's full width. Indenting the container instead
-  // pulls the highlight in with the content and the row stops lining up with its header.
-  // 2026-11-19 (David-Daniel): grouped rows no longer step in. Indentation left dead space on
-  // the left and forced a wider sidebar; the status dot or icon already marks a row as a
-  // session, so rows sit flush with their header. The style names stay because callers pass
-  // them per grouping.
-  rowIndented: {
-    paddingLeft: theme.spacing[1],
-  },
-  // Daseo delta 113: rows under a project header step in by one leading column (the icon and its
-  // gap), so a session's status icon starts where the header's `~/name` starts and its title sits
-  // one step right of it. Before, the header text and the session title shared one x and the
-  // session icon stuck out to the left of its parent. Padding, not margin, for the reason above.
-  // The row's own left padding (spacing[1]) is kept underneath.
-  rowInProject: {
-    paddingLeft: theme.spacing[1],
-  },
-  // The same column for project children without a selection pointer (New workspace, Show more):
-  // they reserve the pointer slot and its gap so their icon lands on the session icons' x.
-  pointerlessRowInProject: {
-    paddingLeft: theme.spacing[1] + SIDEBAR_SELECTION_POINTER_WIDTH + theme.spacing[2],
-  },
   rowRight: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -489,7 +460,9 @@ const styles = StyleSheet.create((theme) => ({
   workspaceRowMain: {
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: theme.spacing[2],
+    // Delta 113 amended: one small gap between the leading icon and the title keeps the title
+    // near the left edge, so the sidebar can be narrow.
+    gap: theme.spacing[1],
     width: "100%",
   },
   workspaceContentColumn: {

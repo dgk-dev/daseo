@@ -33,6 +33,7 @@ import {
   SidebarWorkspaceTrailingActionOverlay,
   SidebarWorkspaceTrailingActionSlot,
 } from "@/components/sidebar/sidebar-workspace-row-content";
+import { SIDEBAR_ROW_INSET } from "@/components/sidebar/sidebar-selection-pointer";
 import { useOpenKebabMenuVisibility } from "@/components/sidebar/use-open-kebab-menu-visibility";
 import { getSidebarRowBackdrop } from "@/components/sidebar/sidebar-row-backdrop";
 import { selectWorkspaceServiceSummary } from "@/components/sidebar/workspace-meta-row";
@@ -512,7 +513,7 @@ const styles = StyleSheet.create((theme) => ({
     minHeight: 36,
     marginBottom: theme.spacing[1],
     paddingVertical: theme.spacing[2],
-    paddingLeft: theme.spacing[1],
+    paddingLeft: SIDEBAR_ROW_INSET,
     paddingRight: theme.spacing[3],
     borderRadius: theme.borderRadius.lg,
     flexDirection: "column",

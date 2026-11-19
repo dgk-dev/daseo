@@ -4,7 +4,7 @@ import { Pressable, Text, View, type PressableStateCallbackType } from "react-na
 import { ChevronDown, ChevronUp } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { isWeb } from "@/constants/platform";
-import { sidebarWorkspaceRowStyles } from "@/components/sidebar/sidebar-workspace-row-content";
+import { SIDEBAR_ROW_INSET } from "@/components/sidebar/sidebar-selection-pointer";
 import type { Theme } from "@/styles/theme";
 
 const foregroundMutedColorMapping = (theme: Theme) => ({
@@ -22,20 +22,16 @@ const ThemedChevronUp = withUnistyles(ChevronUp);
  * set of its own. Sitting under a column of rows, anything it does differently reads as a mistake
  * rather than as a distinction.
  *
- * `indent` because the groupings disagree: status rows sit on their header's label rail, a
- * project's rows step in one icon column under its header (Daseo delta 113), and pinned rows sit
- * flush, so the caller says which list this row is ending. The indent itself is the workspace
- * row's, imported rather than re-derived.
+ * Every grouping puts it at the same inset (Daseo delta 113 amended: rows sit flush left under
+ * their headers), so its chevron lands in the session icons' column and its label on their titles.
  */
 export function SidebarGroupToggleRow({
   expanded,
   onPress,
-  indent = "none",
   testID,
 }: {
   expanded: boolean;
   onPress: () => void;
-  indent?: "none" | "status" | "project";
   testID: string;
 }) {
   const { t } = useTranslation();
@@ -45,12 +41,10 @@ export function SidebarGroupToggleRow({
   const rowStyle = useCallback(
     ({ hovered = false, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
       styles.row,
-      indent === "status" && sidebarWorkspaceRowStyles.rowIndented,
-      indent === "project" && sidebarWorkspaceRowStyles.pointerlessRowInProject,
       hovered && !pressed && styles.rowHovered,
       pressed && styles.rowPressed,
     ],
-    [indent],
+    [],
   );
 
   return (
@@ -91,12 +85,12 @@ const styles = StyleSheet.create((theme) => ({
     minHeight: 36,
     marginBottom: theme.spacing[0.5],
     paddingVertical: theme.spacing[2],
-    paddingLeft: theme.spacing[2],
+    paddingLeft: SIDEBAR_ROW_INSET,
     paddingRight: theme.spacing[3],
     borderRadius: theme.borderRadius.lg,
     flexDirection: "row",
     alignItems: "center",
-    gap: theme.spacing[2],
+    gap: theme.spacing[1],
     userSelect: "none",
   },
   rowHovered: {
