@@ -15,6 +15,7 @@ import type { ScheduleService } from "./schedule/service.js";
 import type { CheckoutDiffManager, CheckoutDiffMetrics } from "./checkout-diff-manager.js";
 import type { DaemonConfigStore, MutableDaemonConfig } from "./daemon-config-store.js";
 import { SidebarOrderStore } from "./sidebar-order/sidebar-order-store.js";
+import { CommandListCache } from "./agent/command-list-cache.js";
 import { SlackScheduledReader } from "./slack-scheduled/slack-scheduled-reader.js";
 import {
   type ServerInfoStatusPayload,
@@ -642,6 +643,7 @@ export class VoiceAssistantWebSocketServer {
   // Daseo delta 133: the sidebar order every device shows.
   private readonly sidebarOrderStore: SidebarOrderStore;
   private readonly slackScheduledReader: SlackScheduledReader;
+  private readonly commandListCache: CommandListCache;
   // Daseo delta 79: History content search; null when this runtime cannot host it.
   private readonly historySearch: HistorySearchService | null | undefined;
   private readonly clientDebugRegistrations = new Map<string, () => void>();
@@ -784,6 +786,11 @@ export class VoiceAssistantWebSocketServer {
       logger: this.logger,
     });
     this.slackScheduledReader = new SlackScheduledReader({ logger: this.logger });
+    // Daseo delta 138: one "/" command list cache for every client session.
+    this.commandListCache = new CommandListCache({
+      filePath: join(paseoHome, "command-lists.json"),
+      logger: this.logger,
+    });
     this.attachBrowserHostStallPush();
 
     this.agentManager.setAgentAttentionCallback((params) => {
@@ -1458,6 +1465,7 @@ export class VoiceAssistantWebSocketServer {
       historySearch: this.historySearch,
       sidebarOrderStore: this.sidebarOrderStore,
       slackScheduledReader: this.slackScheduledReader,
+      commandListCache: this.commandListCache,
       pushNotifications: this.pushNotifications,
       paseoHome: this.paseoHome,
       worktreesRoot: this.worktreesRoot,

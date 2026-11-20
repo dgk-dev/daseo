@@ -1454,6 +1454,7 @@ export function Composer({
     serverId,
     agentId,
     draftConfig: commandDraftConfig,
+    isComposerFocused: isMessageInputFocused,
     canExecuteClientSlashCommand: buildOutgoingAttachments(attachments).length === 0,
     onClientSlashCommand: runClientSlashCommand,
     onAutocompleteApplied: () => {

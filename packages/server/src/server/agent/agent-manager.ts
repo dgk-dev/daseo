@@ -154,6 +154,12 @@ interface PreparedSessionConfig {
   launchConfig: AgentSessionConfig;
 }
 
+/** A requested model id, or undefined when blank or "default" (the provider then decides). */
+export function normalizeRequestedModelId(model: string | undefined): string | undefined {
+  const trimmed = model?.trim() ?? "";
+  return trimmed.length > 0 && trimmed !== "default" ? trimmed : undefined;
+}
+
 interface NormalizeConfigOptions {
   resolveDefaultModel?: boolean;
   env?: Record<string, string>;
@@ -1110,8 +1116,18 @@ export class AgentManager {
     }
   }
 
-  async listDraftCommands(config: AgentSessionConfig): Promise<AgentSlashCommand[]> {
-    const normalizedConfig = await this.normalizeConfig(config, { resolveDefaultModel: false });
+  /**
+   * Lists commands through a throwaway session (or the client's own lister) that is closed before
+   * returning. `resolveDefaultModel` lets a stored agent without a model override list with its
+   * provider's default model, as resuming it would.
+   */
+  async listDraftCommands(
+    config: AgentSessionConfig,
+    options: { resolveDefaultModel?: boolean } = {},
+  ): Promise<AgentSlashCommand[]> {
+    const normalizedConfig = await this.normalizeConfig(config, {
+      resolveDefaultModel: options.resolveDefaultModel ?? false,
+    });
     const client = this.requireClient(normalizedConfig.provider);
     if (!normalizedConfig.model) {
       return [];
@@ -5128,8 +5144,7 @@ export class AgentManager {
     }
 
     if (typeof normalized.model === "string") {
-      const trimmed = normalized.model.trim();
-      normalized.model = trimmed.length > 0 && trimmed !== "default" ? trimmed : undefined;
+      normalized.model = normalizeRequestedModelId(normalized.model);
     }
 
     const shouldResolveDefaultModel = options.resolveDefaultModel ?? true;

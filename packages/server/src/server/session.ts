@@ -227,6 +227,8 @@ import {
   type AgentUpdatesService,
 } from "./session/agent-updates/agent-updates-service.js";
 import { expandTilde } from "../utils/path.js";
+import { CommandListCache } from "./agent/command-list-cache.js";
+import { listAgentCommands } from "./agent/list-agent-commands.js";
 import {
   searchDirectoryEntries,
   WORKSPACE_SEARCH_HIDDEN_DIRECTORIES,
@@ -504,6 +506,8 @@ export interface SessionOptions {
   sidebarOrderStore?: SidebarOrderStore | null;
   /** Daseo delta 135: scheduled Slack messages for the Schedules screen; absent answers an error. */
   slackScheduledReader?: SlackScheduledReader | null;
+  /** Daseo delta 138: the daemon-wide "/" command list cache; absent keeps one per session. */
+  commandListCache?: CommandListCache | null;
   pushNotifications: PushNotifications;
   paseoHome: string;
   worktreesRoot?: string;
@@ -581,6 +585,14 @@ export interface SessionOptions {
   daemonVersion?: string;
   daemonRuntimeConfig?: DaemonRuntimeConfig;
   getWebSocketRuntimeMetrics?: () => DaemonWebSocketRuntimeDiagnosticSnapshot | null;
+}
+
+/** Daseo delta 138: a session built without the daemon's cache keeps its own, in memory. */
+function resolveCommandListCache(
+  cache: CommandListCache | null | undefined,
+  logger: pino.Logger,
+): CommandListCache {
+  return cache ?? new CommandListCache({ filePath: null, logger });
 }
 
 export type SessionLifecycleIntent =
@@ -796,6 +808,7 @@ export class Session {
   private readonly historySearch: HistorySearchService | null | undefined;
   private readonly sidebarOrder: SidebarOrderSessionChannel;
   private readonly slackScheduledReader: SlackScheduledReader | null | undefined;
+  private readonly commandListCache: CommandListCache;
   private readonly gitMutation: GitMutationService;
   private readonly workspaceProvisioning: WorkspaceProvisioningService;
   private readonly workspaceRecovery: WorkspaceRecoveryService;
@@ -881,6 +894,7 @@ export class Session {
       historySearch,
       sidebarOrderStore,
       slackScheduledReader,
+      commandListCache,
       pushNotifications,
       paseoHome,
       worktreesRoot,
@@ -960,6 +974,7 @@ export class Session {
     });
     this.historySearch = historySearch;
     this.slackScheduledReader = slackScheduledReader;
+    this.commandListCache = resolveCommandListCache(commandListCache, this.sessionLogger);
     this.sidebarOrder = new SidebarOrderSessionChannel({
       store: sidebarOrderStore,
       emit: (msg) => this.emit(msg),
@@ -4313,63 +4328,18 @@ export class Session {
     );
 
     try {
-      const existing = this.agentManager.getAgent(agentId);
-      const stored = existing ? null : await this.agentStorage.get(agentId);
-      const agent =
-        existing || (stored && !stored.archivedAt)
-          ? await ensureAgentLoaded(agentId, {
-              agentManager: this.agentManager,
-              agentStorage: this.agentStorage,
-              logger: this.sessionLogger,
-            })
-          : null;
-
-      if (agent?.session?.listCommands) {
-        const commands = await agent.session.listCommands();
-        this.emit({
-          type: "list_commands_response",
-          payload: {
-            agentId,
-            commands,
-            error: null,
-            requestId,
-          },
-        });
-        return;
-      }
-
-      if (!agent && draftConfig) {
-        const sessionConfig: AgentSessionConfig = {
-          provider: draftConfig.provider,
-          cwd: expandTilde(draftConfig.cwd),
-          ...(draftConfig.modeId ? { modeId: draftConfig.modeId } : {}),
-          ...(draftConfig.model ? { model: draftConfig.model } : {}),
-          ...(draftConfig.thinkingOptionId
-            ? { thinkingOptionId: draftConfig.thinkingOptionId }
-            : {}),
-        };
-
-        const commands = await this.agentManager.listDraftCommands(sessionConfig);
-        this.emit({
-          type: "list_commands_response",
-          payload: {
-            agentId,
-            commands,
-            error: null,
-            requestId,
-          },
-        });
-        return;
-      }
-
+      const { commands, error } = await listAgentCommands(
+        {
+          agentManager: this.agentManager,
+          agentStorage: this.agentStorage,
+          commandListCache: this.commandListCache,
+          logger: this.sessionLogger,
+        },
+        { agentId, draftConfig },
+      );
       this.emit({
         type: "list_commands_response",
-        payload: {
-          agentId,
-          commands: [],
-          error: agent ? `Agent does not support listing commands` : `Agent not found: ${agentId}`,
-          requestId,
-        },
+        payload: { agentId, commands, error, requestId },
       });
     } catch (error) {
       this.sessionLogger.error({ err: error, agentId, draftConfig }, "Failed to list commands");

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import {
   ScrollView,
   Text,
@@ -44,21 +44,44 @@ function removeBoltGlyphs(value?: string): string | undefined {
   return cleaned.length > 0 ? cleaned : undefined;
 }
 
-interface AutocompleteRowProps {
+export interface AutocompleteRowProps {
   index: number;
   option: AutocompleteOption;
   isSelected: boolean;
   mutedColor: string;
-  onSelect: (option: AutocompleteOption) => void;
+  /** Selects the option currently at `index`, so a row skipped by memo never selects a stale one. */
+  onSelectIndex: (index: number) => void;
   onRowLayout: (index: number, event: LayoutChangeEvent) => void;
 }
 
-function AutocompleteRow({
+/**
+ * Options are rebuilt on every keystroke, so rows compare what they show rather than the option
+ * object; the callbacks are stable. Arrow keys re-render only the rows whose selection changed.
+ */
+export function areAutocompleteRowPropsEqual(
+  previous: AutocompleteRowProps,
+  next: AutocompleteRowProps,
+): boolean {
+  return (
+    previous.index === next.index &&
+    previous.isSelected === next.isSelected &&
+    previous.mutedColor === next.mutedColor &&
+    previous.onSelectIndex === next.onSelectIndex &&
+    previous.onRowLayout === next.onRowLayout &&
+    previous.option.id === next.option.id &&
+    previous.option.label === next.option.label &&
+    previous.option.detail === next.option.detail &&
+    previous.option.description === next.option.description &&
+    previous.option.kind === next.option.kind
+  );
+}
+
+const AutocompleteRow = memo(function AutocompleteRow({
   index,
   option,
   isSelected,
   mutedColor,
-  onSelect,
+  onSelectIndex,
   onRowLayout,
 }: AutocompleteRowProps) {
   const optionLabel = removeBoltGlyphs(option.label) ?? option.label;
@@ -69,7 +92,7 @@ function AutocompleteRow({
     (event: LayoutChangeEvent) => onRowLayout(index, event),
     [index, onRowLayout],
   );
-  const handlePress = useCallback(() => onSelect(option), [onSelect, option]);
+  const handlePress = useCallback(() => onSelectIndex(index), [index, onSelectIndex]);
   const pressableStyle = useCallback(
     ({ hovered = false, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
       styles.item,
@@ -115,7 +138,7 @@ function AutocompleteRow({
       )}
     </Pressable>
   );
-}
+}, areAutocompleteRowPropsEqual);
 
 export function Autocomplete({
   options,
@@ -135,13 +158,21 @@ export function Autocomplete({
   const rowLayoutsRef = useRef<Map<number, { top: number; height: number }>>(new Map());
   const viewportHeightRef = useRef(0);
   const scrollOffsetRef = useRef(0);
+  // Read through refs so the row callbacks stay stable across keystrokes and arrow keys.
+  const selectedIndexRef = useRef(selectedIndex);
+  selectedIndexRef.current = selectedIndex;
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+  const onSelectRef = useRef(onSelect);
+  onSelectRef.current = onSelect;
 
   const ensureActiveItemVisible = useCallback(() => {
-    if (selectedIndex < 0) {
+    const activeIndex = selectedIndexRef.current;
+    if (activeIndex < 0) {
       return;
     }
 
-    const layout = rowLayoutsRef.current.get(selectedIndex);
+    const layout = rowLayoutsRef.current.get(activeIndex);
     if (!layout) {
       return;
     }
@@ -159,7 +190,14 @@ export function Autocomplete({
 
     scrollOffsetRef.current = nextOffset;
     scrollRef.current?.scrollTo({ y: nextOffset, animated: false });
-  }, [selectedIndex]);
+  }, []);
+
+  const handleSelectIndex = useCallback((index: number) => {
+    const option = optionsRef.current[index];
+    if (option) {
+      onSelectRef.current(option);
+    }
+  }, []);
 
   const pinToBottom = useCallback(() => {
     scrollRef.current?.scrollToEnd({ animated: false });
@@ -185,7 +223,7 @@ export function Autocomplete({
     return () => {
       cancelAnimationFrame(raf);
     };
-  }, [ensureActiveItemVisible, options.length]);
+  }, [ensureActiveItemVisible, options.length, selectedIndex]);
 
   const handleScrollViewLayout = useCallback(
     (event: LayoutChangeEvent) => {
@@ -276,7 +314,7 @@ export function Autocomplete({
               option={option}
               isSelected={index === selectedIndex}
               mutedColor={theme.colors.foregroundMuted}
-              onSelect={onSelect}
+              onSelectIndex={handleSelectIndex}
               onRowLayout={handleRowLayout}
             />
           ))}

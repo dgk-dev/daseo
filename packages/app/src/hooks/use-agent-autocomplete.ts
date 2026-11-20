@@ -4,6 +4,7 @@ import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import type { AutocompleteOption } from "@/components/ui/autocomplete";
 import {
+  shouldLoadAgentCommands,
   useAgentCommandsQuery,
   type AgentSlashCommand,
   type DraftCommandConfig,
@@ -33,6 +34,8 @@ interface UseAgentAutocompleteInput {
   serverId: string;
   agentId: string;
   draftConfig?: DraftCommandConfig;
+  /** The composer input has focus: commands are fetched ahead of the first "/". */
+  isComposerFocused?: boolean;
   onAutocompleteApplied?: () => void;
   onClientSlashCommand?: (command: ClientSlashCommand) => void;
   canExecuteClientSlashCommand?: boolean;
@@ -286,6 +289,7 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
     serverId,
     agentId,
     draftConfig,
+    isComposerFocused = false,
     onAutocompleteApplied,
     onClientSlashCommand,
     canExecuteClientSlashCommand,
@@ -357,7 +361,11 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
   } = useAgentCommandsQuery({
     serverId,
     agentId,
-    enabled: mode === "command" && canLoadCommands,
+    enabled: shouldLoadAgentCommands({
+      commandAutocompleteOpen: mode === "command",
+      composerFocused: isComposerFocused,
+      canLoadCommands,
+    }),
     draftConfig: queryDraftConfig,
   });
 

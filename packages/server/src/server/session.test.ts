@@ -164,6 +164,55 @@ test("cancel_agent_request reports refusal only through its response", async () 
   ]);
 });
 
+test("list_commands_request answers a stored, unloaded agent without loading it (delta 138)", async () => {
+  const agentId = "11111111-1111-4111-8111-111111111138";
+  const messages: SessionOutboundMessage[] = [];
+  const resumeAgentFromPersistence = vi.fn();
+  const createAgent = vi.fn();
+  const listDraftCommands = vi.fn(async () => [
+    { name: "skill:review", description: "Review", argumentHint: "" },
+  ]);
+  const session = createSessionForTest({
+    messages,
+    agentManager: {
+      getAgent: vi.fn(() => null),
+      getRegisteredProviderIds: vi.fn(() => ["pi"]),
+      resumeAgentFromPersistence,
+      createAgent,
+      listDraftCommands,
+    },
+    agentStorage: {
+      get: vi.fn(async () =>
+        createStoredAgentRecord({
+          id: agentId,
+          provider: "pi",
+          cwd: "/tmp/repo",
+          config: { model: "anthropic/claude" },
+        }),
+      ),
+    },
+  });
+
+  for (const requestId of ["first", "second"]) {
+    await session.handleMessage({ type: "list_commands_request", agentId, requestId });
+  }
+
+  expect(messages).toEqual(
+    ["first", "second"].map((requestId) => ({
+      type: "list_commands_response",
+      payload: {
+        agentId,
+        commands: [{ name: "skill:review", description: "Review", argumentHint: "" }],
+        error: null,
+        requestId,
+      },
+    })),
+  );
+  expect(listDraftCommands).toHaveBeenCalledTimes(1);
+  expect(resumeAgentFromPersistence).not.toHaveBeenCalled();
+  expect(createAgent).not.toHaveBeenCalled();
+});
+
 test("legacy cancel_agent_request reports refusal through the activity log", async () => {
   const agentId = "11111111-1111-4111-8111-111111111111";
   const messages: SessionOutboundMessage[] = [];

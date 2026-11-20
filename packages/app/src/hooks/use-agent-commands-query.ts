@@ -5,8 +5,30 @@ import { useRetainedPanelActive } from "@/components/retained-panel";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { agentCommandsQueryKey, type AgentCommandsDraftConfig } from "@/hooks/agent-commands-query";
 
-const DRAFT_COMMANDS_STALE_TIME = Number.POSITIVE_INFINITY;
+// Daseo delta 138: the daemon caches command lists per provider and cwd, so a refetch is cheap;
+// a draft picks up a new skill within 5 minutes, and a list survives 30 minutes away from a tab.
+const DRAFT_COMMANDS_STALE_TIME = 5 * 60_000;
 const SESSION_COMMANDS_STALE_TIME = 60_000;
+const AGENT_COMMANDS_GC_TIME = 30 * 60_000;
+
+export function agentCommandsQueryTiming(isDraft: boolean): { staleTime: number; gcTime: number } {
+  return {
+    staleTime: isDraft ? DRAFT_COMMANDS_STALE_TIME : SESSION_COMMANDS_STALE_TIME,
+    gcTime: AGENT_COMMANDS_GC_TIME,
+  };
+}
+
+/**
+ * Commands load while "/" autocomplete is open and, ahead of it, while the composer has focus,
+ * so the first "/" reads a warm list. The daemon answers an unloaded agent without loading it.
+ */
+export function shouldLoadAgentCommands(input: {
+  commandAutocompleteOpen: boolean;
+  composerFocused: boolean;
+  canLoadCommands: boolean;
+}): boolean {
+  return input.canLoadCommands && (input.commandAutocompleteOpen || input.composerFocused);
+}
 
 export interface AgentSlashCommand {
   name: string;
@@ -66,7 +88,7 @@ export function useAgentCommandsQuery({
       return fetchAgentCommands({ client, agentId, draftConfig });
     },
     enabled: queryEnabled && !!client && isConnected && (!!agentId || !!draftConfig),
-    staleTime: draftConfig ? DRAFT_COMMANDS_STALE_TIME : SESSION_COMMANDS_STALE_TIME,
+    ...agentCommandsQueryTiming(!!draftConfig),
     retry: 3,
     retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 5000),
   });
