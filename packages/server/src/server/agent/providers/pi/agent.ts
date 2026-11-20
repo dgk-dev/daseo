@@ -3552,6 +3552,9 @@ export class PiRpcAgentSession implements AgentSession {
       return;
     }
     if (event.message.role === "custom") {
+      // Pi hides display:false extension messages (model-only steering such as the
+      // reply-language guard); the timeline and finish notices must not show them either.
+      if (event.message.display === false) return;
       const text = getUserMessageText(event.message.content);
       if (text) {
         this.emit({

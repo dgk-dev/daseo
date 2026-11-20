@@ -3201,6 +3201,11 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
      - **Key files:** `packages/server/src/server/slack-scheduled/{slack-scheduled-reader,slack-scheduled-session}.ts`, `packages/app/src/schedules/slack-scheduled.ts`, `packages/app/src/hooks/use-slack-scheduled.ts`, `packages/app/src/components/schedules/slack-scheduled-list.tsx`, `packages/app/src/screens/schedules-screen.tsx`; tests next to each.
      - **Upstream merges.** Keep the two schedule.slack.list schemas, the feature flag and the ledger entries; `status` and `as` stay open strings on the wire.
 
+136. **Pi messages hidden with `display: false` stay hidden** — the owner's report on 2026-11-20: steering text meant only for the model showed on screen. pi-local's reply-language guard sends a `display: false` custom message asking the model to restate an English turn-ending answer in Korean; Pi hides it, but Daseo mapped every custom message to an assistant commentary row. Timelines since 2026-11-05: 104 such rows, and 19 sub-agent finish notices carried the text inside `<agent-response>` (the last-assistant-run reader joined it to the replies around it).
+     - **Fix.** A custom message with `display === false` produces no timeline item, live (`message_end` in `providers/pi/agent.ts`) and on history replay (`mapCustomMessage` in `providers/pi/history-mapper.ts`). The model still receives it; only the display changes.
+     - **Key files:** tests "does not show custom messages Pi hides with display false" in `agent.test.ts` and "does not replay custom messages Pi hides with display false" in `history-mapper.test.ts`.
+     - **Not changed:** custom messages without `display: false` (extension command output, fetch notices) still show as commentary; rows already stored in old timelines stay until that session is replayed from its Pi transcript.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

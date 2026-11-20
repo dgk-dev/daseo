@@ -1202,6 +1202,24 @@ describe("PiRpcAgentSession", () => {
     ]);
   });
 
+  test("does not show custom messages Pi hides with display false", async () => {
+    const { pi, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    fakeSession.emit({
+      type: "message_end",
+      message: {
+        role: "custom",
+        customType: "reply-language-guard",
+        display: false,
+        content: [{ type: "text", text: "<reply-language-guard>restate</reply-language-guard>" }],
+      },
+    });
+    await flushTurnScheduling();
+
+    expect(events.timelineItems()).toEqual([]);
+  });
+
   test("ignores idle extension messages without emitting a turn completion", async () => {
     const { pi, events } = await createSession();
     const fakeSession = pi.latestSession();

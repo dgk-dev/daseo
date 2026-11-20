@@ -349,6 +349,19 @@ describe("Pi history mapper", () => {
     ]);
   });
 
+  test("does not replay custom messages Pi hides with display false", async () => {
+    await expect(
+      collectHistory([
+        {
+          role: "custom",
+          customType: "reply-language-guard",
+          display: false,
+          content: "<reply-language-guard>restate</reply-language-guard>",
+        },
+      ]),
+    ).resolves.toEqual([]);
+  });
+
   test("replays non-notice custom messages as assistant text, matching the live path", async () => {
     await expect(
       collectHistory([{ role: "custom", content: "Extension command output" }]),
