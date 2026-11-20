@@ -15,7 +15,7 @@ vi.mock("expo-modules-core", () => ({
     name === "DaseoAppLinks" ? { openUrlInPackage: mocks.openUrlInPackage } : null,
 }));
 
-const { openExternalUrl } = await import("./open-external-url");
+const { openExternalUrl, tryOpenExternalUrl } = await import("./open-external-url");
 
 const COUPANG_URL = "https://www.coupang.com/vp/products/8556671403?itemId=1&vendorItemId=2";
 const COUPANG_SHARE_URL =
@@ -84,6 +84,28 @@ describe("openExternalUrl on native", () => {
     expect(mocks.openUrlInPackage).not.toHaveBeenCalled();
     expect(mocks.openURL).toHaveBeenCalledTimes(1);
     expect(mocks.openURL).toHaveBeenCalledWith(COUPANG_URL);
+  });
+
+  it("opens a Slack app link of the exact shape and rejects when no app takes it", async () => {
+    const appLink = "slack://channel?team=T02004LSA0L&id=D0AQ557U7U2&message=1795129200.272279";
+
+    await expect(tryOpenExternalUrl(appLink)).resolves.toBe(true);
+    expect(mocks.openUrlInPackage).not.toHaveBeenCalled();
+    expect(mocks.openURL).toHaveBeenCalledWith(appLink);
+
+    mocks.openURL.mockRejectedValueOnce(new Error("No app"));
+    await expect(tryOpenExternalUrl(appLink)).rejects.toThrow("No app");
+  });
+
+  it("refuses other slack: links and any other custom scheme", async () => {
+    for (const url of [
+      "slack://open?team=T02004LSA0L",
+      "slack://channel?team=T02004LSA0L&id=D0AQ557U7U2&message=1795129200.272279&x=1",
+      "paseo://settings",
+    ]) {
+      await expect(tryOpenExternalUrl(url)).resolves.toBe(false);
+    }
+    expect(mocks.openURL).not.toHaveBeenCalled();
   });
 
   it("still refuses non-web schemes before any app routing", async () => {

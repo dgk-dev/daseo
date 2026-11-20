@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type pino from "pino";
 import { getErrorMessage } from "@getpaseo/protocol/error-utils";
 import type { SlackScheduledEntry } from "@getpaseo/protocol/messages";
+import { isSlackAppLink } from "@getpaseo/protocol/slack-app-link";
 import { buildSelfNodeCommand } from "../paseo-env.js";
 
 /**
@@ -113,6 +114,23 @@ export function slackFirstLine(text: string): string {
 }
 
 /**
+ * The sent message's links: the https permalink, and the Slack app link pi-local builds next to
+ * it. Only an https permalink and an app link of the exact shape `isSlackAppLink` accepts leave
+ * the daemon; anything else is dropped (without an app link the app opens the permalink).
+ */
+function messageLinks(raw: Record<string, unknown>): {
+  permalink: string | null;
+  appLink: string | null;
+} {
+  const permalink = optionalString(raw.permalink);
+  const appLink = optionalString(raw.appLink);
+  return {
+    permalink: permalink && permalink.startsWith("https://") ? permalink : null,
+    appLink: appLink && isSlackAppLink(appLink) ? appLink : null,
+  };
+}
+
+/**
  * One record entry (from the command's JSON or the file) in the wire shape. An entry without an
  * id or a post time is dropped. A `scheduled` entry whose time has passed reads as `unverified`:
  * nothing has confirmed yet whether Slack sent it.
@@ -141,7 +159,6 @@ export function normalizeSlackScheduledEntry(
 
   const channel = optionalString(raw.channel) ?? "";
   const toLabel = optionalString(raw.toLabel) ?? optionalString(raw.to) ?? channel;
-  const permalink = optionalString(raw.permalink);
   const error = optionalString(raw.error);
 
   return {
@@ -154,7 +171,7 @@ export function normalizeSlackScheduledEntry(
     status,
     createdAt: optionalNumber(raw.createdAt) ?? 0,
     resolvedAt: optionalNumber(raw.resolvedAt),
-    permalink: permalink && permalink.startsWith("https://") ? permalink : null,
+    ...messageLinks(raw),
     error: error ? truncate(error.split(/\r?\n/)[0] ?? "", ERROR_MAX_CHARS) : null,
     replacedBy: optionalString(raw.replacedBy),
   };

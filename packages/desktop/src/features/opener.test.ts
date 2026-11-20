@@ -44,6 +44,28 @@ describe("desktop opener", () => {
     expect(isAllowedExternalUrl(null)).toBe(false);
   });
 
+  it("allows exactly the Slack app link shape and no other slack: link (delta 135)", () => {
+    const appLink = "slack://channel?team=T02004LSA0L&id=D0AQ557U7U2&message=1795129200.272279";
+    expect(isAllowedExternalUrl(appLink)).toBe(true);
+    expect(isAllowedExternalUrl(`${appLink}&thread_ts=1795129100.000100`)).toBe(true);
+    expect(isAllowedExternalUrl("slack://open?team=T02004LSA0L")).toBe(false);
+    expect(isAllowedExternalUrl("slack://channel?team=T02004LSA0L&id=D0AQ557U7U2")).toBe(false);
+    expect(isAllowedExternalUrl(`${appLink}&x=1`)).toBe(false);
+    expect(isAllowedExternalUrl(`${appLink}#x`)).toBe(false);
+    expect(isAllowedExternalUrl(`${appLink}&message=1795129200.272280`)).toBe(false);
+  });
+
+  it("opens a Slack app link through Electron shell and rejects when no app takes it", async () => {
+    const handler = getRegisteredOpenUrlHandler();
+    const appLink = "slack://channel?team=T02004LSA0L&id=D0AQ557U7U2&message=1795129200.272279";
+
+    await handler({}, appLink);
+    expect(shell.openExternal).toHaveBeenCalledWith(appLink);
+
+    vi.mocked(shell.openExternal).mockRejectedValueOnce(new Error("no handler"));
+    await expect(handler({}, appLink)).rejects.toThrow("no handler");
+  });
+
   it("opens allowed URLs through Electron shell", async () => {
     const handler = getRegisteredOpenUrlHandler();
 

@@ -151,7 +151,15 @@ export function formatSlackPostTime(postAtSeconds: number): string {
   return `${kst.getUTCMonth() + 1}/${kst.getUTCDate()} ${pad(kst.getUTCHours())}:${pad(kst.getUTCMinutes())}`;
 }
 
-/** Whether pressing the row opens the sent message in Slack. */
-export function slackEntryLink(entry: SlackScheduledEntry): string | null {
-  return entry.status === "sent" && entry.permalink ? entry.permalink : null;
+/**
+ * What pressing a sent row opens: the Slack app link first (when the daemon sent one), the https
+ * permalink as the fallback. Null when the row opens nothing (not sent, or no permalink).
+ */
+export function slackEntryLink(
+  entry: SlackScheduledEntry,
+): { appLink: string | null; permalink: string } | null {
+  if (entry.status !== "sent" || !entry.permalink) {
+    return null;
+  }
+  return { appLink: entry.appLink ?? null, permalink: entry.permalink };
 }

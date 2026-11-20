@@ -96,6 +96,18 @@ describe("normalizeSlackScheduledEntry (delta 135)", () => {
     expect(entry?.permalink).toBeNull();
     expect(entry?.error).toBe("channel_not_found");
   });
+
+  it("keeps only a Slack app link of the exact shape", () => {
+    const appLink = "slack://channel?team=T02004LSA0L&id=D0AQ557U7U2&message=1795129200.272279";
+    const read = (value: unknown) =>
+      normalizeSlackScheduledEntry({ id: "a", postAt: 1, status: "sent", appLink: value }, NOW)
+        ?.appLink;
+    expect(read(appLink)).toBe(appLink);
+    expect(read(`${appLink}&x=1`)).toBeNull();
+    expect(read("slack://open?team=T02004LSA0L")).toBeNull();
+    expect(read("javascript:alert(1)")).toBeNull();
+    expect(read(undefined)).toBeNull();
+  });
 });
 
 describe("SlackScheduledReader (delta 135)", () => {
@@ -145,7 +157,8 @@ process.stdout.write(JSON.stringify({
   entries: [
     { id: "Q_SENT", as: "me", to: "D1", toLabel: "김여미 이사 (DM)", channel: "D1",
       postAt: ${NOW / 1000 - HOUR_S}, firstLine: "보낸 글", status: "sent", createdAt: 1,
-      resolvedAt: ${NOW - 10}, permalink: "https://dfcorp.slack.com/archives/D1/p1" },
+      resolvedAt: ${NOW - 10}, permalink: "https://dfcorp.slack.com/archives/D1/p1",
+      appLink: "slack://channel?team=T02004LSA0L&id=D1AB&message=1795129200.272279" },
   ],
 }));`,
     );
@@ -167,6 +180,7 @@ process.stdout.write(JSON.stringify({
         createdAt: 1,
         resolvedAt: NOW - 10,
         permalink: "https://dfcorp.slack.com/archives/D1/p1",
+        appLink: "slack://channel?team=T02004LSA0L&id=D1AB&message=1795129200.272279",
         error: null,
         replacedBy: null,
       },

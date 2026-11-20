@@ -11,9 +11,13 @@ import type {
 
 vi.stubGlobal("React", React);
 
-const openExternalUrl = vi.hoisted(() => vi.fn(async () => undefined));
+// Both entry points record into one mock so a test sees the order of every URL opened.
+const openExternalUrl = vi.hoisted(() => vi.fn(async (_url: string) => true));
 
-vi.mock("@/utils/open-external-url", () => ({ openExternalUrl }));
+vi.mock("@/utils/open-external-url", () => ({
+  openExternalUrl,
+  tryOpenExternalUrl: openExternalUrl,
+}));
 vi.mock("lucide-react-native", () => ({
   CalendarClock: () => null,
   MessageSquare: () => null,
@@ -53,7 +57,7 @@ describe("SlackScheduledList (delta 135)", () => {
   beforeEach(() => {
     (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
       true;
-    openExternalUrl.mockClear();
+    openExternalUrl.mockReset().mockResolvedValue(true);
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -126,6 +130,25 @@ describe("SlackScheduledList (delta 135)", () => {
     expect(openExternalUrl).not.toHaveBeenCalled();
     act(() => byTestId("slack-scheduled-row-SENT")?.click());
     expect(openExternalUrl).toHaveBeenCalledWith(permalink);
+  });
+
+  it("opens a sent message in the Slack app, and the permalink when no app takes the link", async () => {
+    const permalink = "https://dfcorp.slack.com/archives/D1/p1795129200272279";
+    const appLink = "slack://channel?team=T02004LSA0L&id=D1AB&message=1795129200.272279";
+    render([entry({ id: "SENT", status: "sent", postAt: NOW_S - 60, permalink, appLink })]);
+
+    await act(async () => byTestId("slack-scheduled-row-SENT")?.click());
+    expect(openExternalUrl.mock.calls).toEqual([[appLink]]);
+
+    openExternalUrl.mockReset();
+    openExternalUrl.mockRejectedValueOnce(new Error("no app")).mockResolvedValue(true);
+    await act(async () => byTestId("slack-scheduled-row-SENT")?.click());
+    expect(openExternalUrl.mock.calls).toEqual([[appLink], [permalink]]);
+
+    openExternalUrl.mockReset();
+    openExternalUrl.mockResolvedValueOnce(false).mockResolvedValue(true);
+    await act(async () => byTestId("slack-scheduled-row-SENT")?.click());
+    expect(openExternalUrl.mock.calls).toEqual([[appLink], [permalink]]);
   });
 
   it("shows only the chosen host's rows", () => {

@@ -1,5 +1,5 @@
 import { CalendarClock, MessageSquare } from "lucide-react-native";
-import { useCallback, useState, type ReactElement } from "react";
+import { useCallback, useMemo, useState, type ReactElement } from "react";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { Button } from "@/components/ui/button";
@@ -17,7 +17,7 @@ import {
 } from "@/schedules/slack-scheduled";
 import { settingsStyles } from "@/styles/settings";
 import type { Theme } from "@/styles/theme";
-import { openExternalUrl } from "@/utils/open-external-url";
+import { openSlackMessage } from "@/utils/open-slack-message";
 import { formatNextRun } from "@/utils/schedule-format";
 import { formatTimeAgo } from "@/utils/time";
 
@@ -170,11 +170,11 @@ export function SlackScheduledRow({
   const [isHovered, setIsHovered] = useState(false);
   const handlePointerEnter = useCallback(() => setIsHovered(true), []);
   const handlePointerLeave = useCallback(() => setIsHovered(false), []);
-  const link = slackEntryLink(entry);
+  const link = useMemo(() => slackEntryLink(entry), [entry]);
   const badge = slackStatusBadge(entry.status);
 
   const handlePress = useCallback(() => {
-    if (link) void openExternalUrl(link);
+    if (link) void openSlackMessage(link);
   }, [link]);
 
   const rowStyle = useCallback(

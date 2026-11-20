@@ -4646,6 +4646,9 @@ export const SlackScheduledEntrySchema = z.object({
   createdAt: z.number(),
   resolvedAt: z.number().nullable().optional(),
   permalink: z.string().nullable().optional(),
+  // The same message as a Slack app link (slack://channel?…), opened before the permalink; only
+  // the exact shape `isSlackAppLink` accepts. Older daemons omit it and the app opens permalink.
+  appLink: z.string().nullable().optional(),
   error: z.string().nullable().optional(),
   replacedBy: z.string().nullable().optional(),
 });

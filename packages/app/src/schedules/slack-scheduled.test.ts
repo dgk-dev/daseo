@@ -73,7 +73,16 @@ describe("Slack row labels (delta 135)", () => {
 
   it("links only a sent message with a permalink", () => {
     const permalink = "https://dfcorp.slack.com/archives/D1/p1";
-    expect(slackEntryLink(entry({ status: "sent", permalink }))).toBe(permalink);
+    const appLink = "slack://channel?team=T02004LSA0L&id=D1AB&message=1795129200.272279";
+    expect(slackEntryLink(entry({ status: "sent", permalink }))).toEqual({
+      appLink: null,
+      permalink,
+    });
+    expect(slackEntryLink(entry({ status: "sent", permalink, appLink }))).toEqual({
+      appLink,
+      permalink,
+    });
+    expect(slackEntryLink(entry({ status: "failed", permalink, appLink }))).toBeNull();
     expect(slackEntryLink(entry({ status: "sent", permalink: null }))).toBeNull();
     expect(slackEntryLink(entry({ status: "failed", permalink }))).toBeNull();
   });
