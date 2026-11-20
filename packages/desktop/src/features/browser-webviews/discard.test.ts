@@ -6,6 +6,7 @@ import {
   BROWSER_TAB_DISCARD_AFTER_IDLE_NORMAL_MS,
   BROWSER_TAB_DISCARD_SKIP_LOG_INTERVAL_MS,
   BrowserTabDiscarder,
+  getWorkspaceArchiveDiscardBlock,
   isEditingKeyInput,
   type BrowserTabDiscardBlockReason,
   type BrowserTabDiscardEvent,
@@ -179,5 +180,24 @@ describe("edit detection", () => {
     for (const command of ["snapshot", "screenshot", "navigate", "read", "click", "list_tabs"]) {
       expect(BROWSER_AUTOMATION_EDITING_COMMANDS.has(command)).toBe(false);
     }
+  });
+});
+
+describe("getWorkspaceArchiveDiscardBlock (delta 137)", () => {
+  test("an edited tab, a capture, or a page dialog does not keep an archived workspace's tab", () => {
+    expect(getWorkspaceArchiveDiscardBlock([])).toBeNull();
+    expect(getWorkspaceArchiveDiscardBlock(["edited"])).toBeNull();
+    expect(getWorkspaceArchiveDiscardBlock(["freeze-exempt"])).toBeNull();
+    expect(getWorkspaceArchiveDiscardBlock(["edited", "freeze-exempt"])).toBeNull();
+  });
+
+  test("a download and a renderer that cannot be ended alone keep the tab", () => {
+    expect(getWorkspaceArchiveDiscardBlock(["downloading"])).toBe("downloading");
+    expect(getWorkspaceArchiveDiscardBlock(["shared-renderer"])).toBe("shared-renderer");
+    expect(getWorkspaceArchiveDiscardBlock(["destroyed"])).toBe("destroyed");
+    expect(getWorkspaceArchiveDiscardBlock(["no-pid"])).toBe("no-pid");
+    // An edit listed first does not hide a reason that keeps the tab.
+    expect(getWorkspaceArchiveDiscardBlock(["edited", "downloading"])).toBe("downloading");
+    expect(getWorkspaceArchiveDiscardBlock(["edited", "shared-renderer"])).toBe("shared-renderer");
   });
 });

@@ -86,6 +86,7 @@ import {
   setPaseoBrowserContentsPresented,
   setPaseoBrowserPresented,
   getPaseoBrowserCloseBlocks,
+  discardPaseoBrowserTabsOfArchivedWorkspace,
   trackPaseoBrowserDownload,
 } from "./features/browser-webviews/index.js";
 import {
@@ -938,6 +939,22 @@ ipcMain.handle("paseo:browser:auto-close-record", (_event, rawEntries: unknown) 
     log.info(`[browser-auto-close] ${action === "closed" ? "closed" : "would close"}`, detail);
   }
 });
+
+// Delta 137: the app learned these workspaces were archived; their tabs give their memory back.
+ipcMain.handle(
+  "paseo:browser:discard-archived-workspace-tabs",
+  async (_event, rawWorkspaceIds: unknown): Promise<number> => {
+    const workspaceIds = readBrowserIdList(rawWorkspaceIds);
+    if (!workspaceIds) {
+      return 0;
+    }
+    let discarded = 0;
+    for (const workspaceId of new Set(workspaceIds)) {
+      discarded += await discardPaseoBrowserTabsOfArchivedWorkspace(workspaceId);
+    }
+    return discarded;
+  },
+);
 
 ipcMain.handle("paseo:browser:list-popup-targets", (event, rootBrowserId: unknown) => {
   if (typeof rootBrowserId !== "string" || rootBrowserId.trim().length === 0) {

@@ -746,7 +746,8 @@ personal variant is the deliberate exception: it uses `sh.paseo.dgk` for paralle
     Real Electron check (0.5.53): a mouse-only checkbox tab, a right-clicked text field, and a
     tab loaded before the watcher were all kept; an untouched tab was discarded and restored in
     0.05 s with its title and watcher back. Delta 97 adds a discard without memory pressure after
-    a long idle time. Off together with `browser.suspendIdleTabs`. Key files:
+    a long idle time. Off together with `browser.suspendIdleTabs`. Delta 137 discards an archived
+    workspace's tabs at once and drops the typed-into and freeze-exempt rules for them. Key files:
     `packages/desktop/src/features/browser-webviews/{discard,lifecycle,index}.ts`,
     `packages/desktop/src/features/browser-automation/ipc.ts`, `packages/desktop/src/main.ts`.
 
@@ -3205,6 +3206,46 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
      - **Fix.** A custom message with `display === false` produces no timeline item, live (`message_end` in `providers/pi/agent.ts`) and on history replay (`mapCustomMessage` in `providers/pi/history-mapper.ts`). The model still receives it; only the display changes.
      - **Key files:** tests "does not show custom messages Pi hides with display false" in `agent.test.ts` and "does not replay custom messages Pi hides with display false" in `history-mapper.test.ts`.
      - **Not changed:** custom messages without `display: false` (extension command output, fetch notices) still show as commentary; rows already stored in old timelines stay until that session is replayed from its Pi transcript.
+
+137. **An archived workspace's browser tabs give their memory back at once** — the owner's
+     approval on 2026-11-20 ("브라우저 탭은 다 닫혀도됨"): he archives a workspace as soon as its work
+     is done, yet its tabs kept their renderers, because a tab he had looked at is never auto-closed
+     (delta 98) and a typed-into tab, agent-filled forms included, is never discarded (delta 43).
+     Archived workspaces held 394 MB at 10:00 and 298 MB at 16:40 that day (`browser_tab_report`).
+
+
+    - **Trigger.** The app's workspace directory replica reports each workspace the daemon
+      removes with a `remove` update (an archive from this Mac, the phone, or any other client),
+      once, whether the update arrives live or carried into a snapshot commit. A snapshot that
+      merely no longer lists a workspace reports nothing: it can be partial or reconciled
+      differently (paging, a legacy fetch, a store hydrated from a checkpoint), and discarding a
+      live workspace's typed input cannot be undone; an archive missed during a disconnect leaves
+      its tabs to the 3-hour idle discard (delta 97). This Mac's own archive button
+      hides the workspace before the daemon answers; it is reported when the daemon's `remove`
+      arrives, so an archive that fails and is restored discards nothing. An unarchive arrives as
+      an upsert and reports nothing. In the Electron app the report goes to main
+      (`paseo:browser:discard-archived-workspace-tabs`); elsewhere it does nothing.
+    - **Discard.** Main discards every registered tab of those workspaces at once, whatever its
+      lifecycle state, idle time, or holds (delta 43's mechanism: the renderer ends, URL, title,
+      and history stay). Typed-into tabs and tabs with a network capture or page dialog are
+      discarded too; unsent form input and scroll position are lost, as the owner accepted. Kept:
+      a downloading tab (a download is not cut), a tab whose renderer also runs another page, and
+      popups. Each tab logs `[browser-lifecycle] discarded on workspace archive {browserId,
+      webContentsId, workspaceId}` or `kept on workspace archive {…, reason}`. It runs even with
+      `browser.suspendIdleTabs` off; there is no setting.
+    - **Unarchive.** Nothing is closed, so the tabs stay in the workspace's layout and reload when
+      a pane shows them or an agent uses them (delta 97's wake). The local archive button's
+      layout purge (upstream #2003) is unchanged: a workspace archived with it on this Mac comes
+      back without its tabs, as before.
+    - **Not changed:** the idle and pressure discards and their blockers, and the agent-tab
+      auto-close (delta 98).
+    - **Key files:** `packages/desktop/src/features/browser-webviews/{index,lifecycle,discard,registry}.ts`,
+      `packages/desktop/src/{main,preload}.ts`, `packages/app/src/runtime/directory-sync/workspace-replica.ts`,
+      `packages/app/src/desktop/browser/archived-workspace-tabs.ts`; tests in
+      `archive-discard.test.ts` (edited tab discarded, downloading and shared-renderer kept),
+      `lifecycle.test.ts` ("discardNow …"), `discard.test.ts`, `registry.test.ts`, and
+      `workspace-replica.test.ts` (reported once, never on unarchive or a snapshot omission,
+      local archive only once confirmed).
 
 ## Local reliability contracts
 

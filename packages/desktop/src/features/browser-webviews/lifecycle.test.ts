@@ -318,6 +318,45 @@ describe("BrowserTabLifecycle", () => {
     expect(lifecycle.getState(1)).toBe("active");
   });
 
+  test("discardNow ends an active, held tab at once and a later wake reloads it (delta 137)", async () => {
+    const { clock, lifecycle } = createLifecycle();
+    const tab = new FakeTab(1).enableDiscard();
+    lifecycle.track(tab);
+    const release = lifecycle.hold(1);
+    await settle();
+    tab.calls.length = 0;
+
+    await expect(lifecycle.discardNow(1)).resolves.toBe(true);
+    expect(lifecycle.getState(1)).toBe("discarded");
+    expect(tab.calls).toEqual(["discard"]);
+    // Releasing the hold and passing the idle times starts no throttle or freeze on it.
+    release();
+    await clock.advance(BROWSER_TAB_FREEZE_AFTER_MS * 2);
+    expect(tab.calls).toEqual(["discard"]);
+    expect(lifecycle.getState(1)).toBe("discarded");
+
+    await lifecycle.runAwake(1, async () => {
+      tab.calls.push("task");
+    });
+    expect(tab.calls).toEqual(["discard", "restore", "throttling:false", "task"]);
+    expect(lifecycle.getState(1)).toBe("active");
+  });
+
+  test("discardNow leaves a discarded tab, a popup, and an untracked id alone (delta 137)", async () => {
+    const { lifecycle } = createLifecycle();
+    const tab = new FakeTab(1).enableDiscard();
+    const popup = new FakeTab(2);
+    lifecycle.track(tab);
+    lifecycle.track(popup);
+
+    await expect(lifecycle.discardNow(1)).resolves.toBe(true);
+    await expect(lifecycle.discardNow(1)).resolves.toBe(false);
+    await expect(lifecycle.discardNow(2)).resolves.toBe(false);
+    await expect(lifecycle.discardNow(3)).resolves.toBe(false);
+    expect(tab.calls.filter((call) => call === "discard")).toHaveLength(1);
+    expect(lifecycle.getState(2)).toBe("active");
+  });
+
   test("a tab without discard support or with the lifecycle off is never a candidate", async () => {
     const { clock, lifecycle } = createLifecycle();
     lifecycle.track(new FakeTab(1));

@@ -19,6 +19,7 @@ import {
   stampLegacyWorkspaceIds,
 } from "@/workspace/legacy-daemon-workspaces";
 import type { AgentDirectoryDelta } from "@/utils/agent-directory-sync";
+import { discardBrowserTabsOfArchivedWorkspaces } from "@/desktop/browser/archived-workspace-tabs";
 import { AgentDirectoryReplica } from "./agent-replica";
 import {
   WorkspaceDirectoryReplica,
@@ -125,7 +126,9 @@ export class DirectorySync {
     private readonly checkpoints?: DirectoryCheckpointStorage,
   ) {
     this.agents = new AgentDirectoryReplica(serverId, callbacks.onAgentStoppedRunning);
-    this.workspaces = new WorkspaceDirectoryReplica(serverId);
+    this.workspaces = new WorkspaceDirectoryReplica(serverId, {
+      onWorkspacesRemoved: discardBrowserTabsOfArchivedWorkspaces,
+    });
   }
 
   connectionChanged(connection: DirectoryConnection): boolean {

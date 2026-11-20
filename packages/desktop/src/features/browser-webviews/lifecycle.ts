@@ -248,6 +248,29 @@ export class BrowserTabLifecycle {
     }).then(() => discarded);
   }
 
+  /**
+   * Daseo delta 137: discards the tab at once, whatever its state, idle time, or holds, for a tab
+   * whose workspace was archived. Resolves true when it was discarded; false for an untracked tab,
+   * a popup, a tab already discarded, or one destroyed before its turn on the chain. A later wake
+   * reloads it as after any discard.
+   */
+  public discardNow(webContentsId: number): Promise<boolean> {
+    const tab = this.tabs.get(webContentsId);
+    if (!tab) {
+      return Promise.resolve(false);
+    }
+    let discarded = false;
+    return this.enqueue(tab, "discard", () => {
+      if (tab.state === "discarded" || !tab.target.discard || !tab.target.restore) {
+        return;
+      }
+      this.cancelTimer(tab);
+      tab.target.discard();
+      this.setState(tab, "discarded");
+      discarded = true;
+    }).then(() => discarded);
+  }
+
   /** Marks the tab used and resolves once it runs at full speed. */
   public wake(webContentsId: number): Promise<void> {
     const tab = this.tabs.get(webContentsId);

@@ -266,6 +266,11 @@ export interface DesktopBrowserBridge {
   autoCloseCheck?: (browserIds: string[]) => Promise<DesktopBrowserAutoCloseCheck | null>;
   /** Delta 98: writes the sweep's would-close and closed lines to the Mac app log. */
   recordAutoClose?: (entries: DesktopBrowserAutoCloseLogEntry[]) => Promise<void>;
+  /**
+   * Delta 137: these workspaces were archived; main discards their tabs at once (kept in the
+   * workspace, reloaded when used again) and resolves with how many it discarded.
+   */
+  discardArchivedWorkspaceTabs?: (workspaceIds: string[]) => Promise<number>;
   listPopupTargets?: (rootBrowserId: string) => Promise<DesktopBrowserPopupTargetsSnapshot | null>;
   presentPopupTarget?: (input: DesktopBrowserPopupPresentation) => Promise<boolean>;
   /** Resolves true once the popup is destroyed (delta 127); `by` names who closed it in main.log. */

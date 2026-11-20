@@ -126,6 +126,8 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
       ipcRenderer.invoke("paseo:browser:auto-close-check", browserIds),
     recordAutoClose: (entries: unknown[]) =>
       ipcRenderer.invoke("paseo:browser:auto-close-record", entries),
+    discardArchivedWorkspaceTabs: (workspaceIds: string[]) =>
+      ipcRenderer.invoke("paseo:browser:discard-archived-workspace-tabs", workspaceIds),
     listPopupTargets: (rootBrowserId: string) =>
       ipcRenderer.invoke("paseo:browser:list-popup-targets", rootBrowserId),
     presentPopupTarget: (input: {

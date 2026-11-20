@@ -369,4 +369,26 @@ describe("PaseoBrowserWebviewRegistry", () => {
 
     expect(registry.hasBrowserInOtherHostWindow(101, "browser-a")).toBe(false);
   });
+
+  it("lists every WebContents registered for a browser, one per host window", () => {
+    const registry = new PaseoBrowserWebviewRegistry();
+    registry.registerWebContents({
+      webContentsId: 1,
+      browserId: "browser-a",
+      hostWebContentsId: 101,
+    });
+    registry.registerWebContents({
+      webContentsId: 2,
+      browserId: "browser-a",
+      hostWebContentsId: 102,
+    });
+    registry.registerWebContents({
+      webContentsId: 3,
+      browserId: "browser-b",
+      hostWebContentsId: 101,
+    });
+
+    expect(registry.listWebContentsIdsForBrowser("browser-a")).toEqual([1, 2]);
+    expect(registry.listWebContentsIdsForBrowser("browser-c")).toEqual([]);
+  });
 });

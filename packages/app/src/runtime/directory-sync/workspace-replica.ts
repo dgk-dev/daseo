@@ -9,6 +9,7 @@ import {
 import { useWorkspaceSetupStore } from "@/stores/workspace-setup-store";
 import {
   clearWorkspaceArchivePending,
+  isWorkspaceArchivePending,
   shouldSuppressWorkspaceForLocalArchive,
 } from "@/contexts/session-workspace-upserts";
 
@@ -53,8 +54,21 @@ function applyProjectDelta(
   }
 }
 
+export interface WorkspaceDirectoryReplicaOptions {
+  /**
+   * Workspaces the daemon removed with a `remove` update (an archive from any client), each
+   * reported once. A snapshot that merely no longer lists a workspace reports nothing: it may be
+   * partial or reconciled differently, and a wrong report would discard a live workspace's tabs.
+   * Daseo delta 137 discards their browser tabs.
+   */
+  onWorkspacesRemoved?: (workspaceIds: string[]) => void;
+}
+
 export class WorkspaceDirectoryReplica {
-  constructor(private readonly serverId: string) {}
+  constructor(
+    private readonly serverId: string,
+    private readonly options: WorkspaceDirectoryReplicaOptions = {},
+  ) {}
 
   applyDelta(delta: WorkspaceDirectoryDelta): void {
     const state = this.reconcile(this.read(), [delta]);
@@ -119,11 +133,36 @@ export class WorkspaceDirectoryReplica {
 
   private commit(snapshot: WorkspaceDirectorySnapshot, removedWorkspaceIds: string[]): void {
     const store = useSessionStore.getState();
+    const leftWorkspaceIds = this.listLeftWorkspaceIds(snapshot, removedWorkspaceIds);
     store.setWorkspaces(this.serverId, snapshot.workspaces);
     store.setProjects(this.serverId, snapshot.projects.values());
     for (const workspaceId of removedWorkspaceIds) {
       clearWorkspaceArchivePending({ serverId: this.serverId, workspaceId });
       useWorkspaceSetupStore.getState().removeWorkspace({ serverId: this.serverId, workspaceId });
     }
+    if (leftWorkspaceIds.length > 0) this.options.onWorkspacesRemoved?.(leftWorkspaceIds);
+  }
+
+  /**
+   * Workspaces an explicit `remove` takes out of the directory: listed before it, or already
+   * hidden by this client's own pending archive. Read before the commit clears the pending
+   * archives.
+   */
+  private listLeftWorkspaceIds(
+    snapshot: WorkspaceDirectorySnapshot,
+    removedWorkspaceIds: readonly string[],
+  ): string[] {
+    const previous = useSessionStore.getState().sessions[this.serverId]?.workspaces;
+    const left = new Set<string>();
+    for (const workspaceId of removedWorkspaceIds) {
+      if (snapshot.workspaces.has(workspaceId)) continue;
+      if (
+        previous?.has(workspaceId) ||
+        isWorkspaceArchivePending({ serverId: this.serverId, workspaceId })
+      ) {
+        left.add(workspaceId);
+      }
+    }
+    return [...left];
   }
 }

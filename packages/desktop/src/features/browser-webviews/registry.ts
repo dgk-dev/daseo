@@ -146,6 +146,15 @@ export class PaseoBrowserWebviewRegistry {
     this.activeBrowserIdsByHostWindow.delete(hostWebContentsId);
   }
 
+  /** The tab or popup WebContents registered for this browser id, one per host window. */
+  public listWebContentsIdsForBrowser(browserId: string): number[] {
+    const ids: number[] = [];
+    for (const [webContentsId, registration] of this.registrationsByWebContentsId) {
+      if (registration.browserId === browserId) ids.push(webContentsId);
+    }
+    return ids;
+  }
+
   public listBrowserIdsForWorkspace(workspaceId: string): string[] {
     return this.listBrowserIds().filter(
       (browserId) => this.workspaceIdsByBrowserId.get(browserId) === workspaceId,

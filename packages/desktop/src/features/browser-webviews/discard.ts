@@ -43,6 +43,29 @@ export type BrowserTabDiscardBlockReason =
   /** Its renderer process also runs another page, which ending it would take down. */
   | "shared-renderer";
 
+/**
+ * Daseo delta 137: what still keeps a tab's page when its workspace is archived. Typed-in input
+ * and a running capture or page dialog are given up (the owner accepted losing them on archive);
+ * a download is not cut, and a renderer shared with another page, or one that is gone, is left
+ * alone.
+ */
+const WORKSPACE_ARCHIVE_KEEP_REASONS: ReadonlySet<BrowserTabDiscardBlockReason> = new Set([
+  "downloading",
+  "destroyed",
+  "no-pid",
+  "shared-renderer",
+]);
+
+/** The first of `reasons` that keeps the page of an archived workspace's tab, or null. */
+export function getWorkspaceArchiveDiscardBlock(
+  reasons: Iterable<BrowserTabDiscardBlockReason>,
+): BrowserTabDiscardBlockReason | null {
+  for (const reason of reasons) {
+    if (WORKSPACE_ARCHIVE_KEEP_REASONS.has(reason)) return reason;
+  }
+  return null;
+}
+
 export type BrowserTabDiscardTrigger =
   | { readonly kind: "pressure"; readonly pressureLevel: number }
   | { readonly kind: "idle" };

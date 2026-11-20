@@ -13,6 +13,7 @@ import { PaseoBrowserWebviewRegistry, type BrowserTargetMetadata } from "./regis
 import { BrowserTabLifecycle, type BrowserTabLifecycleTarget } from "./lifecycle.js";
 import {
   BrowserTabDiscarder,
+  getWorkspaceArchiveDiscardBlock,
   isEditingKeyInput,
   type BrowserTabDiscardBlockReason,
 } from "./discard.js";
@@ -263,8 +264,15 @@ function readMacMemoryPressureLevel(): Promise<number | undefined> {
 export function getPaseoBrowserTabDiscardBlock(
   webContentsId: number,
 ): BrowserTabDiscardBlockReason | null {
-  const pageKeep = getPaseoBrowserPageKeepReason(webContentsId);
-  if (pageKeep) return pageKeep;
+  return (
+    getPaseoBrowserPageKeepReason(webContentsId) ?? getPaseoBrowserRendererBlock(webContentsId)
+  );
+}
+
+/** Why this tab's renderer cannot be ended on its own, or null when it can. */
+function getPaseoBrowserRendererBlock(
+  webContentsId: number,
+): "destroyed" | "no-pid" | "shared-renderer" | null {
   const contents = allWebContents.fromId(webContentsId);
   if (!contents || contents.isDestroyed()) {
     return "destroyed";
@@ -284,13 +292,69 @@ export function getPaseoBrowserTabDiscardBlock(
 }
 
 /** What on the page itself must not be lost: typed-in input, a download, a capture or dialog. */
-function getPaseoBrowserPageKeepReason(
-  webContentsId: number,
-): "edited" | "downloading" | "freeze-exempt" | null {
-  if (editedWebContentsIds.has(webContentsId)) return "edited";
-  if ((downloadsByWebContentsId.get(webContentsId) ?? 0) > 0) return "downloading";
-  if (freezeExemptions.some((isExempt) => isExempt(webContentsId))) return "freeze-exempt";
-  return null;
+function getPaseoBrowserPageKeepReason(webContentsId: number): PageKeepReason | null {
+  return listPaseoBrowserPageKeepReasons(webContentsId)[0] ?? null;
+}
+
+type PageKeepReason = "edited" | "downloading" | "freeze-exempt";
+
+/** Every page-keep reason that holds, in the order the first-reason checks report them. */
+function listPaseoBrowserPageKeepReasons(webContentsId: number): PageKeepReason[] {
+  const reasons: PageKeepReason[] = [];
+  if (editedWebContentsIds.has(webContentsId)) reasons.push("edited");
+  if ((downloadsByWebContentsId.get(webContentsId) ?? 0) > 0) reasons.push("downloading");
+  if (freezeExemptions.some((isExempt) => isExempt(webContentsId))) reasons.push("freeze-exempt");
+  return reasons;
+}
+
+/**
+ * Daseo delta 137: discards every registered tab of a workspace the app learned was archived, at
+ * once and whatever its idle time, holds, or typed-in input; a download, a renderer shared with
+ * another page, and popups are kept. The tabs stay in the workspace and reload when shown or used
+ * again. Resolves with the number discarded.
+ */
+export async function discardPaseoBrowserTabsOfArchivedWorkspace(
+  workspaceId: string,
+): Promise<number> {
+  let discarded = 0;
+  for (const browserId of browserRegistry.listBrowserIdsForWorkspace(workspaceId)) {
+    for (const webContentsId of browserRegistry.listWebContentsIdsForBrowser(browserId)) {
+      const state = browserTabLifecycle.getState(webContentsId);
+      // Untracked or already without a renderer: nothing to end.
+      if (state === null || state === "discarded") continue;
+      // Popups are never discarded (preparePaseoBrowserWebContents).
+      const reason =
+        browserRegistry.getTargetMetadata(browserId).kind === "popup"
+          ? "popup"
+          : getWorkspaceArchiveDiscardBlock(listPaseoBrowserDiscardReasons(webContentsId));
+      if (reason !== null) {
+        log.info("[browser-lifecycle] kept on workspace archive", {
+          browserId,
+          webContentsId,
+          workspaceId,
+          reason,
+        });
+        continue;
+      }
+      if (await browserTabLifecycle.discardNow(webContentsId)) {
+        discarded += 1;
+        log.info("[browser-lifecycle] discarded on workspace archive", {
+          browserId,
+          webContentsId,
+          workspaceId,
+        });
+      }
+    }
+  }
+  return discarded;
+}
+
+/** Every reason that keeps this tab's page, each checked on its own (the archive rule needs all). */
+function listPaseoBrowserDiscardReasons(webContentsId: number): BrowserTabDiscardBlockReason[] {
+  const reasons: BrowserTabDiscardBlockReason[] = listPaseoBrowserPageKeepReasons(webContentsId);
+  const rendererBlock = getPaseoBrowserRendererBlock(webContentsId);
+  if (rendererBlock) reasons.push(rendererBlock);
+  return reasons;
 }
 
 /** Why the agent-tab auto-close must leave a browser open (delta 98). */
