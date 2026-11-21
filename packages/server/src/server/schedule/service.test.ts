@@ -35,6 +35,7 @@ import {
 } from "../workspace-registry.js";
 import { archiveByScope, type ActiveWorkspaceRef } from "../workspace-archive-service.js";
 import {
+  parseHeldModelFallback,
   ScheduleService,
   ScheduleTargetGoneError,
   type ScheduleServiceOptions,
@@ -3834,6 +3835,217 @@ describe("ScheduleService", () => {
     now = new Date("2026-01-01T00:01:00.000Z");
     expect(await service.releaseForArchivedAgent(agentId)).toEqual({ kept: 0, completed: 1 });
     expect(await service.releaseForArchivedAgent(agentId)).toEqual({ kept: 0, completed: 0 });
+  });
+
+  describe("a held-back scheduled model runs on the fallback the refusal names (delta 141)", () => {
+    const OPUS = "pi-claude/claude-opus-5-5";
+    const FABLE = "pi-claude/claude-fable-5-2";
+    const HOLD_WITH_FALLBACK =
+      "opus is held back on every ready account to protect Fable's weekly share (earliest Fable reset 2026-11-22T10:00:00.266Z); pin an account with /claude-auth use to override " +
+      `[fable-share-hold fallback=${FABLE} thinking=low] (stopReason=error, model=${OPUS})`;
+    const HOLD_WITHOUT_FALLBACK =
+      "sonnet is held back on every ready account to protect Fable's weekly share; pin an account with /claude-auth use to override " +
+      "[fable-share-hold] (stopReason=error, model=pi-claude/claude-sonnet-5-5)";
+
+    type CreateInput = Parameters<ScheduleServiceOptions["createAgent"]>[0];
+
+    async function runOnce(options: {
+      model: string;
+      /** Error of each attempt's turn, in order; null lets that attempt succeed. */
+      turnErrors: (string | null)[];
+      failedAgentTimeline?: ReturnType<AgentManager["getTimeline"]>;
+    }) {
+      const createdInputs: CreateInput[] = [];
+      const archivedWorkspaceIds: string[] = [];
+      const runPrompts: AgentPromptInput[] = [];
+      const manager = new AgentManager({
+        logger: createTestLogger(),
+        clients: createTestAgentClients(),
+        registry: agentStorage,
+      });
+      manager.runAgent = async (agentId, prompt) => {
+        runPrompts.push(prompt);
+        const error = options.turnErrors[runPrompts.length - 1] ?? null;
+        if (error) {
+          throw new Error(error);
+        }
+        return {
+          sessionId: `session-${agentId}`,
+          finalText: "check done",
+          timeline: [{ type: "assistant_message", text: "check done" }],
+        };
+      };
+      manager.waitForAgentEvent = async () => ({
+        status: "idle",
+        permission: null,
+        lastMessage: "check done",
+      });
+      manager.getTimeline = () => options.failedAgentTimeline ?? [];
+      const service = createScheduleService({
+        paseoHome: tempDir,
+        logger: createTestLogger(),
+        agentManager: manager,
+        agentStorage,
+        providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+        archiveWorkspace: async (workspaceId) => {
+          archivedWorkspaceIds.push(workspaceId);
+        },
+        createAgent: async (input) => {
+          createdInputs.push(input);
+          const snapshot = {
+            id: `00000000-0000-0000-0000-00000000014${createdInputs.length}`,
+            provider: "pi",
+            cwd: input.cwd ?? tempDir,
+            workspaceId: input.workspaceId,
+            status: "idle",
+            lifecycle: "idle",
+          };
+          return {
+            snapshot: snapshot as Awaited<
+              ReturnType<ScheduleServiceOptions["createAgent"]>
+            >["snapshot"],
+            liveSnapshot: snapshot as Awaited<
+              ReturnType<ScheduleServiceOptions["createAgent"]>
+            >["liveSnapshot"],
+            background: true,
+            initialPromptStarted: false,
+            initialPromptError: null,
+          };
+        },
+        now: () => now,
+      });
+      const created = await service.create({
+        prompt: "re-measure the push gate",
+        cadence: { type: "every", everyMs: 60_000 },
+        target: {
+          type: "new-agent",
+          config: {
+            provider: "pi",
+            cwd: tempDir,
+            model: options.model,
+            thinkingOptionId: "medium",
+          },
+        },
+        maxRuns: 1,
+      });
+      await service.tick();
+      return {
+        schedule: await service.inspect(created.id),
+        createdInputs,
+        archivedWorkspaceIds,
+        runPrompts,
+      };
+    }
+
+    test("an Opus schedule refused by the Fable-share hold runs once more on the named model and completes", async () => {
+      const { schedule, createdInputs, archivedWorkspaceIds, runPrompts } = await runOnce({
+        model: OPUS,
+        turnErrors: [HOLD_WITH_FALLBACK, null],
+      });
+
+      expect(createdInputs).toHaveLength(2);
+      expect(createdInputs[0]?.config?.model).toBe(OPUS);
+      expect(createdInputs[0]?.thinking).toBe("medium");
+      expect(createdInputs[1]?.config?.model).toBe(FABLE);
+      expect(createdInputs[1]?.thinking).toBe("low");
+      expect(createdInputs[1]?.provider).toBe(`pi/${FABLE}`);
+      expect(createdInputs[1]?.config?.thinkingOptionId).toBe("low");
+      expect(createdInputs[1]?.cwd).toBe(createdInputs[0]?.cwd);
+      expect(runPrompts).toEqual(["re-measure the push gate", "re-measure the push gate"]);
+      // The refused attempt's workspace (and its dead agent) is retired; the fallback's is kept.
+      expect(archivedWorkspaceIds).toEqual([createdInputs[0]?.workspaceId]);
+      expect(createdInputs[1]?.workspaceId).not.toBe(createdInputs[0]?.workspaceId);
+
+      expect(schedule.status).toBe("completed");
+      expect(schedule.runs).toHaveLength(1);
+      expect(schedule.runs[0]).toMatchObject({
+        status: "succeeded",
+        error: null,
+        agentId: "00000000-0000-0000-0000-000000000142",
+        workspaceId: createdInputs[1]?.workspaceId,
+        output: `[Fallback: ${OPUS} was held back, so this run used ${FABLE} (low).]\n\ncheck done`,
+      });
+    });
+
+    test("a hold refusal that names no fallback (any model but Opus) fails as before", async () => {
+      const { schedule, createdInputs, archivedWorkspaceIds } = await runOnce({
+        model: "pi-claude/claude-sonnet-5-5",
+        turnErrors: [HOLD_WITHOUT_FALLBACK],
+      });
+
+      expect(createdInputs).toHaveLength(1);
+      expect(archivedWorkspaceIds).toEqual([]);
+      expect(schedule.runs).toHaveLength(1);
+      expect(schedule.runs[0]).toMatchObject({ status: "failed", error: HOLD_WITHOUT_FALLBACK });
+    });
+
+    test("any other failure of an Opus schedule does not fall back", async () => {
+      const error = "No Claude account is available for opus until 2026-11-22T10:00:00.000Z";
+      const { schedule, createdInputs, archivedWorkspaceIds } = await runOnce({
+        model: OPUS,
+        turnErrors: [error],
+      });
+
+      expect(createdInputs).toHaveLength(1);
+      expect(archivedWorkspaceIds).toEqual([]);
+      expect(schedule.runs[0]).toMatchObject({ status: "failed", error });
+    });
+
+    test("a schedule already on the named model is not repeated", async () => {
+      const { schedule, createdInputs } = await runOnce({
+        model: FABLE,
+        turnErrors: [HOLD_WITH_FALLBACK],
+      });
+
+      expect(createdInputs).toHaveLength(1);
+      expect(schedule.runs[0]?.status).toBe("failed");
+    });
+
+    test("a run that had already called a tool when it was refused is not repeated", async () => {
+      const { schedule, createdInputs, archivedWorkspaceIds } = await runOnce({
+        model: OPUS,
+        turnErrors: [HOLD_WITH_FALLBACK],
+        failedAgentTimeline: [
+          {
+            type: "tool_call",
+            callId: "call-1",
+            name: "bash",
+            status: "completed",
+            error: null,
+            detail: { type: "unknown", input: null, output: null },
+          },
+        ],
+      });
+
+      expect(createdInputs).toHaveLength(1);
+      expect(archivedWorkspaceIds).toEqual([]);
+      expect(schedule.runs[0]).toMatchObject({ status: "failed", error: HOLD_WITH_FALLBACK });
+    });
+
+    test("a fallback run that fails too is one failed run that says the fallback was used", async () => {
+      const { schedule, createdInputs } = await runOnce({
+        model: OPUS,
+        turnErrors: [HOLD_WITH_FALLBACK, "Pi turn failed"],
+      });
+
+      expect(createdInputs).toHaveLength(2);
+      expect(schedule.runs).toHaveLength(1);
+      expect(schedule.runs[0]).toMatchObject({
+        status: "failed",
+        error: `[Fallback: ${OPUS} was held back, so this run used ${FABLE} (low).] Pi turn failed`,
+      });
+    });
+
+    test("only the complete marker is read as a fallback", () => {
+      expect(parseHeldModelFallback(HOLD_WITH_FALLBACK)).toEqual({
+        model: FABLE,
+        thinkingOptionId: "low",
+      });
+      expect(parseHeldModelFallback(HOLD_WITHOUT_FALLBACK)).toBeNull();
+      expect(
+        parseHeldModelFallback("opus is held back to protect Fable's weekly share"),
+      ).toBeNull();
+    });
   });
 
   describe("heartbeats of an archived session (delta 125)", () => {

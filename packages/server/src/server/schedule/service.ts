@@ -153,6 +153,31 @@ function countCompletedRuns(schedule: StoredSchedule): number {
 // Delta 76: a scheduled run's session stays after it finishes unless the schedule
 // says `archiveOnFinish: true`. The owner reads what a run did from its session; an
 // archived one hides that (2026-11-02). A run that produced no agent still archives.
+type ScheduleNewAgentConfig = Extract<ScheduleTarget, { type: "new-agent" }>["config"];
+
+interface HeldModelFallback {
+  model: string;
+  thinkingOptionId: string;
+}
+
+// Local fork (DASEO.md delta 141). pi-local's pi-claude router ends its Fable-share refusal of an
+// Opus request with this marker (`fableShareHoldMarker` in ~/ws/pi-local/extensions/pi-claude/
+// manager.ts); the model and effort in it come from pi-local's model roster. Only the message of a
+// failed turn reaches the daemon, so the marker is the contract: change both sides together.
+const HELD_MODEL_FALLBACK_MARKER = /\[fable-share-hold fallback=([\w./-]+) thinking=([\w-]+)\]/;
+
+export function parseHeldModelFallback(message: string): HeldModelFallback | null {
+  const match = HELD_MODEL_FALLBACK_MARKER.exec(message);
+  return match ? { model: match[1], thinkingOptionId: match[2] } : null;
+}
+
+function formatHeldModelFallbackNote(
+  heldModel: string | undefined,
+  used: HeldModelFallback,
+): string {
+  return `[Fallback: ${heldModel} was held back, so this run used ${used.model} (${used.thinkingOptionId}).]`;
+}
+
 function shouldArchiveScheduleRunWorkspace(input: {
   agentId: string | null;
   archiveOnFinish?: boolean;
@@ -258,6 +283,7 @@ type ScheduleAgentManager = AgentRunController &
     AgentManager,
     | "createAgent"
     | "getRegisteredProviderIds"
+    | "getTimeline"
     | "hydrateTimelineFromProvider"
     | "resumeAgentFromPersistence"
     | "runAgent"
@@ -1062,8 +1088,91 @@ export class ScheduleService {
       throw new Error(`Schedule ${schedule.id} target changed during execution`);
     }
     await this.assertNewAgentCwdDirectory(config.cwd);
+    let fallback: HeldModelFallback | null = null;
+    try {
+      return await this.runNewAgentAttempt(schedule, runId, config, (error, failedAgentId) => {
+        fallback = this.resolveHeldModelFallback(config, error, failedAgentId);
+        return fallback !== null;
+      });
+    } catch (error) {
+      // Assigned inside the callback above, which control-flow analysis does not follow.
+      const held = fallback as HeldModelFallback | null;
+      if (!held) {
+        throw error;
+      }
+      this.logger.warn(
+        {
+          scheduleId: schedule.id,
+          runId,
+          heldModel: config.model,
+          fallbackModel: held.model,
+          fallbackThinkingOptionId: held.thinkingOptionId,
+        },
+        "Scheduled model is held back; running on the fallback model",
+      );
+      const note = formatHeldModelFallbackNote(config.model, held);
+      let result: ScheduleExecutionResult;
+      try {
+        result = await this.runNewAgentAttempt(schedule, runId, {
+          ...config,
+          model: held.model,
+          thinkingOptionId: held.thinkingOptionId,
+        });
+      } catch (fallbackError) {
+        if (fallbackError instanceof Error) {
+          fallbackError.message = `${note} ${fallbackError.message}`;
+        }
+        throw fallbackError;
+      }
+      return {
+        agentId: result.agentId,
+        output: `${note}\n\n${result.output ?? ""}`.trim(),
+      };
+    }
+  }
+
+  /**
+   * Local fork (DASEO.md delta 141): the model a failed new-agent attempt may be repeated on.
+   * Non-null only when the provider's refusal names one (pi-local's Fable-share hold does, for
+   * Opus only) and the failed agent had not called a tool, so repeating the prompt repeats no work.
+   */
+  private resolveHeldModelFallback(
+    config: ScheduleNewAgentConfig,
+    error: unknown,
+    failedAgentId: string | null,
+  ): HeldModelFallback | null {
+    const fallback = parseHeldModelFallback(error instanceof Error ? error.message : String(error));
+    if (!fallback || !config.model || fallback.model === config.model) {
+      return null;
+    }
+    if (failedAgentId) {
+      try {
+        const timeline = this.agentManager.getTimeline(failedAgentId);
+        if (timeline.some((item) => item.type === "tool_call")) {
+          return null;
+        }
+      } catch {
+        // What the failed agent did is unknown, so its prompt is not repeated.
+        return null;
+      }
+    }
+    return fallback;
+  }
+
+  /**
+   * One new-agent attempt: its own workspace and agent. `retireOnFailure` is asked once when the
+   * attempt throws; answering true archives the attempt's workspace (and the failed agent in it)
+   * whatever `archiveOnFinish` says, because the caller replaces the attempt.
+   */
+  private async runNewAgentAttempt(
+    schedule: StoredSchedule,
+    runId: string,
+    config: ScheduleNewAgentConfig,
+    retireOnFailure?: (error: unknown, agentId: string | null) => boolean,
+  ): Promise<ScheduleExecutionResult> {
     let workspace: PersistedWorkspaceRecord | null = null;
     let agentId: string | null = null;
+    let retired = false;
     try {
       workspace = await this.createScheduleRunWorkspace(config, schedule.prompt);
       await this.recordRunWorkspace({
@@ -1130,10 +1239,14 @@ export class ScheduleService {
           finalText: result.finalText,
         }),
       };
+    } catch (error) {
+      retired = retireOnFailure?.(error, agentId) ?? false;
+      throw error;
     } finally {
       if (
         workspace &&
-        shouldArchiveScheduleRunWorkspace({ agentId, archiveOnFinish: config.archiveOnFinish })
+        (retired ||
+          shouldArchiveScheduleRunWorkspace({ agentId, archiveOnFinish: config.archiveOnFinish }))
       ) {
         try {
           await this.archiveWorkspace(workspace.workspaceId);
@@ -1191,7 +1304,7 @@ export class ScheduleService {
   }
 
   private async createScheduleRunWorkspace(
-    config: Extract<ScheduleTarget, { type: "new-agent" }>["config"],
+    config: ScheduleNewAgentConfig,
     prompt: string,
   ): Promise<PersistedWorkspaceRecord> {
     const firstAgentContext = { prompt };
