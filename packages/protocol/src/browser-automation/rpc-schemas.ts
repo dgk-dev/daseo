@@ -731,6 +731,13 @@ export const BrowserAutomationScreenshotResultSchema = z.object({
   dataBase64: z.string().min(1),
   width: z.number().int().nonnegative(),
   height: z.number().int().nonnegative(),
+  /**
+   * Set when the tab is shown in a pane in Responsive mode: its viewport follows that pane, and
+   * this is the pane's size in CSS pixels at capture time.
+   */
+  followsPane: z
+    .object({ width: z.number().int().positive(), height: z.number().int().positive() })
+    .optional(),
 });
 
 export const BrowserAutomationUploadResultSchema = z.object({

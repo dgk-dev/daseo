@@ -27,7 +27,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
 import { SidebarMenuToggle } from "@/components/headers/menu-header";
 import { ScreenHeader } from "@/components/headers/screen-header";
-import { HEADER_INNER_HEIGHT, MAX_CONTENT_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
+import { useIsCompactFormFactor } from "@/constants/layout";
+import { LoginBanner } from "@/motd/login-banner";
 import { useToast } from "@/contexts/toast-context";
 import { useAgentInputDraft } from "@/composer/draft/input-draft";
 import { useForgeSearchQuery } from "@/git/use-forge-search-query";
@@ -732,7 +733,7 @@ function getContentStyle(input: { isCompact: boolean; insetBottom: number }) {
   if (input.isCompact) {
     return [styles.content, styles.contentCompact, { paddingBottom: input.insetBottom }];
   }
-  return [styles.content, styles.contentCentered];
+  return [styles.content, styles.contentBottom];
 }
 
 function normalizeBranchDetails(
@@ -2241,8 +2242,8 @@ export function NewWorkspaceScreen({
     mode: "translate",
   });
 
-  const centeredStyle = useMemo(
-    () => [animatedStaticStyles.centered, composerKeyboardStyle],
+  const composerColumnStyle = useMemo(
+    () => [animatedStaticStyles.composerColumn, composerKeyboardStyle],
     [composerKeyboardStyle],
   );
 
@@ -2342,7 +2343,10 @@ export function NewWorkspaceScreen({
       <ScreenHeader left={screenHeaderLeft} borderless />
       <View style={contentStyle}>
         <TitlebarDragRegion />
-        <ReanimatedAnimated.View style={centeredStyle}>
+        <View style={styles.bannerArea}>
+          <LoginBanner serverId={selectedServerId} />
+        </View>
+        <ReanimatedAnimated.View style={composerColumnStyle}>
           <View style={styles.composerTitleContainer}>
             <Text style={styles.composerTitle}>{t("newWorkspace.title")}</Text>
           </View>
@@ -2413,10 +2417,11 @@ export function NewWorkspaceScreen({
   );
 }
 
+// Daseo: the composer sits on the bottom prompt line at the pane's left inset, the same place
+// as in an ongoing chat, on every width. There is no centred intro column.
 const animatedStaticStyles = RNStyleSheet.create({
-  centered: {
+  composerColumn: {
     width: "100%",
-    maxWidth: MAX_CONTENT_WIDTH,
   },
 });
 
@@ -2431,12 +2436,22 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     alignItems: "center",
   },
-  contentCentered: {
-    justifyContent: "center",
-    paddingBottom: HEADER_INNER_HEIGHT + theme.spacing[6],
+  contentBottom: {
+    justifyContent: "flex-end",
   },
   contentCompact: {
     justifyContent: "flex-end",
+  },
+  // The empty transcript area above the prompt line; the login banner starts at its top left.
+  bannerArea: {
+    flex: 1,
+    minHeight: 0,
+    alignSelf: "stretch",
+    overflow: "hidden",
+    // The same left inset as the title, the pickers and the prompt below it, which is also where
+    // an agent chat's banner starts.
+    paddingHorizontal: { xs: theme.spacing[4], md: theme.spacing[6] },
+    paddingTop: theme.spacing[4],
   },
   composerTitleContainer: {
     marginBottom: theme.spacing[8],

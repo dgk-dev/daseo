@@ -2,9 +2,15 @@ import { describe, expect, it } from "vitest";
 import type { PaseoSubagentRow, ProviderSubagentRow, SubagentRow } from "./select";
 import {
   buildSubagentRowPresentationData,
+  buildTrackHeader,
   countFinishedSubagents,
-  formatHeaderLabel,
+  formatTrackHeaderText,
   resolveRowLabel,
+  resolveSubagentRowDurationMs,
+  resolveSubagentRowState,
+  SUBAGENT_STATE_GLYPH,
+  SUBAGENT_STATE_WORD,
+  summarizeSubagentTrack,
 } from "./track-presentation";
 
 function row(
@@ -20,58 +26,164 @@ function row(
     status: overrides.status ?? "idle",
     requiresAttention: overrides.requiresAttention ?? false,
     createdAt: overrides.createdAt ?? new Date("2026-04-20T00:00:00.000Z"),
+    ...(overrides.backgroundWaits ? { backgroundWaits: overrides.backgroundWaits } : {}),
+    ...(overrides.needsInput ? { needsInput: true as const } : {}),
+    ...(overrides.endedAt ? { endedAt: overrides.endedAt } : {}),
   };
 }
 
-describe("formatHeaderLabel", () => {
-  it("uses singular 'subagent' for a single row", () => {
-    expect(formatHeaderLabel([row({ id: "a" })])).toBe("1 subagent");
+function header(rows: SubagentRow[], elapsed: string | null = null): string {
+  return formatTrackHeaderText(buildTrackHeader(summarizeSubagentTrack(rows), elapsed));
+}
+
+function nativeRow(
+  overrides: Partial<ProviderSubagentRow> & Pick<ProviderSubagentRow, "id" | "status">,
+): ProviderSubagentRow {
+  return {
+    kind: "provider",
+    parentAgentId: "parent",
+    provider: "claude",
+    title: overrides.id,
+    description: null,
+    subtitle: null,
+    requiresAttention: overrides.status === "failed",
+    createdAt: T0,
+    ...overrides,
+  };
+}
+
+const T0 = new Date("2026-04-20T00:00:00.000Z");
+
+describe("track header", () => {
+  it("shows Running N/M and the elapsed time while a subagent runs", () => {
+    const rows = [row({ id: "a", status: "running" }), row({ id: "b" }), row({ id: "c" })];
+    expect(buildTrackHeader(summarizeSubagentTrack(rows), "2min 13s")).toEqual([
+      { text: "[+]", tone: "prompt" },
+      { text: " Running 1/3", tone: "strong" },
+      { text: "  2min 13s", tone: "muted" },
+    ]);
   });
 
-  it("uses plural 'subagents' for two rows with no running rows", () => {
-    expect(formatHeaderLabel([row({ id: "a" }), row({ id: "b" })])).toBe("2 subagents");
-  });
-
-  it("appends the running count when at least one row is running", () => {
+  it("counts running, initializing and background-waiting rows as running", () => {
     expect(
-      formatHeaderLabel([row({ id: "a", status: "running" }), row({ id: "b" }), row({ id: "c" })]),
-    ).toBe("3 subagents · 1 running");
-  });
-
-  it("counts every running row in the suffix", () => {
-    expect(
-      formatHeaderLabel([
+      header([
         row({ id: "a", status: "running" }),
-        row({ id: "b", status: "running" }),
-        row({ id: "c", requiresAttention: true }),
-        row({ id: "d" }),
-        row({ id: "e" }),
+        row({ id: "b", status: "initializing" }),
+        row({ id: "c", status: "idle", backgroundWaits: { pending: 1, labels: [] } }),
+        nativeRow({ id: "d", status: "running" }),
+        row({ id: "e", requiresAttention: true }),
       ]),
-    ).toBe("5 subagents · 2 running");
+    ).toBe("[+] Running 4/5");
   });
 
-  it("ignores requiresAttention on non-running rows in the header copy", () => {
+  it("is a muted done line when nothing runs", () => {
+    expect(header([row({ id: "a" })])).toBe("[+] 1 subagent · done");
     expect(
-      formatHeaderLabel([
-        row({ id: "a", status: "error", requiresAttention: false }),
-        row({ id: "b", status: "idle", requiresAttention: false }),
-        row({ id: "c", status: "idle", requiresAttention: true }),
-      ]),
-    ).toBe("3 subagents");
+      buildTrackHeader(summarizeSubagentTrack([row({ id: "a" }), row({ id: "b" })]), null),
+    ).toEqual([
+      { text: "[+] 2 subagents", tone: "muted" },
+      { text: " · done", tone: "muted" },
+    ]);
   });
 
-  it("still counts running rows even when they require attention", () => {
+  it("counts failed rows in the destructive tone", () => {
+    const rows = [
+      row({ id: "a", status: "error" }),
+      nativeRow({ id: "b", status: "failed" }),
+      row({ id: "c" }),
+    ];
+    expect(buildTrackHeader(summarizeSubagentTrack(rows), null)).toEqual([
+      { text: "[+] 3 subagents", tone: "muted" },
+      { text: " · done", tone: "muted" },
+      { text: " · 2 failed", tone: "destructive" },
+    ]);
+  });
+
+  it("does not say done while a row waits on the user", () => {
+    expect(header([row({ id: "a", needsInput: true }), row({ id: "b" })])).toBe(
+      "[+] 2 subagents · 1 waiting",
+    );
+  });
+
+  it("counts the elapsed time from the oldest running row", () => {
+    const summary = summarizeSubagentTrack([
+      row({ id: "done", createdAt: new Date(T0.getTime() - 60_000) }),
+      row({ id: "new", status: "running", createdAt: new Date(T0.getTime() + 5_000) }),
+      row({ id: "old", status: "running", createdAt: T0 }),
+    ]);
+    expect(summary.oldestRunningStartedAt).toBe(T0.getTime());
+    expect(summarizeSubagentTrack([row({ id: "a" })]).oldestRunningStartedAt).toBeNull();
+  });
+});
+
+describe("resolveSubagentRowState", () => {
+  it("maps managed agents", () => {
+    expect(resolveSubagentRowState(row({ id: "a", status: "running" }))).toBe("running");
+    expect(resolveSubagentRowState(row({ id: "a", status: "initializing" }))).toBe("running");
+    expect(resolveSubagentRowState(row({ id: "a", status: "idle" }))).toBe("done");
+    expect(resolveSubagentRowState(row({ id: "a", status: "closed" }))).toBe("done");
+    expect(resolveSubagentRowState(row({ id: "a", status: "error" }))).toBe("error");
     expect(
-      formatHeaderLabel([
-        row({ id: "a", status: "error", requiresAttention: true }),
-        row({ id: "b", status: "running", requiresAttention: true }),
-        row({ id: "c", status: "idle", requiresAttention: true }),
-      ]),
-    ).toBe("3 subagents · 1 running");
+      resolveSubagentRowState(
+        row({ id: "a", status: "idle", backgroundWaits: { pending: 2, labels: [] } }),
+      ),
+    ).toBe("running");
   });
 
-  it("uses singular 'subagent' for a single row that requires attention upstream", () => {
-    expect(formatHeaderLabel([row({ id: "a", requiresAttention: true })])).toBe("1 subagent");
+  it("puts a row that needs input ahead of running and error", () => {
+    expect(resolveSubagentRowState(row({ id: "a", status: "running", needsInput: true }))).toBe(
+      "waiting",
+    );
+    expect(resolveSubagentRowState(row({ id: "a", status: "error", needsInput: true }))).toBe(
+      "waiting",
+    );
+  });
+
+  it("maps provider-owned subagents", () => {
+    expect(resolveSubagentRowState(nativeRow({ id: "a", status: "running" }))).toBe("running");
+    expect(resolveSubagentRowState(nativeRow({ id: "a", status: "completed" }))).toBe("done");
+    expect(resolveSubagentRowState(nativeRow({ id: "a", status: "failed" }))).toBe("error");
+    expect(resolveSubagentRowState(nativeRow({ id: "a", status: "canceled" }))).toBe("canceled");
+  });
+
+  it("has a word and a glyph for every state", () => {
+    expect(SUBAGENT_STATE_WORD).toEqual({
+      running: "Running",
+      waiting: "Waiting",
+      done: "Done",
+      error: "Error",
+      canceled: "Canceled",
+    });
+    expect(SUBAGENT_STATE_GLYPH.done).toBe("✔");
+    expect(SUBAGENT_STATE_GLYPH.error).toBe("✘");
+    expect(SUBAGENT_STATE_GLYPH.running).toBe("⠿");
+  });
+});
+
+describe("resolveSubagentRowDurationMs", () => {
+  const now = T0.getTime() + 133_000;
+
+  it("counts a working row from its creation to now", () => {
+    expect(resolveSubagentRowDurationMs(row({ id: "a", status: "running" }), now)).toBe(133_000);
+  });
+
+  it("shows a finished row's total up to its end", () => {
+    expect(
+      resolveSubagentRowDurationMs(row({ id: "a", endedAt: new Date(T0.getTime() + 62_000) }), now),
+    ).toBe(62_000);
+    expect(
+      resolveSubagentRowDurationMs(
+        nativeRow({ id: "a", status: "failed", endedAt: new Date(T0.getTime() + 280_000) }),
+        now,
+      ),
+    ).toBe(280_000);
+  });
+
+  it("has no time for a finished row without a real end", () => {
+    expect(resolveSubagentRowDurationMs(row({ id: "a" }), now)).toBeNull();
+    expect(
+      resolveSubagentRowDurationMs(row({ id: "a", endedAt: new Date(T0.getTime() - 1) }), now),
+    ).toBeNull();
   });
 });
 

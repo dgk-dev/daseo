@@ -5,6 +5,8 @@ import {
   clearResidentBrowserWebviewsForTests,
   ensureResidentBrowserWebview,
   getBrowserRegistrationStage,
+  getPresentedBrowserPaneSize,
+  parkBrowserWebview,
   getResidentBrowserWebview,
   prepareBrowserWebview,
   presentBrowserWebview,
@@ -548,15 +550,54 @@ describe("resident browser webviews", () => {
     expect(webview.style.height).toBe("480px");
   });
 
-  it("keeps an inactive in-place browser at its last resolved viewport dimensions", () => {
+  it("returns a parked Responsive browser to the resident 1280x800", () => {
     const webview = document.createElement("webview");
     rememberBrowserWebviewSize({ browserId: "browser-inactive", width: 640, height: 480 });
 
     applyInactiveBrowserWebviewViewport("browser-inactive", webview, { mode: "responsive" });
 
     expect(webview.style.flex).toBe("0 0 auto");
-    expect(webview.style.width).toBe("640px");
-    expect(webview.style.height).toBe("480px");
+    expect(webview.style.width).toBe("1280px");
+    expect(webview.style.height).toBe("800px");
+  });
+
+  it("follows the pane while presented and forgets its size once parked", () => {
+    const anchor = document.createElement("div");
+    anchor.style.position = "fixed";
+    anchor.style.left = "10px";
+    anchor.style.top = "20px";
+    anchor.style.width = "612px";
+    anchor.style.height = "540px";
+    document.body.appendChild(anchor);
+    const webview = document.createElement("webview");
+    releaseResidentBrowserWebview("browser-follow", webview);
+    expect(getPresentedBrowserPaneSize("browser-follow")).toBeNull();
+
+    presentBrowserWebview("browser-follow", webview, anchor, anchor, { mode: "responsive" });
+    rememberBrowserWebviewSize({ browserId: "browser-follow", width: 612, height: 540 });
+    expect(webview.style.width).toBe("612px");
+    expect(webview.style.height).toBe("540px");
+    expect(getPresentedBrowserPaneSize("browser-follow")).toEqual({ width: 612, height: 540 });
+
+    parkBrowserWebview("browser-follow", webview, { mode: "responsive" });
+    expect(webview.style.width).toBe("1280px");
+    expect(webview.style.height).toBe("800px");
+    expect(getPresentedBrowserPaneSize("browser-follow")).toBeNull();
+
+    // A later park of the same background tab (another pane mounting) stays at the default.
+    releaseResidentBrowserWebview("browser-follow", webview);
+    expect(webview.style.width).toBe("1280px");
+    anchor.remove();
+  });
+
+  it("keeps a fixed viewport when its pane parks it", () => {
+    const webview = document.createElement("webview");
+    rememberBrowserWebviewSize({ browserId: "browser-fixed", width: 640, height: 480 });
+
+    parkBrowserWebview("browser-fixed", webview, { mode: "fixed", width: 390, height: 844 });
+
+    expect(webview.style.width).toBe("390px");
+    expect(webview.style.height).toBe("844px");
   });
 
   it("parks a cold inactive browser at its canonical fixed viewport", () => {

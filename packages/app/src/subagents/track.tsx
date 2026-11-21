@@ -1,24 +1,32 @@
 import { useCallback, useMemo, useState, type ReactElement } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View, type PressableStateCallbackType } from "react-native";
 import { useTranslation } from "react-i18next";
-import { Archive, ChevronDown, ChevronRight, Unlink } from "lucide-react-native";
+import { Archive, Unlink } from "lucide-react-native";
+import { useReducedMotion } from "react-native-reanimated";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { getProviderIcon } from "@/components/provider-icons";
-import { Button } from "@/components/ui/button";
+import { formatTerminalDuration } from "@/agent-stream/terminal-duration";
+import { useRetainedPanelActive } from "@/components/retained-panel";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isNative } from "@/constants/platform";
-import {
-  WorkspaceTabIcon,
-  type WorkspaceTabPresentation,
-} from "@/screens/workspace/workspace-tab-presentation";
 import type { Theme } from "@/styles/theme";
 import type { SubagentRow } from "./select";
 import type { ArchiveFinishedStatus } from "./use-archive-finished";
+import { useTrackNow, useTrackSpinnerFrame } from "./track-clock";
 import {
   buildSubagentRowPresentationData,
+  buildTrackHeader,
   countFinishedSubagents,
-  formatHeaderLabel,
+  formatTrackHeaderText,
+  resolveSubagentRowDurationMs,
+  resolveSubagentRowState,
+  SUBAGENT_SPINNER_FRAMES,
+  SUBAGENT_STATE_GLYPH,
+  SUBAGENT_STATE_WORD,
+  summarizeSubagentTrack,
+  type SubagentRowState,
+  type SubagentTrackSummary,
+  type TrackHeaderTone,
 } from "./track-presentation";
 
 const ThemedArchive = withUnistyles(Archive);
@@ -41,14 +49,112 @@ export interface SubagentsTrackProps {
 
 const SUBAGENTS_LIST_MAX_HEIGHT = 200;
 
-function buildRowPresentation(row: SubagentRow): WorkspaceTabPresentation {
-  const data = buildSubagentRowPresentationData(row);
-  return {
-    ...data,
-    tooltip: data.label,
-    modified: false,
-    icon: getProviderIcon(row.provider),
-  };
+function headerToggleStyle({
+  hovered,
+  pressed,
+}: PressableStateCallbackType & { hovered?: boolean }) {
+  return hovered || pressed ? styles.headerToggleActive : styles.headerToggle;
+}
+
+const HEADER_TONE_STYLE = {
+  prompt: "headerPrompt",
+  strong: "headerStrong",
+  muted: "headerMuted",
+  warning: "headerWarning",
+  destructive: "headerDestructive",
+} as const satisfies Record<TrackHeaderTone, string>;
+
+const STATE_STYLE = {
+  running: "stateRunning",
+  waiting: "stateWaiting",
+  done: "stateDone",
+  error: "stateError",
+  canceled: "stateMuted",
+} as const satisfies Record<SubagentRowState, string>;
+
+const GLYPH_STYLE = {
+  running: "glyphRunning",
+  waiting: "glyphWaiting",
+  done: "glyphDone",
+  error: "glyphError",
+  canceled: "glyphMuted",
+} as const satisfies Record<SubagentRowState, string>;
+
+/**
+ * `[+] Running 1/3  2min 13s` while anything runs, a muted `[+] 3 subagents · done` otherwise.
+ * Only this text re-renders on the shared clock's second; the track around it does not.
+ */
+function TrackHeaderLabel({ summary }: { summary: SubagentTrackSummary }): ReactElement {
+  const panelActive = useRetainedPanelActive();
+  const startedAt = summary.oldestRunningStartedAt;
+  const now = useTrackNow(panelActive && startedAt !== null);
+  const elapsedLabel =
+    startedAt === null ? null : formatTerminalDuration(Math.max(0, now - startedAt));
+  const segments = buildTrackHeader(summary, elapsedLabel);
+  return (
+    <Text style={styles.headerLabel} numberOfLines={1} testID="subagents-track-header-label">
+      {segments.map((segment) => (
+        <Text key={segment.tone + segment.text} style={styles[HEADER_TONE_STYLE[segment.tone]]}>
+          {segment.text}
+        </Text>
+      ))}
+    </Text>
+  );
+}
+
+/** The leading cell: a braille spinner while the row runs, the state's glyph otherwise. */
+function SubagentStateGlyph({ state }: { state: SubagentRowState }): ReactElement {
+  const reduceMotion = useReducedMotion();
+  const panelActive = useRetainedPanelActive();
+  const animate = state === "running" && !reduceMotion && panelActive;
+  const frame = useTrackSpinnerFrame(animate);
+  const glyph = animate
+    ? SUBAGENT_SPINNER_FRAMES[frame % SUBAGENT_SPINNER_FRAMES.length]
+    : SUBAGENT_STATE_GLYPH[state];
+  const text = (
+    <Text
+      style={styles[GLYPH_STYLE[state]]}
+      selectable={false}
+      // The cell (running) or the state word next to it carries the meaning.
+      aria-hidden
+      testID={`subagents-track-glyph-${state}`}
+    >
+      {glyph}
+    </Text>
+  );
+  if (state === "running") {
+    // The same role and name the row's loader had before the glyph replaced it.
+    return (
+      <View
+        style={styles.glyphCell}
+        accessibilityRole="progressbar"
+        accessibilityLabel="Agent running"
+      >
+        {text}
+      </View>
+    );
+  }
+  return <View style={styles.glyphCell}>{text}</View>;
+}
+
+/** Live elapsed time while the row works, its total once it ended; nothing without real times. */
+function SubagentRowTime({
+  row,
+  state,
+}: {
+  row: SubagentRow;
+  state: SubagentRowState;
+}): ReactElement | null {
+  const panelActive = useRetainedPanelActive();
+  const live = state === "running" || state === "waiting";
+  const now = useTrackNow(live && panelActive);
+  const durationMs = resolveSubagentRowDurationMs(row, now);
+  if (durationMs === null) return null;
+  return (
+    <Text style={styles.rowTime} numberOfLines={1} testID={`subagents-track-time-${row.id}`}>
+      {formatTerminalDuration(durationMs)}
+    </Text>
+  );
 }
 
 export function SubagentsTrack({
@@ -84,7 +190,9 @@ export function SubagentsTrack({
     return null;
   }
 
-  const headerLabel = formatHeaderLabel(rows);
+  const summary = summarizeSubagentTrack(rows);
+  // The accessible name leaves the ticking time out so it is not re-announced every second.
+  const headerLabel = formatTrackHeaderText(buildTrackHeader(summary, null));
   const finishedCount = countFinishedSubagents(rows);
   const showArchiveFinished = finishedCount > 0 || isArchivingFinished || isArchiveFinishedFailed;
 
@@ -93,19 +201,16 @@ export function SubagentsTrack({
       <View style={styles.track}>
         <View style={surfaceStyle}>
           <View style={headerContainerStyle}>
-            <Button
-              variant="ghost"
-              size="xs"
+            <Pressable
+              accessibilityRole="button"
               accessibilityLabel={headerLabel}
               accessibilityState={headerAccessibilityState}
               testID="subagents-track-header"
               onPress={toggleExpanded}
-              leftIcon={expanded ? ChevronDown : ChevronRight}
-              style={styles.headerToggle}
-              textStyle={styles.headerLabel}
+              style={headerToggleStyle}
             >
-              {headerLabel}
-            </Button>
+              <TrackHeaderLabel summary={summary} />
+            </Pressable>
             {showArchiveFinished && onArchiveFinished ? (
               <View style={styles.headerAction}>
                 <SubagentActionButton
@@ -182,7 +287,8 @@ function SubagentsTrackRow({
   const { t } = useTranslation();
   const isCompact = useIsCompactFormFactor();
   const [hovered, setHovered] = useState(false);
-  const presentation = useMemo(() => buildRowPresentation(row), [row]);
+  const presentation = useMemo(() => buildSubagentRowPresentationData(row), [row]);
+  const state = resolveSubagentRowState(row);
   const displayLabel =
     presentation.titleState === "loading" ? t("common.states.loading") : presentation.label;
   const handlePress = useCallback(() => {
@@ -216,10 +322,7 @@ function SubagentsTrackRow({
       >
         {({ pressed }) => (
           <View style={hovered || pressed ? styles.rowActive : styles.row}>
-            <WorkspaceTabIcon
-              presentation={presentation}
-              backdrop={hovered || pressed ? "surface2" : "surface0"}
-            />
+            <SubagentStateGlyph state={state} />
             <Text style={styles.rowLabel} numberOfLines={1}>
               {displayLabel}
             </Text>
@@ -228,6 +331,14 @@ function SubagentsTrackRow({
                 {presentation.subtitle}
               </Text>
             ) : null}
+            <Text
+              style={styles[STATE_STYLE[state]]}
+              numberOfLines={1}
+              testID={`subagents-track-state-${row.id}`}
+            >
+              {SUBAGENT_STATE_WORD[state]}
+            </Text>
+            <SubagentRowTime row={row} state={state} />
             {row.kind === "paseo" ? (
               <SubagentRowActions
                 rowId={row.id}
@@ -360,11 +471,21 @@ const styles = StyleSheet.create((theme) => ({
   headerToggle: {
     flex: 1,
     minWidth: 0,
-    justifyContent: "flex-start",
-    borderRadius: 0,
+    flexDirection: "row",
+    alignItems: "center",
     paddingLeft: theme.spacing[3],
     paddingRight: theme.spacing[1],
     paddingVertical: theme.spacing[2],
+  },
+  headerToggleActive: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingLeft: theme.spacing[3],
+    paddingRight: theme.spacing[1],
+    paddingVertical: theme.spacing[2],
+    backgroundColor: theme.colors.surface2,
   },
   headerAction: {
     paddingRight: theme.spacing[2],
@@ -381,11 +502,29 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomWidth: theme.borderWidth[1],
     borderBottomColor: theme.colors.border,
   },
+  // Sketch option C (docker compose): `[+] Running 1/3  2min 13s`, machine text in the mono font.
   headerLabel: {
     flexShrink: 1,
     minWidth: 0,
     fontSize: theme.fontSize.xs,
+    fontFamily: theme.fontFamily.mono,
     color: theme.colors.foregroundMuted,
+  },
+  headerPrompt: {
+    color: theme.colors.promptPath,
+  },
+  headerStrong: {
+    color: theme.colors.foreground,
+    fontWeight: theme.fontWeight.bold,
+  },
+  headerMuted: {
+    color: theme.colors.foregroundMuted,
+  },
+  headerWarning: {
+    color: theme.colors.statusWarning,
+  },
+  headerDestructive: {
+    color: theme.colors.destructive,
   },
   scroll: {
     maxHeight: SUBAGENTS_LIST_MAX_HEIGHT,
@@ -418,7 +557,87 @@ const styles = StyleSheet.create((theme) => ({
   rowSubtitle: {
     flexShrink: 1,
     minWidth: 0,
-    maxWidth: "45%",
+    maxWidth: "30%",
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundMuted,
+  },
+  // One monospace cell wide and fixed, so a spinner frame never shifts the label beside it.
+  glyphCell: {
+    width: Math.round(theme.fontSize.sm * 1.2),
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  glyphRunning: {
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.accent,
+  },
+  glyphDone: {
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.accent,
+  },
+  glyphError: {
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.destructive,
+  },
+  glyphWaiting: {
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.statusWarning,
+  },
+  glyphMuted: {
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foregroundMuted,
+  },
+  stateRunning: {
+    flexShrink: 0,
+    // Eight cells, the longest word, so the words start on one column.
+    minWidth: Math.round(theme.fontSize.xs * 0.6 * 8),
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.accent,
+  },
+  stateDone: {
+    flexShrink: 0,
+    // Eight cells, the longest word, so the words start on one column.
+    minWidth: Math.round(theme.fontSize.xs * 0.6 * 8),
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundMuted,
+  },
+  stateError: {
+    flexShrink: 0,
+    // Eight cells, the longest word, so the words start on one column.
+    minWidth: Math.round(theme.fontSize.xs * 0.6 * 8),
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.destructive,
+  },
+  stateWaiting: {
+    flexShrink: 0,
+    // Eight cells, the longest word, so the words start on one column.
+    minWidth: Math.round(theme.fontSize.xs * 0.6 * 8),
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.statusWarning,
+  },
+  stateMuted: {
+    flexShrink: 0,
+    // Eight cells, the longest word, so the words start on one column.
+    minWidth: Math.round(theme.fontSize.xs * 0.6 * 8),
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundMuted,
+  },
+  rowTime: {
+    flexShrink: 0,
+    minWidth: Math.round(theme.fontSize.xs * 0.6 * 9),
+    textAlign: "right",
+    fontFamily: theme.fontFamily.mono,
     fontSize: theme.fontSize.xs,
     color: theme.colors.foregroundMuted,
   },

@@ -996,7 +996,7 @@ describe("mountBrowserAutomationHandler", () => {
       result: { command: "close_tab", browserId: popupId },
     });
     expect(browser.browser.closedPopupTargets).toEqual([
-      { browserId: popupId, workspaceId: "wks_workspace_a" },
+      { browserId: popupId, workspaceId: "wks_workspace_a", by: "agent" },
     ]);
     expect(
       useWorkspaceLayoutStore

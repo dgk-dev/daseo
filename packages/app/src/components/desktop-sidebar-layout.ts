@@ -79,6 +79,12 @@ export function resolveDesktopExplorerWidth(input: {
   });
 }
 
+/**
+ * What the app content needs beside the left sidebar. Where the task rail is docked by default
+ * (the desktop app and the web) callers leave the rail out (`isWorkspaceExplorerOpen: false`): the
+ * rail yields first there (`canDesktopTaskRailShare`), never the navigation. On the native wide
+ * layout an open rail still counts, so the navigation yields to it as before.
+ */
 export function resolveDesktopAppContentMinimum(input: {
   isSettingsRoute: boolean;
   isWorkspaceExplorerOpen: boolean;
@@ -93,6 +99,47 @@ export function resolveDesktopAppContentMinimum(input: {
       })
     : 0;
   return Math.max(input.isSettingsRoute ? SETTINGS_DESKTOP_SPLIT_MIN_WIDTH : 0, workspaceMinimum);
+}
+
+/**
+ * Whether the docked task rail has room: beside the left sidebar (when that is shown) it must
+ * leave the centre its 400. Without room the rail is not drawn; its stored open state stays, so
+ * it returns when the window widens or the left sidebar closes.
+ */
+export function canDesktopTaskRailShare(input: {
+  viewportWidth: number;
+  isSidebarShown: boolean;
+  requestedSidebarWidth: number;
+  requestedRailWidth: number;
+}): boolean {
+  const sidebarWidth = input.isSidebarShown
+    ? resolveDesktopSidebarWidth({
+        requestedWidth: input.requestedSidebarWidth,
+        viewportWidth: input.viewportWidth,
+      })
+    : 0;
+  const railWidth = resolveDesktopExplorerWidth({
+    requestedWidth: input.requestedRailWidth,
+    viewportWidth: input.viewportWidth,
+  });
+  return input.viewportWidth - sidebarWidth - railWidth >= MIN_DESKTOP_CENTER_WIDTH;
+}
+
+export type TaskRailToggleEffect = "close" | "open" | "open-and-close-sidebar";
+
+/**
+ * What the rail's toggle does on a wide layout. A rail that is drawn closes. One that is not
+ * drawn (closed, or open without room) is being asked for explicitly: it opens, and when the left
+ * sidebar leaves it no room, that sidebar closes so the rail can show.
+ */
+export function resolveTaskRailToggle(input: {
+  isOpen: boolean;
+  hasRoom: boolean;
+  hasRoomWithoutSidebar: boolean;
+}): TaskRailToggleEffect {
+  if (input.isOpen && input.hasRoom) return "close";
+  if (input.hasRoom || !input.hasRoomWithoutSidebar) return "open";
+  return "open-and-close-sidebar";
 }
 
 export function canDesktopAppSidebarShare(input: {

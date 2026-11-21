@@ -33,8 +33,21 @@ export function defaultSidebarWidth(isWeb: boolean): number {
 export const MIN_SIDEBAR_WIDTH = 160;
 export const MAX_SIDEBAR_WIDTH = 600;
 
-export const DEFAULT_EXPLORER_SIDEBAR_WIDTH = 400;
-export const MIN_EXPLORER_SIDEBAR_WIDTH = 280;
+// The right panel is the task rail: narrow by default, so the chat column keeps the
+// width (1440 wide with both panels at their defaults leaves 880).
+export const DEFAULT_EXPLORER_SIDEBAR_WIDTH = 240;
+export const MIN_EXPLORER_SIDEBAR_WIDTH = 200;
+// Stored widths above this predate the rail (the old minimum); they take the new default once.
+const LEGACY_MIN_EXPLORER_SIDEBAR_WIDTH = 280;
+
+/**
+ * Whether the task rail is docked by default: on the desktop app and the web, whose wide layouts
+ * have room for it beside the 320 left sidebar. The native wide layout (an unfolded Fold, a
+ * tablet) starts closed and opens it by toggle or when a list first appears.
+ */
+export function isTaskRailDockedByDefault(isWeb: boolean): boolean {
+  return isWeb;
+}
 // Upper bound is intentionally generous; desktop resizing enforces a min-chat-width constraint.
 export const MAX_EXPLORER_SIDEBAR_WIDTH = 2000;
 
@@ -275,6 +288,22 @@ function migratePanelSidebarWidth(
   }
 }
 
+/**
+ * Version 14, the task rail: a stored width above the old minimum goes back to the narrow default,
+ * and where the rail is docked by default it starts open once. Later resizes and toggles persist.
+ */
+function migratePanelTaskRail(state: MigratablePanelState, isWeb: boolean): void {
+  if (typeof state.explorerWidth === "number") {
+    state.explorerWidth =
+      state.explorerWidth > LEGACY_MIN_EXPLORER_SIDEBAR_WIDTH
+        ? DEFAULT_EXPLORER_SIDEBAR_WIDTH
+        : clampExplorerWidth(state.explorerWidth);
+  }
+  if (isTaskRailDockedByDefault(isWeb)) {
+    state.desktop = { ...state.desktop, fileExplorerOpen: true };
+  }
+}
+
 export function migratePanelState(
   persistedState: unknown,
   version: number,
@@ -321,6 +350,9 @@ export function migratePanelState(
   }
   if (typeof state.explorerShowHiddenFiles !== "boolean") {
     state.explorerShowHiddenFiles = true;
+  }
+  if (version < 14) {
+    migratePanelTaskRail(state, isWeb);
   }
   if (version < 12) {
     // Compact panel position is transient UI state. Cold starts always begin

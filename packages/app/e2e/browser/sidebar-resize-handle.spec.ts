@@ -21,6 +21,6 @@ test("both sidebar borders highlight on hover", async ({ page, withWorkspace }) 
 
   await expectBorderHighlight(page, "left-sidebar-resize-handle");
 
-  await page.getByTestId("workspace-explorer-toggle").first().click();
+  // The task rail is docked on wide web layouts: its handle is there without opening anything.
   await expectBorderHighlight(page, "explorer-sidebar-resize-handle");
 });

@@ -5,6 +5,7 @@ import { useStoreWithEqualityFn } from "zustand/traditional";
 import { useSessionStore, type Agent } from "@/stores/session-store";
 import { refreshProviderSubagents, useProviderSubagentStore } from "./provider-store";
 import type { ProviderSubagentDescriptorPayload } from "@getpaseo/protocol/messages";
+import { isAgentWaitingInBackground } from "@getpaseo/protocol/agent-state-bucket";
 
 export interface PaseoSubagentRow {
   kind: "paseo";
@@ -18,6 +19,13 @@ export interface PaseoSubagentRow {
   requiresAttention: Agent["requiresAttention"];
   backgroundWaits?: Agent["backgroundWaits"];
   createdAt: Agent["createdAt"];
+  /** Present when the agent waits on a permission or other input from the user. */
+  needsInput?: true;
+  /**
+   * The agent's last activity, carried only once it is no longer working so a running agent's
+   * every event does not re-render the track. The track shows the total time up to it.
+   */
+  endedAt?: Date;
 }
 
 export interface ProviderSubagentRow {
@@ -35,6 +43,8 @@ export interface ProviderSubagentRow {
   status: ProviderSubagentDescriptorPayload["status"];
   requiresAttention: boolean;
   createdAt: Date;
+  /** The descriptor's last update, carried only once the subagent has stopped running. */
+  endedAt?: Date;
 }
 
 export type SubagentRow = PaseoSubagentRow | ProviderSubagentRow;
@@ -62,7 +72,21 @@ function toSubagentRow(agent: Agent): SubagentRow {
     requiresAttention: agent.requiresAttention,
     ...(agent.backgroundWaits ? { backgroundWaits: agent.backgroundWaits } : {}),
     createdAt: agent.createdAt,
+    ...(agentNeedsInput(agent) ? { needsInput: true as const } : {}),
+    ...(isAgentWorking(agent) ? {} : { endedAt: agent.lastActivityAt }),
   };
+}
+
+function agentNeedsInput(agent: Agent): boolean {
+  return (agent.pendingPermissions?.length ?? 0) > 0 || agent.attentionReason === "permission";
+}
+
+function isAgentWorking(agent: Agent): boolean {
+  return (
+    agent.status === "running" ||
+    agent.status === "initializing" ||
+    isAgentWaitingInBackground({ status: agent.status, backgroundWaits: agent.backgroundWaits })
+  );
 }
 
 export function selectSubagentsForParent(
@@ -116,6 +140,7 @@ export function selectProviderSubagentsForParent(
       status: subagent.status,
       requiresAttention: subagent.status === "failed",
       createdAt: new Date(subagent.createdAt),
+      ...(subagent.status === "running" ? {} : { endedAt: new Date(subagent.updatedAt) }),
     });
   }
   rows.sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());

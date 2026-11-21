@@ -3,6 +3,7 @@ import { getDesktopHost, type DesktopHostBridge } from "@/desktop/host";
 import {
   ensureResidentBrowserWebview as ensureResidentBrowserWebviewDefault,
   waitForBrowserRegistration as waitForBrowserRegistrationDefault,
+  getPresentedBrowserPaneSize,
   getResidentBrowserWebview,
   removeResidentBrowserWebview,
   resizeResidentBrowserWebview,
@@ -25,6 +26,7 @@ import { useBrowserProvenanceStore } from "@/desktop/browser/provenance";
 import { mountBrowserAutoCloseSweeper } from "@/desktop/browser/provenance/sweeper";
 import { countUnseenTabsOpenedByAgent } from "@/desktop/browser/provenance/state";
 import { logBrowserTabStage } from "@/desktop/browser/tab-stage-log";
+import { noteScreenshotFollowsPane } from "./screenshot-viewport";
 
 type BrowserAutomationExecuteRequest = Extract<
   SessionOutboundMessage,
@@ -251,8 +253,18 @@ async function resolveBrowserAutomationRequest(
       waitForBrowserRegistration,
       ...(registrationWaitTimeoutMs !== undefined ? { registrationWaitTimeoutMs } : {}),
     });
-    const payload = await executeAutomationCommand(request);
-    return normalizeBridgePayload(request.requestId, payload);
+    const payload = normalizeBridgePayload(
+      request.requestId,
+      await executeAutomationCommand(request),
+    );
+    if (request.command.command !== "screenshot") {
+      return payload;
+    }
+    const { browserId } = request.command.args;
+    return noteScreenshotFollowsPane(payload, {
+      viewport: getBrowserRecord(browserId)?.viewport ?? null,
+      presentedPaneSize: getPresentedBrowserPaneSize(browserId),
+    });
   } catch (error) {
     return normalizeThrownBridgeError(request.requestId, error);
   }

@@ -1,8 +1,9 @@
 import type { TFunction } from "i18next";
-import { memo } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
+import { resolveTaskRailRowLines } from "@/composer/task-list/rail";
 import { resolveTaskRowState, type TaskRowState } from "@/composer/task-list/summary";
 import type { TodoEntry } from "@/types/stream";
 
@@ -33,7 +34,13 @@ function resolveMarkerColorStyle(state: TaskRowState) {
   }
 }
 
-function TaskStateMarker({ state, variant }: { state: TaskRowState; variant: TaskListRowVariant }) {
+export function TaskStateMarker({
+  state,
+  variant,
+}: {
+  state: TaskRowState;
+  variant: TaskListRowVariant;
+}) {
   return (
     <Text
       style={[
@@ -67,8 +74,8 @@ export type TaskListRowVariant = "board" | "sidebar";
 
 /**
  * One task. `board` is the composer board's one-line row (delta 95); `sidebar` is the task
- * sidebar's two-line row at reading size, whose section header already names the state
- * (delta 101).
+ * rail's row at reading size: one line that opens in place when pressed, under a section that
+ * already names the state (delta 101).
  */
 export const TaskListRow = memo(function TaskListRow({
   task,
@@ -102,12 +109,6 @@ export const TaskListRow = memo(function TaskListRow({
   );
 });
 
-/** What the task in progress is doing now, when that says more than its subject. */
-function resolveRunningDetail(task: TodoEntry, state: TaskRowState): string | null {
-  if (state !== "running" || !task.activeForm || task.activeForm === task.text) return null;
-  return task.activeForm;
-}
-
 function SidebarTaskRow({
   task,
   state,
@@ -117,19 +118,31 @@ function SidebarTaskRow({
   state: TaskRowState;
   suffix: string | null;
 }) {
-  const runningDetail = resolveRunningDetail(task, state);
+  const [expanded, setExpanded] = useState(false);
+  const toggle = useCallback(() => setExpanded((current) => !current), []);
+  const accessibilityState = useMemo(() => ({ expanded }), [expanded]);
+  const lines = resolveTaskRailRowLines(task, state, expanded);
   const closed = state === "completed" || state === "deleted";
   const detailStyle = [styles.sidebarDetail, closed && styles.droppedText];
-  const accessibilityLabel = [task.text, runningDetail, suffix].filter(Boolean).join(", ");
+  const accessibilityLabel = [task.text, lines.doingNow, suffix].filter(Boolean).join(", ");
+  const detailLineLimit = expanded ? undefined : 1;
 
-  // What runs now and the agent's note each get their own line under the subject; the section
-  // header already says the state.
+  // The rail is narrow: a row is its subject on one line and opens in place to the whole subject,
+  // what runs now, and the agent's note. The task in progress keeps its "doing now" line closed.
   return (
-    <View style={styles.sidebarRow} accessibilityLabel={accessibilityLabel}>
+    <Pressable
+      onPress={toggle}
+      style={styles.sidebarRow}
+      accessibilityRole="button"
+      accessibilityState={accessibilityState}
+      aria-expanded={expanded}
+      accessibilityLabel={accessibilityLabel}
+      testID="task-sidebar-row"
+    >
       <TaskStateMarker state={state} variant="sidebar" />
       <View style={styles.sidebarContent}>
         <Text
-          numberOfLines={3}
+          numberOfLines={lines.subjectLineLimit ?? undefined}
           style={[
             styles.sidebarText,
             state === "completed" && styles.completedText,
@@ -138,10 +151,14 @@ function SidebarTaskRow({
         >
           {task.text}
         </Text>
-        {runningDetail ? <Text style={detailStyle}>{runningDetail}</Text> : null}
-        {task.note ? <Text style={detailStyle}>{task.note}</Text> : null}
+        {lines.doingNow ? (
+          <Text numberOfLines={detailLineLimit} style={detailStyle}>
+            {lines.doingNow}
+          </Text>
+        ) : null}
+        {lines.note ? <Text style={detailStyle}>{lines.note}</Text> : null}
       </View>
-    </View>
+    </Pressable>
   );
 }
 
@@ -174,7 +191,7 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "flex-start",
     gap: theme.spacing[2],
-    paddingVertical: theme.spacing[2],
+    paddingVertical: theme.spacing[1],
   },
   // The marker sets in the mono face at its row's text size and line height, so it sits on the
   // subject's first line however far the subject wraps.

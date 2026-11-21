@@ -201,6 +201,7 @@ import type { SidebarOrderStore } from "./sidebar-order/sidebar-order-store.js";
 import { ComposerDraftSessionChannel } from "./composer-draft/composer-draft-session-channel.js";
 import type { ComposerDraftStore } from "./composer-draft/composer-draft-store.js";
 import type { SlackScheduledReader } from "./slack-scheduled/slack-scheduled-reader.js";
+import { collectLoginBannerFacts, type LoginBannerFacts } from "./login-banner/login-banner.js";
 import { handleScheduleSlackListRequest } from "./slack-scheduled/slack-scheduled-session.js";
 import type { PushNotifications } from "./push/index.js";
 import {
@@ -510,6 +511,8 @@ export interface SessionOptions {
   composerDraftStore?: ComposerDraftStore | null;
   /** Daseo delta 135: scheduled Slack messages for the Schedules screen; absent answers an error. */
   slackScheduledReader?: SlackScheduledReader | null;
+  /** Daseo: the client connection before this session's, for the login banner; absent omits it. */
+  getPreviousLogin?: () => { at: number; from: string | null } | null;
   /** Daseo delta 138: the daemon-wide "/" command list cache; absent keeps one per session. */
   commandListCache?: CommandListCache | null;
   pushNotifications: PushNotifications;
@@ -813,6 +816,7 @@ export class Session {
   private readonly sidebarOrder: SidebarOrderSessionChannel;
   private readonly composerDrafts: ComposerDraftSessionChannel;
   private readonly slackScheduledReader: SlackScheduledReader | null | undefined;
+  private readonly getPreviousLogin: (() => { at: number; from: string | null } | null) | undefined;
   private readonly commandListCache: CommandListCache;
   private readonly gitMutation: GitMutationService;
   private readonly workspaceProvisioning: WorkspaceProvisioningService;
@@ -900,6 +904,7 @@ export class Session {
       sidebarOrderStore,
       composerDraftStore,
       slackScheduledReader,
+      getPreviousLogin,
       commandListCache,
       pushNotifications,
       paseoHome,
@@ -980,6 +985,7 @@ export class Session {
     });
     this.historySearch = historySearch;
     this.slackScheduledReader = slackScheduledReader;
+    this.getPreviousLogin = getPreviousLogin;
     this.commandListCache = resolveCommandListCache(commandListCache, this.sessionLogger);
     this.sidebarOrder = new SidebarOrderSessionChannel({
       store: sidebarOrderStore,
@@ -2430,6 +2436,8 @@ export class Session {
       case "client.diagnostics.report.request":
         this.handleClientDiagnosticsReport(msg);
         return undefined;
+      case "daemon.get_login_banner.request":
+        return this.handleGetLoginBannerRequest(msg);
       case "daemon.update.request":
         return this.daemonSession.handleUpdateRequest(msg);
       case "set_daemon_config_request":
@@ -7292,6 +7300,27 @@ export class Session {
       limit: 1,
     });
     return buildTimelinePromptIndex(timeline.epoch, rows);
+  }
+
+  // Daseo: host facts for the empty-chat login banner; a fact that cannot be read is left out.
+  private async handleGetLoginBannerRequest(
+    msg: Extract<SessionInboundMessage, { type: "daemon.get_login_banner.request" }>,
+  ): Promise<void> {
+    let facts: LoginBannerFacts = {};
+    try {
+      facts = await collectLoginBannerFacts({
+        agentsRunning: this.agentManager
+          .listAgents()
+          .filter((agent) => agent.lifecycle === "running").length,
+        lastLogin: this.getPreviousLogin?.() ?? null,
+      });
+    } catch (error) {
+      this.sessionLogger.warn({ err: error }, "Failed to collect login banner facts");
+    }
+    this.emit({
+      type: "daemon.get_login_banner.response",
+      payload: { requestId: msg.requestId, ...facts },
+    });
   }
 
   // Daseo delta 61: app-side errors, one log row each, so a phone problem can be read on the Mac.

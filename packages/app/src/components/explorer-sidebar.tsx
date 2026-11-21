@@ -29,6 +29,8 @@ import {
   SIDEBAR_RESIZE_FAIL_OFFSET,
 } from "@/components/sidebar-resize-handle-layout";
 import { TaskSectionsBody, useAgentTasks, useTaskBoard } from "@/composer/task-list/body";
+import { resolveTaskMeter } from "@/composer/task-list/rail";
+import { useTaskRailHasRoom } from "@/task-sidebar/use-rail-room";
 import type { TodoEntry } from "@/types/stream";
 import type { Theme } from "@/styles/theme";
 
@@ -101,6 +103,9 @@ export function ExplorerSidebar({ serverId, agentId }: TaskPanelProps) {
   const explorerWidth = usePanelStore((state) => state.explorerWidth);
   const setExplorerWidth = usePanelStore((state) => state.setExplorerWidth);
   const isOpen = usePanelStore((state) => selectIsFileExplorerOpen(state, { isCompact: false }));
+  // The rail yields first: without room beside the left sidebar it is not drawn, and it stays open
+  // in the store so it returns when the window widens.
+  const hasRoom = useTaskRailHasRoom();
   const { width: viewportWidth } = useWindowDimensions();
   const visibleExplorerWidth = resolveDesktopExplorerWidth({
     requestedWidth: explorerWidth,
@@ -163,7 +168,7 @@ export function ExplorerSidebar({ serverId, agentId }: TaskPanelProps) {
     [resizeAnimatedStyle, insets.top],
   );
 
-  if (!isOpen) {
+  if (!isOpen || !hasRoom) {
     return null;
   }
 
@@ -242,18 +247,20 @@ interface TaskSidebarContentProps {
 
 // Daseo delta 101: the viewed session's task list, read-only, grouped by state.
 function TaskSidebarContent({ serverId, agentId, onClose }: TaskSidebarContentProps) {
-  const { t } = useTranslation();
   const tasks = useAgentTasks(serverId, agentId);
 
   if (!tasks?.length) {
+    // The rail is docked for every session, so a session without a list is the common case: one
+    // muted line where the meter goes, and nothing below it.
     return (
       <View style={styles.sidebarContent} pointerEvents="auto">
         <SidebarHeader onClose={onClose}>
-          <View style={styles.taskSummarySlot} />
+          <View style={styles.taskSummarySlot}>
+            <Text style={styles.noTasks} numberOfLines={1} testID="task-sidebar-empty">
+              no tasks
+            </Text>
+          </View>
         </SidebarHeader>
-        <View style={styles.emptyContainer} testID="task-sidebar-empty">
-          <Text style={styles.emptyText}>{t("workspace.tabs.tasks.empty")}</Text>
-        </View>
       </View>
     );
   }
@@ -261,19 +268,26 @@ function TaskSidebarContent({ serverId, agentId, onClose }: TaskSidebarContentPr
 }
 
 function TaskSidebarBoard({ tasks, onClose }: { tasks: TodoEntry[]; onClose?: () => void }) {
-  // The sections below show the task in progress and count what waits and what is held.
-  const { label } = useTaskBoard(tasks, { withCurrent: false, withStateCounts: false });
+  // The meter is drawing; the progress sentence is what assistive tech reads. The sections below
+  // show the task in progress and count what waits and what is held.
+  const { summary, label } = useTaskBoard(tasks, { withCurrent: false, withStateCounts: false });
+  const meter = resolveTaskMeter(summary);
   return (
     <View style={styles.sidebarContent} pointerEvents="auto">
       <SidebarHeader onClose={onClose}>
         <View style={styles.taskSummarySlot}>
           <Text
-            style={styles.taskSummary}
+            style={styles.taskMeter}
             numberOfLines={1}
             accessibilityRole="header"
+            accessibilityLabel={label}
+            selectable={false}
             testID="task-sidebar-summary"
           >
-            {label}
+            {"tasks ["}
+            <Text style={styles.taskMeterFilled}>{meter.filled}</Text>
+            <Text style={styles.taskMeterEmpty}>{meter.empty}</Text>
+            {`] ${meter.count}`}
           </Text>
         </View>
       </SidebarHeader>
@@ -327,20 +341,22 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 0,
     paddingHorizontal: theme.spacing[1],
   },
-  taskSummary: {
+  // `tasks [|||......] 3/9`: mono, so the nine cells keep one width whatever is filled.
+  taskMeter: {
+    fontFamily: theme.fontFamily.mono,
     fontSize: theme.fontSize.base,
     fontWeight: theme.fontWeight.normal,
     color: theme.colors.foreground,
   },
-  // The Changes pane's empty state, the sibling in this sidebar.
-  emptyContainer: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingTop: theme.spacing[16],
+  taskMeterFilled: {
+    color: theme.colors.accent,
   },
-  emptyText: {
-    fontSize: theme.fontSize.lg,
+  taskMeterEmpty: {
+    color: theme.colors.foregroundExtraMuted,
+  },
+  noTasks: {
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.base,
     color: theme.colors.foregroundMuted,
   },
 }));

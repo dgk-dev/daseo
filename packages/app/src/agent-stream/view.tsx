@@ -113,6 +113,8 @@ import { useStableEvent } from "@/hooks/use-stable-event";
 import { useForkAgent } from "@/hooks/use-fork-agent";
 import { isNative, isWeb } from "@/constants/platform";
 import { useShellPromptParts } from "@/composer/input/use-shell-prompt-parts";
+import { LoginBanner } from "@/motd/login-banner";
+import { ToolRunClock } from "./terminal-duration";
 import { getStreamEdgeBleed, STREAM_CONTENT_INSET_PX, STREAM_ITEM_INSET_PX } from "./spacing";
 import type { Theme } from "@/styles/theme";
 import { recordRenderProfileReasons } from "@/utils/render-profiler";
@@ -202,6 +204,12 @@ function renderListEmptyComponent(input: {
   renderModel: AgentStreamRenderModel;
   emptyStateStyle: StyleProp<ViewStyle>;
   emptyText: string;
+  /**
+   * Daseo: a chat the user can write in shows the login banner at its top left instead of the
+   * centred line, once its history is known to be empty rather than still loading. A read-only
+   * stream keeps the text.
+   */
+  banner: { serverId: string; readOnly: boolean; historyReady: boolean };
 }): ReactNode {
   if (
     input.renderModel.boundary.hasVirtualizedHistory ||
@@ -211,6 +219,14 @@ function renderListEmptyComponent(input: {
     input.renderModel.auxiliary.turnFooter
   ) {
     return null;
+  }
+
+  if (!input.banner.readOnly && input.banner.historyReady) {
+    return (
+      <View style={stylesheet.emptyBanner}>
+        <LoginBanner serverId={input.banner.serverId} />
+      </View>
+    );
   }
 
   return (
@@ -1138,8 +1154,13 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           renderModel,
           emptyStateStyle,
           emptyText: t("agentStream.empty"),
+          banner: {
+            serverId: resolvedServerId,
+            readOnly,
+            historyReady: isAuthoritativeHistoryReady,
+          },
         }),
-      [renderModel, emptyStateStyle, t],
+      [renderModel, emptyStateStyle, t, resolvedServerId, readOnly, isAuthoritativeHistoryReady],
     );
 
     const { boundary, auxiliary } = renderModel;
@@ -1407,7 +1428,7 @@ AgentStreamView.displayName = "AgentStreamView";
 
 interface ToolCallSlotProps extends Omit<
   ComponentProps<typeof ToolCall>,
-  "onInlineDetailsExpandedChange" | "startedAt"
+  "onInlineDetailsExpandedChange" | "startedAt" | "ranForMs"
 > {
   itemId: string;
   /** The stream item's timestamp; it moves with every update of the call. */
@@ -1416,22 +1437,9 @@ interface ToolCallSlotProps extends Omit<
 }
 
 // Daseo delta 73: a tool call's item timestamp moves with every update, so the running
-// row counts its elapsed time from the first time this app saw the call running. The
-// entry goes when the call stops running, which keeps the map to the calls in flight.
-const runningSinceByItemId = new Map<string, number>();
-
-function pinRunningSince(itemId: string, running: boolean, seenAt: Date): number | undefined {
-  if (!running) {
-    runningSinceByItemId.delete(itemId);
-    return undefined;
-  }
-  let since = runningSinceByItemId.get(itemId);
-  if (since === undefined) {
-    since = Math.min(seenAt.getTime(), Date.now());
-    runningSinceByItemId.set(itemId, since);
-  }
-  return since;
-}
+// row counts its elapsed time from the first time this app saw the call running. When the
+// call ends, the same clock keeps how long it ran for the finished row's duration column.
+const toolRunClock = new ToolRunClock();
 
 function ToolCallSlot({
   itemId,
@@ -1444,11 +1452,12 @@ function ToolCallSlot({
     [onInlineDetailsExpandedChangeByItemId, itemId],
   );
   const running = rest.status === "running" || rest.status === "executing";
-  const startedAt = pinRunningSince(itemId, running, seenAt);
+  const { startedAt, ranForMs } = toolRunClock.observe({ itemId, running, seenAt });
   return (
     <ToolCall
       {...rest}
       startedAt={startedAt}
+      ranForMs={ranForMs}
       onInlineDetailsExpandedChange={handleExpandedChange}
     />
   );
@@ -1762,6 +1771,14 @@ const stylesheet = StyleSheet.create((theme) => ({
   streamItemWrapper: {
     width: "100%",
     paddingHorizontal: STREAM_ITEM_INSET_PX,
+  },
+  emptyBanner: {
+    flex: 1,
+    width: "100%",
+    alignItems: "flex-start",
+    justifyContent: "flex-start",
+    paddingHorizontal: STREAM_ITEM_INSET_PX,
+    paddingTop: theme.spacing[4],
   },
   emptyState: {
     flex: 1,

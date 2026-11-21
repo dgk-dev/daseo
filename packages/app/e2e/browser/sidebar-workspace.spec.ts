@@ -383,8 +383,10 @@ test.describe("Half-screen desktop layout", () => {
     await expect(page.getByTestId("sidebar-settings")).not.toBeVisible();
   });
 
-  // Daseo delta 101: the right sidebar holds the viewed session's task list.
-  test("yields app navigation to the task sidebar", async ({ page }) => {
+  // Daseo delta 101: the right sidebar holds the viewed session's task list. On the web it is the
+  // task rail, docked by default, and it yields first: in a window too narrow for both panels the
+  // navigation stays and the rail is not drawn until its toggle asks for it.
+  test("keeps app navigation and yields the docked task rail", async ({ page }) => {
     const workspace = await seedWorkspace({ repoPrefix: "sidebar-half-screen-explorer-" });
 
     try {
@@ -392,17 +394,23 @@ test.describe("Half-screen desktop layout", () => {
       await waitForSidebarProject(page, path.basename(workspace.repoPath));
       await openWorkspaceFromSidebar(page, workspace.workspaceId);
 
-      await page.getByTestId("workspace-explorer-toggle").first().click();
-      await expect(
-        page.getByTestId("task-sidebar-empty").filter({ visible: true }).first(),
-      ).toBeVisible();
-      await expect(page.getByTestId("workspace-explorer-toggle").first()).toBeVisible();
+      const toggle = page.getByTestId("workspace-explorer-toggle").first();
+      await expect(page.getByTestId("sidebar-global-new-workspace")).toBeVisible();
+      await expect(page.getByTestId("task-sidebar-empty")).toHaveCount(0);
+      await expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+      // Asking for the rail closes the navigation, which is what leaves it room.
+      await toggle.click();
+      const emptyLine = page.getByTestId("task-sidebar-empty").filter({ visible: true }).first();
+      await expect(emptyLine).toHaveText("no tasks");
+      await expect(toggle).toHaveAttribute("aria-expanded", "true");
       // Daseo delta 113: the header toggle is the panel's only control on wide layouts; no X.
       await expect(page.getByTestId("explorer-close")).toHaveCount(0);
       await expect(page.getByTestId("sidebar-global-new-workspace")).not.toBeVisible();
-
-      // The header-glyph-to-tab-glyph alignment check that sat here moved out with the tab kind
-      // icons (Daseo delta 112: tabs are text only); the tab row's own specs own its alignment.
+      // 240 wide, less the rail's 1px left border.
+      await expect
+        .poll(async () => (await page.getByTestId("explorer-header").first().boundingBox())?.width)
+        .toBe(239);
       await expect
         .poll(
           async () =>
@@ -410,9 +418,9 @@ test.describe("Half-screen desktop layout", () => {
         )
         .toBeGreaterThanOrEqual(400);
 
-      await page.getByTestId("workspace-explorer-toggle").first().click();
-      await expect(page.getByTestId("task-sidebar-empty")).not.toBeVisible();
-      await expect(page.getByTestId("workspace-explorer-toggle").first()).toBeVisible();
+      await toggle.click();
+      await expect(page.getByTestId("task-sidebar-empty")).toHaveCount(0);
+      await expect(toggle).toHaveAttribute("aria-expanded", "false");
     } finally {
       await workspace.cleanup();
     }

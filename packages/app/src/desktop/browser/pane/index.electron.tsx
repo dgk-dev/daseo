@@ -75,7 +75,7 @@ import {
   useBrowserStore,
 } from "@/desktop/browser/store";
 import {
-  applyInactiveBrowserWebviewViewport,
+  parkBrowserWebview,
   measureBrowserPresentationBounds,
   prepareBrowserWebview,
   presentBrowserWebview,
@@ -897,8 +897,7 @@ export function BrowserPane({
       if (isPresentedRef.current) {
         presentBrowserWebview(browserIdRef.current, webview, host, clip, currentViewport);
       } else {
-        applyInactiveBrowserWebviewViewport(browserIdRef.current, webview, currentViewport);
-        releaseResidentBrowserWebview(browserIdRef.current, webview);
+        parkBrowserWebview(browserIdRef.current, webview, currentViewport);
       }
     },
     [],
@@ -1108,10 +1107,13 @@ export function BrowserPane({
         popupBrowserId: null,
         visible: false,
       });
-      const browserStillExists = Boolean(
-        useBrowserStore.getState().browsersById[browserIdRef.current],
-      );
-      if (browserStillExists) {
+      const remainingBrowser = useBrowserStore.getState().browsersById[browserIdRef.current];
+      if (remainingBrowser && !mountedRef.current) {
+        // The pane is gone (its tab was hidden or moved): the tab is parked at its inactive size.
+        // `mountedRef` is cleared by an earlier effect's cleanup, which runs first on unmount.
+        parkBrowserWebview(browserIdRef.current, webview, remainingBrowser.viewport);
+      } else if (remainingBrowser) {
+        // This effect is only re-running: the pane still shows the tab, so its size stays.
         releaseResidentBrowserWebview(browserIdRef.current, webview);
       } else {
         removeResidentBrowserWebview(browserIdRef.current);

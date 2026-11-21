@@ -18,6 +18,7 @@ import { SidebarOrderStore } from "./sidebar-order/sidebar-order-store.js";
 import { ComposerDraftStore } from "./composer-draft/composer-draft-store.js";
 import { CommandListCache } from "./agent/command-list-cache.js";
 import { SlackScheduledReader } from "./slack-scheduled/slack-scheduled-reader.js";
+import { ClientLoginLog } from "./login-banner/login-banner.js";
 import {
   type ServerInfoStatusPayload,
   type SessionInboundMessage,
@@ -673,6 +674,8 @@ export class VoiceAssistantWebSocketServer {
   // Daseo delta 139: existing chats' composer drafts every device shares.
   private readonly composerDraftStore: ComposerDraftStore;
   private readonly slackScheduledReader: SlackScheduledReader;
+  /** Daseo: accepted client connections, for the login banner's "Last login" line. */
+  private readonly clientLoginLog = new ClientLoginLog();
   private readonly commandListCache: CommandListCache;
   // Daseo delta 79: History content search; null when this runtime cannot host it.
   private readonly historySearch: HistorySearchService | null | undefined;
@@ -1503,6 +1506,7 @@ export class VoiceAssistantWebSocketServer {
       sidebarOrderStore: this.sidebarOrderStore,
       composerDraftStore: this.composerDraftStore,
       slackScheduledReader: this.slackScheduledReader,
+      getPreviousLogin: () => this.clientLoginLog.previousFor(options.clientId),
       commandListCache: this.commandListCache,
       pushNotifications: this.pushNotifications,
       paseoHome: this.paseoHome,
@@ -1668,6 +1672,11 @@ export class VoiceAssistantWebSocketServer {
 
     const connectionLogger = pending.connectionLogger.child({ clientId });
     this.incrementRuntimeCounter("helloNew");
+    this.clientLoginLog.record({
+      clientId,
+      at: Date.now(),
+      from: getClientDebugCapability(message.capabilities ?? null)?.platform ?? null,
+    });
     const connection = this.createSessionConnection({
       ws,
       clientId,
@@ -1719,6 +1728,8 @@ export class VoiceAssistantWebSocketServer {
         composerDraftSync: true,
         // Local fork (delta 135): schedule.slack.list lists scheduled Slack messages, read-only.
         slackScheduledList: true,
+        // Local fork: daemon.get_login_banner.request reports host facts for the empty-chat banner.
+        loginBanner: true,
         // Local fork (delta 75): tailnet preview links, only when a base URL is configured.
         previewLinks: this.previewLinks?.isConfigured() === true,
         // Local fork (delta 90): links in agent answers resolve through fs.path.resolve.request.

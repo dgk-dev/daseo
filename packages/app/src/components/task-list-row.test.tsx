@@ -21,6 +21,26 @@ const { theme } = vi.hoisted(() => ({
 }));
 
 vi.mock("react-native", () => ({
+  Pressable: ({
+    children,
+    onPress,
+    testID,
+    accessibilityState,
+  }: React.PropsWithChildren<{
+    onPress?: () => void;
+    testID?: string;
+    accessibilityState?: { expanded?: boolean };
+  }>) =>
+    React.createElement(
+      "button",
+      {
+        type: "button",
+        onClick: onPress,
+        "data-testid": testID,
+        "aria-expanded": accessibilityState?.expanded,
+      },
+      children,
+    ),
   View: ({ children, ...props }: React.PropsWithChildren<Record<string, unknown>>) =>
     React.createElement("div", props, children),
   Text: ({
@@ -175,24 +195,45 @@ describe("TaskListRow in the task sidebar (Daseo delta 101)", () => {
     container.remove();
   });
 
-  it("puts the note on its own smaller muted line, without the state word", () => {
+  function press(): void {
+    const row = container.querySelector<HTMLElement>('[data-testid="task-sidebar-row"]');
+    act(() => row?.click());
+  }
+
+  it("is the subject on one line until it is pressed", () => {
     act(() => root.render(<TaskListRow task={decisionTask} variant="sidebar" />));
+
+    expect(renderedLines(container)).toEqual([
+      { text: "Pick a model", color: "#foreground", size: "16", lineHeight: "22" },
+    ]);
+    expect(marker(container)).toEqual({ text: "[?]", color: "#warning" });
+    expect(container.querySelector('[data-lines="1"]')?.textContent).toBe("Pick a model");
+    expect(container.querySelector("button")?.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("opens in place to the whole subject and the note, without the state word", () => {
+    act(() => root.render(<TaskListRow task={decisionTask} variant="sidebar" />));
+    press();
 
     expect(renderedLines(container)).toEqual([
       { text: "Pick a model", color: "#foreground", size: "16", lineHeight: "22" },
       { text: "Opus or Sonnet", color: "#muted", size: "14", lineHeight: "20" },
     ]);
-    expect(marker(container)).toEqual({ text: "[?]", color: "#warning" });
-    expect(container.querySelector('[data-lines="3"]')?.textContent).toBe("Pick a model");
+    expect(container.querySelector("[data-lines]")).toBeNull();
+    expect(container.querySelector("button")?.getAttribute("aria-expanded")).toBe("true");
+
+    press();
+    expect(renderedLines(container).map((line) => line.text)).toEqual(["Pick a model"]);
   });
 
-  it("shows what the task in progress is doing under its subject", () => {
+  it("shows what the task in progress is doing under its subject without a press", () => {
     act(() => root.render(<TaskListRow task={runningTask} variant="sidebar" />));
 
     expect(renderedLines(container).map((line) => line.text)).toEqual([
       "Run checks",
       "Running checks",
     ]);
+    expect(container.querySelectorAll('[data-lines="1"]')).toHaveLength(2);
   });
 
   it("shows a task without a note on one line", () => {

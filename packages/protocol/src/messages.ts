@@ -1379,6 +1379,13 @@ export const DiagnosticsRequestSchema = z.object({
   requestId: z.string(),
 });
 
+// Daseo: host facts for the login banner an empty chat shows (Ubuntu MOTD style). No arguments.
+// Gate on `server_info.features.loginBanner`.
+export const DaemonGetLoginBannerRequestSchema = z.object({
+  type: z.literal("daemon.get_login_banner.request"),
+  requestId: z.string(),
+});
+
 // Daseo delta 61: an app (the phone above all) hands its own errors to the daemon so they end
 // up in daemon.log next to the server's, where they can be read from the Mac.
 export const ClientDiagnosticsEventSchema = z.object({
@@ -3179,6 +3186,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   HubManagementDaemonDisconnectRequestSchema,
   DiagnosticsRequestSchema,
   ClientDiagnosticsReportRequestSchema,
+  DaemonGetLoginBannerRequestSchema,
   PluginCatalogGetRequestSchema,
   PluginListRequestSchema,
   PluginDirectoryInstallRequestSchema,
@@ -3518,6 +3526,8 @@ export const ServerInfoStatusPayloadSchema = z
         composerDraftSync: z.boolean().optional(),
         // Local fork (delta 135): schedule.slack.list lists scheduled Slack messages, read-only.
         slackScheduledList: z.boolean().optional(),
+        // Local fork: daemon.get_login_banner.request reports host facts for the empty-chat banner.
+        loginBanner: z.boolean().optional(),
         // Local fork (delta 75): fs.preview_link.create.request issues tailnet preview links;
         // true only when the host has a preview base URL configured.
         previewLinks: z.boolean().optional(),
@@ -5128,6 +5138,27 @@ export const ClientDiagnosticsReportResponseSchema = z.object({
   payload: z.object({
     requestId: z.string(),
     accepted: z.number().int().nonnegative(),
+  }),
+});
+
+// Every fact is optional: the daemon leaves out what it could not measure on its host, and the
+// app leaves out that line. Sizes are bytes, times are epoch milliseconds on the daemon's clock.
+export const DaemonGetLoginBannerResponseSchema = z.object({
+  type: z.literal("daemon.get_login_banner.response"),
+  payload: z.object({
+    requestId: z.string(),
+    /** `os.type()`, `os.release()`, `process.arch` of the daemon host, e.g. Darwin 27.2.0 arm64. */
+    os: z.object({ type: z.string(), release: z.string(), arch: z.string() }).optional(),
+    /** One-minute load average; absent where the OS has none (Windows). */
+    loadAverage1m: z.number().nonnegative().optional(),
+    /** Agents whose lifecycle is running right now. */
+    agentsRunning: z.number().int().nonnegative().optional(),
+    memory: z
+      .object({ usedBytes: z.number().nonnegative(), totalBytes: z.number().positive() })
+      .optional(),
+    swap: z.object({ usedBytes: z.number().nonnegative() }).optional(),
+    /** The client connection before this one, as far as this daemon process has seen. */
+    lastLogin: z.object({ at: z.number(), from: z.string().optional() }).optional(),
   }),
 });
 
@@ -6783,6 +6814,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   HubManagementDaemonDisconnectResponseSchema,
   DiagnosticsResponseSchema,
   ClientDiagnosticsReportResponseSchema,
+  DaemonGetLoginBannerResponseSchema,
   GetDaemonConfigResponseMessageSchema,
   SetDaemonConfigResponseMessageSchema,
   ReadProjectConfigResponseMessageSchema,
@@ -7062,6 +7094,9 @@ export type ClientDebugCollectRequest = z.infer<typeof ClientDebugCollectRequest
 export type ClientDebugCollectResponse = z.infer<typeof ClientDebugCollectResponseSchema>;
 export type ClientDebugCollectPayload = ClientDebugCollectResponse["payload"];
 export type ClientDiagnosticsReportResponse = z.infer<typeof ClientDiagnosticsReportResponseSchema>;
+export type DaemonLoginBannerPayload = z.infer<
+  typeof DaemonGetLoginBannerResponseSchema
+>["payload"];
 export type GetProvidersSnapshotResponseMessage = z.infer<
   typeof GetProvidersSnapshotResponseMessageSchema
 >;

@@ -395,6 +395,40 @@ const routedToolCases = [
     ],
   },
   {
+    name: "screenshot of a tab that follows its pane",
+    toolName: "browser_screenshot",
+    input: { browserId: BROWSER_ID },
+    command: { command: "screenshot", args: { browserId: BROWSER_ID, fullPage: false } },
+    payload: {
+      requestId: "req-follows-pane",
+      ok: true,
+      result: {
+        command: "screenshot",
+        browserId: BROWSER_ID,
+        mimeType: "image/png",
+        dataBase64: "iVBORw0KGgo=",
+        width: 912,
+        height: 640,
+        followsPane: { width: 912, height: 640 },
+      },
+    },
+    content: [
+      {
+        type: "text",
+        text: "Captured browser screenshot (912x640). The tab is shown in a pane in Responsive mode, so its viewport follows the visible pane (912x640); browser_resize gives it a fixed size.",
+      },
+      { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
+    ],
+    structuredResult: {
+      command: "screenshot",
+      browserId: BROWSER_ID,
+      mimeType: "image/png",
+      width: 912,
+      height: 640,
+      followsPane: { width: 912, height: 640 },
+    },
+  },
+  {
     name: "full page screenshot",
     toolName: "browser_screenshot",
     input: { browserId: BROWSER_ID, fullPage: true },

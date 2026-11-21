@@ -12,7 +12,8 @@ export function isTaskListInSidebar(input: {
 }
 
 /**
- * Whether the pinned right sidebar exists: wide layouts outside focus mode. Only it opens by itself
+ * Whether the pinned right sidebar (the task rail) exists: wide layouts outside focus mode. On the
+ * desktop app and the web it is docked by default; on the native wide layout it opens by itself
  * when a task list first appears (compact never does: the overlay would cover the chat).
  */
 export function hasPinnedTaskSidebar(input: {

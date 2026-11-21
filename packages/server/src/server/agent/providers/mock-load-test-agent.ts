@@ -188,6 +188,26 @@ function shouldEmitTurnFailure(prompt: AgentPromptInput): boolean {
   return /emit\s+(?:a\s+)?synthetic\s+turn\s+failure/i.test(promptToText(prompt));
 }
 
+/** `emit synthetic shell commands`: one command that exits 0 and one that exits 1. */
+function shouldEmitShellCommands(prompt: AgentPromptInput): boolean {
+  return /emit\s+synthetic\s+shell\s+commands/i.test(promptToText(prompt));
+}
+
+const SYNTHETIC_SHELL_COMMANDS: ReadonlyArray<{
+  command: string;
+  output: string;
+  exitCode: number;
+  runsForMs: number;
+}> = [
+  { command: "npm run typecheck", output: "Found 0 errors.\n", exitCode: 0, runsForMs: 1200 },
+  {
+    command: "npx vitest run state.test.ts",
+    output: "FAIL state.test.ts > clamps the width\n",
+    exitCode: 1,
+    runsForMs: 700,
+  },
+];
+
 function parseSettledAssistantImageMarkdown(prompt: AgentPromptInput): string | null {
   const match = /^emit settled assistant image markdown:\s*(!\[[^\]\r\n]*\]\(.+\))\s*$/i.exec(
     promptToText(prompt),
@@ -735,6 +755,8 @@ export class MockLoadTestAgentSession implements AgentSession {
     const scheduleTurn = () => {
       if (shouldEmitTurnFailure(prompt)) {
         this.scheduleFailedTurn(turn);
+      } else if (shouldEmitShellCommands(prompt)) {
+        this.scheduleShellCommandsTurn(turn, 0);
       } else if (this.streamingAssistantResponse !== null) {
         this.scheduleStreamingAssistantTurn(turn, this.streamingAssistantResponse);
       } else if (this.assistantResponse !== null) {
@@ -1021,6 +1043,61 @@ export class MockLoadTestAgentSession implements AgentSession {
         timeline: [],
         canceled: false,
       });
+    }, 0);
+    turn.timer.unref?.();
+  }
+
+  /** Runs the synthetic commands one after another, each for its own real time, then ends. */
+  private scheduleShellCommandsTurn(turn: ActiveTurn, index: number): void {
+    turn.timer = setTimeout(() => {
+      if (this.activeTurn !== turn) {
+        return;
+      }
+      this.emitTurnStarted(turn);
+      const command = SYNTHETIC_SHELL_COMMANDS[index];
+      if (!command) {
+        this.clearTurnTimer(turn);
+        this.activeTurn = null;
+        this.emit({ type: "turn_completed", provider: this.provider, turnId: turn.turnId });
+        turn.resolve({
+          sessionId: this.id,
+          finalText: "",
+          timeline: [],
+          canceled: false,
+        });
+        return;
+      }
+      const callId = `${turn.turnId}:bash:${index}`;
+      const detail: ToolCallDetail = { type: "shell", command: command.command };
+      this.emitTimeline(
+        turn.turnId,
+        createToolCall({ callId, name: "bash", status: "running", detail }),
+      );
+      turn.timer = setTimeout(() => {
+        if (this.activeTurn !== turn) {
+          return;
+        }
+        const finished: ToolCallDetail = {
+          ...detail,
+          output: command.output,
+          exitCode: command.exitCode,
+        };
+        this.emitTimeline(
+          turn.turnId,
+          command.exitCode === 0
+            ? createToolCall({ callId, name: "bash", status: "completed", detail: finished })
+            : {
+                type: "tool_call",
+                callId,
+                name: "bash",
+                status: "failed",
+                error: `Command exited with code ${command.exitCode}`,
+                detail: finished,
+              },
+        );
+        this.scheduleShellCommandsTurn(turn, index + 1);
+      }, command.runsForMs);
+      turn.timer.unref?.();
     }, 0);
     turn.timer.unref?.();
   }

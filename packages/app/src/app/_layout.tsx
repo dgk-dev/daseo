@@ -118,6 +118,7 @@ import { getDaemonStartService } from "@/runtime/daemon-start-service";
 import { applyAppearance } from "@/screens/settings/appearance/apply-appearance";
 import { applyRootUiFont } from "@/screens/settings/appearance/apply-root-font";
 import { selectIsAgentListOpen, usePanelStore } from "@/stores/panel-store";
+import { isTaskRailDockedByDefault } from "@/stores/panel-store/state";
 import { flushDraftPersistStorage } from "@/stores/draft-store";
 import {
   DEFAULT_UI_FONT_STACK,
@@ -572,7 +573,9 @@ function AppContainer({ children, chromeEnabled: chromeEnabledOverride }: AppCon
 
   const appContentMinimumWidth = resolveDesktopAppContentMinimum({
     isSettingsRoute: pathname.includes("/settings"),
-    isWorkspaceExplorerOpen: isWorkspaceRoute && isDesktopFileExplorerOpen,
+    // Where the rail is docked by default it yields first, so it never costs the navigation.
+    isWorkspaceExplorerOpen:
+      isWorkspaceRoute && isDesktopFileExplorerOpen && !isTaskRailDockedByDefault(isWeb),
     requestedExplorerWidth: explorerWidth,
     viewportWidth,
   });

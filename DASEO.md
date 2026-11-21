@@ -3283,6 +3283,161 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
      - **Key files:** `packages/server/src/server/schedule/service.ts` (`runNewAgentAttempt`, `resolveHeldModelFallback`), `service.test.ts` (describe "a held-back scheduled model runs on the fallback the refusal names (delta 141)").
      - Takes effect with the next release and daemon restart. pi-local's marker is live for every Pi process started after its change.
 
+142. **A running subagent looks like it is running; an empty chat is a login screen; a finished
+     command says how it ended** — the owner's picks on 2026-11-21 after the sketch ("1. C",
+     "3-1 동의", "3-2 굿"): the collapsed track was muted small text with no colour, motion or
+     time ("실행 중인데 실행 중으로 안 보인다"), and the centred new-session composer he had removed
+     before still came back on some paths ("아직도 종종 뜨는 경우 있어서 이번 김에 다 통일").
+     Palette, D2Coding, 0 px corners and the vocabulary of deltas 53, 55, 57, 73, 89 stand.
+     - **Subagents track (docker compose).** Header while anything runs:
+       `[+] Running 1/3  2min 13s`: `[+]` in `promptPath`, `Running N/M` bold in the text colour
+       (N = running, initializing or waiting in the background; M = every row), then the time
+       since the oldest running row was created, on screen from the start. Nothing running:
+       muted `[+] 3 subagents · done`, plus ` · 1 failed` in the destructive colour; when a row
+       waits on the user the line says ` · 1 waiting` (warning colour) instead of `done`. Rows:
+       a one-cell glyph, the label, the provider subtitle (now at most 30% of the row, was 45%),
+       a state word, a time. Running: a braille spinner and `Running` in the accent, live time.
+       Done: accent `✔`, muted `Done`. Error: destructive `✘` and `Error`. Needs a permission or
+       other input: `?` and `Waiting` in the warning colour. A cancelled provider subagent:
+       muted `-` and `Canceled`. A row's time counts from its creation; a finished row shows the
+       total up to its last activity (managed agent) or last descriptor update (provider
+       subagent) and no time when that end is unknown. The glyph replaces the provider icon and
+       loader in the row; the running cell keeps the loader's role and name (`progressbar`,
+       "Agent running"). Expand and collapse, opening a row's tab, archive, detach and
+       archive-finished are unchanged.
+     - **One timer.** `subagents/track-clock.ts` owns a single interval for every spinner and
+       elapsed time: 100 ms while a spinner is on screen, 1 s when only times are (collapsed
+       track, reduce motion), none without subscribers or while the panel is retained off
+       screen. Under reduce motion the running glyph is a static `⠿`. Only the glyph and time
+       texts re-render on a tick. The sidebar status loader and ring are untouched.
+     - **Empty chat.** The new-workspace screen (`/new`: global button, a project's new
+       workspace icon, worktree and local isolation, terminal launch, a host without worktree
+       support, the error fallback) puts its title, pickers and composer on the bottom prompt
+       line at the pane's left inset on every width; the centred 820 px column is gone
+       (`contentCentered`, `MAX_CONTENT_WIDTH`). The new-agent draft tab, which quick ask also
+       opens, already sat there. Both show the login banner at the top left of the empty
+       transcript area, and it leaves with the first message:
+
+       ```
+       Welcome to Daseo 0.5.150 (Darwin 27.2.0 arm64)
+
+         System load:  2.31          Agents running: 3
+         Memory usage: 71% of 32GB   Swap usage:     4.2GB
+
+       Last login: Sat Nov 21 14:02:11 2026 from android
+       ```
+
+       Muted, selectable, mono, no box; one pair per line on a phone. Every value is read when
+       the banner appears: the version from the app, the rest from the daemon through
+       `daemon.get_login_banner.request` (`server_info.features.loginBanner`; every payload
+       field optional). A value the host could not measure is left out with its label, and an
+       older daemon gives only the Welcome line. Memory is total minus what the kernel can hand
+       out without swapping (`vm_stat` free, inactive, speculative, purgeable on macOS;
+       `MemAvailable` on Linux; the free figure on Windows), not `os.freemem()`, which reads as
+       a full machine. Swap comes from `sysctl vm.swapusage` or `/proc/meminfo`; Windows has
+       neither swap nor load. `Last login` is the client connection accepted just before the
+       asking client's own, kept in memory by the daemon (`ClientLoginLog`, 32 entries), so it is
+       absent after a daemon restart; `from` is the platform the client declared in its
+       `debug_collect` capability and is dropped when it declared none. No usage-limit numbers.
+
+     - **Exit code and duration.** A finished shell row ends in `exit 0` (accent) or `exit N`
+       (destructive) and then its duration in muted text; other tools show only the duration,
+       after what they already show. The exit code is the provider's own number
+       (`detail.exitCode`); null or missing shows nothing and success is never read as 0. Pi
+       sends its result's `exitCode` or `code`, Codex its item's `exitCode`, Claude Code only
+       when its tool output object carries one. The duration is the tool's own figure where it
+       reports one (search, fetch); otherwise the time from when this app first saw the call
+       running (delta 73's pin) to the timestamp of the update that ended it (`ToolRunClock`),
+       so a call that was already finished when it arrived, every history row, shows none.
+       Format: `41.2s` under a minute, `1min 05s`, `1h 02min`; the running row's elapsed time
+       uses the same words (`13s`, `1min 05s`; it was `1m 5s`). Always visible, and the
+       command text truncates before it.
+     - **Screenshot note (for the task-rail delta).** The browser screenshot result has an
+       optional `followsPane {width,height}`; the daemon adds one sentence to the text result
+       when it is set.
+       Checks: `subagents/track-presentation.test.ts`, `subagents/track-clock.test.ts`,
+       `subagents/select.test.ts`, `agent-stream/terminal-duration.test.ts`, `motd/format.test.ts`,
+       server `login-banner/login-banner.test.ts` and `browser-tools/tools.test.ts`,
+       `e2e/browser/lane-a-running-rail.spec.ts` (mock provider prompt
+       `emit synthetic shell commands`; `RUNNING_RAIL_SHOTS_DIR` saves screenshots).
+       Key files: `packages/app/src/subagents/{track.tsx,track-presentation.ts,track-clock.ts,select.ts}`,
+       `packages/app/src/agent-stream/{terminal-duration.ts,view.tsx}`,
+       `packages/app/src/components/message.tsx`, `packages/app/src/motd/`,
+       `packages/app/src/screens/new-workspace-screen.tsx`,
+       `packages/app/src/composer/draft/workspace-tab.tsx`,
+       `packages/server/src/server/login-banner/login-banner.ts`,
+       `packages/server/src/server/{session.ts,websocket-server.ts}`,
+       `packages/protocol/src/messages.ts`, `packages/client/src/daemon-client.ts`.
+
+143. **The task list is a narrow rail that stays docked; a parked browser tab is 1280 wide again** — the
+     owner's pick on 2026-11-21 after the sketch of the right panel ("2. 권장대로": 너비 240, 넓은
+     화면에서는 항상 붙어 있음, 맨 위 진행 막대, 줄은 한 줄씩(누르면 펼침)), and the lead's finding
+     that an agent's screenshot of a background tab came out as narrow as the pane that last showed it.
+     Changes delta 101's Sidebar, Sections, and Auto-open paragraphs; delta 113 (no `X`) and delta 116
+     (checkbox markers) stand.
+     - **Width.** The right panel defaults to 240 and goes down to 200 (it was 400 and 280); the
+       maximum and the 400 minimum for the centre are unchanged, so at 1440 with both panels at
+       their defaults (320 and 240) the chat column is 880. Persisted `panel-state` version 14: a
+       stored width above 280 (the old minimum, so never a width chosen on the rail) becomes 240
+       once, a smaller one is clamped to 200; later resizes persist as before.
+     - **Docked.** On the desktop app and the web (`isTaskRailDockedByDefault`, the platforms whose
+       left sidebar defaults to 320) the panel is open by default, for every session, with or
+       without a list, and the same migration opens it once for an existing install. The header
+       toggle and `Cmd+E` close and reopen it and that choice persists globally, as before.
+       Nothing opens it by itself there any more (`opensTaskSidebarOnFirstList`): the hook that
+       opened it on a first live list does nothing on those platforms. The native wide layout (the
+       unfolded Fold, tablets) keeps delta 101's behaviour: closed by default, opened by its toggle
+       or once per session when a list first appears, with the same widths and rows. The compact
+       overlay is unchanged apart from the rows. Where the rail is docked by
+       default it yields first: when the left sidebar, the rail, and a 400 centre do not fit (below
+       960 wide at the defaults) the rail is not drawn and the navigation stays; its stored open
+       state stays true, so it returns when the window widens or the left sidebar closes
+       (`canDesktopTaskRailShare`). The toggle and `Cmd+E` then ask for it explicitly: the rail
+       opens and the left sidebar closes to make room; pressed again, the rail closes
+       (`resolveTaskRailToggle`). The toggle shows the rail as open only while it is drawn. On the
+       native wide layout the old rule stands (the navigation yields to an opened rail): on the
+       unfolded Fold, 875 wide, 260 + 240 + 400 never fit, so a yielding rail could not be opened.
+     - **Header.** `tasks [|||......] 3/9`: nine text cells, filled ones in the accent colour, done
+       over total with dropped tasks left out of both. Any progress shows at least one cell and
+       only a finished list fills the last (`resolveTaskMeter`). Assistive tech reads delta 95's
+       progress sentence. A tab without a list shows one muted line in the same place, `no tasks`,
+       and nothing below it (it was a centred "No task list yet").
+     - **Rows.** One line each: the marker and the subject, truncated. Pressing a row opens it in
+       place to the whole subject, what the task is doing now, and the agent's note; pressing again
+       closes it. The task in progress shows its "doing now" line without a press. Rows are
+       buttons with an expanded state.
+     - **Sections.** Same order. The rules carry one fixed English word each so they fit 200:
+       `── now · 1 ──`, `── ask · 2 ──` (warning colour), `── todo · 5 ──`, `── hold · 1 ──`. Done
+       and Dropped are no longer rules: each is one row of the list, `[x] 3 done ▸` and
+       `[-] 1 dropped ▸`, that opens its tasks below it and starts folded on every mount. Their
+       accessibility labels keep the translated section names.
+     - **Browser tab size.** A Responsive tab follows its pane only while that pane presents it.
+       When the pane hides it or unmounts, the tab returns to the resident 1280x800 instead of
+       keeping the last pane size (`parkBrowserWebview`; an effect re-run while the pane still
+       shows the tab keeps the size, so his view does not reflow). A fixed viewport, and
+       `browser_resize`, are unchanged. A tab that returns to a pane reflows to that pane, as it
+       did when the pane was resized.
+     - **Screenshot note.** When `browser_screenshot` captures a tab that a pane presents in
+       Responsive mode, the app adds `followsPane: { width, height }` to the result (an optional
+       protocol field; an older daemon drops it) and the daemon's text says the viewport follows
+       the visible pane (WxH) and that `browser_resize` gives a fixed size. No other change to the
+       capture.
+     - **Checks.** Unit: `stores/panel-store/state.test.ts` (widths, clamp, migration, docked
+       default), `components/desktop-sidebar-layout.test.ts` (880 at 1440, 200 minimum, rail
+       yields at 800 and 959, both at 960 and 1280, toggle effects), `task-sidebar/auto-open.test.ts`, `composer/task-list/rail.test.ts` (meter,
+       section words, row lines), `components/task-list-row.test.tsx` (press to open),
+       `desktop/browser/automation/screenshot-viewport.test.ts`; real Chromium:
+       `desktop/browser/resident-webviews.browser.test.ts` (parked size reset, fixed kept). E2E:
+       `e2e/browser/lane-b-task-rail.spec.ts` (docked at 240 with `no tasks`, live list, rows, a
+       list with every state injected into the session store for the screenshots, compact),
+       `sidebar-workspace.spec.ts` and `sidebar-resize-handle.spec.ts` updated for the docked rail.
+     - **Key files.** `packages/app/src/stores/panel-store/state.ts`, `index.ts`;
+       `task-sidebar/auto-open.ts`, `use-auto-open.ts`, `use-rail-room.ts`;
+       `components/desktop-sidebar-layout.ts`; `screens/workspace/workspace-screen.tsx` (toggle wiring); `composer/task-list/rail.ts`, `body.tsx`;
+       `components/task-list-row.tsx`, `explorer-sidebar.tsx`;
+       `desktop/browser/resident-webviews.ts`, `pane/index.electron.tsx`,
+       `automation/screenshot-viewport.ts`, `automation/handler.ts`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

@@ -8,8 +8,12 @@ import {
   buildExplorerTabForCheckoutPatch,
   buildOpenFileExplorerPatch,
   buildToggleFileExplorerPatch,
+  clampExplorerWidth,
+  DEFAULT_EXPLORER_SIDEBAR_WIDTH,
   DEFAULT_NATIVE_SIDEBAR_WIDTH,
   DEFAULT_SIDEBAR_WIDTH,
+  isTaskRailDockedByDefault,
+  MIN_EXPLORER_SIDEBAR_WIDTH,
   migratePanelState,
   selectIsAgentListOpen,
   selectIsFileExplorerOpen,
@@ -296,5 +300,56 @@ describe("panel-store explorer requests", () => {
     });
 
     expect(buildExplorerTabForCheckoutPatch(state, checkout)).toEqual({ explorerTab: "files" });
+  });
+});
+
+describe("panel-store task rail", () => {
+  it("is 240 wide by default and no narrower than 200", () => {
+    expect(DEFAULT_EXPLORER_SIDEBAR_WIDTH).toBe(240);
+    expect(MIN_EXPLORER_SIDEBAR_WIDTH).toBe(200);
+    expect(clampExplorerWidth(120)).toBe(200);
+    expect(clampExplorerWidth(200)).toBe(200);
+    expect(clampExplorerWidth(640)).toBe(640);
+    expect(clampExplorerWidth(Number.NaN)).toBe(200);
+  });
+
+  it("brings a stored width above the old minimum back to the default once", () => {
+    for (const isWeb of [true, false]) {
+      expect(migratePanelState({ explorerWidth: 400 }, 13, { isWeb }).explorerWidth).toBe(240);
+      expect(migratePanelState({ explorerWidth: 281 }, 13, { isWeb }).explorerWidth).toBe(240);
+      expect(migratePanelState({ explorerWidth: 1200 }, 13, { isWeb }).explorerWidth).toBe(240);
+      expect(migratePanelState({ explorerWidth: 280 }, 13, { isWeb }).explorerWidth).toBe(280);
+      expect(migratePanelState({ explorerWidth: 120 }, 13, { isWeb }).explorerWidth).toBe(200);
+    }
+  });
+
+  it("keeps a width chosen after the migration", () => {
+    expect(migratePanelState({ explorerWidth: 520 }, 14, { isWeb: true }).explorerWidth).toBe(520);
+    expect(migratePanelState({ explorerWidth: 210 }, 14, { isWeb: true }).explorerWidth).toBe(210);
+  });
+
+  it("leaves a state without a stored width to the store default", () => {
+    expect(migratePanelState({}, 13, { isWeb: true }).explorerWidth).toBeUndefined();
+  });
+
+  it("is docked by default on the desktop app and the web, not on the native wide layout", () => {
+    expect(isTaskRailDockedByDefault(true)).toBe(true);
+    expect(isTaskRailDockedByDefault(false)).toBe(false);
+  });
+
+  it("opens the rail once on the web and keeps the other sidebar choices", () => {
+    const closed = { agentListOpen: false, fileExplorerOpen: false, focusModeEnabled: true };
+    expect(migratePanelState({ desktop: closed }, 13, { isWeb: true }).desktop).toEqual({
+      agentListOpen: false,
+      fileExplorerOpen: true,
+      focusModeEnabled: true,
+    });
+    expect(migratePanelState({}, 13, { isWeb: true }).desktop?.fileExplorerOpen).toBe(true);
+  });
+
+  it("does not open it on native, and not again after the owner closed it", () => {
+    const closed = { agentListOpen: true, fileExplorerOpen: false, focusModeEnabled: false };
+    expect(migratePanelState({ desktop: closed }, 13, { isWeb: false }).desktop).toEqual(closed);
+    expect(migratePanelState({ desktop: closed }, 14, { isWeb: true }).desktop).toEqual(closed);
   });
 });

@@ -1,10 +1,10 @@
 import { memo, useCallback, useMemo, useState } from "react";
-import { View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { ChevronDown, ChevronRight } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
 import { Button } from "@/components/ui/button";
-import { TaskListRow } from "@/components/task-list-row";
+import { TaskListRow, TaskStateMarker } from "@/components/task-list-row";
 import { SidebarSectionHeader } from "@/components/sidebar/pinned-section-header";
 import { useSessionStore } from "@/stores/session-store";
 import type { TodoEntry } from "@/types/stream";
@@ -14,6 +14,7 @@ import {
   type TaskSection,
   type TaskSectionKey,
 } from "./sections";
+import { formatFoldedTaskSection, formatTaskSectionRule } from "./rail";
 import {
   formatTaskBoardLabel,
   summarizeTasks,
@@ -119,9 +120,9 @@ const SECTION_LABEL_KEYS = {
 const NO_EXPANDED_SECTIONS: ReadonlySet<TaskSectionKey> = new Set();
 
 /**
- * The task sidebar's list (wide layouts, Daseo delta 101): in progress, waiting on a decision, to
- * do, on hold, then done and dropped folded away. Sections with no task are left out, and done
- * and dropped start folded on every mount.
+ * The task rail's list (the right panel, Daseo delta 101): in progress, waiting on a decision, to
+ * do, on hold, then done and dropped each folded into one line. Sections with no task are left
+ * out, and done and dropped start folded on every mount.
  */
 export const TaskSectionsBody = memo(function TaskSectionsBody({
   tasks,
@@ -162,31 +163,72 @@ const TaskSectionBlock = memo(function TaskSectionBlock({
   collapsed: boolean;
   onToggle: (key: TaskSectionKey) => void;
 }) {
-  const { t } = useTranslation();
   const { key, tasks } = section;
-  const toggle = useCallback(() => onToggle(key), [onToggle, key]);
-  const title = `${t(SECTION_LABEL_KEYS[key]).toLowerCase()} · ${tasks.length}`;
+  const rows = collapsed ? null : (
+    <View style={styles.sectionRows}>
+      {tasks.map((task, index) => (
+        <TaskListRow key={task.id ?? `${index}:${task.text}`} task={task} variant="sidebar" />
+      ))}
+    </View>
+  );
 
+  if (isTaskSectionCollapsible(key)) {
+    return (
+      <View testID={`task-sidebar-section-${key}`}>
+        <FoldedSectionLine
+          sectionKey={key}
+          count={tasks.length}
+          collapsed={collapsed}
+          onToggle={onToggle}
+        />
+        {rows}
+      </View>
+    );
+  }
   return (
     <View testID={`task-sidebar-section-${key}`}>
       <SidebarSectionHeader
-        title={title}
+        title={formatTaskSectionRule(key, tasks.length)}
         tone={key === "decision" ? "warning" : undefined}
-        collapsed={collapsed}
-        onToggle={isTaskSectionCollapsible(key) ? toggle : undefined}
-        alwaysShowState
         testID={`task-sidebar-section-${key}-header`}
       />
-      {collapsed ? null : (
-        <View style={styles.sectionRows}>
-          {tasks.map((task, index) => (
-            <TaskListRow key={task.id ?? `${index}:${task.text}`} task={task} variant="sidebar" />
-          ))}
-        </View>
-      )}
+      {rows}
     </View>
   );
 });
+
+/** Done and dropped as one row of the list: `[x] 3 done ▸`. Pressing it opens the tasks below. */
+function FoldedSectionLine({
+  sectionKey,
+  count,
+  collapsed,
+  onToggle,
+}: {
+  sectionKey: TaskSectionKey;
+  count: number;
+  collapsed: boolean;
+  onToggle: (key: TaskSectionKey) => void;
+}) {
+  const { t } = useTranslation();
+  const toggle = useCallback(() => onToggle(sectionKey), [onToggle, sectionKey]);
+  const accessibilityState = useMemo(() => ({ expanded: !collapsed }), [collapsed]);
+  return (
+    <Pressable
+      onPress={toggle}
+      style={styles.foldedLine}
+      accessibilityRole="button"
+      accessibilityState={accessibilityState}
+      aria-expanded={!collapsed}
+      accessibilityLabel={`${t(SECTION_LABEL_KEYS[sectionKey])} · ${count}`}
+      testID={`task-sidebar-section-${sectionKey}-header`}
+    >
+      <TaskStateMarker state={sectionKey} variant="sidebar" />
+      <Text style={styles.foldedText} numberOfLines={1} selectable={false}>
+        {formatFoldedTaskSection(sectionKey, count, collapsed)}
+      </Text>
+    </Pressable>
+  );
+}
 
 const styles = StyleSheet.create((theme) => ({
   list: {
@@ -212,15 +254,31 @@ const styles = StyleSheet.create((theme) => ({
     paddingBottom: theme.spacing[1],
     gap: theme.spacing[1],
   },
-  // The header's own inset (spacing[2]) plus this one puts the rule, the icons, and the summary
-  // line above them on one rail.
+  // The header's own inset (spacing[2]) plus this one puts the rule, the markers, and the meter
+  // above them on one rail.
   sections: {
     paddingHorizontal: theme.spacing[1],
-    paddingTop: theme.spacing[2],
+    paddingTop: theme.spacing[1],
     paddingBottom: theme.spacing[6],
-    gap: theme.spacing[4],
   },
   sectionRows: {
     paddingHorizontal: theme.spacing[2],
+  },
+  // A row of the list (the rows' inset, gap, and line), so it reads as the list's last lines.
+  foldedLine: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: theme.spacing[2],
+    paddingHorizontal: theme.spacing[2],
+    paddingVertical: theme.spacing[1],
+    userSelect: "none",
+  },
+  foldedText: {
+    flex: 1,
+    minWidth: 0,
+    color: theme.colors.foregroundMuted,
+    fontFamily: theme.fontFamily.mono,
+    fontSize: theme.fontSize.base,
+    lineHeight: Math.round(theme.fontSize.base * 1.4),
   },
 }));

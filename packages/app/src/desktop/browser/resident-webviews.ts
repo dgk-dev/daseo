@@ -442,15 +442,47 @@ function applyBrowserWebviewDimensions(
   webview.style.height = `${Math.max(1, Math.round(dimensions.height))}px`;
 }
 
+/**
+ * Sizes a tab no pane presents. A fixed viewport keeps its size. A Responsive one only follows a
+ * pane while that pane shows it: once parked it returns to the resident default (1280x800), so a
+ * capture of a background tab does not inherit the width of whatever pane last showed it.
+ */
 export function applyInactiveBrowserWebviewViewport(
   browserId: string,
   webview: HTMLElement,
   viewport: BrowserViewport,
 ): void {
+  const normalizedBrowserId = trimNonEmpty(browserId);
   if (viewport.mode === "fixed") {
     rememberBrowserWebviewSize({ browserId, width: viewport.width, height: viewport.height });
+  } else if (normalizedBrowserId) {
+    residentWebviewSizesByBrowserId.delete(normalizedBrowserId);
   }
-  applyResidentWebviewStyle(webview, trimNonEmpty(browserId));
+  applyResidentWebviewStyle(webview, normalizedBrowserId);
+}
+
+/** Parks a tab its pane stopped presenting (hidden, or the pane unmounted) at its inactive size. */
+export function parkBrowserWebview(
+  browserId: string,
+  webview: HTMLElement,
+  viewport: BrowserViewport,
+): void {
+  applyInactiveBrowserWebviewViewport(browserId, webview, viewport);
+  releaseResidentBrowserWebview(browserId, webview);
+}
+
+/**
+ * The size of the pane a tab is presented in right now, or null when no pane shows it. A
+ * Responsive tab's viewport is this size for as long as it is presented.
+ */
+export function getPresentedBrowserPaneSize(
+  browserId: string,
+): { width: number; height: number } | null {
+  const normalizedBrowserId = trimNonEmpty(browserId);
+  if (!normalizedBrowserId || !reportedPresentationByBrowserId.get(normalizedBrowserId)) {
+    return null;
+  }
+  return residentWebviewSizesByBrowserId.get(normalizedBrowserId) ?? null;
 }
 
 export function measureBrowserPresentationBounds(

@@ -93,6 +93,7 @@ import type {
   DaemonConfigReloadResponse,
   DiagnosticsResponse,
   ClientDiagnosticsEvent,
+  DaemonLoginBannerPayload,
   ClientDebugCollectResponse,
   AgentRewindResponseMessage,
   ListTerminalsResponse,
@@ -5267,6 +5268,18 @@ export class DaemonClient {
       message: {
         type: "diagnostics.request",
       },
+    });
+  }
+
+  /**
+   * Daseo: host facts for the empty-chat login banner. Call only when
+   * server_info.features.loginBanner is true; facts the host could not measure are absent.
+   */
+  async getLoginBanner(requestId?: string): Promise<DaemonLoginBannerPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"daemon.get_login_banner.response">({
+      requestId,
+      message: { type: "daemon.get_login_banner.request" },
+      timeout: 10_000,
     });
   }
 

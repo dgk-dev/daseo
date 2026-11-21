@@ -5,7 +5,15 @@ import type { TodoEntry } from "@/types/stream";
  * opens by itself once when a task list first appears live in the session being viewed. Opening a
  * session that already has a list, switching tabs, reloading, and history pages never open it, and
  * after it opened once for a session the owner's toggle wins.
+ *
+ * Where the rail is docked by default (the desktop app and the web) it is already open for every
+ * session, so nothing opens it there: the owner's toggle is the only thing that changes it.
  */
+
+/** Whether a first live task list opens the right panel on this platform's wide layout. */
+export function opensTaskSidebarOnFirstList(input: { dockedByDefault: boolean }): boolean {
+  return !input.dockedByDefault;
+}
 
 /** How many sessions remember that the sidebar already opened for them. Oldest are forgotten. */
 export const AUTO_OPENED_SESSION_LIMIT = 500;

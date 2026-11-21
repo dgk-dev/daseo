@@ -2357,7 +2357,10 @@ function summarizeBrowserMediaSuccess(
   result: Extract<BrowserToolsResponsePayload, { ok: true }>["result"],
 ): string | null {
   if (result.command === "screenshot") {
-    return `Captured browser screenshot (${result.width}x${result.height}).`;
+    const captured = `Captured browser screenshot (${result.width}x${result.height}).`;
+    return result.followsPane
+      ? `${captured} The tab is shown in a pane in Responsive mode, so its viewport follows the visible pane (${result.followsPane.width}x${result.followsPane.height}); browser_resize gives it a fixed size.`
+      : captured;
   }
   if (result.command === "upload") {
     const count = result.filePaths.length;

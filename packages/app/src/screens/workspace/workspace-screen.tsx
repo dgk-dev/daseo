@@ -54,6 +54,7 @@ import {
 } from "@/components/ui/floating-panel-portal";
 import { ExplorerSidebar } from "@/components/explorer-sidebar";
 import { useTaskSidebarAutoOpen } from "@/task-sidebar/use-auto-open";
+import { useIsTaskPanelShown, useToggleTaskPanel } from "@/task-sidebar/use-rail-room";
 import { hasPinnedTaskSidebar } from "@/task-sidebar/layout";
 import { resolveViewedAgentId } from "@/task-sidebar/viewed-agent";
 import { SplitContainer } from "@/components/split-container";
@@ -65,7 +66,7 @@ import { HEADER_WORDS, HeaderWord } from "@/screens/workspace/header-word";
 import { ImportSessionSheet } from "@/components/import-session-sheet";
 import { useToast } from "@/contexts/toast-context";
 import { getOrCreateClientId } from "@/utils/client-id";
-import { selectIsFileExplorerOpen, usePanelStore } from "@/stores/panel-store";
+import { usePanelStore } from "@/stores/panel-store";
 import { traceInstant } from "@/performance/native-trace";
 import { useSessionStore, type WorkspaceDescriptor } from "@/stores/session-store";
 import {
@@ -1970,16 +1971,11 @@ function WorkspaceScreenContent({
     checkoutState: workspaceHeaderCheckoutState,
   });
 
-  const isExplorerOpen = usePanelStore((state) =>
-    selectIsFileExplorerOpen(state, { isCompact: isMobile }),
-  );
-  const toggleFileExplorerForLayout = usePanelStore((state) => state.toggleFileExplorerForLayout);
+  // Daseo delta 101: the right panel holds the task list, which needs no workspace directory. On
+  // wide layouts it is the docked rail, shown only while it has room beside the left sidebar.
+  const isExplorerOpen = useIsTaskPanelShown(isMobile);
+  const handleToggleExplorer = useToggleTaskPanel(isMobile);
   const showMobileAgent = usePanelStore((state) => state.showMobileAgent);
-
-  // Daseo delta 101: the right panel holds the task list, which needs no workspace directory.
-  const handleToggleExplorer = useCallback(() => {
-    toggleFileExplorerForLayout({ isCompact: isMobile });
-  }, [isMobile, toggleFileExplorerForLayout]);
 
   const explorerToggleAccessibilityState = useMemo(
     () => ({ expanded: isExplorerOpen }),

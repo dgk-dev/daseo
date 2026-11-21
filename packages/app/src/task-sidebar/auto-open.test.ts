@@ -3,6 +3,7 @@ import type { TodoEntry } from "@/types/stream";
 import {
   buildTaskSessionKey,
   isLiveTaskListFirstAppearance,
+  opensTaskSidebarOnFirstList,
   rememberAutoOpenedSession,
   shouldAutoOpenTaskSidebar,
   type TaskSidebarObservation,
@@ -209,5 +210,12 @@ describe("task sidebar auto-open (Daseo delta 101)", () => {
   it("keeps the remembered sessions bounded, newest last", () => {
     expect(rememberAutoOpenedSession(["a", "b", "c"], "b", 3)).toEqual(["a", "c", "b"]);
     expect(rememberAutoOpenedSession(["a", "b", "c"], "d", 3)).toEqual(["b", "c", "d"]);
+  });
+
+  it("opens on a first list only where the rail is not docked by default", () => {
+    // The desktop app and the web keep the rail docked for every session; the native wide layout
+    // (an unfolded Fold, a tablet) still opens it on a first live list.
+    expect(opensTaskSidebarOnFirstList({ dockedByDefault: true })).toBe(false);
+    expect(opensTaskSidebarOnFirstList({ dockedByDefault: false })).toBe(true);
   });
 });

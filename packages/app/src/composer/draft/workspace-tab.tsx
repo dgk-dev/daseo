@@ -9,6 +9,7 @@ import { useContainerWidthBelow } from "@/hooks/use-container-width";
 import invariant from "tiny-invariant";
 import { Composer } from "@/composer";
 import { FileDropZone } from "@/components/file-drop/file-drop-zone";
+import { LoginBanner } from "@/motd/login-banner";
 import { ComposerImportPill } from "@/composer/draft/import-pill";
 import { AgentStreamView } from "@/agent-stream/view";
 import { composerWorkspaceAttachment } from "@/composer/attachments/workspace";
@@ -670,6 +671,9 @@ export function WorkspaceDraftAgentTab({
         ) : (
           <ScrollView style={styles.scrollView} contentContainerStyle={styles.configScrollContent}>
             <View style={styles.configSection}>
+              <View style={styles.bannerInset}>
+                <LoginBanner serverId={serverId} />
+              </View>
               {formErrorMessage ? (
                 <View style={styles.errorContainer}>
                   <Text style={styles.errorText}>{formErrorMessage}</Text>
@@ -746,6 +750,10 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing[4],
     paddingTop: theme.spacing[4],
     paddingBottom: theme.spacing[6],
+  },
+  // With the scroll content's own padding this is the prompt line's left inset on wide panes.
+  bannerInset: {
+    paddingHorizontal: { xs: 0, md: theme.spacing[2] },
   },
   configSection: {
     gap: theme.spacing[3],
