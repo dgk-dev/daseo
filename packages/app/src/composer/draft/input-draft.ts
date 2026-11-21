@@ -22,6 +22,7 @@ import {
 } from "@/provider-selection/provider-selection";
 import { useDraftStore, waitForDraftStoreHydration } from "@/stores/draft-store";
 import { toDraftInputIfReady } from "@/stores/draft-store/state";
+import { composerActivity } from "@/composer/draft-sync/composer-activity";
 
 type AttachmentUpdater =
   | UserComposerAttachment[]
@@ -85,6 +86,10 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
   const attachmentFocusRequestId = useDraftStore(
     (state) => state.attachmentFocusRequestByDraftKey[draftKey] ?? 0,
   );
+  // Daseo delta 139: a draft synced from another device asks the editor to take the new text.
+  const syncedReplacementRevision = useDraftStore(
+    (state) => state.textReplacementRequestByDraftKey[draftKey] ?? 0,
+  );
   const [hydratedDraftKey, setHydratedDraftKey] = useState<string | null>(null);
   const [textReplacementRevision, setTextReplacementRevision] = useState(0);
   const text = draft?.text ?? "";
@@ -112,17 +117,19 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
 
   const editText = useCallback(
     (nextText: string) => {
+      composerActivity.noteLocalEdit(draftKey);
       saveDraft((current) => ({ ...current, text: nextText }));
     },
-    [saveDraft],
+    [draftKey, saveDraft],
   );
 
   const replaceText = useCallback(
     (nextText: string) => {
+      composerActivity.noteLocalEdit(draftKey);
       saveDraft((current) => ({ ...current, text: nextText }));
       setTextReplacementRevision((revision) => revision + 1);
     },
-    [saveDraft],
+    [draftKey, saveDraft],
   );
 
   const setAttachments = useCallback(
@@ -280,7 +287,7 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
     text,
     editText,
     replaceText,
-    textReplacementKey: `${draftKey}:${textReplacementRevision}`,
+    textReplacementKey: `${draftKey}:${textReplacementRevision}:${syncedReplacementRevision}`,
     attachments,
     setAttachments,
     clear,

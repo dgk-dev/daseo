@@ -112,6 +112,9 @@ import type {
   WorkspaceRecoveryState,
   PluginListItem,
   SidebarOrder,
+  ComposerDraft,
+  ComposerDraftAttachment,
+  ComposerDraftThumbnail,
 } from "@getpaseo/protocol/messages";
 import type {
   AgentPermissionRequest,
@@ -282,6 +285,10 @@ export type DaemonEvent =
       payload: Extract<SessionOutboundMessage, { type: "sidebar.order.update" }>["payload"];
     }
   | {
+      type: "composer.draft.update";
+      payload: Extract<SessionOutboundMessage, { type: "composer.draft.update" }>["payload"];
+    }
+  | {
       type: "workspace_setup_progress";
       workspaceId: string;
       payload: Extract<SessionOutboundMessage, { type: "workspace_setup_progress" }>["payload"];
@@ -378,6 +385,20 @@ export class AgentCommandDeliveryUnknownError extends Error {
     super("The command may have reached the host, but its receipt was not observed.", { cause });
     this.name = "AgentCommandDeliveryUnknownError";
     this.commandId = commandId;
+  }
+}
+
+/**
+ * Daseo delta 139: a composer.draft.* request the host refused. `code` is "agent_not_found" when
+ * the chat no longer exists (the client stops syncing it); null for other failures.
+ */
+export class ComposerDraftRequestError extends Error {
+  readonly code: string | null;
+
+  constructor(message: string, code: string | null) {
+    super(message);
+    this.name = "ComposerDraftRequestError";
+    this.code = code;
   }
 }
 
@@ -2596,6 +2617,92 @@ export class DaemonClient {
       responseType: "sidebar.order.get.response",
     });
     return payload.order;
+  }
+
+  /**
+   * Daseo delta 139: stored composer drafts of existing chats (all, or only `agentIds`), cleared
+   * ones included. Also subscribes this connection to `composer.draft.update`. Send only when
+   * server_info.features.composerDraftSync is true.
+   */
+  async listComposerDrafts(
+    options: {
+      agentIds?: readonly string[];
+      /** agentId -> revision already held; drafts still at it are left out of the answer. */
+      knownRevisions?: Record<string, number>;
+    } = {},
+  ): Promise<ComposerDraft[]> {
+    const payload = await this.sendCorrelatedSessionRequest({
+      message: {
+        type: "composer.draft.list.request",
+        ...(options.agentIds ? { agentIds: [...options.agentIds] } : {}),
+        ...(options.knownRevisions ? { knownRevisions: { ...options.knownRevisions } } : {}),
+      },
+      responseType: "composer.draft.list.response",
+    });
+    if (payload.error !== null) throw new Error(payload.error);
+    return payload.drafts;
+  }
+
+  /** Daseo delta 139: stores a chat's draft (last writer wins); every device gets it pushed. */
+  async setComposerDraft(input: {
+    agentId: string;
+    text: string;
+    attachments: ComposerDraftAttachment[];
+    clientId: string;
+    baseRevision?: number;
+  }): Promise<ComposerDraft> {
+    const payload = await this.sendCorrelatedSessionRequest({
+      message: { type: "composer.draft.set.request", ...input },
+      responseType: "composer.draft.set.response",
+    });
+    if (payload.error !== null || payload.draft === null) {
+      throw new ComposerDraftRequestError(
+        payload.error ?? "Composer draft was not stored",
+        payload.errorCode ?? null,
+      );
+    }
+    return payload.draft;
+  }
+
+  /**
+   * Daseo delta 139: clears a chat's draft while it is still at `revision`; a draft written since
+   * survives and comes back as `draft` with `cleared: false`.
+   */
+  async clearComposerDraft(input: {
+    agentId: string;
+    clientId: string;
+    revision: number;
+  }): Promise<{ draft: ComposerDraft | null; cleared: boolean }> {
+    const payload = await this.sendCorrelatedSessionRequest({
+      message: { type: "composer.draft.clear.request", ...input },
+      responseType: "composer.draft.clear.response",
+    });
+    if (payload.error !== null) {
+      throw new ComposerDraftRequestError(payload.error, payload.errorCode ?? null);
+    }
+    return { draft: payload.draft, cleared: payload.cleared };
+  }
+
+  /** Daseo delta 139: stores an uploaded image's thumbnail once, next to the upload. */
+  async setComposerDraftThumbnail(input: {
+    uploadId: string;
+    thumbnail: ComposerDraftThumbnail;
+  }): Promise<void> {
+    const payload = await this.sendCorrelatedSessionRequest({
+      message: { type: "composer.draft.set_thumbnail.request", ...input },
+      responseType: "composer.draft.set_thumbnail.response",
+    });
+    if (payload.error !== null) throw new Error(payload.error);
+  }
+
+  /** Daseo delta 139: an uploaded image's thumbnail, or null when the host has none. */
+  async getComposerDraftThumbnail(uploadId: string): Promise<ComposerDraftThumbnail | null> {
+    const payload = await this.sendCorrelatedSessionRequest({
+      message: { type: "composer.draft.get_thumbnail.request", uploadId },
+      responseType: "composer.draft.get_thumbnail.response",
+    });
+    if (payload.error !== null) throw new Error(payload.error);
+    return payload.thumbnail;
   }
 
   /**
@@ -6661,6 +6768,8 @@ export class DaemonClient {
         return { type: "project.update", payload: msg.payload };
       case "sidebar.order.update":
         return { type: "sidebar.order.update", payload: msg.payload };
+      case "composer.draft.update":
+        return { type: "composer.draft.update", payload: msg.payload };
       case "workspace_setup_progress":
         return {
           type: "workspace_setup_progress",

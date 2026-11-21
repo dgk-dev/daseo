@@ -1,5 +1,6 @@
 import { collectRetainedAttachmentIds } from "@/attachments/gc-retention";
 import { getAttachmentStore } from "@/attachments/store";
+import { hostUploadThumbnails } from "@/attachments/host-upload-thumbnails";
 import type { AttachmentMetadata, SaveAttachmentInput } from "@/attachments/types";
 import {
   encodeImageAttachmentForSend,
@@ -127,6 +128,10 @@ export async function encodeAttachmentsForSend(
   return await Promise.all(
     attachments.map(async (attachment) => {
       try {
+        if (attachment.storageType === "host-upload") {
+          // Sent by upload id (delta 139); only a host without image uploads would land here.
+          throw new Error("This image is stored on the host. Update Paseo on the host to send it.");
+        }
         const encoded = await encodeImageAttachmentForSend({ attachment, store });
         if (!encoded.data.trim()) {
           throw new Error("Attachment bytes are empty.");
@@ -155,6 +160,18 @@ export async function findAttachmentsSentAsStill(
 }
 
 export async function resolveAttachmentPreviewUrl(attachment: AttachmentMetadata): Promise<string> {
+  if (attachment.storageType === "host-upload") {
+    // Daseo delta 139: an image attached on another device previews as its thumbnail, fetched
+    // from the host once per upload and cached.
+    const upload = attachment.hostUpload;
+    if (!upload?.thumbnail || !upload.serverId) {
+      throw new Error("This image was attached on another device without a preview.");
+    }
+    return await hostUploadThumbnails.resolve({
+      serverId: upload.serverId,
+      uploadId: upload.uploadId,
+    });
+  }
   const store = await getAttachmentStore();
   return await store.resolvePreviewUrl({ attachment });
 }
@@ -163,6 +180,7 @@ export async function releaseAttachmentPreviewUrl(input: {
   attachment: AttachmentMetadata;
   url: string;
 }): Promise<void> {
+  if (input.attachment.storageType === "host-upload") return;
   const store = await getAttachmentStore();
   if (!store.releasePreviewUrl) {
     return;
@@ -173,12 +191,14 @@ export async function releaseAttachmentPreviewUrl(input: {
 export async function deleteAttachments(
   attachments: readonly AttachmentMetadata[] | undefined,
 ): Promise<void> {
-  if (!attachments || attachments.length === 0) {
+  // Bytes of an image attached on another device live on the host, not in this device's store.
+  const local = attachments?.filter((attachment) => attachment.storageType !== "host-upload");
+  if (!local || local.length === 0) {
     return;
   }
   const store = await getAttachmentStore();
   await Promise.all(
-    attachments.map(async (attachment) => {
+    local.map(async (attachment) => {
       try {
         await store.delete({ attachment });
       } catch (error) {

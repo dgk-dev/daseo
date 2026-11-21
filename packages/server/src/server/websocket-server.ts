@@ -15,6 +15,7 @@ import type { ScheduleService } from "./schedule/service.js";
 import type { CheckoutDiffManager, CheckoutDiffMetrics } from "./checkout-diff-manager.js";
 import type { DaemonConfigStore, MutableDaemonConfig } from "./daemon-config-store.js";
 import { SidebarOrderStore } from "./sidebar-order/sidebar-order-store.js";
+import { ComposerDraftStore } from "./composer-draft/composer-draft-store.js";
 import { CommandListCache } from "./agent/command-list-cache.js";
 import { SlackScheduledReader } from "./slack-scheduled/slack-scheduled-reader.js";
 import {
@@ -576,6 +577,33 @@ function requireWebSocketServices(params: {
 /**
  * WebSocket server that only accepts sockets + parses/forwards messages to the session layer.
  */
+/**
+ * Daseo delta 139: the composer draft store every session shares (bootstrap passes the one the
+ * upload sweep reads pins from). A deleted agent's draft goes with it; an archived agent keeps its
+ * record and its draft.
+ */
+function attachComposerDraftStore(input: {
+  store: ComposerDraftStore | null | undefined;
+  paseoHome: string;
+  agentStorage: AgentStorage;
+  logger: pino.Logger;
+}): ComposerDraftStore {
+  const store =
+    input.store ??
+    new ComposerDraftStore({
+      filePath: join(input.paseoHome, "composer-drafts.json"),
+      paseoHome: input.paseoHome,
+      logger: input.logger,
+    });
+  input.agentStorage.onRecordChanged((agentId, record) => {
+    if (record !== null) return;
+    void store.remove(agentId).catch((error: unknown) => {
+      input.logger.warn({ err: error, agentId }, "Failed to remove a deleted agent's draft");
+    });
+  });
+  return store;
+}
+
 export class VoiceAssistantWebSocketServer {
   private readonly logger: pino.Logger;
   private readonly wss: WebSocketServer;
@@ -642,6 +670,8 @@ export class VoiceAssistantWebSocketServer {
   private readonly previewLinks: PreviewLinkService | null;
   // Daseo delta 133: the sidebar order every device shows.
   private readonly sidebarOrderStore: SidebarOrderStore;
+  // Daseo delta 139: existing chats' composer drafts every device shares.
+  private readonly composerDraftStore: ComposerDraftStore;
   private readonly slackScheduledReader: SlackScheduledReader;
   private readonly commandListCache: CommandListCache;
   // Daseo delta 79: History content search; null when this runtime cannot host it.
@@ -700,6 +730,7 @@ export class VoiceAssistantWebSocketServer {
     clientDebugBroker?: ClientDebugBroker | null,
     previewLinks?: PreviewLinkService | null,
     historySearch?: HistorySearchService | null,
+    composerDraftStore?: ComposerDraftStore | null,
   ) {
     this.logger = logger.child({ module: "websocket-server" });
     this.workspaceSetupRuntime = workspaceSetupRuntime;
@@ -783,6 +814,12 @@ export class VoiceAssistantWebSocketServer {
     this.pushNotificationSender = pushNotificationSender ?? this.pushNotifications;
     this.sidebarOrderStore = new SidebarOrderStore({
       filePath: join(paseoHome, "sidebar-order.json"),
+      logger: this.logger,
+    });
+    this.composerDraftStore = attachComposerDraftStore({
+      store: composerDraftStore,
+      paseoHome,
+      agentStorage,
       logger: this.logger,
     });
     this.slackScheduledReader = new SlackScheduledReader({ logger: this.logger });
@@ -1464,6 +1501,7 @@ export class VoiceAssistantWebSocketServer {
       previewLinks: this.previewLinks,
       historySearch: this.historySearch,
       sidebarOrderStore: this.sidebarOrderStore,
+      composerDraftStore: this.composerDraftStore,
       slackScheduledReader: this.slackScheduledReader,
       commandListCache: this.commandListCache,
       pushNotifications: this.pushNotifications,
@@ -1677,6 +1715,8 @@ export class VoiceAssistantWebSocketServer {
         discardEmptyWorkspace: true,
         // Local fork (delta 133): sidebar.order.* keeps one sidebar order for every device.
         sidebarOrderSync: true,
+        // Local fork (delta 139): composer.draft.* keeps existing chats' drafts for every device.
+        composerDraftSync: true,
         // Local fork (delta 135): schedule.slack.list lists scheduled Slack messages, read-only.
         slackScheduledList: true,
         // Local fork (delta 75): tailnet preview links, only when a base URL is configured.

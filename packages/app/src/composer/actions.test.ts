@@ -888,6 +888,65 @@ describe("dispatchComposerAgentMessage", () => {
     ]);
   });
 
+  it("sends a synced draft's images by their attach-time upload id, uploading only the rest (delta 139)", async () => {
+    const client = createFakeSendClient();
+    const uploads: string[] = [];
+    const encoded: string[] = [];
+    client.getLastServerInfoMessage = () => ({ features: { imageUploads: true } });
+    client.uploadFile = async (file) => {
+      uploads.push(file.fileName);
+      return {
+        requestId: "upload-request",
+        file: {
+          type: "uploaded_file",
+          id: `upload_now_${uploads.length}`,
+          fileName: file.fileName,
+          mimeType: file.mimeType,
+          size: file.bytes.byteLength,
+          path: `/uploads/upload_now_${uploads.length}/${file.fileName}`,
+        },
+        error: null,
+      };
+    };
+    const fromOtherDevice = {
+      ...imageWithId("img-remote"),
+      storageType: "host-upload" as const,
+      storageKey: "upload_phone",
+      hostUpload: { uploadId: "upload_phone", mimeType: "image/jpeg", thumbnail: null },
+    };
+    const attachedHere = {
+      ...imageWithId("img-here"),
+      hostUpload: { uploadId: "upload_here", mimeType: "image/png", thumbnail: null },
+    };
+
+    await dispatchComposerAgentMessage({
+      serverId: "server",
+      outbox: createFakeOutbox(),
+      client,
+      agentId: "agent",
+      text: "photos",
+      attachments: [
+        { kind: "image", metadata: fromOtherDevice },
+        { kind: "image", metadata: imageWithId("img-new") },
+        { kind: "image", metadata: attachedHere },
+      ],
+      encodeImages: async (images) => {
+        encoded.push(...images.map((image) => image.id));
+        return images.map(() => ({ data: "aGVsbG8=", mimeType: "image/jpeg" }));
+      },
+      submission: createFakeStream(),
+    });
+
+    expect(encoded).toEqual(["img-new"]);
+    expect(uploads).toHaveLength(1);
+    expect(client.calls[0]?.options.images).toEqual([]);
+    expect(client.calls[0]?.options.imageUploads).toEqual([
+      { uploadId: "upload_phone", mimeType: "image/jpeg" },
+      { uploadId: "upload_now_1", mimeType: "image/jpeg" },
+      { uploadId: "upload_here", mimeType: "image/png" },
+    ]);
+  });
+
   it("sends text + image data + structured attachments and appends user_message to the tail when head is empty", async () => {
     const client = createFakeSendClient();
     const stream = createFakeStream();

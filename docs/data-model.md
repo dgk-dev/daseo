@@ -70,6 +70,7 @@ $PASEO_HOME/
 │   └── managed-processes/
 │       └── {recordId}.json              # Helper processes owned by Paseo; reconciled on daemon bootstrap
 ├── push-tokens.json                     # Device-scoped push subscriptions
+├── composer-drafts.json                 # Unsent drafts of existing chats, shared by devices
 ├── push-events.json                     # Notification epoch/sequence catch-up log
 └── updates/current.json                 # Exact-version daemon update trial state
 ```
@@ -506,6 +507,14 @@ Each canonical row is an individually atomic, mode-`0600` JSON file; `state.json
 
 The one SQLite file in the daemon, and the one store that is a cache rather than a record: it holds the owner's messages and the assistant's answers of every root session (FTS5 trigram) plus embedding vectors, all derived from section 8 and from Pi session files. A missing or unreadable file, or a schema version change, rebuilds it in the background; nothing migrates. It needs `node:sqlite` (Node 22.5+, Electron's runtime has it); without it History keeps title-only search. Why it exists and how it ranks: DASEO.md delta 79.
 
+## 8b. Composer drafts
+
+**Path:** `$PASEO_HOME/composer-drafts.json` (`{ version: 1, drafts: Record<agentId, ComposerDraft> }`, `ComposerDraftSchema` in `packages/protocol/src/messages.ts`)
+
+The unsent composer draft of each existing chat, so it follows the owner between devices; the app's draft store stays the cache the composer edits. It lives in its own file rather than in the agent record because it is written several times a second while typing. Last writer wins. A cleared draft stays as an empty record with its revision, so a clear sent for an older revision (a send racing new text on another device) cannot erase the newer text; empty records older than 30 days are dropped on load. A deleted agent's draft is removed; an archived agent keeps it.
+
+Attachment bytes stay in `$PASEO_HOME/uploads/`, and an image's thumbnail is stored once beside it as `.thumbnail.json`, so draft records carry only upload ids and thumbnail sizes. A stored draft pins the uploads it references against the 7-day abandoned-upload sweep, and the first reference writes a `.draft` marker into the upload directory so a send reads the image without removing it (another device's draft may still name it). A write or clear that drops an upload rewrites its marker, restarting the 7-day age, so a message queued from the draft still finds it; after that the ordinary age rule removes it with its thumbnail. Why and how the app syncs: DASEO.md delta 139.
+
 ## 9. Daemon update trial
 
 **Path:** `$PASEO_HOME/updates/current.json`
@@ -571,12 +580,13 @@ Stores binary attachment blobs keyed by attachment ID.
 
 ### AttachmentMetadata
 
-| Field         | Type      | Description                    |
-| ------------- | --------- | ------------------------------ |
-| `id`          | `string`  | Unique attachment ID           |
-| `mimeType`    | `string`  | MIME type                      |
-| `storageType` | `string`  | Storage backend identifier     |
-| `storageKey`  | `string`  | Key within the storage backend |
-| `createdAt`   | `number`  | Epoch ms                       |
-| `fileName`    | `string?` | Original filename              |
-| `byteSize`    | `number?` | Size in bytes                  |
+| Field         | Type      | Description                                               |
+| ------------- | --------- | --------------------------------------------------------- |
+| `id`          | `string`  | Unique attachment ID                                      |
+| `mimeType`    | `string`  | MIME type                                                 |
+| `storageType` | `string`  | Storage backend; `host-upload` means bytes only on a host |
+| `storageKey`  | `string`  | Key within the storage backend                            |
+| `createdAt`   | `number`  | Epoch ms                                                  |
+| `fileName`    | `string?` | Original filename                                         |
+| `byteSize`    | `number?` | Size in bytes                                             |
+| `hostUpload`  | `object?` | Synced draft image already uploaded: id, MIME, thumbnail  |

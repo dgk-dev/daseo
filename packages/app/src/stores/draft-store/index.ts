@@ -1,7 +1,11 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import type { AttachmentMetadata, WorkspaceFileComposerAttachment } from "@/attachments/types";
+import type {
+  AttachmentMetadata,
+  HostUploadReference,
+  WorkspaceFileComposerAttachment,
+} from "@/attachments/types";
 import { appendWorkspaceFileAttachment } from "@/attachments/workspace-file";
 import {
   garbageCollectAttachments,
@@ -52,6 +56,17 @@ interface DraftStoreActions {
     draftKey: string;
     attachment: WorkspaceFileComposerAttachment;
   }) => Promise<void>;
+  /**
+   * Daseo delta 139: replaces a draft with the synced one from another device and asks the
+   * composer to show it (the editor takes a new value only on a replacement request).
+   */
+  applySyncedDraftInput: (input: { draftKey: string; draft: DraftInput }) => void;
+  /** Daseo delta 139: records the host upload of a draft image once its attach-time upload ended. */
+  attachHostUploadToDraftImage: (input: {
+    draftKey: string;
+    attachmentId: string;
+    hostUpload: HostUploadReference;
+  }) => void;
   getCreateModalDraft: () => DraftInput | null;
   saveCreateModalDraft: (draft: DraftInput | null) => void;
   collectActiveAttachmentIds: () => string[];
@@ -59,6 +74,7 @@ interface DraftStoreActions {
 
 interface DraftStoreRuntimeState {
   attachmentFocusRequestByDraftKey: Record<string, number>;
+  textReplacementRequestByDraftKey: Record<string, number>;
 }
 
 type DraftStore = DraftStoreState & DraftStoreRuntimeState & DraftStoreActions;
@@ -278,6 +294,7 @@ export const useDraftStore = create<DraftStore>()(
       drafts: {},
       createModalDraft: null,
       attachmentFocusRequestByDraftKey: {},
+      textReplacementRequestByDraftKey: {},
 
       getDraftInput: (draftKey) => {
         const record = get().drafts[draftKey];
@@ -412,6 +429,61 @@ export const useDraftStore = create<DraftStore>()(
           };
         });
         scheduleAttachmentGc();
+      },
+
+      applySyncedDraftInput: ({ draftKey, draft }) => {
+        set((state) => {
+          const existing = state.drafts[draftKey];
+          const nowMs = Date.now();
+          const hasContent = draft.text.trim().length > 0 || draft.attachments.length > 0;
+          const drafts = { ...state.drafts };
+          if (hasContent) {
+            drafts[draftKey] = createDraftRecord({
+              draft,
+              lifecycle: "active",
+              previousVersion: existing?.version,
+            });
+          } else if (existing) {
+            drafts[draftKey] =
+              applyClearDraftRecord({ record: existing, lifecycle: "abandoned", nowMs }) ??
+              existing;
+          }
+          return {
+            drafts,
+            textReplacementRequestByDraftKey: {
+              ...state.textReplacementRequestByDraftKey,
+              [draftKey]: (state.textReplacementRequestByDraftKey[draftKey] ?? 0) + 1,
+            },
+          };
+        });
+        scheduleAttachmentGc();
+      },
+
+      attachHostUploadToDraftImage: ({ draftKey, attachmentId, hostUpload }) => {
+        set((state) => {
+          const existing = state.drafts[draftKey];
+          const draft = toDraftInputIfReady(existing);
+          if (!existing || !draft) return state;
+          let found = false;
+          const attachments = draft.attachments.map((attachment) => {
+            if (attachment.kind !== "image" || attachment.metadata.id !== attachmentId) {
+              return attachment;
+            }
+            found = true;
+            return { kind: "image" as const, metadata: { ...attachment.metadata, hostUpload } };
+          });
+          if (!found) return state;
+          return {
+            drafts: {
+              ...state.drafts,
+              [draftKey]: createDraftRecord({
+                draft: { ...draft, attachments },
+                lifecycle: "active",
+                previousVersion: existing.version,
+              }),
+            },
+          };
+        });
       },
 
       getCreateModalDraft: () => {

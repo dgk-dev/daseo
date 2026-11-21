@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AttachmentMetadata, AttachmentStore, SaveAttachmentInput } from "@/attachments/types";
 import { __setAttachmentStoreForTests } from "./store";
+import { hostUploadThumbnails } from "./host-upload-thumbnails";
 import {
+  deleteAttachments,
   encodeAttachmentsForSend,
   garbageCollectAttachments,
   persistAttachmentFromBytes,
+  resolveAttachmentPreviewUrl,
 } from "./service";
 
 function createAttachment(input: Partial<AttachmentMetadata> = {}): AttachmentMetadata {
@@ -284,5 +287,50 @@ describe("attachment service", () => {
     }
 
     expect(garbageCollections).toEqual([["assistant-preview"]]);
+  });
+});
+
+describe("an image attached on another device (delta 139)", () => {
+  afterEach(() => {
+    __setAttachmentStoreForTests(null);
+  });
+
+  const hostImage: AttachmentMetadata = {
+    ...createAttachment({ id: "remote", storageType: "host-upload", storageKey: "upload_x" }),
+    hostUpload: {
+      uploadId: "upload_x",
+      mimeType: "image/jpeg",
+      thumbnail: { mimeType: "image/jpeg", width: 4, height: 3 },
+      serverId: "srv-preview",
+    },
+  };
+
+  it("previews as its thumbnail, fetched from its host, without touching this device's store", async () => {
+    const store = createRecordingStore();
+    const resolve = vi.spyOn(store, "resolvePreviewUrl");
+    __setAttachmentStoreForTests(store);
+    const fetched: string[] = [];
+    const unregister = hostUploadThumbnails.register("srv-preview", async (uploadId) => {
+      fetched.push(uploadId);
+      return { data: "AAAA", mimeType: "image/jpeg", width: 4, height: 3 };
+    });
+    try {
+      await expect(resolveAttachmentPreviewUrl(hostImage)).resolves.toBe(
+        "data:image/jpeg;base64,AAAA",
+      );
+      expect(fetched).toEqual(["upload_x"]);
+      expect(resolve).not.toHaveBeenCalled();
+    } finally {
+      unregister();
+    }
+  });
+
+  it("is never deleted from or encoded out of this device's store", async () => {
+    const store = createRecordingStore();
+    const remove = vi.spyOn(store, "delete");
+    __setAttachmentStoreForTests(store);
+    await deleteAttachments([hostImage]);
+    expect(remove).not.toHaveBeenCalled();
+    await expect(encodeAttachmentsForSend([hostImage])).rejects.toThrow("stored on the host");
   });
 });

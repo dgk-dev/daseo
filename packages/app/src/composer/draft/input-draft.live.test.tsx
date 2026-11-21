@@ -239,8 +239,21 @@ describe("useAgentInputDraft live contract", () => {
 
     expect(getLatest().textReplacementKey).not.toBe(hydratedReplacementKey);
 
+    // Daseo delta 139: a draft synced from another device replaces the text in the editor.
+    const beforeSyncKey = getLatest().textReplacementKey;
+    await act(async () => {
+      useDraftStore.getState().applySyncedDraftInput({
+        draftKey: "draft:setup",
+        draft: { text: "from the phone", attachments: [] },
+      });
+    });
+    expect(getLatest().text).toBe("from the phone");
+    expect(getLatest().attachments).toEqual([]);
+    expect(getLatest().textReplacementKey).not.toBe(beforeSyncKey);
+
     await act(async () => {
       getLatest().editText("hello world");
+      getLatest().setAttachments([{ kind: "image", metadata: image }]);
     });
 
     await act(async () => {

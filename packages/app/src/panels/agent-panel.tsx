@@ -1771,6 +1771,7 @@ function ActiveAgentComposer({
         onChangeText={agentInputDraft.editText}
         onReplaceText={agentInputDraft.replaceText}
         textReplacementKey={agentInputDraft.textReplacementKey}
+        draftKey={buildDraftStoreKey({ serverId, agentId })}
         isDraftHydrated={agentInputDraft.isHydrated}
         attachments={agentInputDraft.attachments}
         attachmentScopeKeys={attachmentScopeKeys}

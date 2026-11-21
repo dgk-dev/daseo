@@ -102,9 +102,10 @@ Cross-platform React Native app that connects to one or more daemons.
 - `runtime/directory-sync` owns directory reconciliation. On reconnect it passes the persisted per-entity cursor through `project.list`, `fetch_workspaces`, and `fetch_agents`; the daemon returns each entity's latest projection when its sequence is newer, plus tombstones.
 - `SessionContext` wraps the daemon client for the active session
 - Composer UI and submit/draft behavior live in `packages/app/src/composer/`; screens and panels should integrate it from there instead of dropping composer internals into `components/`, `hooks/`, or `screens/workspace/`
+- Drafts of existing chats sync between devices through the daemon (`composer.draft.*`, `composer/draft-sync/`) when the host advertises `composerDraftSync`. The local draft store stays what the composer renders, so it works offline. Images of a synced draft upload once when attached and are sent by upload id. A draft from another device never replaces the editor's value while the owner is composing there (IME composition, dictation, or typing in the last 2 s): re-feeding the editor ends a composition and drops the syllable. Store shape: [data-model.md](data-model.md#8b-composer-drafts)
 - Timeline reducers in `timeline/session-stream-reducers.ts` handle compaction, gap detection, sequence-based deduplication
 - Timeline sync correctness is documented in [docs/timeline-sync.md](timeline-sync.md): live streams are for immediacy, `fetch_agent_timeline_request` is authoritative, and catch-up is paged but complete.
-- Image attachments reject sources above 32 MiB or 40 megapixels before provider delivery; native images above 8 MiB are bounded to 4,096 px and re-encoded as JPEG while smaller supported files retain their original bytes
+- Image attachments reject sources above 32 MiB or 52 megapixels before provider delivery; native images above 8 MiB are bounded to 4,096 px and re-encoded as JPEG while smaller supported files retain their original bytes
 - Voice features: dictation (STT) and voice agent (realtime)
 
 The replica cache paints stale data immediately while the host connects. Directory cursors are

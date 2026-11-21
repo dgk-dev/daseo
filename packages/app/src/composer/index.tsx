@@ -138,6 +138,7 @@ import { AttachmentLabel, AttachmentPill, AttachmentThumbnail } from "@/componen
 import { AttachmentLightbox, type ImageLightboxSource } from "@/components/attachment-lightbox";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { useIsDictationReady } from "@/hooks/use-is-dictation-ready";
+import { composerActivity } from "@/composer/draft-sync/composer-activity";
 import { useForgeSearchQuery } from "@/git/use-forge-search-query";
 import { useCheckoutStatusQuery } from "@/git/use-status-query";
 import { useCheckoutPrStatusQuery } from "@/git/use-pr-status-query";
@@ -1000,6 +1001,11 @@ interface ComposerProps {
   /** Persists application-owned replacements and advances the native replacement revision. */
   onReplaceText?: (text: string) => void;
   textReplacementKey: string;
+  /**
+   * Daseo delta 139: the draft-store key this composer edits. Its focus and dictation are reported
+   * so a draft synced from another device waits while the owner is writing here.
+   */
+  draftKey?: string;
   /** Prevents edits until the persisted draft has completed its global hydration merge. */
   isDraftHydrated?: boolean;
   attachments: UserComposerAttachment[];
@@ -1220,6 +1226,7 @@ export function Composer({
   onChangeText,
   onReplaceText,
   textReplacementKey,
+  draftKey,
   isDraftHydrated = true,
   attachments,
   attachmentScopeKeys = EMPTY_ATTACHMENT_SCOPE_KEYS,
@@ -2490,12 +2497,22 @@ export function Composer({
   const handleFocusChange = useCallback(
     (focused: boolean) => {
       setIsMessageInputFocused(focused);
+      if (draftKey) composerActivity.setFocused(draftKey, focused);
       if (focused) {
         onAttentionInputFocus?.();
       }
     },
-    [onAttentionInputFocus],
+    [draftKey, onAttentionInputFocus],
   );
+  const handleDictationActiveChange = useMemo(
+    () =>
+      draftKey ? (active: boolean) => composerActivity.setDictating(draftKey, active) : undefined,
+    [draftKey],
+  );
+  useEffect(() => {
+    if (!draftKey) return;
+    return () => composerActivity.setFocused(draftKey, false);
+  }, [draftKey]);
 
   const handleLightboxClose = useCallback(() => {
     setLightboxMetadata(null);
@@ -2713,6 +2730,7 @@ export function Composer({
                 onKeyPress={handleCommandKeyPress}
                 onSelectionChange={handleSelectionChange}
                 onFocusChange={handleFocusChange}
+                onDictationActiveChange={handleDictationActiveChange}
                 onHeightChange={onComposerHeightChange}
                 inputWrapperStyle={inputWrapperStyle}
                 attachmentSlot={attachmentTray}

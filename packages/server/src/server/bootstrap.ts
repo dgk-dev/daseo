@@ -253,6 +253,7 @@ import {
 import { DaemonExecutions } from "./hub/daemon-executions.js";
 import { PluginService } from "./plugins/index.js";
 import { startUploadSweeper } from "./file-upload/index.js";
+import { ComposerDraftStore } from "./composer-draft/composer-draft-store.js";
 
 const MAX_MCP_DEBUG_BATCH_ITEMS = 10;
 const REDACTED_LOG_VALUE = "[redacted]";
@@ -658,7 +659,17 @@ export async function createPaseoDaemon(
     logger.warn({ err: error }, "Failed to reconcile managed helper process ledger");
   });
   let relayRuntime: RelayRuntime | null = null;
-  const stopUploadSweeper = startUploadSweeper({ paseoHome: config.paseoHome, logger });
+  // Daseo delta 139: synced composer drafts pin the uploads they reference against the sweep.
+  const composerDraftStore = new ComposerDraftStore({
+    filePath: path.join(config.paseoHome, "composer-drafts.json"),
+    paseoHome: config.paseoHome,
+    logger,
+  });
+  const stopUploadSweeper = startUploadSweeper({
+    paseoHome: config.paseoHome,
+    logger,
+    listPinnedUploadIds: () => composerDraftStore.pinnedUploadIds(),
+  });
 
   const staticDir = config.staticDir;
   const downloadTokenTtlMs = config.downloadTokenTtlMs ?? 60000;
@@ -1825,6 +1836,7 @@ export async function createPaseoDaemon(
               clientDebugBroker,
               previewLinkService,
               historySearch,
+              composerDraftStore,
             );
             relayRuntime = createRelayRuntime({
               config: {

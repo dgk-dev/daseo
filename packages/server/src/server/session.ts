@@ -198,6 +198,8 @@ import { DownloadTokenStore } from "./file-download/token-store.js";
 import type { PreviewLinkService } from "./file-preview/service.js";
 import { SidebarOrderSessionChannel } from "./sidebar-order/sidebar-order-session-channel.js";
 import type { SidebarOrderStore } from "./sidebar-order/sidebar-order-store.js";
+import { ComposerDraftSessionChannel } from "./composer-draft/composer-draft-session-channel.js";
+import type { ComposerDraftStore } from "./composer-draft/composer-draft-store.js";
 import type { SlackScheduledReader } from "./slack-scheduled/slack-scheduled-reader.js";
 import { handleScheduleSlackListRequest } from "./slack-scheduled/slack-scheduled-session.js";
 import type { PushNotifications } from "./push/index.js";
@@ -504,6 +506,8 @@ export interface SessionOptions {
   historySearch?: HistorySearchService | null;
   /** Daseo delta 133: the sidebar order shared by every device; absent answers nothing. */
   sidebarOrderStore?: SidebarOrderStore | null;
+  /** Daseo delta 139: existing chats' composer drafts shared by every device; absent answers nothing. */
+  composerDraftStore?: ComposerDraftStore | null;
   /** Daseo delta 135: scheduled Slack messages for the Schedules screen; absent answers an error. */
   slackScheduledReader?: SlackScheduledReader | null;
   /** Daseo delta 138: the daemon-wide "/" command list cache; absent keeps one per session. */
@@ -807,6 +811,7 @@ export class Session {
   private readonly workspaceAutoName: WorkspaceAutoName;
   private readonly historySearch: HistorySearchService | null | undefined;
   private readonly sidebarOrder: SidebarOrderSessionChannel;
+  private readonly composerDrafts: ComposerDraftSessionChannel;
   private readonly slackScheduledReader: SlackScheduledReader | null | undefined;
   private readonly commandListCache: CommandListCache;
   private readonly gitMutation: GitMutationService;
@@ -893,6 +898,7 @@ export class Session {
       previewLinks,
       historySearch,
       sidebarOrderStore,
+      composerDraftStore,
       slackScheduledReader,
       commandListCache,
       pushNotifications,
@@ -977,6 +983,13 @@ export class Session {
     this.commandListCache = resolveCommandListCache(commandListCache, this.sessionLogger);
     this.sidebarOrder = new SidebarOrderSessionChannel({
       store: sidebarOrderStore,
+      emit: (msg) => this.emit(msg),
+      logger: this.sessionLogger,
+    });
+    this.composerDrafts = new ComposerDraftSessionChannel({
+      store: composerDraftStore,
+      paseoHome,
+      agentExists: async (agentId) => (await agentStorage.get(agentId)) !== null,
       emit: (msg) => this.emit(msg),
       logger: this.sessionLogger,
     });
@@ -2093,9 +2106,14 @@ export class Session {
       this.dispatchPluginMessage(msg) ??
       this.dispatchTerminalMessage(msg) ??
       this.dispatchScheduleMessage(msg) ??
-      this.sidebarOrder.handle(msg) ??
+      this.dispatchDeviceSyncMessage(msg) ??
       this.dispatchMiscMessage(msg);
     if (promise) await promise;
+  }
+
+  /** State every device shares: the sidebar order (delta 133) and chat drafts (delta 139). */
+  private dispatchDeviceSyncMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    return this.sidebarOrder.handle(msg) ?? this.composerDrafts.handle(msg);
   }
 
   private dispatchPluginMessage(msg: SessionInboundMessage): Promise<void> | undefined {
@@ -8107,6 +8125,7 @@ export class Session {
     this.unsubscribeWorkspaceMutations?.();
     this.unsubscribeWorkspaceMutations = null;
     this.sidebarOrder.dispose();
+    this.composerDrafts.dispose();
     this.agentUpdates.dispose();
     this.directorySuggestions.dispose();
     await this.hubExecutionController?.cleanup();

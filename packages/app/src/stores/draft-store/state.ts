@@ -37,14 +37,27 @@ export interface DraftStoreState {
   createModalDraft: DraftRecord | null;
 }
 
+const HostUploadReferenceSchema = z.strictObject({
+  uploadId: z.string(),
+  mimeType: z.string(),
+  thumbnail: z
+    .strictObject({
+      mimeType: z.string(),
+      width: z.number(),
+      height: z.number(),
+    })
+    .nullable(),
+  serverId: z.string().optional(),
+});
 export const AttachmentMetadataSchema = z.strictObject({
   id: z.string(),
   mimeType: z.string(),
-  storageType: z.enum(["web-indexeddb", "desktop-file", "native-file"]),
+  storageType: z.enum(["web-indexeddb", "desktop-file", "native-file", "host-upload"]),
   storageKey: z.string(),
   fileName: z.string().nullable().optional(),
   byteSize: z.number().nullable().optional(),
   createdAt: z.number(),
+  hostUpload: HostUploadReferenceSchema.optional(),
 }) satisfies z.ZodType<AttachmentMetadata>;
 export const LegacyDraftImageSchema: z.ZodType<LegacyDraftImage> = z.strictObject({
   uri: z.string(),
@@ -142,6 +155,7 @@ export function normalizeAttachmentMetadata(image: AttachmentMetadata): Attachme
     ...(typeof image.byteSize === "number" || image.byteSize === null
       ? { byteSize: image.byteSize }
       : {}),
+    ...(image.hostUpload ? { hostUpload: image.hostUpload } : {}),
   };
 }
 

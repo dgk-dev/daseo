@@ -46,6 +46,7 @@ import { installWindowDimensionsSync } from "@/runtime/window-dimensions-sync";
 import { WorkspaceSetupDialog } from "@/components/workspace-setup-dialog";
 import { WorkspaceShortcutTargetsSubscriber } from "@/components/workspace-shortcut-targets-subscriber";
 import { SidebarOrderSyncSubscriber } from "@/components/sidebar-order-sync-subscriber";
+import { ComposerDraftSyncSubscriber } from "@/composer/draft-sync/subscriber";
 import { FloatingPanelPortalHost } from "@/components/ui/floating-panel-portal";
 import { HostChooserModal, useHostChooser } from "@/hosts/host-chooser";
 import {
@@ -685,6 +686,7 @@ function SidebarChrome({
       {mounted ? <LeftSidebar active={active} /> : null}
       <WorkspaceShortcutTargetsSubscriber enabled={keyboardShortcutsEnabled} />
       <SidebarOrderSyncSubscriber />
+      <ComposerDraftSyncSubscriber />
     </SidebarModelProvider>
   );
 }

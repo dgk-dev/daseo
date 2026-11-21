@@ -2528,6 +2528,97 @@ export const SidebarOrderSetRequestSchema = z.object({
   requestId: z.string(),
 });
 
+// Daseo delta 139: the unsent composer draft of an existing agent chat, kept by the daemon so it
+// follows the owner between devices. Attachment bytes stay on the host: an image or file is
+// uploaded once through `file.upload.request` when it is attached, and the draft carries only its
+// upload id. An image's thumbnail (a small JPEG made by the attaching device) is stored once next
+// to its upload with composer.draft.set_thumbnail and fetched by upload id; the draft carries only
+// its size and type, so a text change moves no image bytes. `data` carries the app's own
+// attachment JSON for kinds the daemon does not read; the daemon reads only `uploadId` (to keep
+// the upload from the abandoned-upload sweep). A draft with no text and no attachments is a
+// cleared draft; its revision stays so a stale clear cannot erase newer text.
+export const ComposerDraftThumbnailInfoSchema = z.object({
+  mimeType: z.string(),
+  width: z.number(),
+  height: z.number(),
+});
+
+export const ComposerDraftThumbnailSchema = z.object({
+  data: z.string(),
+  mimeType: z.string(),
+  width: z.number(),
+  height: z.number(),
+});
+
+export const ComposerDraftAttachmentSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  uploadId: z.string().nullable().optional(),
+  fileName: z.string().nullable().optional(),
+  mimeType: z.string().nullable().optional(),
+  size: z.number().nullable().optional(),
+  thumbnail: ComposerDraftThumbnailInfoSchema.nullable().optional(),
+  data: z.string().nullable().optional(),
+});
+
+export const ComposerDraftSchema = z.object({
+  agentId: z.string(),
+  text: z.string(),
+  attachments: z.array(ComposerDraftAttachmentSchema),
+  // Per agent, increases with every stored write or clear.
+  revision: z.number().int(),
+  // Daemon clock, milliseconds.
+  updatedAt: z.number(),
+  // The writer's sync client id, so the writer can ignore its own echo.
+  clientId: z.string().nullable(),
+});
+
+// Lists stored drafts (all, or only `agentIds`) and subscribes the session to
+// composer.draft.update. With `knownRevisions` (agentId -> revision the client already holds) a
+// draft still at that revision is left out, so a reconnect with nothing changed moves almost
+// nothing.
+export const ComposerDraftListRequestSchema = z.object({
+  type: z.literal("composer.draft.list.request"),
+  agentIds: z.array(z.string()).optional(),
+  knownRevisions: z.record(z.string(), z.number()).optional(),
+  requestId: z.string(),
+});
+
+// Stores the thumbnail of an uploaded image once, next to the upload (swept with it).
+export const ComposerDraftSetThumbnailRequestSchema = z.object({
+  type: z.literal("composer.draft.set_thumbnail.request"),
+  uploadId: z.string(),
+  thumbnail: ComposerDraftThumbnailSchema,
+  requestId: z.string(),
+});
+
+export const ComposerDraftGetThumbnailRequestSchema = z.object({
+  type: z.literal("composer.draft.get_thumbnail.request"),
+  uploadId: z.string(),
+  requestId: z.string(),
+});
+
+// Last writer wins; `baseRevision` is the revision the writer's text descends from.
+export const ComposerDraftSetRequestSchema = z.object({
+  type: z.literal("composer.draft.set.request"),
+  agentId: z.string(),
+  text: z.string(),
+  attachments: z.array(ComposerDraftAttachmentSchema),
+  clientId: z.string(),
+  baseRevision: z.number().int().optional(),
+  requestId: z.string(),
+});
+
+// Clears the draft only while its revision is still `revision` (what the sender sent or emptied),
+// so text written meanwhile on another device survives.
+export const ComposerDraftClearRequestSchema = z.object({
+  type: z.literal("composer.draft.clear.request"),
+  agentId: z.string(),
+  clientId: z.string(),
+  revision: z.number().int(),
+  requestId: z.string(),
+});
+
 // Daseo delta 135: read-only list of the Slack messages agents scheduled through pi-local
 // `slack_post postAt`, for the Schedules screen's Slack filter. The daemon reads them from
 // pi-local's own record; the request takes no arguments, so a client cannot point it elsewhere.
@@ -3183,6 +3274,11 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   WorkspaceDiscardEmptyRequestSchema,
   SidebarOrderGetRequestSchema,
   SidebarOrderSetRequestSchema,
+  ComposerDraftListRequestSchema,
+  ComposerDraftSetRequestSchema,
+  ComposerDraftClearRequestSchema,
+  ComposerDraftSetThumbnailRequestSchema,
+  ComposerDraftGetThumbnailRequestSchema,
   ScheduleSlackListRequestSchema,
   FileExplorerRequestSchema,
   FileSubscribeRequestSchema,
@@ -3418,6 +3514,8 @@ export const ServerInfoStatusPayloadSchema = z
         discardEmptyWorkspace: z.boolean().optional(),
         // Local fork (delta 133): sidebar.order.* keeps one sidebar order for every device.
         sidebarOrderSync: z.boolean().optional(),
+        // Local fork (delta 139): composer.draft.* keeps existing chats' drafts for every device.
+        composerDraftSync: z.boolean().optional(),
         // Local fork (delta 135): schedule.slack.list lists scheduled Slack messages, read-only.
         slackScheduledList: z.boolean().optional(),
         // Local fork (delta 75): fs.preview_link.create.request issues tailnet preview links;
@@ -4628,6 +4726,66 @@ export const SidebarOrderSetResponseSchema = z.object({
     requestId: z.string(),
     order: SidebarOrderSchema.nullable(),
     error: z.string().nullable(),
+  }),
+});
+
+// Daseo delta 139. `errorCode` names a refusal a client acts on: "agent_not_found" (the chat was
+// deleted; stop syncing it). Open string so a later code does not break an older app.
+export const ComposerDraftListResponseSchema = z.object({
+  type: z.literal("composer.draft.list.response"),
+  payload: z.object({
+    requestId: z.string(),
+    drafts: z.array(ComposerDraftSchema),
+    error: z.string().nullable(),
+  }),
+});
+
+export const ComposerDraftSetResponseSchema = z.object({
+  type: z.literal("composer.draft.set.response"),
+  payload: z.object({
+    requestId: z.string(),
+    draft: ComposerDraftSchema.nullable(),
+    error: z.string().nullable(),
+    errorCode: z.string().nullable().optional(),
+  }),
+});
+
+// `draft` is the stored draft after the request: the cleared one, or the newer one that survived.
+export const ComposerDraftClearResponseSchema = z.object({
+  type: z.literal("composer.draft.clear.response"),
+  payload: z.object({
+    requestId: z.string(),
+    draft: ComposerDraftSchema.nullable(),
+    cleared: z.boolean(),
+    error: z.string().nullable(),
+    errorCode: z.string().nullable().optional(),
+  }),
+});
+
+export const ComposerDraftSetThumbnailResponseSchema = z.object({
+  type: z.literal("composer.draft.set_thumbnail.response"),
+  payload: z.object({
+    requestId: z.string(),
+    error: z.string().nullable(),
+  }),
+});
+
+// thumbnail is null when none was stored for that upload (or the upload is gone).
+export const ComposerDraftGetThumbnailResponseSchema = z.object({
+  type: z.literal("composer.draft.get_thumbnail.response"),
+  payload: z.object({
+    requestId: z.string(),
+    thumbnail: ComposerDraftThumbnailSchema.nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
+// Daseo delta 139: pushed to every session that sent a composer.draft.* request, the writer
+// included (it recognises its own echo by clientId).
+export const ComposerDraftUpdateMessageSchema = z.object({
+  type: z.literal("composer.draft.update"),
+  payload: z.object({
+    draft: ComposerDraftSchema,
   }),
 });
 
@@ -6598,6 +6756,12 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   SidebarOrderGetResponseSchema,
   SidebarOrderSetResponseSchema,
   SidebarOrderUpdateMessageSchema,
+  ComposerDraftListResponseSchema,
+  ComposerDraftSetResponseSchema,
+  ComposerDraftClearResponseSchema,
+  ComposerDraftUpdateMessageSchema,
+  ComposerDraftSetThumbnailResponseSchema,
+  ComposerDraftGetThumbnailResponseSchema,
   ScheduleSlackListResponseSchema,
   SendAgentMessageResponseMessageSchema,
   AgentCommandReceiptGetResponseMessageSchema,
@@ -7152,6 +7316,10 @@ export type ArchiveWorkspaceRequest = z.infer<typeof ArchiveWorkspaceRequestSche
 export type WorkspaceClearAttentionRequest = z.infer<typeof WorkspaceClearAttentionRequestSchema>;
 export type WorkspaceDiscardEmptyResponse = z.infer<typeof WorkspaceDiscardEmptyResponseSchema>;
 export type SidebarOrder = z.infer<typeof SidebarOrderSchema>;
+export type ComposerDraft = z.infer<typeof ComposerDraftSchema>;
+export type ComposerDraftAttachment = z.infer<typeof ComposerDraftAttachmentSchema>;
+export type ComposerDraftThumbnail = z.infer<typeof ComposerDraftThumbnailSchema>;
+export type ComposerDraftThumbnailInfo = z.infer<typeof ComposerDraftThumbnailInfoSchema>;
 export type SlackScheduledEntry = z.infer<typeof SlackScheduledEntrySchema>;
 export type FileExplorerRequest = z.infer<typeof FileExplorerRequestSchema>;
 export type FileExplorerResponse = z.infer<typeof FileExplorerResponseSchema>;

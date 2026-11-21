@@ -5,7 +5,44 @@ import type {
 } from "@getpaseo/protocol/messages";
 import type { PluginResourceComposerAttachment } from "@/plugins/attachments";
 
-export type AttachmentStorageType = "web-indexeddb" | "desktop-file" | "native-file";
+/**
+ * `host-upload` (Daseo delta 139): an image attached on another device. Its bytes exist only on the
+ * host, as the upload `storageKey` names; this device has the thumbnail in `hostUpload`.
+ */
+export type AttachmentStorageType =
+  | "web-indexeddb"
+  | "desktop-file"
+  | "native-file"
+  | "host-upload";
+
+/** A small JPEG made by the device that attached the image, for the other devices' chips. */
+export interface HostUploadThumbnail {
+  data: string;
+  mimeType: string;
+  width: number;
+  height: number;
+}
+
+/** What a synced draft says about a thumbnail; the bytes are fetched from the host by upload id. */
+export interface HostUploadThumbnailInfo {
+  mimeType: string;
+  width: number;
+  height: number;
+}
+
+/**
+ * Daseo delta 139: an image of a synced chat draft, already uploaded to the host at attach time.
+ * Sending passes `uploadId` instead of uploading the bytes again.
+ */
+export interface HostUploadReference {
+  uploadId: string;
+  /** MIME type of the uploaded bytes (the send encoding, which can differ from the source). */
+  mimeType: string;
+  /** Null when the attaching device stored no thumbnail on the host. */
+  thumbnail: HostUploadThumbnailInfo | null;
+  /** The host holding the upload; set on images attached on another device. */
+  serverId?: string;
+}
 
 export interface AttachmentMetadata {
   id: string;
@@ -20,6 +57,7 @@ export interface AttachmentMetadata {
   fileName?: string | null;
   byteSize?: number | null;
   createdAt: number;
+  hostUpload?: HostUploadReference;
 }
 
 export interface BrowserElementAttachment {

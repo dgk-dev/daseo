@@ -423,15 +423,36 @@ function assertInlineImagesFitRelayFrame(
   );
 }
 
-async function uploadImagesIfSupported(
+function resolveSupportsImageUploads(
   input: Pick<DispatchComposerAgentMessageInput, "client" | "supportsImageUploads">,
-  imagesData: Array<{ data: string; mimeType: string }> | undefined,
-): Promise<Array<{ uploadId: string; mimeType: string }> | null> {
-  const supported =
+): boolean {
+  return (
     input.supportsImageUploads ??
-    input.client.getLastServerInfoMessage?.()?.features?.imageUploads === true;
-  if (!supported || !imagesData || imagesData.length === 0) return null;
-  return await uploadEncodedImages({ client: input.client, images: imagesData });
+    input.client.getLastServerInfoMessage?.()?.features?.imageUploads === true
+  );
+}
+
+/**
+ * Upload references for every image, in message order. An image of a synced draft that is already
+ * on the host (delta 139, uploaded at attach time on this device or on another one) is referenced
+ * by its upload id; the others are uploaded now from `encoded`, which holds them in order.
+ */
+async function buildImageUploads(input: {
+  client: Pick<ComposerSendClient, "uploadFile">;
+  images: readonly AttachmentMetadata[];
+  encoded: ReadonlyArray<{ data: string; mimeType: string }>;
+}): Promise<Array<{ uploadId: string; mimeType: string }> | null> {
+  if (input.images.length === 0) return null;
+  const uploadedNow = await uploadEncodedImages({ client: input.client, images: input.encoded });
+  let next = 0;
+  return input.images.map((image) => {
+    if (image.hostUpload) {
+      return { uploadId: image.hostUpload.uploadId, mimeType: image.hostUpload.mimeType };
+    }
+    const uploaded = uploadedNow[next++];
+    if (!uploaded) throw new Error("Image upload failed.");
+    return uploaded;
+  });
 }
 
 export async function dispatchComposerAgentMessage(
@@ -473,8 +494,20 @@ export async function dispatchComposerAgentMessage(
   });
   input.submission.begin(input.agentId, userMessage);
   try {
-    const imagesData = await encodeComposerImages(input.encodeImages, wirePayload.images);
-    const imageUploads = await uploadImagesIfSupported(input, imagesData);
+    const supportsImageUploads = resolveSupportsImageUploads(input);
+    const imagesData = await encodeComposerImages(
+      input.encodeImages,
+      supportsImageUploads
+        ? wirePayload.images.filter((image) => !image.hostUpload)
+        : wirePayload.images,
+    );
+    const imageUploads = supportsImageUploads
+      ? await buildImageUploads({
+          client: input.client,
+          images: wirePayload.images,
+          encoded: imagesData ?? [],
+        })
+      : null;
     if (!imageUploads && imagesData) {
       // COMPAT(imageUploads): added in v0.5.46, remove after 2027-05-16 with the inline path.
       assertInlineImagesFitRelayFrame(input.text, imagesData);

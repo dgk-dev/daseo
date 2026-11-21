@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 
 import { FileTransferOpcode, type FileTransferFrame } from "@getpaseo/protocol/binary-frames/index";
@@ -296,6 +296,127 @@ export async function markUploadsAdmitted(input: {
   );
 }
 
+/**
+ * Daseo delta 139: marker written into an upload directory once a synced composer draft references
+ * it. Sending a message consumes image uploads (image-uploads.ts); a marked upload is read but not
+ * removed then, because another device's draft, or this one's after a failed send, may still name
+ * it. While a stored draft references an upload the sweep keeps it (pinned); once no draft does,
+ * the ordinary age rule below removes it.
+ */
+export const UPLOAD_DRAFT_MARKER = ".draft";
+
+/** Marks uploads a synced composer draft references; see UPLOAD_DRAFT_MARKER. */
+export async function markUploadsDraftReferenced(input: {
+  paseoHome: string;
+  uploadIds: readonly string[];
+}): Promise<void> {
+  await Promise.all(
+    input.uploadIds.map(async (uploadId) => {
+      let dir: string;
+      try {
+        dir = uploadDirectory({ paseoHome: input.paseoHome, uploadId });
+      } catch {
+        return;
+      }
+      const children = await readdir(dir).catch(() => null);
+      if (!children || children.includes(UPLOAD_DRAFT_MARKER)) return;
+      await writeFile(join(dir, UPLOAD_DRAFT_MARKER), "").catch(() => undefined);
+    }),
+  );
+}
+
+/**
+ * Daseo delta 139: rewrites the draft marker of uploads a draft stopped referencing (the draft was
+ * cleared or the attachment removed), so the 7-day age rule restarts from now. A message queued
+ * from that draft and dispatched later still finds its upload.
+ */
+export async function refreshDraftUploadAge(input: {
+  paseoHome: string;
+  uploadIds: readonly string[];
+}): Promise<void> {
+  await Promise.all(
+    input.uploadIds.map(async (uploadId) => {
+      let dir: string;
+      try {
+        dir = uploadDirectory({ paseoHome: input.paseoHome, uploadId });
+      } catch {
+        return;
+      }
+      if (!(await stat(dir).catch(() => null))) return;
+      await writeFile(join(dir, UPLOAD_DRAFT_MARKER), "").catch(() => undefined);
+    }),
+  );
+}
+
+/**
+ * Daseo delta 139: the thumbnail of an uploaded image, stored once in its upload directory (a dot
+ * file, so image reads skip it) and removed with the upload. Draft records carry only its size.
+ */
+export const UPLOAD_THUMBNAIL_FILE = ".thumbnail.json";
+// About 256 px JPEG is a few tens of KB; anything far larger is not a thumbnail.
+export const MAX_UPLOAD_THUMBNAIL_DATA_CHARS = 96 * 1024;
+
+export interface UploadThumbnail {
+  data: string;
+  mimeType: string;
+  width: number;
+  height: number;
+}
+
+export async function writeUploadThumbnail(input: {
+  paseoHome: string;
+  uploadId: string;
+  thumbnail: UploadThumbnail;
+}): Promise<void> {
+  const dir = uploadDirectory({ paseoHome: input.paseoHome, uploadId: input.uploadId });
+  if (input.thumbnail.data.length > MAX_UPLOAD_THUMBNAIL_DATA_CHARS) {
+    throw new Error("The thumbnail is larger than a thumbnail.");
+  }
+  if (!input.thumbnail.mimeType.startsWith("image/")) {
+    throw new Error(`The thumbnail is not an image (${input.thumbnail.mimeType}).`);
+  }
+  if (!(await stat(dir).catch(() => null))) {
+    throw new Error("The upload is no longer on the host.");
+  }
+  const { data, mimeType, width, height } = input.thumbnail;
+  await writeFile(
+    join(dir, UPLOAD_THUMBNAIL_FILE),
+    JSON.stringify({ data, mimeType, width, height }),
+  );
+}
+
+export async function readUploadThumbnail(input: {
+  paseoHome: string;
+  uploadId: string;
+}): Promise<UploadThumbnail | null> {
+  const dir = uploadDirectory({ paseoHome: input.paseoHome, uploadId: input.uploadId });
+  let raw: string;
+  try {
+    raw = await readFile(join(dir, UPLOAD_THUMBNAIL_FILE), "utf8");
+  } catch {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<UploadThumbnail>;
+    if (
+      typeof parsed.data === "string" &&
+      typeof parsed.mimeType === "string" &&
+      typeof parsed.width === "number" &&
+      typeof parsed.height === "number"
+    ) {
+      return {
+        data: parsed.data,
+        mimeType: parsed.mimeType,
+        width: parsed.width,
+        height: parsed.height,
+      };
+    }
+  } catch {
+    // Unreadable: treated as no thumbnail.
+  }
+  return null;
+}
+
 /** Written into `uploads/` by the first sweep, after every pre-existing upload was marked kept. */
 export const UPLOAD_SWEEP_BASELINE = ".sweep-baseline";
 
@@ -314,11 +435,15 @@ async function newestModification(dir: string): Promise<number> {
   return newest;
 }
 
-/** Removes upload directories that no message admitted and that saw no write for `maxAgeMs`. */
+/**
+ * Removes upload directories that no message admitted, that no stored composer draft references
+ * (`pinnedUploadIds`, delta 139), and that saw no write for `maxAgeMs`.
+ */
 export async function sweepAbandonedUploads(input: {
   paseoHome: string;
   maxAgeMs?: number;
   now?: number;
+  pinnedUploadIds?: ReadonlySet<string>;
 }): Promise<{ removed: string[] }> {
   const root = join(input.paseoHome, "uploads");
   const maxAgeMs = input.maxAgeMs ?? ABANDONED_UPLOAD_MAX_AGE_MS;
@@ -343,6 +468,7 @@ export async function sweepAbandonedUploads(input: {
   const removed: string[] = [];
   for (const entry of entries) {
     if (!UPLOAD_ID_PATTERN.test(entry)) continue;
+    if (input.pinnedUploadIds?.has(entry)) continue;
     const dir = join(root, entry);
     try {
       const children = await readdir(dir);
@@ -361,9 +487,17 @@ export async function sweepAbandonedUploads(input: {
 export function startUploadSweeper(input: {
   paseoHome: string;
   logger: { info: (obj: object, msg: string) => void; warn: (obj: object, msg: string) => void };
+  /** Uploads stored composer drafts reference (delta 139); read before every sweep. */
+  listPinnedUploadIds?: () => Promise<ReadonlySet<string>>;
 }): () => void {
+  const sweep = async (): Promise<{ removed: string[] }> => {
+    const pinnedUploadIds = input.listPinnedUploadIds
+      ? await input.listPinnedUploadIds()
+      : undefined;
+    return await sweepAbandonedUploads({ paseoHome: input.paseoHome, pinnedUploadIds });
+  };
   const run = (): void => {
-    void sweepAbandonedUploads({ paseoHome: input.paseoHome }).then(
+    void sweep().then(
       ({ removed }) => {
         if (removed.length > 0) {
           input.logger.info({ removed: removed.length }, "Removed abandoned file uploads");

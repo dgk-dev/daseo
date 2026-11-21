@@ -186,6 +186,8 @@ export interface MessageInputProps {
   /** Reports cursor selection updates from the underlying input. */
   onSelectionChange?: (selection: { start: number; end: number }) => void;
   onFocusChange?: (focused: boolean) => void;
+  /** Daseo delta 139: true while dictation records or transcribes into this input. */
+  onDictationActiveChange?: (active: boolean) => void;
   onHeightChange?: (height: number) => void;
   /** Extra styles merged onto the input wrapper (e.g. elevated background). */
   inputWrapperStyle?: import("react-native").ViewStyle;
@@ -1489,6 +1491,13 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       canConfirm: canConfirmDictation,
       enableDuration: true,
     });
+
+    const onDictationActiveChange = props.onDictationActiveChange;
+    const isDictationActiveForDraft = isDictating || isDictationProcessing;
+    useEffect(() => {
+      onDictationActiveChange?.(isDictationActiveForDraft);
+    }, [isDictationActiveForDraft, onDictationActiveChange]);
+    useEffect(() => () => onDictationActiveChange?.(false), [onDictationActiveChange]);
 
     const isRealtimeVoiceForCurrentAgent = computeIsRealtimeVoiceForAgent(
       voice,

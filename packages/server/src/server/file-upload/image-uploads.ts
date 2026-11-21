@@ -1,7 +1,7 @@
 import { readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 
-import { uploadDirectory } from "./index.js";
+import { UPLOAD_DRAFT_MARKER, uploadDirectory } from "./index.js";
 
 export interface ImageUploadReference {
   uploadId: string;
@@ -53,7 +53,9 @@ export async function readImageUploads(input: {
  * Reads the uploaded images into message bytes, then removes their upload directories: once the
  * bytes are in the message the copies on disk serve nothing. A retried send uploads again (new
  * upload ids, same bytes, same receipt hash). When a read fails nothing is removed; the age
- * sweep collects what is left.
+ * sweep collects what is left. An upload a synced composer draft referenced (delta 139) is kept:
+ * the draft on another device, or a draft restored after a failed send, still names it, and the
+ * sweep removes it once no draft does.
  */
 export async function consumeImageUploads(input: {
   paseoHome: string;
@@ -61,12 +63,12 @@ export async function consumeImageUploads(input: {
 }): Promise<InlineImage[]> {
   const images = await readImageUploads(input);
   await Promise.all(
-    (input.uploads ?? []).map((upload) =>
-      rm(uploadDirectory({ paseoHome: input.paseoHome, uploadId: upload.uploadId }), {
-        recursive: true,
-        force: true,
-      }).catch(() => undefined),
-    ),
+    (input.uploads ?? []).map(async (upload) => {
+      const dir = uploadDirectory({ paseoHome: input.paseoHome, uploadId: upload.uploadId });
+      const children = await readdir(dir).catch(() => [] as string[]);
+      if (children.includes(UPLOAD_DRAFT_MARKER)) return;
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }),
   );
   return images;
 }

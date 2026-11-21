@@ -21,10 +21,14 @@ import {
 import {
   FileUploadStore,
   markUploadsAdmitted,
+  readUploadThumbnail,
   sweepAbandonedUploads,
   UPLOAD_ADMITTED_MARKER,
   UPLOAD_SWEEP_BASELINE,
+  UPLOAD_THUMBNAIL_FILE,
+  writeUploadThumbnail,
 } from "./index.js";
+import { readImageUploads } from "./image-uploads.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -424,3 +428,60 @@ function decodeUploadFrame(bytes: Uint8Array): FileTransferFrame {
   }
   return frame;
 }
+
+describe("upload thumbnails (delta 139)", () => {
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("stores a thumbnail next to its upload, out of the image read, and removes it with the upload", async () => {
+    const paseoHome = makePaseoHome();
+    const now = Date.now();
+    await sweepAbandonedUploads({ paseoHome: mkdirUploads(paseoHome), now });
+    makeUpload(paseoHome, "upload_photo", daysAgo(now, 8));
+    const thumbnail = { data: "AAAA", mimeType: "image/jpeg", width: 4, height: 3 };
+
+    await writeUploadThumbnail({ paseoHome, uploadId: "upload_photo", thumbnail });
+    await expect(readUploadThumbnail({ paseoHome, uploadId: "upload_photo" })).resolves.toEqual(
+      thumbnail,
+    );
+    await expect(
+      readImageUploads({
+        paseoHome,
+        uploads: [{ uploadId: "upload_photo", mimeType: "image/png" }],
+      }),
+    ).resolves.toEqual([{ data: "eA==", mimeType: "image/png" }]);
+
+    utimesSync(
+      join(paseoHome, "uploads", "upload_photo", UPLOAD_THUMBNAIL_FILE),
+      daysAgo(now, 8),
+      daysAgo(now, 8),
+    );
+    utimesSync(join(paseoHome, "uploads", "upload_photo"), daysAgo(now, 8), daysAgo(now, 8));
+    await expect(sweepAbandonedUploads({ paseoHome, now })).resolves.toEqual({
+      removed: ["upload_photo"],
+    });
+    await expect(readUploadThumbnail({ paseoHome, uploadId: "upload_photo" })).resolves.toBeNull();
+  });
+
+  it("refuses an oversized thumbnail or one for a missing upload", async () => {
+    const paseoHome = makePaseoHome();
+    makeUpload(paseoHome, "upload_photo", Date.now() / 1000);
+    await expect(
+      writeUploadThumbnail({
+        paseoHome,
+        uploadId: "upload_photo",
+        thumbnail: { data: "A".repeat(200 * 1024), mimeType: "image/jpeg", width: 4, height: 3 },
+      }),
+    ).rejects.toThrow("larger than a thumbnail");
+    await expect(
+      writeUploadThumbnail({
+        paseoHome,
+        uploadId: "upload_gone",
+        thumbnail: { data: "AAAA", mimeType: "image/jpeg", width: 4, height: 3 },
+      }),
+    ).rejects.toThrow("no longer on the host");
+  });
+});
