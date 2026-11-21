@@ -151,10 +151,17 @@ class FakeDaemonClient {
 
   public ensureConnectedCalls: Array<{ verify?: boolean } | undefined> = [];
 
+  /** Like the real client over a relay: the reconnect stays `connecting` until hello. */
+  public ensureConnectedStaysConnecting = false;
+
   ensureConnected(options?: { verify?: boolean }): void {
     this.ensureConnectedCalls.push(options);
     if (this.state.status !== "connected") {
-      this.setConnectionState({ status: "connected" });
+      this.setConnectionState(
+        this.ensureConnectedStaysConnecting
+          ? { status: "connecting", attempt: 0 }
+          : { status: "connected" },
+      );
     }
   }
 
@@ -1594,6 +1601,74 @@ describe("background suspend (Daseo delta 86)", () => {
     expect(client.connectCalls).toBe(1);
     expect(controller.getSnapshot().connectionStatus).toBe("idle");
     await controller.stop();
+  });
+
+  // Daseo delta 140: every return to the app opened two relay sockets with the same client id,
+  // the reconnecting active client and a probe client for the same connection.
+  async function startedController(client: FakeDaemonClient, probes: string[]) {
+    client.setConnectionState({ status: "connected" });
+    const controller = new HostRuntimeController({
+      host: makeHost({ connections: [directConnection] }),
+      deps: makeSingleConnectionDeps({ client, probes }),
+    });
+    await controller.start({
+      initialConnection: { connectionId: directConnection.id, existingClient: client as never },
+    });
+    expect(controller.getSnapshot()).toMatchObject({ connectionStatus: "online", client });
+    return controller;
+  }
+
+  it.each(["resume", "cycle"] as const)(
+    "opens no second socket for the selected connection on a %s",
+    async (path) => {
+      let now = 1_000_000;
+      const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+      try {
+        const client = new FakeDaemonClient();
+        const probes: string[] = [];
+        const controller = await startedController(client, probes);
+        client.ensureConnectedStaysConnecting = true;
+        now += 120_000;
+
+        if (path === "resume") {
+          controller.suspend();
+          controller.resume();
+        } else {
+          controller.cycleConnection();
+        }
+        await controller.runProbeCycleNow();
+
+        expect(controller.getSnapshot().connectionStatus).toBe("connecting");
+        expect(probes).toEqual([]);
+        expect(client.connectCalls).toBe(0);
+
+        client.setConnectionState({ status: "connected" });
+        expect(controller.getSnapshot()).toMatchObject({ connectionStatus: "online", client });
+        expect(probes).toEqual([]);
+        await controller.stop();
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+
+  it("still probes the selected connection separately while its client waits to retry", async () => {
+    let now = 1_000_000;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    try {
+      const client = new FakeDaemonClient();
+      const probes: string[] = [];
+      const controller = await startedController(client, probes);
+      client.setConnectionState({ status: "disconnected", reason: "Transport closed (1006)" });
+      now += 120_000;
+
+      await controller.runProbeCycleNow();
+
+      expect(probes).toEqual([directConnection.id]);
+      await controller.stop();
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it("restores the pre-suspend state of a host that had no connection yet", async () => {

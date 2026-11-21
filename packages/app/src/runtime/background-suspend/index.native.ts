@@ -1,6 +1,7 @@
 import { AppState } from "react-native";
 import { requireOptionalNativeModule, type EventSubscription } from "expo-modules-core";
 import { getIsAppVisible } from "@/utils/app-visibility";
+import { traceReturnSync } from "@/runtime/return-sync-trace";
 import {
   createBackgroundSuspendController,
   type BackgroundSuspendController,
@@ -86,6 +87,7 @@ export function startBackgroundSuspend(target: BackgroundSuspendTarget): () => v
     },
     scheduler: nativeTimer?.scheduler ?? timeoutScheduler,
     initiallyVisible: getIsAppVisible(),
+    onTransition: ({ kind, awayMs }) => traceReturnSync(kind, { awayMs }),
   });
   controller = started;
   const subscription = AppState.addEventListener("change", (state) => {

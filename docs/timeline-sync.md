@@ -147,6 +147,10 @@ The app chooses one delivery policy from `server_info.features.selectiveAgentTim
 This policy is owned by `viewed-timeline-sync.ts`; downstream reducers do not branch on daemon
 version.
 
+On native, every resubscription, catch-up, and return to the app writes one `[return-sync]` info
+line (store end seq beside the list's newest drawn row). Read them from the phone with
+`phone_logs` before guessing whether a stale chat lacked data or drawing.
+
 ## Projected pages reconcile with live presentation
 
 A projected page is canonical state, not a sequence of live deltas. One projected item can overlap

@@ -1,6 +1,10 @@
 import { expect, test, vi } from "vitest";
 import type { ProjectedTimelineForwardFetchPlan } from "./timeline-sync-plan";
-import { createViewedTimelineSync, type ViewedTimelineSync } from "./viewed-timeline-sync";
+import {
+  createViewedTimelineSync,
+  type ViewedTimelineSync,
+  type ViewedTimelineSyncTraceEvent,
+} from "./viewed-timeline-sync";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -46,6 +50,7 @@ async function soon<T>(promise: Promise<T>, what: string): Promise<T> {
 
 class TimelineWorld {
   readonly errors: string[] = [];
+  readonly traces: ViewedTimelineSyncTraceEvent[] = [];
   readonly cursors = new Map<string, { epoch: string; endSeq: number }>();
   readonly sync: ViewedTimelineSync;
 
@@ -108,6 +113,7 @@ class TimelineWorld {
           if (index >= 0) this.scheduled.splice(index, 1);
         };
       },
+      trace: (event) => this.traces.push(event),
     });
   }
 
@@ -955,6 +961,48 @@ test("a reconnect never observed as a disconnect resubscribes and catches up the
   });
   catchUp.respond({ hasNewer: false, seq: 75 });
   await vi.waitFor(() => expect(world.sync.getAgentTimelineStatus("agent-a")).toBe("ready"));
+});
+
+// Daseo delta 140: the phone's resume path (logcat 2026-11-21): the socket drops a few seconds
+// after the app leaves the screen, the suspend follows, and the app comes back to the same chat.
+// Every step is traced for the return breadcrumbs.
+test("a chat open across a hidden drop and a resume resubscribes, catches up, and traces each step", async () => {
+  const world = new TimelineWorld({ initialConnected: true, initialConnectionEpoch: 1 });
+  world.sync.replaceVisibleAgentIds("workspace", ["agent-a"]);
+  world.takePendingMembership().succeed();
+  (await world.nextFetch("agent-a")).respond({ hasNewer: false, seq: 69 });
+  world.cursors.set("agent-a", { epoch: "epoch-agent-a", endSeq: 69 });
+  await vi.waitFor(() => expect(world.sync.getAgentTimelineStatus("agent-a")).toBe("ready"));
+  world.traces.length = 0;
+
+  world.sync.setActive(false);
+  world.sync.setConnected(false, 1);
+  world.sync.setActive(true);
+  world.sync.setConnected(true, 2);
+
+  const membership = await soon(world.nextMembership(), "a resubscription after the resume");
+  expect(membership.agentIds).toEqual(["agent-a"]);
+  membership.succeed();
+  const catchUp = await soon(world.nextFetch("agent-a"), "a catch-up after the resume");
+  expect(catchUp.request).toMatchObject({ direction: "after", cursor: { seq: 69 } });
+  catchUp.respond({ hasNewer: false, seq: 80 });
+  await vi.waitFor(() => expect(world.sync.getAgentTimelineStatus("agent-a")).toBe("ready"));
+
+  expect(world.traces.map((event) => event.type)).toEqual([
+    "connection",
+    "connection",
+    "subscription-sent",
+    "subscription-acked",
+    "catch-up-start",
+    "catch-up-finish",
+  ]);
+  expect(world.traces[0]).toMatchObject({ change: "disconnected", connectionEpoch: 1 });
+  expect(world.traces[1]).toMatchObject({ change: "connected", connectionEpoch: 2 });
+  expect(world.traces[5]).toMatchObject({
+    agentId: "agent-a",
+    outcome: "complete",
+    endCursor: { epoch: "epoch-agent-a", seq: 80 },
+  });
 });
 
 test("a catch-up running on the replaced transport cannot complete for the new one", async () => {

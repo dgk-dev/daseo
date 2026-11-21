@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import {
+  AppState,
   FlatList,
   Keyboard,
   Platform,
@@ -23,6 +24,7 @@ import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import type { StreamItem } from "@/types/stream";
 import type { Theme } from "@/styles/theme";
 import { useStableEvent } from "@/hooks/use-stable-event";
+import { RETURN_SYNC_SETTLE_MS, shortTraceId, traceReturnSync } from "@/runtime/return-sync-trace";
 import { useBottomAnchorController } from "./bottom-anchor-controller";
 import { OlderHistoryErrorRow } from "./older-history-error-row";
 import { useScrollKeyboardDismiss } from "./scroll-keyboard-dismiss/use-scroll-keyboard-dismiss";
@@ -427,6 +429,47 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
     };
   }, [agentId, bottomAnchorController, markNativeViewportSettling, scrollToMessage, viewportRef]);
 
+  // Daseo delta 140: what the list draws a few seconds after a return or a resize, next to the
+  // store lines from session-context. `newestDrawnSeq` lags `newestRowSeq` when the store has a
+  // row the list never drew; `anchor` and `offsetY` show a list that drew it off screen.
+  const newestDrawnRowRef = useRef<StreamItem | null>(null);
+  const settleTraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const traceListSettled = useStableEvent((reason: "return" | "resize") => {
+    const newestRow = historyRowsRef.current[0] ?? null;
+    const newestDrawn = newestDrawnRowRef.current;
+    const metrics = streamViewportMetricsRef.current;
+    traceReturnSync("list-settled", {
+      reason,
+      agent: shortTraceId(agentId),
+      rows: historyRowsRef.current.length,
+      liveHead: segments.liveHead.length,
+      newestRowSeq: newestRow?.timelineCursor?.seq ?? null,
+      newestDrawnSeq: newestDrawn?.timelineCursor?.seq ?? null,
+      drawnIsNewest: newestRow !== null && newestDrawn?.id === newestRow.id,
+      offsetY: Math.round(metrics.offsetY),
+      anchor: bottomAnchorController.mode,
+      anchorReason: bottomAnchorController.getLastModeChangeReason(),
+      width: Math.round(metrics.viewportWidth),
+    });
+  });
+  const scheduleListSettledTrace = useStableEvent((reason: "return" | "resize") => {
+    if (settleTraceTimerRef.current) clearTimeout(settleTraceTimerRef.current);
+    settleTraceTimerRef.current = setTimeout(() => {
+      settleTraceTimerRef.current = null;
+      traceListSettled(reason);
+    }, RETURN_SYNC_SETTLE_MS);
+  });
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") scheduleListSettledTrace("return");
+    });
+    return () => {
+      subscription.remove();
+      if (settleTraceTimerRef.current) clearTimeout(settleTraceTimerRef.current);
+      settleTraceTimerRef.current = null;
+    };
+  }, [scheduleListSettledTrace]);
+
   const isScrollEventNearBottom = useStableEvent(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
@@ -539,6 +582,15 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
     if (viewportChanged) {
       markNativeViewportSettling();
     }
+    if (previousViewportWidth > 0 && previousViewportWidth !== viewportWidth) {
+      traceReturnSync("list-resized", {
+        agent: shortTraceId(agentId),
+        from: Math.round(previousViewportWidth),
+        to: Math.round(viewportWidth),
+        anchor: bottomAnchorController.mode,
+      });
+      scheduleListSettledTrace("resize");
+    }
     bottomAnchorController.handleViewportMetricsChange({
       previousViewportWidth,
       viewportWidth,
@@ -582,6 +634,7 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
 
   const renderItem = useStableEvent(
     ({ item, index }: ListRenderItemInfo<StreamItem>): ReactElement | null => {
+      if (index === 0) newestDrawnRowRef.current = item;
       const rendered = renderHistoryMountedRow(item, index, historyItems);
       return (rendered ?? null) as ReactElement | null;
     },

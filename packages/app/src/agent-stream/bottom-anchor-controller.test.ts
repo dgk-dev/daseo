@@ -136,6 +136,7 @@ function createDriverHarness(input?: {
     scrollToBottomBehavior();
   };
   const modeChanges: BottomAnchorMode[] = [];
+  const modeChangeReasons: string[] = [];
   const driver = __private__.createBottomAnchorControllerDriver({
     getAgentId: () => context.agentId,
     getIsAuthoritativeHistoryReady: () => context.authoritativeReady,
@@ -144,7 +145,8 @@ function createDriverHarness(input?: {
     getMeasurementState: () => context.measurementState,
     isNearBottom: () => context.nearBottom,
     scrollToBottom,
-    onModeChange: (mode) => {
+    onModeChange: (mode, reason) => {
+      modeChangeReasons.push(reason);
       modeChanges.push(mode);
     },
     scheduleFrame: (params) => scheduler.schedule(params),
@@ -160,6 +162,7 @@ function createDriverHarness(input?: {
       scrollToBottomBehavior = next;
     },
     modeChanges,
+    modeChangeReasons,
   };
 }
 
@@ -678,10 +681,12 @@ describe("bottom anchor controller driver", () => {
       scrollDelta: 0,
     });
     harness.scheduler.flushAll();
+    harness.driver.beginUserScroll();
     harness.driver.handleScrollNearBottomChange({
       nextIsNearBottom: false,
       scrollDelta: 64,
     });
+    harness.driver.endUserScroll({ isNearBottom: false });
 
     expect(harness.driver.getSnapshot().mode).toBe("detached");
   });
@@ -719,10 +724,12 @@ describe("bottom anchor controller driver", () => {
       scrollDelta: 0,
     });
     harness.scheduler.flushAll();
+    harness.driver.beginUserScroll();
     harness.driver.handleScrollNearBottomChange({
       nextIsNearBottom: false,
       scrollDelta: 64,
     });
+    harness.driver.endUserScroll({ isNearBottom: false });
 
     expect(harness.driver.getSnapshot().mode).toBe("detached");
   });
@@ -882,62 +889,110 @@ describe("controller helper predicates", () => {
     ).toBe(false);
   });
 
-  it("does not detach from sticky while a restick request is still pending", () => {
+  it("leaves a running request or verification alone once the geometry is verified", () => {
+    const base = {
+      mode: "sticky-bottom" as const,
+      nextIsNearBottom: false,
+      hasUnverifiedStickyMeasurementChange: false,
+    };
     expect(
-      __private__.shouldDetachFromScrollAway({
-        mode: "sticky-bottom",
-        nextIsNearBottom: false,
-        scrollDelta: 0,
+      __private__.shouldRestickAfterUnownedScroll({
+        ...base,
         hasPendingRequest: true,
         hasPendingVerification: false,
-        hasUnverifiedStickyMeasurementChange: false,
       }),
     ).toBe(false);
-
     expect(
-      __private__.shouldDetachFromScrollAway({
-        mode: "sticky-bottom",
-        nextIsNearBottom: false,
-        scrollDelta: 0,
+      __private__.shouldRestickAfterUnownedScroll({
+        ...base,
         hasPendingRequest: false,
         hasPendingVerification: true,
-        hasUnverifiedStickyMeasurementChange: false,
       }),
     ).toBe(false);
-
     expect(
-      __private__.shouldDetachFromScrollAway({
-        mode: "sticky-bottom",
-        nextIsNearBottom: false,
-        scrollDelta: 0,
+      __private__.shouldRestickAfterUnownedScroll({
+        ...base,
         hasPendingRequest: false,
         hasPendingVerification: false,
-        hasUnverifiedStickyMeasurementChange: true,
-      }),
-    ).toBe(false);
-
-    expect(
-      __private__.shouldDetachFromScrollAway({
-        mode: "sticky-bottom",
-        nextIsNearBottom: false,
-        scrollDelta: 0,
-        hasPendingRequest: false,
-        hasPendingVerification: false,
-        hasUnverifiedStickyMeasurementChange: false,
       }),
     ).toBe(true);
+    expect(
+      __private__.shouldRestickAfterUnownedScroll({
+        ...base,
+        mode: "detached",
+        hasPendingRequest: false,
+        hasPendingVerification: false,
+      }),
+    ).toBe(false);
   });
 
-  it("treats a large scroll delta as user detach even during an unverified sticky change", () => {
-    expect(
-      __private__.shouldDetachFromScrollAway({
-        mode: "sticky-bottom",
-        nextIsNearBottom: false,
-        scrollDelta: 48,
-        hasPendingRequest: false,
-        hasPendingVerification: false,
-        hasUnverifiedStickyMeasurementChange: true,
-      }),
-    ).toBe(true);
+  // Daseo delta 140: the owner's stale chat after a fold or a return. A scroll event no gesture
+  // owns used to detach the list; Android then held the old reading position (its
+  // maintainVisibleContentPosition is on only while detached) and new rows arrived below.
+  describe("scrolls no gesture owns (delta 140)", () => {
+    function attachedHarness() {
+      return createDriverHarness({
+        transportBehavior: { verificationDelayFrames: 2, verificationRetryMode: "recheck" },
+      });
+    }
+
+    it.each([
+      ["a return from background (layout pass, insets)", 0],
+      ["a fold resize moving the offset", 394],
+      ["replaced content (disk replica or tail replacement)", 1800],
+      ["a small keyboard-hide shift", 12],
+    ])("%s keeps the chat attached and puts the newest row back on screen", (_event, delta) => {
+      const harness = attachedHarness();
+      harness.context.nearBottom = false;
+      harness.context.measurementState.offsetY = 400;
+
+      harness.driver.handleScrollNearBottomChange({ nextIsNearBottom: false, scrollDelta: delta });
+      harness.scheduler.flushAll();
+
+      expect(harness.driver.getSnapshot().mode).toBe("sticky-bottom");
+      expect(harness.modeChanges).toEqual([]);
+      expect(harness.scrollAttempts.length).toBeGreaterThan(0);
+      expect(harness.context.nearBottom).toBe(true);
+    });
+
+    it("keeps an attached chat attached through a fold resize and the scroll events after it", () => {
+      const harness = attachedHarness();
+
+      harness.driver.handleViewportMetricsChange({
+        previousViewportWidth: 874,
+        viewportWidth: 480,
+        previousViewportHeight: 900,
+        viewportHeight: 1040,
+      });
+      harness.context.nearBottom = false;
+      harness.driver.handleContentSizeChange({ previousContentHeight: 1200, contentHeight: 2100 });
+      harness.driver.handleScrollNearBottomChange({ nextIsNearBottom: false, scrollDelta: 600 });
+      harness.scheduler.flushAll();
+      harness.context.nearBottom = false;
+      harness.driver.handleScrollNearBottomChange({ nextIsNearBottom: false, scrollDelta: 0 });
+      harness.scheduler.flushAll();
+
+      expect(harness.driver.getSnapshot().mode).toBe("sticky-bottom");
+      expect(harness.modeChanges).toEqual([]);
+      expect(harness.context.nearBottom).toBe(true);
+    });
+
+    it("still detaches when a drag ends away from the bottom, and names the gesture", () => {
+      const harness = createDriverHarness();
+      const driver = harness.driver;
+      const reasons = harness.modeChangeReasons;
+
+      driver.beginUserScroll();
+      harness.context.nearBottom = false;
+      driver.handleScrollNearBottomChange({ nextIsNearBottom: false, scrollDelta: 120 });
+      driver.endUserScroll({ isNearBottom: false });
+
+      expect(driver.getSnapshot().mode).toBe("detached");
+      expect(reasons).toEqual(["gesture-end"]);
+
+      driver.requestLocalAnchor({ agentId: "agent-1", reason: "jump-to-bottom" });
+      driver.detachByUser();
+      expect(reasons).toEqual(["gesture-end", "jump-to-bottom", "scroll-to-message"]);
+    });
   });
 });

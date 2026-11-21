@@ -69,13 +69,15 @@ function createTarget() {
 function setup(initiallyVisible = true) {
   const clock = createManualScheduler();
   const target = createTarget();
+  const transitions: string[] = [];
   const controller = createBackgroundSuspendController({
     target,
     scheduler: clock.scheduler,
     initiallyVisible,
     now: clock.now,
+    onTransition: ({ kind, awayMs }) => transitions.push(`${kind}:${awayMs}`),
   });
-  return { clock, target, controller };
+  return { clock, target, controller, transitions };
 }
 
 describe("background suspend controller", () => {
@@ -277,5 +279,25 @@ describe("background suspend controller", () => {
       clock.advance(1);
       expect(target.calls).toEqual([true]);
     });
+  });
+
+  // Daseo delta 140: the return breadcrumbs name the path each return took.
+  it("reports which path each return took and how long the app was away", () => {
+    const { clock, controller, transitions } = setup();
+
+    controller.setVisible(false);
+    clock.advance(30_000);
+    clock.advance(5_000);
+    controller.setVisible(true);
+
+    controller.setVisible(false);
+    clock.sleep(40_000);
+    controller.setVisible(true);
+
+    controller.setVisible(false);
+    clock.advance(2_000);
+    controller.setVisible(true);
+
+    expect(transitions).toEqual(["suspend:30000", "resume:35000", "cycle:40000", "verify:2000"]);
   });
 });

@@ -1,7 +1,18 @@
 import { useEffect, useRef, useState } from "react";
+import { shortTraceId, traceReturnSync } from "@/runtime/return-sync-trace";
 import type { BottomAnchorTransportBehavior } from "./strategy";
 
 export type BottomAnchorMode = "sticky-bottom" | "detached";
+
+/**
+ * Daseo delta 140: why the mode last changed, for the return breadcrumbs. Only a gesture (a drag
+ * and the momentum it started, or opening a search result) detaches.
+ */
+export type BottomAnchorModeChangeReason =
+  | "gesture-end"
+  | "scroll-to-message"
+  | "agent-change"
+  | BottomAnchorRequestReason;
 
 export interface BottomAnchorRouteRequest {
   reason: "initial-entry" | "resume";
@@ -70,7 +81,7 @@ interface BottomAnchorControllerDriver {
   requestLocalAnchor: (request: BottomAnchorLocalRequest) => void;
   beginUserScroll: () => void;
   endUserScroll: (params: { isNearBottom: boolean }) => void;
-  detachByUser: () => void;
+  detachByUser: (reason?: BottomAnchorModeChangeReason) => void;
   handleViewportMetricsChange: (params: {
     previousViewportWidth: number;
     viewportWidth: number;
@@ -99,7 +110,7 @@ interface CreateBottomAnchorControllerDriverInput {
   getMeasurementState: () => ControllerMeasurementState;
   isNearBottom: () => boolean;
   scrollToBottom: (animated: boolean) => void;
-  onModeChange: (mode: BottomAnchorMode) => void;
+  onModeChange: (mode: BottomAnchorMode, reason: BottomAnchorModeChangeReason) => void;
   scheduleFrame: (params: {
     kind: "attempt" | "verification";
     callback: () => void;
@@ -110,7 +121,6 @@ interface CreateBottomAnchorControllerDriverInput {
 
 const MAX_VERIFICATION_RETRIES = 3;
 const WEB_PARTIAL_VIRTUALIZED_CONFIRMATION_DELAY_FRAMES = 1;
-const USER_SCROLL_AWAY_DELTA_PX = 24;
 
 function scheduleAnimationFrameWithDelay(input: {
   callback: () => void;
@@ -254,12 +264,12 @@ function createBottomAnchorControllerDriver(
     blockedReason = nextBlockedReason;
   };
 
-  const setModeInternal = (nextMode: BottomAnchorMode) => {
+  const setModeInternal = (nextMode: BottomAnchorMode, reason: BottomAnchorModeChangeReason) => {
     if (mode === nextMode) {
       return;
     }
     mode = nextMode;
-    input.onModeChange(nextMode);
+    input.onModeChange(nextMode, reason);
     if (nextMode === "detached") {
       lastVerifiedStickyMeasurementRevision = stickyMeasurementRevision;
     }
@@ -465,6 +475,7 @@ function createBottomAnchorControllerDriver(
       "requestKey" in request
         ? "sticky-bottom"
         : __private__.deriveModeForLocalRequest({ reason: request.reason }),
+      request.reason,
     );
     evaluate(request.reason === "jump-to-bottom", "request_created");
   };
@@ -490,7 +501,7 @@ function createBottomAnchorControllerDriver(
       lastVerifiedStickyMeasurementRevision = 0;
       isUserScrollActive = false;
       mode = "sticky-bottom";
-      input.onModeChange("sticky-bottom");
+      input.onModeChange("sticky-bottom", "agent-change");
     },
     applyRouteRequest(request) {
       if (!request) {
@@ -513,7 +524,7 @@ function createBottomAnchorControllerDriver(
       isUserScrollActive = false;
       if (params.isNearBottom) {
         if (mode === "detached") {
-          setModeInternal("sticky-bottom");
+          setModeInternal("sticky-bottom", "gesture-end");
           pendingVerification = { requestId: null, retries: 0 };
           evaluate(false, "user_scroll_end");
           return;
@@ -534,15 +545,15 @@ function createBottomAnchorControllerDriver(
         return;
       }
       if (mode === "sticky-bottom") {
-        this.detachByUser();
+        this.detachByUser("gesture-end");
       }
     },
-    detachByUser() {
+    detachByUser(reason = "scroll-to-message") {
       if (mode === "detached") {
         return;
       }
       cancelPendingRequest("user_scrolled_away");
-      setModeInternal("detached");
+      setModeInternal("detached", reason);
     },
     handleViewportMetricsChange(params) {
       if (
@@ -619,7 +630,7 @@ function createBottomAnchorControllerDriver(
       evaluate(false, "content_size_change");
     },
     handleScrollNearBottomChange(params) {
-      const { nextIsNearBottom, scrollDelta } = params;
+      const { nextIsNearBottom } = params;
       if (isUserScrollActive) {
         return;
       }
@@ -632,20 +643,20 @@ function createBottomAnchorControllerDriver(
       }
       const hasUnverifiedStickyMeasurementChange =
         stickyMeasurementRevision !== lastVerifiedStickyMeasurementRevision;
+      // Daseo delta 140: no gesture owns this scroll (a gesture returns above), so it came from
+      // layout: a fold resize, a return from background, inset or keyboard changes, replaced
+      // content. It never detaches; a sticky list that it moved off the bottom goes back. Before,
+      // one such event left the chat detached, and Android's maintainVisibleContentPosition then
+      // held the old reading position while new rows arrived below it.
       if (
-        __private__.shouldDetachFromScrollAway({
+        __private__.shouldRestickAfterUnownedScroll({
           mode,
           nextIsNearBottom,
-          scrollDelta,
           hasPendingRequest: pendingRequest !== null,
           hasPendingVerification: pendingVerification !== null,
           hasUnverifiedStickyMeasurementChange,
         })
       ) {
-        this.detachByUser();
-        return;
-      }
-      if (mode === "sticky-bottom" && !nextIsNearBottom && hasUnverifiedStickyMeasurementChange) {
         if (!pendingRequest && !pendingVerification) {
           pendingVerification = { requestId: null, retries: 0 };
         }
@@ -702,21 +713,22 @@ export const __private__ = {
   }): boolean {
     return input.mode === "sticky-bottom" && input.contentHeight > input.previousContentHeight;
   },
-  shouldDetachFromScrollAway(input: {
+  /**
+   * A sticky list moved off the bottom by a scroll no gesture owns. While a request or a
+   * verification is already running and the geometry is verified, that work owns the viewport
+   * (an animated jump to the bottom passes through such offsets) and nothing is added.
+   */
+  shouldRestickAfterUnownedScroll(input: {
     mode: BottomAnchorMode;
     nextIsNearBottom: boolean;
-    scrollDelta: number;
     hasPendingRequest: boolean;
     hasPendingVerification: boolean;
     hasUnverifiedStickyMeasurementChange: boolean;
   }): boolean {
-    const scrolledAwayIntentionally = Math.abs(input.scrollDelta) >= USER_SCROLL_AWAY_DELTA_PX;
+    if (input.mode !== "sticky-bottom" || input.nextIsNearBottom) return false;
     return (
-      input.mode === "sticky-bottom" &&
-      !input.nextIsNearBottom &&
-      !input.hasPendingRequest &&
-      !input.hasPendingVerification &&
-      (!input.hasUnverifiedStickyMeasurementChange || scrolledAwayIntentionally)
+      input.hasUnverifiedStickyMeasurementChange ||
+      (!input.hasPendingRequest && !input.hasPendingVerification)
     );
   },
 };
@@ -740,6 +752,8 @@ export function useBottomAnchorController(input: {
   const isNearBottomRef = useRef(input.isNearBottom);
   const scrollToBottomRef = useRef(input.scrollToBottom);
   const driverRef = useRef<BottomAnchorControllerDriver | null>(null);
+  const lastModeChangeReasonRef = useRef<BottomAnchorModeChangeReason | null>(null);
+  const tracedModeRef = useRef<BottomAnchorMode>("sticky-bottom");
 
   agentIdRef.current = input.agentId;
   readinessRef.current = input.isAuthoritativeHistoryReady;
@@ -758,7 +772,20 @@ export function useBottomAnchorController(input: {
       getMeasurementState: () => getMeasurementStateRef.current(),
       isNearBottom: () => isNearBottomRef.current(),
       scrollToBottom: (animated) => scrollToBottomRef.current(animated),
-      onModeChange: (nextMode) => setMode(nextMode),
+      onModeChange: (nextMode, reason) => {
+        // Daseo delta 140: a phone log shows what attached or detached the open chat. A reset for
+        // a new chat that was already attached is not a change.
+        if (nextMode !== tracedModeRef.current) {
+          tracedModeRef.current = nextMode;
+          lastModeChangeReasonRef.current = reason;
+          traceReturnSync("anchor", {
+            agent: shortTraceId(agentIdRef.current),
+            mode: nextMode,
+            anchorReason: reason,
+          });
+        }
+        setMode(nextMode);
+      },
       scheduleFrame: ({ callback, delayFrames }) =>
         scheduleAnimationFrameWithDelay({ callback, delayFrames }),
       cancelFrame: (handle) => cancelScheduledAnimationFrame(handle),
@@ -786,6 +813,8 @@ export function useBottomAnchorController(input: {
 
   return {
     mode,
+    /** Why the mode last changed (Daseo delta 140 breadcrumbs); null before any change. */
+    getLastModeChangeReason: () => lastModeChangeReasonRef.current,
     requestLocalAnchor(request: BottomAnchorLocalRequest) {
       driverRef.current?.requestLocalAnchor(request);
     },

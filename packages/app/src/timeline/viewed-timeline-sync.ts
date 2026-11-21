@@ -24,7 +24,26 @@ interface ViewedTimelineSyncPorts {
   fetchLatestTail(agentId: string): Promise<TimelinePageResult>;
   reportError(error: unknown): void;
   schedule(task: () => void, delayMs: number): () => void;
+  /** Daseo delta 140: each subscription and catch-up step, for the return breadcrumbs. */
+  trace?(event: ViewedTimelineSyncTraceEvent): void;
 }
+
+export type ViewedTimelineSyncTraceEvent =
+  | {
+      type: "connection";
+      change: "connected" | "disconnected" | "transport-replaced";
+      connectionEpoch: number | undefined;
+    }
+  | { type: "subscription-sent"; agentIds: string[] }
+  | { type: "subscription-acked"; agentIds: string[] }
+  | { type: "subscription-failed"; agentIds: string[] }
+  | { type: "catch-up-start"; agentId: string; request: ProjectedTimelineForwardFetchPlan }
+  | {
+      type: "catch-up-finish";
+      agentId: string;
+      outcome: "complete" | "error" | "superseded";
+      endCursor: { epoch: string; seq: number } | null;
+    };
 
 export type TimelineDeliveryMode = "legacy" | "selective";
 export type ViewedTimelineStatus = "ready" | "pending" | "error" | "retrying";
@@ -199,8 +218,13 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
     pendingCatchUps.delete(agentId);
   };
 
-  const completeCatchUp = (agentId: string, generation: number) => {
+  const completeCatchUp = (
+    agentId: string,
+    generation: number,
+    endCursor: { epoch: string; seq: number } | null,
+  ) => {
     catchUps.set(agentId, { generation, status: "complete" });
+    ports.trace?.({ type: "catch-up-finish", agentId, outcome: "complete", endCursor });
     const pendingCatchUp = pendingCatchUps.get(agentId);
     if (pendingCatchUp) {
       startCatchUp(agentId, { request: pendingCatchUp, supersede: true });
@@ -219,16 +243,24 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
 
     try {
       const page = await ports.fetchPage(agentId, request);
-      if (!ownsCatchUp(agentId, generation)) return;
+      if (!ownsCatchUp(agentId, generation)) {
+        ports.trace?.({
+          type: "catch-up-finish",
+          agentId,
+          outcome: "superseded",
+          endCursor: page.endCursor,
+        });
+        return;
+      }
       if (page.hasNewer && page.endCursor) {
         if (fallbackToLatestTailOnOverflow) {
           // From here this catch-up is a running tail: a gap reported meanwhile parks behind it.
           const running = catchUps.get(agentId);
           if (running) catchUps.set(agentId, { ...running, request: planTimelineTailFetch() });
-          await ports.fetchLatestTail(agentId);
+          const tail = await ports.fetchLatestTail(agentId);
           // A disconnect or a newer catch-up during the tail owns the state now.
           if (!ownsCatchUp(agentId, generation)) return;
-          completeCatchUp(agentId, generation);
+          completeCatchUp(agentId, generation, tail.endCursor);
           return;
         }
         await fetchUntilCurrent(
@@ -242,7 +274,7 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
       if (page.hasNewer) {
         throw new Error(`Timeline page for ${agentId} hasNewer without an end cursor`);
       }
-      completeCatchUp(agentId, generation);
+      completeCatchUp(agentId, generation, page.endCursor);
     } catch (error) {
       if (catchUps.get(agentId)?.generation === generation) {
         const nextRetryDelayMs = getNextRetryDelayMs(catchUps.get(agentId)?.retryDelayMs);
@@ -259,6 +291,7 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
           retryDelayMs: nextRetryDelayMs,
         });
         setVisibilityCatchUpError([agentId]);
+        ports.trace?.({ type: "catch-up-finish", agentId, outcome: "error", endCursor: null });
         ports.reportError(error);
       }
     }
@@ -298,6 +331,7 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
       retryDelayMs,
     });
     pendingCatchUps.delete(agentId);
+    ports.trace?.({ type: "catch-up-start", agentId, request: nextRequest });
     void fetchUntilCurrent(
       agentId,
       generation,
@@ -322,9 +356,11 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
     const requested = desired;
     if (!membershipNeedsRetry && sameAgentIds(requested, acknowledged)) return;
     membershipNeedsRetry = false;
+    ports.trace?.({ type: "subscription-sent", agentIds: requested });
     try {
       await ports.setSubscription(requested);
     } catch (error) {
+      ports.trace?.({ type: "subscription-failed", agentIds: requested });
       membershipNeedsRetry = true;
       setVisibilityCatchUpError(requested);
       cancelMembershipRetry?.();
@@ -350,6 +386,7 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
     membershipRetryDelayMs = undefined;
     if (disposed || !connected || deliveryMode !== "selective") return;
     acknowledged = requested;
+    ports.trace?.({ type: "subscription-acked", agentIds: requested });
     if (generation !== membershipGeneration) {
       await reconcileLatestMembership();
       return;
@@ -518,11 +555,17 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
         nextConnectionEpoch !== connectionEpoch;
       if (nextConnectionEpoch !== undefined) connectionEpoch = nextConnectionEpoch;
       if (transportReplaced) {
+        ports.trace?.({ type: "connection", change: "transport-replaced", connectionEpoch });
         markDisconnected();
         markConnected();
         return;
       }
       if (connected === nextConnected) return;
+      ports.trace?.({
+        type: "connection",
+        change: nextConnected ? "connected" : "disconnected",
+        connectionEpoch,
+      });
       if (nextConnected) markConnected();
       else markDisconnected();
     },

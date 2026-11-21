@@ -36,6 +36,15 @@ export interface BackgroundSuspendTarget {
   verifyConnections(): void;
 }
 
+/**
+ * Daseo delta 140: what the controller did, for the return breadcrumbs. `awayMs` is wall-clock
+ * time since the app left the screen.
+ */
+export interface BackgroundSuspendTransition {
+  kind: "suspend" | "resume" | "cycle" | "verify";
+  awayMs: number;
+}
+
 export interface BackgroundSuspendController {
   setVisible(visible: boolean): void;
   /** Keeps the connection while the returned release function has not been called. */
@@ -51,6 +60,7 @@ export function createBackgroundSuspendController(input: {
   graceMs?: number;
   /** Wall clock: keeps counting through device sleep and a frozen process. */
   now?: () => number;
+  onTransition?: (transition: BackgroundSuspendTransition) => void;
 }): BackgroundSuspendController {
   const { target, scheduler } = input;
   const graceMs = input.graceMs ?? BACKGROUND_SUSPEND_GRACE_MS;
@@ -70,6 +80,7 @@ export function createBackgroundSuspendController(input: {
     }
     suspended = true;
     target.setBackgroundSuspended(true);
+    input.onTransition?.({ kind: "suspend", awayMs: hiddenAt === null ? 0 : now() - hiddenAt });
   }
 
   function armGrace(): void {
@@ -113,14 +124,17 @@ export function createBackgroundSuspendController(input: {
       if (suspended) {
         suspended = false;
         target.setBackgroundSuspended(false);
+        input.onTransition?.({ kind: "resume", awayMs });
         return;
       }
       // A hold kept the connection on purpose (a recording streams over it): never cut it.
       if (awayMs >= graceMs && holds.size === 0) {
         target.cycleConnections();
+        input.onTransition?.({ kind: "cycle", awayMs });
         return;
       }
       target.verifyConnections();
+      input.onTransition?.({ kind: "verify", awayMs });
     },
     hold() {
       const token = Symbol("background-suspend-hold");

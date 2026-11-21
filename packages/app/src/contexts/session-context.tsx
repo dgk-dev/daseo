@@ -77,6 +77,11 @@ import { showProviderNoticeToast } from "@/utils/provider-notice-toast";
 import { applyCheckoutStatusUpdateFromEvent } from "@/git/checkout-status-cache";
 import { useProviderSubagentStore } from "@/subagents/provider-store";
 import { revalidateSessionAfterResume } from "@/contexts/session-resume-revalidation";
+import { RETURN_SYNC_SETTLE_MS, shortTraceId, traceReturnSync } from "@/runtime/return-sync-trace";
+import {
+  describeStoredTimeline,
+  traceViewedTimelineSyncEvent,
+} from "@/timeline/return-sync-breadcrumbs";
 
 type TimelineResponsePayload = Extract<
   SessionOutboundMessage,
@@ -413,6 +418,27 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
   useEffect(() => {
     viewedTimelineSyncRef.current?.setActive(isAppVisible);
   }, [isAppVisible]);
+
+  // Daseo delta 140: the open chat's store state when the app shows again and once it settled.
+  useEffect(() => {
+    if (!isAppVisible) return;
+    const traceOpenChat = (event: string) => {
+      const agentId = useSessionStore.getState().sessions[serverId]?.focusedAgentId ?? null;
+      if (!agentId) return;
+      const snapshot = getHostRuntimeStore().getSnapshot(serverId);
+      traceReturnSync(event, {
+        server: shortTraceId(serverId),
+        agent: shortTraceId(agentId),
+        status: snapshot?.connectionStatus ?? null,
+        epoch: snapshot?.connectionEpoch ?? null,
+        sync: viewedTimelineSyncRef.current?.getAgentTimelineStatus(agentId) ?? null,
+        ...describeStoredTimeline(serverId, agentId),
+      });
+    };
+    traceOpenChat("chat-shown");
+    const timer = setTimeout(() => traceOpenChat("chat-settled"), RETURN_SYNC_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [isAppVisible, serverId]);
 
   const recoverTimelineGap = useCallback(
     (agentId: string, cursor: { epoch: string; endSeq: number }) => {
@@ -769,6 +795,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
         const timeout = setTimeout(task, delayMs);
         return () => clearTimeout(timeout);
       },
+      trace: (event) => traceViewedTimelineSyncEvent(serverId, event),
     });
     viewedTimelineSyncRef.current = sync;
     setViewedTimelineSync(serverId, sync);

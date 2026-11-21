@@ -1109,6 +1109,16 @@ export class HostRuntimeController {
           let connectedClient: DaemonClient | null = null;
           let shouldCloseClient = false;
           try {
+            // Daseo delta 140: the selected connection's own client is opening a socket right now
+            // (resume, cycle, reconnect). That attempt is the probe; a second client here opened a
+            // second socket with the same client id on every return to the app. The verdict stays
+            // pending, so the cycle neither fails over nor ranks on it.
+            if (
+              this.snapshot.activeConnectionId === connection.id &&
+              this.snapshot.client?.getConnectionState().status === "connecting"
+            ) {
+              return;
+            }
             const activeClient =
               this.snapshot.connectionStatus === "online" &&
               this.snapshot.activeConnectionId === connection.id
