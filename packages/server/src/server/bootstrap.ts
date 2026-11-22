@@ -130,6 +130,10 @@ import { DownloadTokenStore } from "./file-download/token-store.js";
 import { PreviewLinkService, type PreviewLinkSettings } from "./file-preview/service.js";
 import { createDaemonHistorySearch } from "./history-search/create-daemon-history-search.js";
 import type { HistorySearchSettings } from "./history-search/history-search-service.js";
+import {
+  startTimelineCompactionSweeper,
+  type TimelineCompactionSettings,
+} from "./agent/timeline-compaction-sweeper.js";
 import { createPreviewLinkRouteHandler, PREVIEW_LINK_ROUTE } from "./file-preview/route.js";
 import type { OpenAiSpeechProviderConfig } from "./speech/providers/openai/config.js";
 import type { AzureSpeechProviderConfig } from "./speech/providers/azure/config.js";
@@ -459,6 +463,7 @@ export interface PaseoDaemonConfig {
   previewLinks?: PreviewLinkSettings | null;
   /** Daseo delta 79: History content search; null or absent turns it off. */
   historySearch?: HistorySearchSettings | null;
+  timelineCompaction?: TimelineCompactionSettings | null;
   webUi?: {
     enabled: boolean;
     distDir: string | null;
@@ -1190,6 +1195,16 @@ export async function createPaseoDaemon(
         logger,
       })
     : null;
+  // Local fork (DASEO.md delta 146): archived timelines into one file per agent.
+  const timelineCompaction = startTimelineCompactionSweeper({
+    store: durableTimelineStore,
+    timelinesDir: path.join(config.paseoHome, "timelines"),
+    listAgentRecords: () => agentStorage.list(),
+    getAgentRecord: (agentId) => agentStorage.get(agentId),
+    isAgentLoaded: (agentId) => agentManager.getAgent(agentId) !== null,
+    settings: config.timelineCompaction,
+    logger,
+  });
 
   setupAutoArchiveOnMerge({
     paseoHome: config.paseoHome,
@@ -1939,6 +1954,7 @@ export async function createPaseoDaemon(
     terminalManager.killAll();
     speechService.stop();
     await historySearch?.stop().catch(() => undefined);
+    await timelineCompaction.stop().catch(() => undefined);
     await scheduleService.stop().catch(() => undefined);
     await relayRuntime?.stop().catch(() => undefined);
     if (wsServer) {

@@ -26,6 +26,7 @@ import { mergeHostnames, parseHostnamesEnv, type HostnamesConfig } from "./hostn
 import { resolveGitProcessPolicy } from "../utils/git-process-scheduler.js";
 import type { PreviewLinkSettings } from "./file-preview/service.js";
 import type { HistorySearchSettings } from "./history-search/history-search-service.js";
+import type { TimelineCompactionSettings } from "./agent/timeline-compaction-sweeper.js";
 
 const DEFAULT_PORT = 6767;
 const DEFAULT_RELAY_ENDPOINT = "relay.paseo.sh:443";
@@ -408,6 +409,35 @@ function resolveHistorySearchConfig(env: NodeJS.ProcessEnv): HistorySearchSettin
   return { semantic: env.PASEO_HISTORY_SEMANTIC !== "0" };
 }
 
+// Daseo delta 146: archived timelines compacted into rows.jsonl. Off unless
+// PASEO_TIMELINE_COMPACTION is "1" (compact) or "dry-run" (log what it would do).
+// Environment only, like History search, so a rollback meets no unknown config key.
+const DEFAULT_TIMELINE_COMPACTION_MAX_AGENTS = 100;
+function resolveTimelineCompactionConfig(
+  env: NodeJS.ProcessEnv,
+): TimelineCompactionSettings | null {
+  const raw = env.PASEO_TIMELINE_COMPACTION?.trim();
+  if (!raw || raw === "0") return null;
+  if (raw !== "1" && raw !== "dry-run") {
+    throw new Error(`Invalid PASEO_TIMELINE_COMPACTION: ${raw} (use 1 or dry-run)`);
+  }
+  const rawMax = env.PASEO_TIMELINE_COMPACTION_MAX_AGENTS?.trim();
+  const maxAgentsPerRun = rawMax ? Number(rawMax) : DEFAULT_TIMELINE_COMPACTION_MAX_AGENTS;
+  if (!Number.isInteger(maxAgentsPerRun) || maxAgentsPerRun <= 0) {
+    throw new Error(`Invalid PASEO_TIMELINE_COMPACTION_MAX_AGENTS: ${rawMax}`);
+  }
+  const rawInterval = env.PASEO_TIMELINE_COMPACTION_INTERVAL_HOURS?.trim();
+  const intervalHours = rawInterval ? Number(rawInterval) : null;
+  if (intervalHours !== null && (!Number.isFinite(intervalHours) || intervalHours <= 0)) {
+    throw new Error(`Invalid PASEO_TIMELINE_COMPACTION_INTERVAL_HOURS: ${rawInterval}`);
+  }
+  return {
+    mode: raw === "1" ? "compact" : "dry-run",
+    maxAgentsPerRun,
+    intervalMs: intervalHours === null ? null : intervalHours * 60 * 60 * 1000,
+  };
+}
+
 interface ResolvedWebUi {
   enabled: boolean;
   distDir: string | null;
@@ -624,6 +654,7 @@ export function resolveConfigFromPersisted(
   const serviceProxy = resolveServiceProxyConfig(env, persisted);
   const previewLinks = resolvePreviewLinksConfig(env, persisted);
   const historySearch = resolveHistorySearchConfig(env);
+  const timelineCompaction = resolveTimelineCompactionConfig(env);
   const webUi = resolveWebUiConfig(paseoHome, env, cli, persisted);
 
   const { openai, speech } = resolveSpeechConfig({
@@ -672,6 +703,7 @@ export function resolveConfigFromPersisted(
     serviceProxy,
     previewLinks,
     historySearch,
+    timelineCompaction,
     webUi,
     appBaseUrl,
     auth: resolveAuthConfig(env, persisted),

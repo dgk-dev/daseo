@@ -1,10 +1,13 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import * as nodeFs from "node:fs";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import pino from "pino";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { FileBackedAgentTimelineStore } from "../agent/file-backed-agent-timeline-store.js";
 import { HistoryIndexStore } from "./history-index-store.js";
 import { HistoryIndexer, type IndexableAgent } from "./history-indexer.js";
+import { readTimelineMessages } from "./timeline-message-reader.js";
 import {
   REASONING_ONLY_WORD,
   SYSTEM_ONLY_WORD,
@@ -216,5 +219,131 @@ describe("HistoryIndexer", () => {
     await indexer.start();
     expect(store.getSession("empty")?.source).toBe("none");
     expect(indexer.status()).toEqual({ state: "ready", indexedSessions: 1, totalSessions: 1 });
+  });
+});
+
+describe("HistoryIndexer on compacted timelines (Daseo delta 146)", () => {
+  const sessions = [
+    {
+      id: "root",
+      title: "t",
+      messages: [
+        { role: "user" as const, text: "first question" },
+        { role: "assistant" as const, text: "first answer" },
+        { role: "assistant" as const, text: "first answer continued" },
+        { role: "user" as const, text: "second question" },
+        { role: "assistant" as const, text: "second answer" },
+      ],
+    },
+  ];
+
+  async function readAll(directory: string) {
+    const full = await readTimelineMessages({
+      directory,
+      afterSeq: 0,
+      state: { anchorSeq: null, tailAssistantSeq: null },
+    });
+    // An incremental read from the middle of the timeline (after row 6).
+    const middle = await readTimelineMessages({
+      directory,
+      afterSeq: 6,
+      state: { anchorSeq: 2, tailAssistantSeq: 6 },
+    });
+    return { full, middle };
+  }
+
+  test("the reader returns the same messages and cursor before and after compaction", async () => {
+    const { timelinesDir } = await setup([]);
+    const timelines = await writeFixtureTimelines({ timelinesDir, sessions });
+    const directory = path.join(timelinesDir, "root");
+    const before = await readAll(directory);
+    expect(before.full.messages.map((message) => message.text)).toContain("second answer");
+
+    await timelines.compactTimeline("root");
+    expect((await readdir(directory)).sort()).toEqual(["rows.jsonl", "state.json"]);
+
+    expect(await readAll(directory)).toEqual(before);
+  });
+
+  test("loose rows overlay the bundle in the reader as they do in the store", async () => {
+    const { timelinesDir } = await setup([]);
+    const timelines = await writeFixtureTimelines({ timelinesDir, sessions });
+    await timelines.compactTimeline("root");
+    const reopened = new FileBackedAgentTimelineStore(timelinesDir);
+    const rows = await reopened.getCommittedRows("root");
+    const answer = rows.find(
+      (row) => row.item.type === "assistant_message" && row.item.text === "second answer",
+    )!;
+    await reopened.updateCommittedRow("root", {
+      ...answer,
+      item: { type: "assistant_message", text: "second answer, enriched" },
+    });
+    const appended = await reopened.appendCommitted("root", {
+      type: "user_message",
+      text: "third question",
+    });
+
+    const batch = await readTimelineMessages({
+      directory: path.join(timelinesDir, "root"),
+      afterSeq: 0,
+      state: { anchorSeq: null, tailAssistantSeq: null },
+    });
+    expect(batch.messages.map((message) => message.text)).toEqual([
+      "first question",
+      "first answerfirst answer continued",
+      "second question",
+      "second answer, enriched",
+      "third question",
+    ]);
+    expect(batch.maxSeq).toBe(appended.seq);
+  });
+
+  test("a loose file moved into the bundle mid-read is read from the bundle", async () => {
+    const { timelinesDir } = await setup([]);
+    const timelines = await writeFixtureTimelines({ timelinesDir, sessions });
+    const directory = path.join(timelinesDir, "root");
+    const expected = await readAll(directory);
+    const originalOpen = nodeFs.promises.open;
+    let compacted = false;
+    const spy = vi
+      .spyOn(nodeFs.promises, "open")
+      .mockImplementation(async (...args: Parameters<typeof originalOpen>) => {
+        if (!compacted && String(args[0]).endsWith("0000000000000002.json")) {
+          compacted = true;
+          await timelines.compactTimeline("root");
+        }
+        return originalOpen(...args);
+      });
+    cleanups.push(() => spy.mockRestore());
+
+    const full = await readTimelineMessages({
+      directory,
+      afterSeq: 0,
+      state: { anchorSeq: null, tailAssistantSeq: null },
+    });
+
+    expect(compacted).toBe(true);
+    expect(full).toEqual(expected.full);
+  });
+
+  test("the index stays the same after compaction and keeps appending", async () => {
+    const { timelinesDir, store, indexer } = await setup([{ id: "root", piSessionFile: null }]);
+    const timelines = await writeFixtureTimelines({ timelinesDir, sessions });
+    timelines.onCommittedChange((agentId) => indexer.notifyTimelineChanged(agentId));
+    await indexer.start();
+    const before = store.listMessages("root");
+
+    await timelines.compactTimeline("root");
+    indexer.notifyTimelineChanged("root");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await indexer.idle();
+    expect(store.listMessages("root")).toEqual(before);
+
+    await timelines.appendCommitted("root", { type: "user_message", text: "after compaction" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await indexer.idle();
+    const after = store.listMessages("root");
+    expect(after.slice(0, before.length)).toEqual(before);
+    expect(after.at(-1)?.text).toBe("after compaction");
   });
 });

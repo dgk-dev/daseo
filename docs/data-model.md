@@ -499,7 +499,7 @@ The daemon writes an `in_flight` receipt before dispatching a command that carri
 
 **Path:** `$PASEO_HOME/timelines/{agentId}/`
 
-Each canonical row is an individually atomic, mode-`0600` JSON file; `state.json` retains the cursor epoch and next sequence. Assistant rows may carry the optional terminal `turnOutcome`, so cold clients and daemon restarts preserve which logical answer completed even when provider history has no terminal event. Internal turn correlation is stored with the row but is not exposed as a client contract.
+Each canonical row is an individually atomic, mode-`0600` JSON file (`{16-digit seq}.json`); `state.json` retains the cursor epoch and next sequence. An archived agent's rows can be compacted into `rows.jsonl`, one row per line in ascending seq, because each small row file holds a whole 4 KB disk block. Loose row files overlay the bundle: a loose file wins over the line with the same seq, so writes never change shape and an unarchived agent keeps appending loose files. Every reader goes through `packages/server/src/server/agent/timeline-row-files.ts`; do not list a timeline directory by hand. `rows.jsonl.tmp` is a compaction in progress and is never read. Compaction is off unless `PASEO_TIMELINE_COMPACTION` is `1` or `dry-run` (DASEO.md delta 146). Assistant rows may carry the optional terminal `turnOutcome`, so cold clients and daemon restarts preserve which logical answer completed even when provider history has no terminal event. Internal turn correlation is stored with the row but is not exposed as a client contract.
 
 ## 8a. History search index
 

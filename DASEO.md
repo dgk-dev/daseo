@@ -3525,6 +3525,77 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        dropped connection with the same audio, failure after the second drop, no retry on timeout).
      - **Key file.** `packages/server/src/server/speech/providers/azure/stt.ts`.
 
+146. **Archived agents' timelines can live in one file per agent** — measured 2026-11-22:
+     `~/.paseo/timelines` held 4,160,174 files, 7.9 GiB of content on 21.0 GiB of disk, because
+     every row is its own small JSON file and each takes a whole 4 KB block. 6,670 agents archived
+     and unchanged for over a day held 4.06M of those files and 20.5 GiB.
+     - **Format.** `<agent>/rows.jsonl`, one compact `JSON.stringify(row)` per line, ascending
+       seq; `state.json` unchanged. Loose `<seq>.json` files stay valid and overlay the bundle
+       (a loose file wins for its seq). Writes do not change: append, bulk insert, and row update
+       still write loose files, so unarchive-and-continue needs no unpack step. The store, the
+       uncached load, and History search's direct reader all go through one module
+       (`timeline-row-files.ts`); History's reader streams the bundle line by line with the same
+       256-character head test it uses on loose files, and keeps the same `maxSeq` cursor.
+       Lines are split on `\n` bytes, never with `node:readline`: it also breaks at U+2028 and
+       U+2029, which `JSON.stringify` leaves raw inside strings. The first real-data run hit this
+       (a row with U+2028); the read-back check refused the bundle and left that agent untouched.
+     - **Compaction.** `FileBackedAgentTimelineStore.compactTimeline` runs on the agent's mutation
+       queue: load bundle + loose (a row that does not load fails the whole agent, nothing is
+       deleted) -> write `rows.jsonl.tmp`, fsync -> read the temp back and compare every line with
+       what was loaded -> rename over `rows.jsonl`, fsync the directory -> unlink exactly the loose
+       files that were read, 32 at a time with an event-loop turn between batches. Rows, epoch, and
+       nextSeq do not change, so the cache stays valid and no committed-change listener fires (no
+       History re-index). A crash leaves the old state, or a bundle plus identical loose files;
+       both load the same rows. A leftover temp is never read and the next compaction removes it.
+       Re-compaction after unarchive merges bundle + loose the same way.
+     - **Races fixed with it.** Whole-timeline delete now runs on the agent's queue, so a compaction
+       never reads a half-removed directory and writes a bundle back into it. An uncached load
+       or a History read that finds a listed loose file gone (moved into the bundle meanwhile)
+       lists again, up to three times; History keeps its old behaviour (skip) on the last try,
+       which is a deleted timeline. No path deletes an individual row (checked: every caller of
+       `deleteAgent` removes the whole directory), so a bundled row cannot come back.
+     - **Sweeper, off by default.** Environment only, like History search (a rollback meets no
+       unknown `config.json` key): `PASEO_TIMELINE_COMPACTION=1` compacts, `=dry-run` logs what it
+       would do (agents, loose files, allocated bytes) and writes nothing. Eligible: the agent
+       record has `archivedAt` at least 7 days old (re-read right before each agent), the manager
+       does not hold the agent, and it has at least 2 loose rows. Oldest archive first, one agent
+       at a time, 250 ms between agents, at most `PASEO_TIMELINE_COMPACTION_MAX_AGENTS` (default 100) per run. First run 5 minutes after start, then once per start unless
+       `PASEO_TIMELINE_COMPACTION_INTERVAL_HOURS` repeats it. One log line per run with counts and
+       bytes reclaimed; one warning per agent it left unchanged. The packaged app's daemon inherits
+       the login shell's environment, so the switch goes in the shell profile and takes effect at
+       the next daemon start.
+     - **Rollback.** A daemon older than this delta reads loose files only, so rows inside
+       `rows.jsonl` would be hidden from it. Before starting an older daemon on a compacted home, run
+       `npx tsx scripts/expand-timelines.ts --home <PASEO_HOME>` from `packages/server` (`--dry-run`
+       lists what it would write, `--agent <id>` limits it, repeatable). It refuses while that home's
+       daemon is alive (a live PID in `paseo.pid`, or anything answering on the listen address the
+       home's config resolves to) unless `--force`. Per agent it runs
+       `FileBackedAgentTimelineStore.expandTimeline` on the agent's queue: write a loose file, in
+       `writeRow`'s format and fsynced, for every bundled row that has none (loose overlays are kept),
+       re-read the loose files alone and compare them with what was loaded, then remove `rows.jsonl`
+       last. A crash leaves bundle plus identical loose files; running it again finishes.
+       Measured on the same 200 copied agents after compaction: 214,471 loose files written in
+       620 s (one fsync per file), 0 failures; `diff -r` against an untouched copy of the originals
+       shows no difference (every row file byte-identical, all mode 0600); a second run finds
+       nothing to do.
+     - **Rejected:** SQLite and zstd formats (bigger migration; another tool's SQLite move left old
+       sessions invisible).
+     - **Measured on copies.** 200 real archived agents copied from `~/.paseo/timelines` (the 5
+       largest, up to 33,716 files, plus 195 at random), 214,471 rows: every agent compacted, rows,
+       epoch, window, and History reader output (full and incremental) deep-equal before and
+       after for all 200; 214,671 files -> 400; 1,037,780 KB -> 302,064 KB allocated (-71%);
+       80 s for all 200 in one process.
+     - **Checks.** `packages/server/src/server/agent/file-backed-agent-timeline-store.test.ts`
+       (round trip, overlay after update and append, the three crash states, append racing a
+       compaction, uncached load racing a compaction, re-compaction, delete, lone surrogate,
+       malformed loose file and bundle line), `packages/server/src/server/history-search/history-indexer.test.ts`
+       (same messages and cursor before and after, overlay, a read racing a compaction, index
+       unchanged then appending), `packages/server/src/server/agent/timeline-compaction-sweeper.test.ts`
+       (eligibility, cap and order, dry run changes nothing, a broken agent is left alone).
+     - **Key files.** `packages/server/src/server/agent/{timeline-row-files,file-backed-agent-timeline-store,timeline-compaction-sweeper}.ts`,
+       `packages/server/src/server/history-search/timeline-message-reader.ts`,
+       `packages/server/src/server/{config,bootstrap}.ts`, `docs/data-model.md` section 8.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including
