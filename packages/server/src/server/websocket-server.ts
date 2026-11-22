@@ -17,6 +17,7 @@ import type { DaemonConfigStore, MutableDaemonConfig } from "./daemon-config-sto
 import { SidebarOrderStore } from "./sidebar-order/sidebar-order-store.js";
 import { ComposerDraftStore } from "./composer-draft/composer-draft-store.js";
 import { CommandListCache } from "./agent/command-list-cache.js";
+import { SlackScheduledActions } from "./slack-scheduled/slack-scheduled-actions.js";
 import { SlackScheduledReader } from "./slack-scheduled/slack-scheduled-reader.js";
 import { ClientLoginLog } from "./login-banner/login-banner.js";
 import {
@@ -674,6 +675,7 @@ export class VoiceAssistantWebSocketServer {
   // Daseo delta 139: existing chats' composer drafts every device shares.
   private readonly composerDraftStore: ComposerDraftStore;
   private readonly slackScheduledReader: SlackScheduledReader;
+  private readonly slackScheduledActions: SlackScheduledActions;
   /** Daseo: accepted client connections, for the login banner's "Last login" line. */
   private readonly clientLoginLog = new ClientLoginLog();
   private readonly commandListCache: CommandListCache;
@@ -826,6 +828,10 @@ export class VoiceAssistantWebSocketServer {
       logger: this.logger,
     });
     this.slackScheduledReader = new SlackScheduledReader({ logger: this.logger });
+    this.slackScheduledActions = new SlackScheduledActions({
+      logger: this.logger,
+      onSettled: () => this.slackScheduledReader.invalidate(),
+    });
     // Daseo delta 138: one "/" command list cache for every client session.
     this.commandListCache = new CommandListCache({
       filePath: join(paseoHome, "command-lists.json"),
@@ -1506,6 +1512,7 @@ export class VoiceAssistantWebSocketServer {
       sidebarOrderStore: this.sidebarOrderStore,
       composerDraftStore: this.composerDraftStore,
       slackScheduledReader: this.slackScheduledReader,
+      slackScheduledActions: this.slackScheduledActions,
       getPreviousLogin: () => this.clientLoginLog.previousFor(options.clientId),
       commandListCache: this.commandListCache,
       pushNotifications: this.pushNotifications,
@@ -1726,8 +1733,10 @@ export class VoiceAssistantWebSocketServer {
         sidebarOrderSync: true,
         // Local fork (delta 139): composer.draft.* keeps existing chats' drafts for every device.
         composerDraftSync: true,
-        // Local fork (delta 135): schedule.slack.list lists scheduled Slack messages, read-only.
+        // Local fork (delta 135): schedule.slack.list lists scheduled Slack messages.
         slackScheduledList: true,
+        // Local fork (delta 135, 2026-11-23): schedule.slack.cancel and schedule.slack.update.
+        slackScheduledActions: true,
         // Local fork: daemon.get_login_banner.request reports host facts for the empty-chat banner.
         loginBanner: true,
         // Local fork (delta 75): tailnet preview links, only when a base URL is configured.

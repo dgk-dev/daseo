@@ -2719,6 +2719,43 @@ export class DaemonClient {
     });
   }
 
+  /**
+   * Daseo delta 135 (2026-11-23): the owner's 취소 button on an upcoming scheduled Slack message.
+   * Send only when server_info.features.slackScheduledActions is true.
+   */
+  async cancelSlackScheduled(
+    id: string,
+  ): Promise<
+    Extract<SessionOutboundMessage, { type: "schedule.slack.cancel.response" }>["payload"]
+  > {
+    return this.sendCorrelatedSessionRequest({
+      message: { type: "schedule.slack.cancel.request", id },
+      responseType: "schedule.slack.cancel.response",
+    });
+  }
+
+  /**
+   * Daseo delta 135 (2026-11-23): the owner's 시간 변경 and 내용 수정 buttons. postAt is Unix
+   * seconds; a change comes back under newId. Send only when slackScheduledActions is true.
+   */
+  async updateSlackScheduled(input: {
+    id: string;
+    postAt?: number;
+    text?: string;
+  }): Promise<
+    Extract<SessionOutboundMessage, { type: "schedule.slack.update.response" }>["payload"]
+  > {
+    return this.sendCorrelatedSessionRequest({
+      message: {
+        type: "schedule.slack.update.request",
+        id: input.id,
+        ...(input.postAt !== undefined ? { postAt: input.postAt } : {}),
+        ...(input.text !== undefined ? { text: input.text } : {}),
+      },
+      responseType: "schedule.slack.update.response",
+    });
+  }
+
   /** Daseo delta 133: stores the whole sidebar order; other connected devices get it pushed. */
   async setSidebarOrder(order: SidebarOrder): Promise<SidebarOrder> {
     const payload = await this.sendCorrelatedSessionRequest({

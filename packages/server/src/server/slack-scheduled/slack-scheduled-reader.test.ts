@@ -110,8 +110,49 @@ describe("normalizeSlackScheduledEntry (delta 135)", () => {
   });
 });
 
+describe("normalizeSlackScheduledEntry text and mentions (delta 135, 2026-11-23)", () => {
+  it("passes a 40,000-character text whole, cuts a longer one there, and keeps only names of ids the text mentions", () => {
+    const full = normalizeSlackScheduledEntry(
+      { id: "a", postAt: 1, text: "가".repeat(40_000) },
+      NOW,
+    );
+    expect(full?.text).toBe("가".repeat(40_000));
+    const entry = normalizeSlackScheduledEntry(
+      {
+        id: "a",
+        postAt: 1,
+        text: `<@U0DOYOUNG> <@W0KIM0001|김> ${"가".repeat(41_000)}`,
+        mentions: {
+          U0DOYOUNG: "  도영 ",
+          W0KIM0001: "김",
+          U0ABSENT1: "없는 사람",
+          "<script>": "x",
+          U0EMPTY01: "  ",
+        },
+      },
+      NOW,
+    );
+    expect(Array.from(entry?.text ?? "")).toHaveLength(40_000);
+    expect(entry?.text?.endsWith("…")).toBe(true);
+    expect(entry?.mentions).toEqual({ U0DOYOUNG: "도영", W0KIM0001: "김" });
+  });
+
+  it("reads the record's stored mentionNames on the file path, and nothing without a text", () => {
+    const fromFile = normalizeSlackScheduledEntry(
+      { id: "a", postAt: 1, text: "<@U0DOYOUNG> 확인", mentionNames: { U0DOYOUNG: "도영" } },
+      NOW,
+    );
+    expect(fromFile?.mentions).toEqual({ U0DOYOUNG: "도영" });
+    const noText = normalizeSlackScheduledEntry(
+      { id: "a", postAt: 1, firstLine: "첫 줄", mentions: { U0DOYOUNG: "도영" } },
+      NOW,
+    );
+    expect([noText?.text, noText?.mentions]).toEqual([null, null]);
+  });
+});
+
 describe("SlackScheduledReader (delta 135)", () => {
-  it("reads an old-shape record when the reconcile command is missing, without the full text", async () => {
+  it("reads an old-shape record when the reconcile command is missing, with the full text", async () => {
     const home = createHome();
     writeRecord(home, OLD_SHAPE_RECORD);
     const reader = new SlackScheduledReader({ logger, homeDir: home, now: () => NOW });
@@ -129,10 +170,12 @@ describe("SlackScheduledReader (delta 135)", () => {
     expect(result.entries[1]?.firstLine).toBe("지난 알림");
     const future = result.entries[0];
     expect(Array.from(future?.firstLine ?? "").length).toBeLessThanOrEqual(80);
+    // 2026-11-23: the whole message leaves the daemon (the owner reads it in his own app).
+    expect(future?.text).toBe(LONG_TEXT);
+    expect(future?.mentions).toBeNull();
     const wire = JSON.stringify(result);
-    expect(wire).not.toContain("둘째 줄 비밀 내용");
-    expect(wire).not.toContain('"text"');
     expect(wire).not.toContain("threadTs");
+    expect(wire).not.toContain("mentionNames");
   });
 
   it("answers an empty list when neither the command nor the record exists", async () => {
@@ -181,6 +224,8 @@ process.stdout.write(JSON.stringify({
         resolvedAt: NOW - 10,
         permalink: "https://dfcorp.slack.com/archives/D1/p1",
         appLink: "slack://channel?team=T02004LSA0L&id=D1AB&message=1795129200.272279",
+        text: null,
+        mentions: null,
         error: null,
         replacedBy: null,
       },
@@ -232,6 +277,34 @@ process.stdout.write(JSON.stringify({
     now += 2_000;
     await reader.list();
     expect(runs).toBe(2);
+  });
+
+  it("reads again after invalidate(), and does not cache a read that started before it", async () => {
+    const home = createHome();
+    writeCommand(home, "unused");
+    let runs = 0;
+    let release: () => void = () => {};
+    const reader = new SlackScheduledReader({
+      logger,
+      homeDir: home,
+      now: () => NOW,
+      runCommand: async () => {
+        runs += 1;
+        if (runs === 2) await new Promise<void>((resolve) => (release = resolve));
+        return { stdout: JSON.stringify({ entries: [] }) };
+      },
+    });
+    await reader.list();
+    reader.invalidate();
+    const stale = reader.list();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    reader.invalidate();
+    release();
+    await stale;
+    await reader.list();
+    expect(runs).toBe(3);
+    await reader.list();
+    expect(runs).toBe(3);
   });
 
   it("rejects an unreadable record instead of answering an empty list", async () => {

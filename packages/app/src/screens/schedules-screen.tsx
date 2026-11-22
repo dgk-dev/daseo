@@ -47,7 +47,7 @@ type FormState =
   | { mode: "create" }
   | { mode: "edit"; serverId: string; schedule: ScheduleSummary };
 
-// Daseo delta 135: "slack" lists scheduled Slack messages (read-only) instead of schedules.
+// Daseo delta 135: "slack" lists scheduled Slack messages instead of schedules.
 type ScheduleStatusFilter = ScheduleBucket | "slack";
 
 const STATUS_FILTER_OPTIONS: { value: ScheduleStatusFilter; label: string; testID: string }[] = [
@@ -265,7 +265,9 @@ function SchedulesScreenBody({
     );
   }
 
-  if (bodyState.kind === "empty") {
+  // Daseo delta 135: with no agent schedules the filter row still appears when the Slack filter is
+  // offered, so scheduled Slack messages stay reachable.
+  if (bodyState.kind === "empty" && !slackScheduled.supported) {
     return (
       <View style={styles.centered}>
         {hostErrors.length > 0 ? <ScheduleHostErrorsBanner errors={hostErrors} /> : null}
@@ -284,6 +286,7 @@ function SchedulesScreenBody({
         serverId={selectedHost === ALL_HOSTS_OPTION_ID ? null : selectedHost}
         singleHost={singleHost}
         onRetry={slackScheduled.refetch}
+        actions={slackScheduled.actions}
       />
     );
   } else if (rows.length > 0) {

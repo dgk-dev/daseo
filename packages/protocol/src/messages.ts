@@ -2634,6 +2634,24 @@ export const ScheduleSlackListRequestSchema = z.object({
   requestId: z.string(),
 });
 
+// Daseo delta 135 (2026-11-23): the owner's own buttons on an upcoming scheduled Slack message. The daemon runs
+// pi-local's act script; it never calls Slack itself. WebSocket only: no MCP tool or CLI command
+// reaches these. Send only when server_info.features.slackScheduledActions is true.
+export const ScheduleSlackCancelRequestSchema = z.object({
+  type: z.literal("schedule.slack.cancel.request"),
+  id: z.string(),
+  requestId: z.string(),
+});
+
+// A change re-schedules under a new id. postAt is Unix seconds; omitted postAt or text keeps it.
+export const ScheduleSlackUpdateRequestSchema = z.object({
+  type: z.literal("schedule.slack.update.request"),
+  id: z.string(),
+  postAt: z.number().optional(),
+  text: z.string().optional(),
+  requestId: z.string(),
+});
+
 export const WorkspaceClearAttentionRequestSchema = z.object({
   type: z.literal("workspace.clear_attention.request"),
   workspaceId: z.union([z.string(), z.array(z.string())]),
@@ -3288,6 +3306,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ComposerDraftSetThumbnailRequestSchema,
   ComposerDraftGetThumbnailRequestSchema,
   ScheduleSlackListRequestSchema,
+  ScheduleSlackCancelRequestSchema,
+  ScheduleSlackUpdateRequestSchema,
   FileExplorerRequestSchema,
   FileSubscribeRequestSchema,
   FileUnsubscribeRequestSchema,
@@ -3524,8 +3544,11 @@ export const ServerInfoStatusPayloadSchema = z
         sidebarOrderSync: z.boolean().optional(),
         // Local fork (delta 139): composer.draft.* keeps existing chats' drafts for every device.
         composerDraftSync: z.boolean().optional(),
-        // Local fork (delta 135): schedule.slack.list lists scheduled Slack messages, read-only.
+        // Local fork (delta 135): schedule.slack.list lists scheduled Slack messages.
         slackScheduledList: z.boolean().optional(),
+        // Local fork (delta 135, 2026-11-23): schedule.slack.cancel and schedule.slack.update, the owner's own
+        // buttons on an upcoming scheduled Slack message.
+        slackScheduledActions: z.boolean().optional(),
         // Local fork: daemon.get_login_banner.request reports host facts for the empty-chat banner.
         loginBanner: z.boolean().optional(),
         // Local fork (delta 75): fs.preview_link.create.request issues tailnet preview links;
@@ -4801,8 +4824,8 @@ export const ComposerDraftUpdateMessageSchema = z.object({
 
 // Daseo delta 135: one scheduled Slack message. status and as stay open strings so a later value
 // does not break an older app (known: scheduled | sent | cancelled | failed | replaced |
-// unverified, me | bot). firstLine is the message's first line cut to 80 characters; the full
-// text is never sent. postAt is Unix seconds, createdAt and resolvedAt are milliseconds.
+// unverified, me | bot). firstLine is the message's first line cut to 80 characters. postAt is
+// Unix seconds, createdAt and resolvedAt are milliseconds.
 export const SlackScheduledEntrySchema = z.object({
   id: z.string(),
   as: z.string(),
@@ -4810,6 +4833,11 @@ export const SlackScheduledEntrySchema = z.object({
   channel: z.string(),
   postAt: z.number(),
   firstLine: z.string(),
+  // 2026-11-23 (the owner's decision, 2026-11-23): the whole message as Slack stores it, capped by the
+  // daemon, and the names of the people it mentions (user id -> name). Older daemons omit both; the
+  // app then shows firstLine.
+  text: z.string().nullable().optional(),
+  mentions: z.record(z.string(), z.string()).nullable().optional(),
   status: z.string(),
   createdAt: z.number(),
   resolvedAt: z.number().nullable().optional(),
@@ -4830,6 +4858,27 @@ export const ScheduleSlackListResponseSchema = z.object({
     source: z.string().nullable(),
     fetchedAt: z.number().nullable(),
     warning: z.string().nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
+// Daseo delta 135 (2026-11-23): ok false carries the reason in error (a sentence the app shows as is).
+export const ScheduleSlackCancelResponseSchema = z.object({
+  type: z.literal("schedule.slack.cancel.response"),
+  payload: z.object({
+    requestId: z.string(),
+    ok: z.boolean(),
+    error: z.string().nullable(),
+  }),
+});
+
+// newId is the id the changed message is scheduled under now (the old id reads as replaced).
+export const ScheduleSlackUpdateResponseSchema = z.object({
+  type: z.literal("schedule.slack.update.response"),
+  payload: z.object({
+    requestId: z.string(),
+    ok: z.boolean(),
+    newId: z.string().nullable(),
     error: z.string().nullable(),
   }),
 });
@@ -6807,6 +6856,8 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ComposerDraftSetThumbnailResponseSchema,
   ComposerDraftGetThumbnailResponseSchema,
   ScheduleSlackListResponseSchema,
+  ScheduleSlackCancelResponseSchema,
+  ScheduleSlackUpdateResponseSchema,
   SendAgentMessageResponseMessageSchema,
   AgentCommandReceiptGetResponseMessageSchema,
   AgentCommandReceiptResolveResponseMessageSchema,

@@ -3,10 +3,10 @@ import type { SlackScheduledEntry } from "@getpaseo/protocol/messages";
 import { toErrorMessage } from "@/utils/error-messages";
 
 /**
- * Daseo delta 135: the Schedules screen's read-only Slack filter. The daemon reads pi-local's
- * record of the Slack messages agents scheduled (`slack_post postAt`); this module merges the
- * hosts that advertise `slackScheduledList`, splits the list into upcoming and past, and owns the
- * labels the rows show. Nothing here changes a scheduled message.
+ * Daseo delta 135: the Schedules screen's Slack filter. The daemon reads pi-local's record of the
+ * Slack messages agents scheduled (`slack_post postAt`); this module merges the hosts that
+ * advertise `slackScheduledList`, splits the list into upcoming and past, and owns the labels the
+ * rows show. The owner's cancel and change buttons (2026-11-23) go through `useSlackScheduled`.
  */
 
 export const slackScheduledQueryBaseKey = ["schedules", "slack"] as const;
@@ -22,6 +22,22 @@ export interface SlackScheduledHostInput {
 export interface SlackScheduledRuntime {
   getClient(serverId: string): Pick<DaemonClient, "listSlackScheduled"> | null;
   isOnline(serverId: string): boolean;
+}
+
+/** What one of the owner's buttons did: a change comes back under a new id. */
+export type SlackScheduledActionResult =
+  | { ok: true; newId: string | null }
+  | { ok: false; error: string };
+
+export interface SlackScheduledChange {
+  postAt?: number;
+  text?: string;
+}
+
+/** The whole message as the daemon sent it; an older daemon sends only the first line. */
+export function slackEntryText(entry: SlackScheduledEntry): string {
+  // COMPAT(slackScheduledText): added in v0.5.155, remove after 2027-05-23 once daemon floor >= v0.5.155.
+  return entry.text ?? entry.firstLine;
 }
 
 export interface AggregatedSlackScheduled extends SlackScheduledEntry {

@@ -200,9 +200,14 @@ import { SidebarOrderSessionChannel } from "./sidebar-order/sidebar-order-sessio
 import type { SidebarOrderStore } from "./sidebar-order/sidebar-order-store.js";
 import { ComposerDraftSessionChannel } from "./composer-draft/composer-draft-session-channel.js";
 import type { ComposerDraftStore } from "./composer-draft/composer-draft-store.js";
+import type { SlackScheduledActions } from "./slack-scheduled/slack-scheduled-actions.js";
 import type { SlackScheduledReader } from "./slack-scheduled/slack-scheduled-reader.js";
 import { collectLoginBannerFacts, type LoginBannerFacts } from "./login-banner/login-banner.js";
-import { handleScheduleSlackListRequest } from "./slack-scheduled/slack-scheduled-session.js";
+import {
+  handleScheduleSlackCancelRequest,
+  handleScheduleSlackListRequest,
+  handleScheduleSlackUpdateRequest,
+} from "./slack-scheduled/slack-scheduled-session.js";
 import type { PushNotifications } from "./push/index.js";
 import {
   archivePersistedWorkspaceRecord,
@@ -511,6 +516,8 @@ export interface SessionOptions {
   composerDraftStore?: ComposerDraftStore | null;
   /** Daseo delta 135: scheduled Slack messages for the Schedules screen; absent answers an error. */
   slackScheduledReader?: SlackScheduledReader | null;
+  /** Daseo delta 135 (2026-11-23): the owner's cancel and change buttons; absent answers an error. */
+  slackScheduledActions?: SlackScheduledActions | null;
   /** Daseo: the client connection before this session's, for the login banner; absent omits it. */
   getPreviousLogin?: () => { at: number; from: string | null } | null;
   /** Daseo delta 138: the daemon-wide "/" command list cache; absent keeps one per session. */
@@ -816,6 +823,7 @@ export class Session {
   private readonly sidebarOrder: SidebarOrderSessionChannel;
   private readonly composerDrafts: ComposerDraftSessionChannel;
   private readonly slackScheduledReader: SlackScheduledReader | null | undefined;
+  private readonly slackScheduledActions: SlackScheduledActions | null | undefined;
   private readonly getPreviousLogin: (() => { at: number; from: string | null } | null) | undefined;
   /** Daseo delta 144: compared with the Daseo bundles on disk for the banner's restart line. */
   private readonly daemonVersion: string | undefined;
@@ -906,6 +914,7 @@ export class Session {
       sidebarOrderStore,
       composerDraftStore,
       slackScheduledReader,
+      slackScheduledActions,
       getPreviousLogin,
       commandListCache,
       pushNotifications,
@@ -987,6 +996,7 @@ export class Session {
     });
     this.historySearch = historySearch;
     this.slackScheduledReader = slackScheduledReader;
+    this.slackScheduledActions = slackScheduledActions;
     this.getPreviousLogin = getPreviousLogin;
     this.daemonVersion = daemonVersion;
     this.commandListCache = resolveCommandListCache(commandListCache, this.sessionLogger);
@@ -2693,6 +2703,18 @@ export class Session {
           request: msg,
           emit: (message) => this.emit(message),
           logger: this.sessionLogger,
+        });
+      case "schedule.slack.cancel.request":
+        return handleScheduleSlackCancelRequest({
+          actions: this.slackScheduledActions,
+          request: msg,
+          emit: (message) => this.emit(message),
+        });
+      case "schedule.slack.update.request":
+        return handleScheduleSlackUpdateRequest({
+          actions: this.slackScheduledActions,
+          request: msg,
+          emit: (message) => this.emit(message),
         });
       default:
         return undefined;

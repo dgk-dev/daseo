@@ -1,15 +1,19 @@
-import { CalendarClock, MessageSquare } from "lucide-react-native";
-import { useCallback, useMemo, useState, type ReactElement } from "react";
+import { ArrowUpRight, CalendarClock, MessageSquare } from "lucide-react-native";
+import { memo, useCallback, useMemo, useState, type ReactElement } from "react";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useIsCompactFormFactor } from "@/constants/layout";
+import { isNative } from "@/constants/platform";
+import type { SlackScheduledActions } from "@/hooks/use-slack-scheduled";
+import { slackDisplayFirstLine } from "@/schedules/slack-message-text";
 import {
   formatSlackPostTime,
   partitionSlackScheduled,
   slackEntryLink,
+  slackEntryText,
   slackSenderLabel,
   slackStatusBadge,
   type AggregatedSlackScheduled,
@@ -20,9 +24,12 @@ import type { Theme } from "@/styles/theme";
 import { openSlackMessage } from "@/utils/open-slack-message";
 import { formatNextRun } from "@/utils/schedule-format";
 import { formatTimeAgo } from "@/utils/time";
+import { SlackScheduledDetail } from "./slack-scheduled-detail";
 
 const ThemedMessageSquare = withUnistyles(MessageSquare);
+const ThemedArrowUpRight = withUnistyles(ArrowUpRight);
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const LEADING_ICON_SIZE = 16;
 
 interface SlackScheduledListProps {
@@ -33,12 +40,14 @@ interface SlackScheduledListProps {
   serverId: string | null;
   singleHost: boolean;
   onRetry: () => void;
+  actions: SlackScheduledActions;
 }
 
 /**
- * Daseo delta 135: the Schedules screen's Slack filter. Read-only by decision: no cancel,
- * reschedule, or send-now, so the rule that only messages David-Daniel approved in chat are sent
- * stays inside the chat. Rows reuse the schedule row's card, spacing, badge, and hover.
+ * Daseo delta 135: the Schedules screen's Slack filter. Rows reuse the schedule row's card,
+ * spacing, badge, and hover. Pressing a row opens it in place to show the whole message; on an
+ * upcoming one the owner can cancel it, move it, or change its text (2026-11-23: his press in his
+ * own app is his approval). No send-now. One row is open at a time.
  */
 export function SlackScheduledList({
   data,
@@ -47,7 +56,13 @@ export function SlackScheduledList({
   serverId,
   singleHost,
   onRetry,
+  actions,
 }: SlackScheduledListProps): ReactElement {
+  const [openId, setOpenId] = useState<string | null>(null);
+  const toggle = useCallback((id: string) => {
+    setOpenId((current) => (current === id ? null : id));
+  }, []);
+
   if (isLoading && !data) {
     return (
       <View style={styles.centered}>
@@ -103,7 +118,14 @@ export function SlackScheduledList({
           <Text style={settingsStyles.sectionHeaderTitle}>예정</Text>
         </View>
         {upcoming.length > 0 ? (
-          <SlackScheduledCard entries={upcoming} singleHost={singleHost} />
+          <SlackScheduledCard
+            entries={upcoming}
+            singleHost={singleHost}
+            openId={openId}
+            onToggle={toggle}
+            onDone={setOpenId}
+            actions={actions}
+          />
         ) : (
           <View style={styles.emptyState} testID="slack-scheduled-empty">
             <CalendarClock size={styles.emptyIcon.width} color={styles.emptyIcon.color} />
@@ -119,19 +141,34 @@ export function SlackScheduledList({
           <View style={settingsStyles.sectionHeader}>
             <Text style={settingsStyles.sectionHeaderTitle}>지난 30일</Text>
           </View>
-          <SlackScheduledCard entries={past} singleHost={singleHost} />
+          <SlackScheduledCard
+            entries={past}
+            singleHost={singleHost}
+            openId={openId}
+            onToggle={toggle}
+            onDone={setOpenId}
+            actions={actions}
+          />
         </View>
       ) : null}
     </View>
   );
 }
 
+interface SlackScheduledRowShared {
+  singleHost: boolean;
+  onToggle: (id: string) => void;
+  onDone: (openId: string | null) => void;
+  actions: SlackScheduledActions;
+}
+
 function SlackScheduledCard({
   entries,
-  singleHost,
-}: {
+  openId,
+  ...shared
+}: SlackScheduledRowShared & {
   entries: AggregatedSlackScheduled[];
-  singleHost: boolean;
+  openId: string | null;
 }): ReactElement {
   return (
     <View style={settingsStyles.card}>
@@ -140,7 +177,9 @@ function SlackScheduledCard({
           key={entry.id}
           entry={entry}
           isFirst={index === 0}
-          singleHost={singleHost}
+          isOpen={entry.id === openId}
+          canChange={shared.actions.canChange(entry.serverId)}
+          {...shared}
         />
       ))}
     </View>
@@ -157,23 +196,36 @@ function buildMeta(entry: AggregatedSlackScheduled, singleHost: boolean): string
   return parts.join(" · ");
 }
 
-export function SlackScheduledRow({
+export const SlackScheduledRow = memo(function SlackScheduledRow({
   entry,
   isFirst,
+  isOpen,
+  canChange,
   singleHost,
-}: {
+  onToggle,
+  onDone,
+  actions,
+}: SlackScheduledRowShared & {
   entry: AggregatedSlackScheduled;
   isFirst: boolean;
-  singleHost: boolean;
+  isOpen: boolean;
+  canChange: boolean;
 }): ReactElement {
   const isCompact = useIsCompactFormFactor();
   const [isHovered, setIsHovered] = useState(false);
   const handlePointerEnter = useCallback(() => setIsHovered(true), []);
   const handlePointerLeave = useCallback(() => setIsHovered(false), []);
   const link = useMemo(() => slackEntryLink(entry), [entry]);
+  const title = useMemo(
+    () => slackDisplayFirstLine(slackEntryText(entry), entry.mentions),
+    [entry],
+  );
   const badge = slackStatusBadge(entry.status);
+  const showOpenButton = isHovered || isNative || isCompact;
+  const accessibilityState = useMemo(() => ({ expanded: isOpen }), [isOpen]);
 
-  const handlePress = useCallback(() => {
+  const handlePress = useCallback(() => onToggle(entry.id), [onToggle, entry.id]);
+  const handleOpenInSlack = useCallback(() => {
     if (link) void openSlackMessage(link);
   }, [link]);
 
@@ -182,10 +234,10 @@ export function SlackScheduledRow({
       settingsStyles.row,
       styles.row,
       !isFirst && settingsStyles.rowBorder,
-      link !== null && isHovered && !isCompact && styles.rowHovered,
-      link !== null && pressed && styles.rowPressed,
+      isHovered && !isCompact && styles.rowHovered,
+      pressed && styles.rowPressed,
     ],
-    [isFirst, isHovered, isCompact, link],
+    [isFirst, isHovered, isCompact],
   );
 
   return (
@@ -196,9 +248,9 @@ export function SlackScheduledRow({
     >
       <Pressable
         style={rowStyle}
-        onPress={link ? handlePress : undefined}
-        disabled={link === null}
-        accessibilityRole={link ? "link" : undefined}
+        onPress={handlePress}
+        accessibilityRole="button"
+        accessibilityState={accessibilityState}
         testID={`slack-scheduled-row-${entry.id}`}
       >
         <View style={styles.main}>
@@ -207,7 +259,7 @@ export function SlackScheduledRow({
           </View>
           <View style={styles.textGroup}>
             <Text style={settingsStyles.rowTitle} numberOfLines={1}>
-              {entry.firstLine || "(내용 없음)"}
+              {title || "(내용 없음)"}
             </Text>
             <Text style={styles.target} numberOfLines={1}>
               {entry.toLabel}
@@ -223,10 +275,39 @@ export function SlackScheduledRow({
           </View>
         </View>
         <View style={styles.trailing}>
+          {link ? (
+            <Pressable
+              onPress={handleOpenInSlack}
+              hitSlop={8}
+              accessibilityRole="link"
+              accessibilityLabel="슬랙에서 열기"
+              style={[styles.openButton, !showOpenButton && styles.openButtonHidden]}
+              testID={`slack-scheduled-row-open-${entry.id}`}
+            >
+              {renderOpenIcon}
+            </Pressable>
+          ) : null}
           <StatusBadge label={badge.label} variant={badge.variant} />
         </View>
       </Pressable>
+      {isOpen ? (
+        <SlackScheduledDetail
+          entry={entry}
+          canChange={canChange}
+          actions={actions}
+          onDone={onDone}
+        />
+      ) : null}
     </View>
+  );
+});
+
+function renderOpenIcon({ hovered }: PressableStateCallbackType & { hovered?: boolean }) {
+  return (
+    <ThemedArrowUpRight
+      size={LEADING_ICON_SIZE}
+      uniProps={hovered ? foregroundColorMapping : mutedColorMapping}
+    />
   );
 }
 
@@ -325,5 +406,16 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],
+  },
+  openButton: {
+    width: 24,
+    height: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: theme.borderRadius.md,
+  },
+  openButtonHidden: {
+    opacity: 0,
+    pointerEvents: "none",
   },
 }));

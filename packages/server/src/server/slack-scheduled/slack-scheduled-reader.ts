@@ -6,16 +6,19 @@ import type pino from "pino";
 import { getErrorMessage } from "@getpaseo/protocol/error-utils";
 import type { SlackScheduledEntry } from "@getpaseo/protocol/messages";
 import { isSlackAppLink } from "@getpaseo/protocol/slack-app-link";
+import { SLACK_SCHEDULED_TEXT_MAX_CHARS } from "@getpaseo/protocol/slack-scheduled-limits";
 import { buildSelfNodeCommand } from "../paseo-env.js";
 
 /**
  * Daseo delta 135: the Slack messages David-Daniel's agents scheduled with pi-local `slack_post
- * postAt`, read for the Schedules screen. Read-only: the daemon never talks to Slack and never
- * changes a scheduled message. The list comes from pi-local's reconcile command (which checks past
- * entries against Slack and writes their outcome back to the record); when that command is missing
- * or fails, the record file is read directly. Both paths are fixed under the daemon user's home;
- * no request argument chooses what is read. The full message text never leaves this module: a
- * client gets the first line, cut to 80 characters.
+ * postAt`, read for the Schedules screen. The daemon never talks to Slack itself. The list comes
+ * from pi-local's reconcile command (which checks past entries against Slack, looks up the names of
+ * mentioned people, and writes both back to the record); when that command is missing or fails, the
+ * record file is read directly. Both paths are fixed under the daemon user's home; no request
+ * argument chooses what is read. Since 2026-11-23 (the owner's decision: he reads the whole message
+ * in his own app) the full text leaves the daemon, capped at the 40,000 characters a scheduled
+ * message can hold, with the mentioned
+ * people's names; the owner's cancel and change buttons run through `SlackScheduledActions`.
  */
 
 export const SLACK_SCHEDULED_COMMAND_RELATIVE_PATH =
@@ -27,6 +30,10 @@ const CACHE_TTL_MS = 60_000;
 const COMMAND_MAX_BUFFER_BYTES = 4 * 1024 * 1024;
 const FIRST_LINE_MAX_CHARS = 80;
 const ERROR_MAX_CHARS = 200;
+const MENTION_MAX_COUNT = 50;
+const MENTION_NAME_MAX_CHARS = 80;
+const SLACK_USER_ID = /^[UW][A-Z0-9]{2,}$/;
+const SLACK_MENTION = /<@([UW][A-Z0-9]{2,})(?:\|[^>]*)?>/g;
 
 const KNOWN_STATUSES = new Set(["scheduled", "sent", "cancelled", "failed", "replaced"]);
 
@@ -114,6 +121,31 @@ export function slackFirstLine(text: string): string {
 }
 
 /**
+ * Names of the people the text mentions, from the command's `mentions` or the record's stored
+ * `mentionNames`: only Slack user ids that occur as `<@U…>` in the text, trimmed names, at most 50.
+ */
+function mentionNames(
+  raw: Record<string, unknown>,
+  text: string | null,
+): Record<string, string> | null {
+  let source: Record<string, unknown> | null = null;
+  if (isRecord(raw.mentions)) source = raw.mentions;
+  else if (isRecord(raw.mentionNames)) source = raw.mentionNames;
+  if (!source || text === null) return null;
+  const inText = new Set(Array.from(text.matchAll(SLACK_MENTION), (match) => match[1]));
+  const names: Record<string, string> = {};
+  let count = 0;
+  for (const [id, value] of Object.entries(source)) {
+    if (count >= MENTION_MAX_COUNT) break;
+    const name = optionalString(value);
+    if (!SLACK_USER_ID.test(id) || !inText.has(id) || !name) continue;
+    names[id] = truncate(name, MENTION_NAME_MAX_CHARS);
+    count += 1;
+  }
+  return count > 0 ? names : null;
+}
+
+/**
  * The sent message's links: the https permalink, and the Slack app link pi-local builds next to
  * it. Only an https permalink and an app link of the exact shape `isSlackAppLink` accepts leave
  * the daemon; anything else is dropped (without an app link the app opens the permalink).
@@ -156,6 +188,7 @@ export function normalizeSlackScheduledEntry(
   } else if (typeof raw.text === "string") {
     firstLine = slackFirstLine(raw.text);
   }
+  const fullText = typeof raw.text === "string" && raw.text.trim().length > 0 ? raw.text : null;
 
   const channel = optionalString(raw.channel) ?? "";
   const toLabel = optionalString(raw.toLabel) ?? optionalString(raw.to) ?? channel;
@@ -168,6 +201,8 @@ export function normalizeSlackScheduledEntry(
     channel,
     postAt,
     firstLine,
+    text: fullText === null ? null : truncate(fullText, SLACK_SCHEDULED_TEXT_MAX_CHARS),
+    mentions: mentionNames(raw, fullText),
     status,
     createdAt: optionalNumber(raw.createdAt) ?? 0,
     resolvedAt: optionalNumber(raw.resolvedAt),
@@ -196,6 +231,8 @@ export class SlackScheduledReader {
   private readonly fileExists: (path: string) => Promise<boolean>;
   private cached: SlackScheduledListResult | null = null;
   private inFlight: Promise<SlackScheduledListResult> | null = null;
+  /** Bumped by invalidate(); a read that started before it is answered but not cached. */
+  private generation = 0;
 
   constructor(options: SlackScheduledReaderOptions) {
     const home = options.homeDir ?? homedir();
@@ -214,15 +251,24 @@ export class SlackScheduledReader {
       return this.cached;
     }
     if (this.inFlight) return this.inFlight;
-    this.inFlight = this.read()
+    const generation = this.generation;
+    const read = this.read()
       .then((result) => {
-        this.cached = result;
+        if (generation === this.generation) this.cached = result;
         return result;
       })
       .finally(() => {
-        this.inFlight = null;
+        if (this.inFlight === read) this.inFlight = null;
       });
-    return this.inFlight;
+    this.inFlight = read;
+    return read;
+  }
+
+  /** Drop the cached list after the owner changed a message, so the next list reads it fresh. */
+  invalidate(): void {
+    this.generation += 1;
+    this.cached = null;
+    this.inFlight = null;
   }
 
   private async read(): Promise<SlackScheduledListResult> {
