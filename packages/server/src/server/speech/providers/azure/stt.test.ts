@@ -85,6 +85,62 @@ describe("AzureSTT", () => {
     expect(failure.message).not.toContain("test-key");
   });
 
+  test("sends a segment once more when the connection drops before an answer", async () => {
+    const reset = Object.assign(new TypeError("fetch failed"), {
+      cause: Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+    });
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValueOnce(reset)
+      .mockResolvedValueOnce(Response.json({ combinedPhrases: [{ text: "다시 보냄" }] }));
+    const provider = new AzureSTT(config, logger, { fetchImpl: fetchImpl as typeof fetch });
+    const session = provider.createSession({ logger, language: "ko" });
+    await session.connect();
+    session.appendPcm16(Buffer.alloc(320));
+    const transcript = waitForEvent<StreamingTranscriptionEvent>(session, "transcript");
+    session.commit();
+
+    await expect(transcript).resolves.toMatchObject({ transcript: "다시 보냄", isFinal: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const firstAudio = (fetchImpl.mock.calls[0]![1] as RequestInit).body as FormData;
+    const secondAudio = (fetchImpl.mock.calls[1]![1] as RequestInit).body as FormData;
+    expect(secondAudio.get("audio")).toBe(firstAudio.get("audio"));
+  });
+
+  test("reports a failure after the second dropped connection", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError("fetch failed");
+    });
+    const provider = new AzureSTT(config, logger, { fetchImpl: fetchImpl as typeof fetch });
+    const session = provider.createSession({ logger, language: "ko" });
+    await session.connect();
+    session.appendPcm16(Buffer.alloc(320));
+    const error = waitForEvent<Error>(session, "error");
+    session.commit();
+
+    await expect(error).resolves.toMatchObject({
+      message: "Azure Speech transcription failed: request did not complete",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test("does not repeat a request that timed out", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new DOMException("The operation timed out.", "TimeoutError");
+    });
+    const provider = new AzureSTT(config, logger, { fetchImpl: fetchImpl as typeof fetch });
+    const session = provider.createSession({ logger, language: "ko" });
+    await session.connect();
+    session.appendPcm16(Buffer.alloc(320));
+    const error = waitForEvent<Error>(session, "error");
+    session.commit();
+
+    await expect(error).resolves.toMatchObject({
+      message: "Azure Speech transcription failed: request did not complete",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   test("joins phrases when the response has no combined phrase", () => {
     expect(readAzureTranscript({ phrases: [{ text: "첫 문장." }, { text: " 둘째 문장." }] })).toBe(
       "첫 문장. 둘째 문장.",

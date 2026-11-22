@@ -3501,6 +3501,30 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
      - **Key files.** `packages/server/src/server/login-banner/{login-banner,dev-motd,restart-required}.ts`,
        `packages/app/src/motd/{format.ts,login-banner.tsx}`, `packages/protocol/src/messages.ts`.
 
+145. **Dictation reaches Azure from the office network** — the owner's report on 2026-11-22
+     ("dictate가 왜 이렇게 실패를 많이함"): about half of all dictations failed with "Azure Speech
+     transcription failed: request did not complete". The model was never the cause: requests that got
+     through were transcribed in 0.3-0.9 s. The TLS connection to
+     `southeastasia.api.cognitive.microsoft.com` was reset before the handshake finished: 4 of 8
+     requests from the daemon's own runtime (Electron 44.10.2) and 6 of 6 from Homebrew Node 24.22.3
+     on the Mac (office network behind its firewall), 0 of 4 from the same Node build on another
+     network, 0 with classic key shares. The runtime's default ClientHello offers the post-quantum
+     X25519MLKEM768 share (about 1.8 kB), which this endpoint does not take (it asks for secp384r1
+     again) and which the office path resets; curl (LibreSSL) and `koreacentral` were unaffected.
+     - **Change.** The Azure STT provider's default request path goes through its own HTTPS agent
+       with `ecdhCurve: "X25519:P-256:P-384"` (keep-alive on), building the multipart body through
+       `Request` so callers still pass a `FormData`; injected `fetchImpl` in tests is unchanged. A
+       request that fails before an answer (anything but a timeout or abort) is sent once more with
+       the same audio, so the owner does not speak again; the log line now carries the error code,
+       attempt, and whether it retried.
+     - **Measured after the change.** 10 of 10 real requests from Homebrew Node on the office Mac,
+       0.25-0.8 s each, no retry needed.
+     - **Not changed:** other HTTPS traffic of the daemon, the OpenAI provider, the dictation
+       protocol, the 30 s timeout.
+     - **Checks.** `packages/server/src/server/speech/providers/azure/stt.test.ts` (retry after a
+       dropped connection with the same audio, failure after the second drop, no retry on timeout).
+     - **Key file.** `packages/server/src/server/speech/providers/azure/stt.ts`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

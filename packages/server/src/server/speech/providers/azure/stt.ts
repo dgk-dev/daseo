@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import https from "node:https";
 import type pino from "pino";
 import { v4 } from "uuid";
 import { z } from "zod";
@@ -12,6 +13,58 @@ const AZURE_STT_SAMPLE_RATE = 16000;
 // Dictation segments are at most the auto-commit window (15 s); fast transcription answers a
 // segment that short in about a second, so 30 s only trips on a stalled connection.
 const AZURE_TRANSCRIBE_TIMEOUT_MS = 30_000;
+// Key shares the client offers in its TLS ClientHello. The runtime default adds the post-quantum
+// X25519MLKEM768 share, which makes the first packet about 1.8 kB; the Azure Speech front ends do
+// not take it (they ask for secp384r1 again), and the office firewall in front of the Mac resets
+// that oversized ClientHello about half the time (measured 2026-11-22: 4 of 8 requests reset
+// before the handshake from the office, 0 of 4 from another network, 0 with these curves).
+const AZURE_TLS_ECDH_CURVES = "X25519:P-256:P-384";
+
+const azureAgent = new https.Agent({ keepAlive: true, ecdhCurve: AZURE_TLS_ECDH_CURVES });
+
+/**
+ * The default request path: the same contract as `fetch`, sent through an agent that offers only
+ * classic key shares. The multipart body and its boundary come from `Request`, so callers keep
+ * building a normal `FormData`.
+ */
+export async function azureSpeechFetch(
+  input: string | URL | Request,
+  init?: RequestInit,
+): Promise<Response> {
+  const request = new Request(input, init);
+  const body = Buffer.from(await request.arrayBuffer());
+  const headers: Record<string, string> = {};
+  request.headers.forEach((value, name) => {
+    headers[name] = value;
+  });
+  headers["content-length"] = String(body.length);
+  return new Promise<Response>((resolve, reject) => {
+    const req = https.request(
+      request.url,
+      { method: request.method, headers, agent: azureAgent, signal: init?.signal ?? undefined },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("error", reject);
+        res.on("end", () => {
+          const responseHeaders = new Headers();
+          for (const [name, value] of Object.entries(res.headers)) {
+            if (typeof value === "string") responseHeaders.set(name, value);
+            else if (Array.isArray(value)) responseHeaders.set(name, value.join(", "));
+          }
+          resolve(
+            new Response(Buffer.concat(chunks), {
+              status: res.statusCode ?? 0,
+              headers: responseHeaders,
+            }),
+          );
+        });
+      },
+    );
+    req.on("error", reject);
+    req.end(body);
+  });
+}
 
 const AzureTranscribeResponseSchema = z.object({
   combinedPhrases: z.array(z.object({ text: z.string() })).optional(),
@@ -89,6 +142,17 @@ export function pcm16MonoToWav(pcm16le: Buffer, sampleRate: number): Buffer<Arra
   return wav;
 }
 
+function readErrorCode(error: unknown): string | null {
+  const candidates = [error, error instanceof Error ? error.cause : undefined];
+  for (const candidate of candidates) {
+    if (candidate && typeof candidate === "object" && "code" in candidate) {
+      const code = (candidate as { code: unknown }).code;
+      if (typeof code === "string") return code;
+    }
+  }
+  return null;
+}
+
 async function readProviderCode(response: Response): Promise<string | null> {
   try {
     const parsed = AzureErrorBodySchema.safeParse(await response.json());
@@ -116,7 +180,7 @@ export class AzureSTT implements SpeechToTextProvider {
     options: { fetchImpl?: typeof fetch; timeoutMs?: number } = {},
   ) {
     this.config = config;
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.fetchImpl = options.fetchImpl ?? azureSpeechFetch;
     this.timeoutMs = options.timeoutMs ?? AZURE_TRANSCRIBE_TIMEOUT_MS;
     parentLogger
       .child({ module: "agent", provider: "azure", component: "stt" })
@@ -213,20 +277,29 @@ export class AzureSTT implements SpeechToTextProvider {
       ),
     );
 
-    let response: Response;
-    try {
-      response = await this.fetchImpl(buildAzureTranscribeUrl(this.config.region), {
-        method: "POST",
-        headers: { "Ocp-Apim-Subscription-Key": this.config.apiKey },
-        body: form,
-        signal: AbortSignal.timeout(this.timeoutMs),
-      });
-    } catch (error) {
-      params.logger.error(
-        { err: error instanceof Error ? error.name : String(error) },
-        "Azure transcription request did not complete",
-      );
-      throw new AzureTranscriptionError(0, null);
+    let response: Response | null = null;
+    // A connection dropped before an answer (reset handshake, closed keep-alive socket) is sent
+    // once more with the same audio, so the owner does not have to speak again. A timeout is not.
+    for (let attempt = 1; response === null; attempt += 1) {
+      try {
+        response = await this.fetchImpl(buildAzureTranscribeUrl(this.config.region), {
+          method: "POST",
+          headers: { "Ocp-Apim-Subscription-Key": this.config.apiKey },
+          body: form,
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+      } catch (error) {
+        const name = error instanceof Error ? error.name : String(error);
+        const code = readErrorCode(error);
+        const retry = attempt === 1 && name !== "TimeoutError" && name !== "AbortError";
+        params.logger.error(
+          { err: name, code, attempt, retry },
+          "Azure transcription request did not complete",
+        );
+        if (!retry) {
+          throw new AzureTranscriptionError(0, null);
+        }
+      }
     }
     if (!response.ok) {
       const providerCode = await readProviderCode(response);
