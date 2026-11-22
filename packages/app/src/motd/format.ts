@@ -9,6 +9,12 @@ export interface LoginBannerFacts {
   memory?: { usedBytes: number; totalBytes: number };
   swap?: { usedBytes: number };
   lastLogin?: { at: number; from?: string };
+  /** Daseo delta 144 */
+  disk?: { usedBytes: number; totalBytes: number };
+  extraHeaders?: LoginBannerPair[];
+  /** `warning` or `critical`; a level this app does not know reads as a warning. */
+  notes?: Array<{ severity: string; text: string }>;
+  restartRequired?: { version: string };
 }
 
 export interface LoginBannerPair {
@@ -16,11 +22,36 @@ export interface LoginBannerPair {
   value: string;
 }
 
+export interface LoginBannerNote {
+  severity: "warning" | "critical";
+  text: string;
+}
+
 export interface LoginBannerModel {
   welcome: string;
   pairs: LoginBannerPair[];
+  /** Critical first, then the daemon's order; at most six, each at most 120 characters. */
+  notes: LoginBannerNote[];
+  restartRequired: string | null;
   lastLogin: string | null;
 }
+
+/**
+ * How a line is coloured: the banner is muted, a warning note one step brighter (the normal
+ * foreground), a critical note the destructive red the tool rows use for a failed exit, and the
+ * restart line the normal foreground.
+ */
+export type LoginBannerTone = "muted" | "warning" | "critical" | "notice";
+
+export interface LoginBannerLine {
+  /** Stable within one banner: the line's role, plus its position among pairs or notes. */
+  key: string;
+  text: string;
+  tone: LoginBannerTone;
+}
+
+const MAX_NOTES = 6;
+const MAX_NOTE_LENGTH = 120;
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 const MONTHS = [
@@ -52,6 +83,13 @@ export function buildLoginBanner(input: {
   if (isCount(facts.agentsRunning)) {
     pairs.push({ label: "Agents running:", value: String(Math.floor(facts.agentsRunning)) });
   }
+  const disk = formatDiskUsage(facts.disk);
+  if (disk) {
+    pairs.push({ label: "Usage of /:", value: disk });
+  }
+  for (const header of facts.extraHeaders ?? []) {
+    pairs.push({ label: header.label, value: header.value });
+  }
   const memory = formatMemoryUsage(facts.memory);
   if (memory) {
     pairs.push({ label: "Memory usage:", value: memory });
@@ -62,8 +100,37 @@ export function buildLoginBanner(input: {
   return {
     welcome: formatWelcome(input.appVersion, facts.os),
     pairs,
+    notes: orderNotes(facts.notes ?? []),
+    restartRequired: facts.restartRequired?.version.trim() || null,
     lastLogin: formatLastLogin(facts.lastLogin),
   };
+}
+
+function orderNotes(notes: NonNullable<LoginBannerFacts["notes"]>): LoginBannerNote[] {
+  const shown: LoginBannerNote[] = notes
+    .filter((note) => note.text.trim().length > 0)
+    .map((note) => ({
+      severity: note.severity === "critical" ? "critical" : "warning",
+      text: cutNote(note.text.trim()),
+    }));
+  // Array.prototype.sort is stable, so each severity keeps the daemon's order.
+  shown.sort((left, right) => severityRank(left) - severityRank(right));
+  return shown.slice(0, MAX_NOTES);
+}
+
+function severityRank(note: LoginBannerNote): number {
+  return note.severity === "critical" ? 0 : 1;
+}
+
+function cutNote(text: string): string {
+  return text.length > MAX_NOTE_LENGTH ? `${text.slice(0, MAX_NOTE_LENGTH - 1)}…` : text;
+}
+
+/** Ubuntu's `73.0% of 460GB`: one decimal always, as landscape-sysinfo prints it. */
+function formatDiskUsage(disk: LoginBannerFacts["disk"]): string | null {
+  if (!disk || !isCount(disk.usedBytes) || !(disk.totalBytes > 0)) return null;
+  if (disk.usedBytes > disk.totalBytes) return null;
+  return `${((disk.usedBytes / disk.totalBytes) * 100).toFixed(1)}% of ${formatBytes(disk.totalBytes)}`;
 }
 
 function isCount(value: unknown): value is number {
@@ -107,14 +174,14 @@ function formatLastLogin(lastLogin: LoginBannerFacts["lastLogin"]): string | nul
 }
 
 /**
- * The banner as text lines. `columns` is how many label/value pairs share a line: two on a wide
- * pane, one on a phone so a pair never overflows. Labels and values pad to their column so the
- * values line up in a monospace font.
+ * The banner as lines. `columns` is how many label/value pairs share a line: two on a wide pane,
+ * one on a phone so a pair never overflows. Labels and values pad to their column so the values
+ * line up in a monospace font. Notes are not padded; on a phone they wrap.
  */
-export function layoutLoginBanner(model: LoginBannerModel, columns: 1 | 2): string[] {
-  const lines = [model.welcome];
+export function layoutLoginBanner(model: LoginBannerModel, columns: 1 | 2): LoginBannerLine[] {
+  const lines: LoginBannerLine[] = [muted("welcome", model.welcome)];
   if (model.pairs.length > 0) {
-    lines.push("");
+    lines.push(muted("pairs-gap", ""));
     const labelWidths: number[] = [];
     const valueWidths: number[] = [];
     model.pairs.forEach((pair, index) => {
@@ -127,11 +194,28 @@ export function layoutLoginBanner(model: LoginBannerModel, columns: 1 | 2): stri
         const cell = `${pair.label.padEnd(labelWidths[column] ?? 0)} ${pair.value}`;
         return cell.padEnd((labelWidths[column] ?? 0) + 1 + (valueWidths[column] ?? 0));
       });
-      lines.push(`  ${cells.join("   ")}`.trimEnd());
+      lines.push(muted(`pairs-${index}`, `  ${cells.join("   ")}`.trimEnd()));
     }
   }
+  if (model.notes.length > 0) {
+    lines.push(muted("notes-gap", ""));
+    model.notes.forEach((note, index) => {
+      lines.push({ key: `note-${index}`, text: `=> ${note.text}`, tone: note.severity });
+    });
+  }
+  if (model.restartRequired) {
+    lines.push(muted("restart-gap", ""), {
+      key: "restart",
+      text: `*** Daseo ${model.restartRequired} is installed; restart required ***`,
+      tone: "notice",
+    });
+  }
   if (model.lastLogin) {
-    lines.push("", model.lastLogin);
+    lines.push(muted("last-login-gap", ""), muted("last-login", model.lastLogin));
   }
   return lines;
+}
+
+function muted(key: string, text: string): LoginBannerLine {
+  return { key, text, tone: "muted" };
 }

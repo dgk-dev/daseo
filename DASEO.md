@@ -3438,6 +3438,69 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        `desktop/browser/resident-webviews.ts`, `pane/index.electron.tsx`,
        `automation/screenshot-viewport.ts`, `automation/handler.ts`.
 
+144. **The login banner says where the disk stands and when to act on the dev environment** — the
+     owner's request on 2026-11-22: after delta 142 the banner showed load, agents, memory, swap and
+     the last login, nothing he could act on. Plan and measurements:
+     `~/.pi/agent/plans/-Users-ddgk/2026-11-22-daseo-motd-notes.md` and its research synthesis.
+     The shape copies Ubuntu's landscape-sysinfo and update-notifier; his colour pick the same day.
+     Delta 142's banner otherwise stands.
+
+     ```
+     Welcome to Daseo 0.5.151 (Darwin 27.2.0 arm64)
+
+       System load:  13.92            Agents running: 10
+       Usage of /:   73.0% of 460GB   Dev servers:    2 (3.1GB)
+       Memory usage: 56% of 24GB      Swap usage:     2.4GB
+
+     => Memory pressure is critical: next-server (office) 5.2GB
+     => / is using 86.0% of 460GB
+
+     *** Daseo 0.5.152 is installed; restart required ***
+
+     Last login: Sat Nov 22 20:41:07 2026 from fold7
+     ```
+
+     - **Pairs.** System load, Agents running, `Usage of /`, each header from the motd file, Memory
+       usage, Swap usage, so two columns give the rows above. `Usage of /` is the volume holding the
+       daemon user's home (`fs.statfs`; on macOS the Data volume, since `/` is the sealed system
+       snapshot), used = total - available as `df` shows it, one decimal as Ubuntu prints it.
+     - **Notes.** `=> ` lines after the pairs, at most six, each cut to 120 characters with `…`,
+       critical first and otherwise in the daemon's order: Daseo's disk note, then the motd file's.
+       Disk: Ubuntu's 85% used (landscape `disk.py`) or under 40 GB free is a warning, under 25 GB
+       free critical. A warning note is the normal foreground (one step brighter than the muted
+       banner), a critical one the destructive red of a failed `exit N`. The lines are spans inside
+       the one Text, so the banner stays one selectable block; on a phone notes wrap.
+     - **The motd file.** `~/.cache/dev-motd/motd.json`, written every 120 s by pi-local's
+       dev-memory-guard (update-motd.d model: the checks run there, the daemon only reads the file
+       when a banner is asked for). Schema 1: `headers` [{label, value}] capped at 4, `notes`
+       [{severity warning|critical, text}] capped at 6; unknown fields ignored, malformed entries
+       dropped, line breaks folded, more than 64 KB or bad JSON is no file. A file whose
+       `generatedAt` is over 10 minutes old shows none of its lines and one warning,
+       `dev-memory-guard has not reported for N minutes`. No file (any host without the guard) adds
+       nothing, so there the banner is delta 142's plus `Usage of /`.
+     - **Restart required.** `*** Daseo X is installed; restart required ***` (normal foreground)
+       when the newest of two bundles on disk is newer than the running daemon's version: the
+       staged `~/Applications/Paseo Local Patch.app`, which is newer exactly while the idle-gated
+       activation waits, and the daemon's own app bundle (the outermost `.app` of its executable),
+       which is newer when the app was swapped but the daemon survived. The installed
+       `/Applications/Daseo.app` alone is wrong for the first case (the script replaces it only at
+       activation), and a running `daseo-activate-once` process is gone once the script detaches.
+       A daemon outside an app bundle (a checkout's dev daemon) reports nothing.
+     - **Protocol.** `daemon.get_login_banner.response` gains optional `disk`, `extraHeaders`,
+       `notes` (severity an open string), `restartRequired`; no new feature flag, since delta 142's
+       `loginBanner` already gates the request. An older app passes the fields through and shows its
+       old banner; a newer app with an older daemon shows the old banner.
+     - **Fixtures.** `DASEO_DEV_MOTD_FILE`, `DASEO_LOGIN_BANNER_DISK_PATH` and
+       `DASEO_LOGIN_BANNER_APP_BUNDLE` on the daemon replace the motd path, the statfs path and the
+       daemon's own bundle.
+     - **Checks.** Unit: `packages/app/src/motd/format.test.ts` (order, colours, six-note cap, 120
+       cut, stale note, no-file banner), `packages/server/src/server/login-banner/login-banner.test.ts`
+       (disk thresholds, motd valid, malformed, missing, stale, oversize, restart signal),
+       `packages/protocol/src/messages.login-banner.test.ts` (delta 142 payload, new fields, unknown
+       severity through the generated validator).
+     - **Key files.** `packages/server/src/server/login-banner/{login-banner,dev-motd,restart-required}.ts`,
+       `packages/app/src/motd/{format.ts,login-banner.tsx}`, `packages/protocol/src/messages.ts`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

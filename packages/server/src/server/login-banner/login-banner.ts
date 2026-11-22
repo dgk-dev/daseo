@@ -1,8 +1,16 @@
-import { readFile } from "node:fs/promises";
-import { freemem, loadavg, platform, release, totalmem, type } from "node:os";
+import { open, readFile, statfs } from "node:fs/promises";
+import { freemem, homedir, loadavg, platform, release, totalmem, type } from "node:os";
+import path from "node:path";
 
 import type { SessionOutboundMessage } from "../messages.js";
 import { execCommand } from "../../utils/spawn.js";
+import { DEV_MOTD_MAX_BYTES, parseDevMotd, type DevMotd } from "./dev-motd.js";
+import {
+  infoPlistPaths,
+  newerInstalledVersion,
+  parseBundleShortVersion,
+  resolveOwnAppBundle,
+} from "./restart-required.js";
 
 /**
  * Daseo: host facts for the login banner an empty chat shows (`daemon.get_login_banner.request`).
@@ -14,7 +22,10 @@ export type LoginBannerFacts = Omit<
   "requestId"
 >;
 
-export interface LoginBannerMemory {
+export type LoginBannerHeader = NonNullable<LoginBannerFacts["extraHeaders"]>[number];
+export type LoginBannerNote = NonNullable<LoginBannerFacts["notes"]>[number];
+
+export interface LoginBannerUsage {
   usedBytes: number;
   totalBytes: number;
 }
@@ -30,9 +41,29 @@ export interface LoginBannerHost {
   /** Runs a command and returns its stdout; rejects when it fails. */
   run: (command: string, args: string[]) => Promise<string>;
   readTextFile: (filePath: string) => Promise<string>;
+  /** Daseo delta 144 */
+  homeDir: string;
+  /** The daemon's executable; inside an app bundle when the daemon is a packaged build. */
+  execPath: string;
+  env: NodeJS.ProcessEnv;
+  now: () => number;
+  statfs: (filePath: string) => Promise<{ totalBytes: number; availableBytes: number }>;
+  /** The file's text, null when it does not exist; rejects when it is larger than `maxBytes`. */
+  readFileBounded: (filePath: string, maxBytes: number) => Promise<string | null>;
 }
 
 const COMMAND_TIMEOUT_MS = 2_000;
+const GIB = 1024 ** 3;
+const MIB = 1024 ** 2;
+const INFO_PLIST_MAX_BYTES = 256 * 1024;
+
+/**
+ * Environment overrides, for fixtures and tests: the motd file to read, the path whose volume
+ * `Usage of /` reports, and an app bundle that stands in for the one the daemon runs from.
+ */
+export const DEV_MOTD_FILE_ENV = "DASEO_DEV_MOTD_FILE";
+export const DISK_PATH_ENV = "DASEO_LOGIN_BANNER_DISK_PATH";
+export const APP_BUNDLE_ENV = "DASEO_LOGIN_BANNER_APP_BUNDLE";
 
 function realHost(): LoginBannerHost {
   return {
@@ -46,18 +77,61 @@ function realHost(): LoginBannerHost {
     run: async (command, args) =>
       (await execCommand(command, args, { timeout: COMMAND_TIMEOUT_MS })).stdout,
     readTextFile: (filePath) => readFile(filePath, "utf8"),
+    homeDir: homedir(),
+    execPath: process.execPath,
+    env: process.env,
+    now: () => Date.now(),
+    statfs: async (filePath) => {
+      const stats = await statfs(filePath);
+      return { totalBytes: stats.blocks * stats.bsize, availableBytes: stats.bavail * stats.bsize };
+    },
+    readFileBounded,
   };
+}
+
+export class FileTooLargeError extends Error {
+  constructor(
+    public readonly filePath: string,
+    public readonly maxBytes: number,
+  ) {
+    super(`${filePath} is larger than ${maxBytes} bytes`);
+    this.name = "FileTooLargeError";
+  }
+}
+
+/** Reads at most `maxBytes + 1` bytes, so an oversized file costs no more than a valid one. */
+export async function readFileBounded(filePath: string, maxBytes: number): Promise<string | null> {
+  let handle;
+  try {
+    handle = await open(filePath, "r");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  try {
+    const buffer = Buffer.alloc(maxBytes + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > maxBytes) throw new FileTooLargeError(filePath, maxBytes);
+    return buffer.subarray(0, bytesRead).toString("utf8");
+  } finally {
+    await handle.close();
+  }
 }
 
 export async function collectLoginBannerFacts(input: {
   agentsRunning: number | null;
   lastLogin: { at: number; from: string | null } | null;
+  /** The running daemon's version, compared with the Daseo bundles on disk. */
+  daemonVersion: string | null;
   host?: LoginBannerHost;
 }): Promise<LoginBannerFacts> {
   const host = input.host ?? realHost();
-  const [memory, swapUsedBytes] = await Promise.all([
+  const [memory, swapUsedBytes, disk, devMotd, restartVersion] = await Promise.all([
     readMemory(host).catch(() => null),
     readSwapUsedBytes(host).catch(() => null),
+    readDisk(host).catch(() => null),
+    readDevMotd(host).catch(() => null),
+    readRestartRequiredVersion(host, input.daemonVersion).catch(() => null),
   ]);
   const facts: LoginBannerFacts = {};
   if (host.osType && host.osRelease && host.arch) {
@@ -83,7 +157,93 @@ export async function collectLoginBannerFacts(input: {
       ...(input.lastLogin.from ? { from: input.lastLogin.from } : {}),
     };
   }
+  return { ...facts, ...hostNotesFacts({ disk, devMotd, restartVersion }) };
+}
+
+/** Daseo delta 144: disk, the motd file's lines, and the restart line. */
+function hostNotesFacts(input: {
+  disk: LoginBannerUsage | null;
+  devMotd: DevMotd | null;
+  restartVersion: string | null;
+}): LoginBannerFacts {
+  const facts: LoginBannerFacts = {};
+  if (input.disk) {
+    facts.disk = input.disk;
+  }
+  if (input.devMotd && input.devMotd.headers.length > 0) {
+    facts.extraHeaders = input.devMotd.headers;
+  }
+  // Daseo's own notes come first: disk, then the motd file's (its stale warning, or its notes).
+  const notes = [...(input.disk ? diskNotes(input.disk) : []), ...(input.devMotd?.notes ?? [])];
+  if (notes.length > 0) {
+    facts.notes = notes;
+  }
+  if (input.restartVersion) {
+    facts.restartRequired = { version: input.restartVersion };
+  }
   return facts;
+}
+
+/**
+ * The volume holding the daemon user's home: on macOS that is the Data volume, where everything
+ * the user writes lands, while `/` itself is the sealed system snapshot. Used is total minus
+ * available, as `df` reports it to an unprivileged user.
+ */
+async function readDisk(host: LoginBannerHost): Promise<LoginBannerUsage | null> {
+  const target = host.env[DISK_PATH_ENV]?.trim() || host.homeDir;
+  const { totalBytes, availableBytes } = await host.statfs(target);
+  if (!(totalBytes > 0) || !(availableBytes >= 0) || availableBytes > totalBytes) return null;
+  return { usedBytes: totalBytes - availableBytes, totalBytes };
+}
+
+/**
+ * Ubuntu's landscape-sysinfo warns at 85% used (`disk.py`); a large disk can be under 85% and
+ * still nearly full in absolute terms, so little free space warns too.
+ */
+export function diskNotes(disk: LoginBannerUsage): LoginBannerNote[] {
+  const availableBytes = disk.totalBytes - disk.usedBytes;
+  const percent = (disk.usedBytes / disk.totalBytes) * 100;
+  const text = `/ is using ${percent.toFixed(1)}% of ${formatBannerBytes(disk.totalBytes)}`;
+  if (availableBytes < 25 * GIB) return [{ severity: "critical", text }];
+  if (percent >= 85 || availableBytes < 40 * GIB) return [{ severity: "warning", text }];
+  return [];
+}
+
+async function readDevMotd(host: LoginBannerHost): Promise<DevMotd> {
+  const filePath =
+    host.env[DEV_MOTD_FILE_ENV]?.trim() || path.join(host.homeDir, ".cache/dev-motd/motd.json");
+  return parseDevMotd(await host.readFileBounded(filePath, DEV_MOTD_MAX_BYTES), host.now());
+}
+
+async function readRestartRequiredVersion(
+  host: LoginBannerHost,
+  daemonVersion: string | null,
+): Promise<string | null> {
+  if (!daemonVersion || host.platform !== "darwin") return null;
+  const ownBundle = host.env[APP_BUNDLE_ENV]?.trim() || resolveOwnAppBundle(host.execPath);
+  if (!ownBundle) return null;
+  const versions = await Promise.all(
+    infoPlistPaths({ ownBundle, homeDir: host.homeDir }).map(async (plistPath) => {
+      const plist = await host.readFileBounded(plistPath, INFO_PLIST_MAX_BYTES).catch(() => null);
+      return plist === null ? null : parseBundleShortVersion(plist);
+    }),
+  );
+  return newerInstalledVersion(
+    daemonVersion,
+    versions.filter((version): version is string => version !== null),
+  );
+}
+
+/**
+ * The app's banner byte style (`460GB`, `4.2GB`, `512MB`; one decimal only when it says
+ * something), for the note texts the daemon writes. The app formats header values itself.
+ */
+export function formatBannerBytes(bytes: number): string {
+  if (bytes >= GIB) {
+    const fixed = (bytes / GIB).toFixed(1);
+    return `${fixed.endsWith(".0") ? fixed.slice(0, -2) : fixed}GB`;
+  }
+  return `${Math.round(bytes / MIB)}MB`;
 }
 
 /**
@@ -91,7 +251,7 @@ export async function collectLoginBannerFacts(input: {
  * without swapping. `os.freemem()` alone counts only untouched pages on macOS and Linux, which
  * would read as a nearly full machine, so each platform is asked for its reclaimable pages.
  */
-async function readMemory(host: LoginBannerHost): Promise<LoginBannerMemory | null> {
+async function readMemory(host: LoginBannerHost): Promise<LoginBannerUsage | null> {
   const totalBytes = host.totalMemoryBytes;
   if (!(totalBytes > 0)) return null;
   let availableBytes: number | null = null;

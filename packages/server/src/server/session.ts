@@ -817,6 +817,8 @@ export class Session {
   private readonly composerDrafts: ComposerDraftSessionChannel;
   private readonly slackScheduledReader: SlackScheduledReader | null | undefined;
   private readonly getPreviousLogin: (() => { at: number; from: string | null } | null) | undefined;
+  /** Daseo delta 144: compared with the Daseo bundles on disk for the banner's restart line. */
+  private readonly daemonVersion: string | undefined;
   private readonly commandListCache: CommandListCache;
   private readonly gitMutation: GitMutationService;
   private readonly workspaceProvisioning: WorkspaceProvisioningService;
@@ -986,6 +988,7 @@ export class Session {
     this.historySearch = historySearch;
     this.slackScheduledReader = slackScheduledReader;
     this.getPreviousLogin = getPreviousLogin;
+    this.daemonVersion = daemonVersion;
     this.commandListCache = resolveCommandListCache(commandListCache, this.sessionLogger);
     this.sidebarOrder = new SidebarOrderSessionChannel({
       store: sidebarOrderStore,
@@ -7313,6 +7316,7 @@ export class Session {
           .listAgents()
           .filter((agent) => agent.lifecycle === "running").length,
         lastLogin: this.getPreviousLogin?.() ?? null,
+        daemonVersion: this.daemonVersion ?? null,
       });
     } catch (error) {
       this.sessionLogger.warn({ err: error }, "Failed to collect login banner facts");

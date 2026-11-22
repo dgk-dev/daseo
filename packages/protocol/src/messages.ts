@@ -5159,6 +5159,19 @@ export const DaemonGetLoginBannerResponseSchema = z.object({
     swap: z.object({ usedBytes: z.number().nonnegative() }).optional(),
     /** The client connection before this one, as far as this daemon process has seen. */
     lastLogin: z.object({ at: z.number(), from: z.string().optional() }).optional(),
+    /** Daseo delta 144: the volume holding the daemon user's home, used = total - available. */
+    disk: z
+      .object({ usedBytes: z.number().nonnegative(), totalBytes: z.number().positive() })
+      .optional(),
+    /** Daseo delta 144: extra header pairs from the host's motd file, e.g. Dev servers. */
+    extraHeaders: z.array(z.object({ label: z.string(), value: z.string() })).optional(),
+    /**
+     * Daseo delta 144: Ubuntu-style `=> ` lines in source order. Severity is `warning` or
+     * `critical` today and an open string on the wire, so a later level does not break this app.
+     */
+    notes: z.array(z.object({ severity: z.string(), text: z.string() })).optional(),
+    /** Daseo delta 144: a newer Daseo build is installed or staged than the running daemon. */
+    restartRequired: z.object({ version: z.string() }).optional(),
   }),
 });
 
