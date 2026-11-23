@@ -2377,7 +2377,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     "update_agent",
     {
       title: "Update agent",
-      description: "Update an agent name, labels, and/or runtime settings.",
+      description:
+        "Update an agent name, labels, and/or runtime settings. Setting the paseo.parent-agent-id label to another agent also moves the agent into that parent's workspace.",
       inputSchema: {
         agentId: z.string(),
         name: z.string().optional(),

@@ -1,4 +1,4 @@
-import { expect, test, vi } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -15,6 +15,7 @@ import {
   type ManagedAgent,
 } from "./agent-manager.js";
 import { AgentStorage } from "./agent-storage.js";
+import { archiveWorkspaceContents } from "../workspace-archive-service.js";
 import { AssistantImageSnapshotStore } from "../assistant-image-snapshots/assistant-image-snapshot-store.js";
 import { AssistantImageSnapshotter } from "../assistant-image-snapshots/assistant-image-snapshotter.js";
 import { FileBackedAgentTimelineStore } from "./file-backed-agent-timeline-store.js";
@@ -10478,4 +10479,228 @@ test("an assistant image is sent, recorded, and kept as the bytes from when it w
   } finally {
     rmSync(workdir, { recursive: true, force: true });
   }
+});
+
+// Local fork (DASEO.md delta 148): re-parenting an agent moves it into the new parent's workspace.
+describe("re-parenting moves the agent into the new parent's workspace", () => {
+  function createReparentManager(options?: { activeWorkspaces?: Set<string> }) {
+    const workdir = mkdtempSync(join(tmpdir(), "agent-manager-reparent-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger);
+    const finishRun = deferred<void>();
+
+    class RunningSession extends TestAgentSession {
+      closeCalled = false;
+      interruptCalled = false;
+
+      override async startTurn(): Promise<{ turnId: string }> {
+        const turnId = "reparent-running-turn";
+        void (async () => {
+          this.pushEvent({ type: "turn_started", provider: this.provider, turnId });
+          await finishRun.promise;
+          this.pushEvent({ type: "turn_completed", provider: this.provider, turnId });
+        })();
+        return { turnId };
+      }
+
+      override async interrupt(): Promise<void> {
+        this.interruptCalled = true;
+      }
+
+      override async close(): Promise<void> {
+        this.closeCalled = true;
+      }
+    }
+
+    class RunningClient extends TestAgentClient {
+      readonly sessions: RunningSession[] = [];
+
+      override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+        const session = new RunningSession(config);
+        this.sessions.push(session);
+        return session;
+      }
+    }
+
+    const client = new RunningClient();
+    const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+    const moves: Array<{ agentId: string; from: string | undefined; to: string }> = [];
+    manager.setAgentWorkspaceMoveHost({
+      isWorkspaceActive: async (workspaceId) =>
+        options?.activeWorkspaces ? options.activeWorkspaces.has(workspaceId) : true,
+      onAgentWorkspaceMoved: async ({ agentId, fromWorkspaceId, toWorkspaceId }) => {
+        moves.push({ agentId, from: fromWorkspaceId, to: toWorkspaceId });
+      },
+    });
+    return { workdir, storage, manager, client, moves, finishRun };
+  }
+
+  async function createLeads(
+    manager: AgentManager,
+    workdir: string,
+  ): Promise<{ oldLead: ManagedAgent; newLead: ManagedAgent; child: ManagedAgent }> {
+    const oldLead = await manager.createAgent(
+      { provider: "codex", cwd: workdir, title: "Old lead" },
+      undefined,
+      { workspaceId: "ws-old" },
+    );
+    const newLead = await manager.createAgent(
+      { provider: "codex", cwd: workdir, title: "New lead" },
+      undefined,
+      { workspaceId: "ws-new" },
+    );
+    const child = await manager.createAgent(
+      { provider: "codex", cwd: workdir, title: "Implementer" },
+      undefined,
+      { workspaceId: "ws-old", labels: { [PARENT_AGENT_ID_LABEL]: oldLead.id } },
+    );
+    return { oldLead, newLead, child };
+  }
+
+  test("moves a live agent, persists it, and emits the new workspace", async () => {
+    const { workdir, storage, manager, moves } = createReparentManager();
+    const { newLead, child } = await createLeads(manager, workdir);
+    const emitted: Array<string | undefined> = [];
+    const unsubscribe = manager.subscribe(
+      (event) => {
+        if (event.type === "agent_state" && event.agent.id === child.id) {
+          emitted.push(event.agent.workspaceId);
+        }
+      },
+      { replayState: false },
+    );
+
+    await manager.updateAgentMetadata(child.id, {
+      labels: { [PARENT_AGENT_ID_LABEL]: newLead.id },
+    });
+    await manager.flush();
+    unsubscribe();
+
+    expect(manager.getAgent(child.id)?.workspaceId).toBe("ws-new");
+    expect(manager.getAgent(child.id)?.labels[PARENT_AGENT_ID_LABEL]).toBe(newLead.id);
+    const stored = await storage.get(child.id);
+    expect(stored?.workspaceId).toBe("ws-new");
+    expect(stored?.labels[PARENT_AGENT_ID_LABEL]).toBe(newLead.id);
+    expect(emitted).toContain("ws-new");
+    expect(moves).toEqual([{ agentId: child.id, from: "ws-old", to: "ws-new" }]);
+  });
+
+  test("re-applying the same parent still moves an agent left behind", async () => {
+    const { workdir, storage, manager } = createReparentManager();
+    const { newLead, child } = await createLeads(manager, workdir);
+    // The label was changed before this delta, so the agent is already labelled but not moved.
+    await manager.setLabels(child.id, { [PARENT_AGENT_ID_LABEL]: newLead.id });
+    expect(manager.getAgent(child.id)?.workspaceId).toBe("ws-old");
+
+    await manager.updateAgentMetadata(child.id, {
+      labels: { [PARENT_AGENT_ID_LABEL]: newLead.id },
+    });
+
+    expect(manager.getAgent(child.id)?.workspaceId).toBe("ws-new");
+    expect((await storage.get(child.id))?.workspaceId).toBe("ws-new");
+  });
+
+  test("keeps the workspace when the parent's workspace is archived", async () => {
+    const { workdir, manager, moves } = createReparentManager({
+      activeWorkspaces: new Set(["ws-old"]),
+    });
+    const { newLead, child } = await createLeads(manager, workdir);
+
+    await manager.updateAgentMetadata(child.id, {
+      labels: { [PARENT_AGENT_ID_LABEL]: newLead.id },
+    });
+
+    expect(manager.getAgent(child.id)?.labels[PARENT_AGENT_ID_LABEL]).toBe(newLead.id);
+    expect(manager.getAgent(child.id)?.workspaceId).toBe("ws-old");
+    expect(moves).toEqual([]);
+  });
+
+  test("keeps the workspace when the parent is unknown or archived", async () => {
+    const { workdir, manager, moves } = createReparentManager();
+    const { newLead, child } = await createLeads(manager, workdir);
+
+    await manager.updateAgentMetadata(child.id, {
+      labels: { [PARENT_AGENT_ID_LABEL]: "00000000-0000-4000-8000-00000000dead" },
+    });
+    expect(manager.getAgent(child.id)?.workspaceId).toBe("ws-old");
+
+    await manager.archiveAgent(newLead.id);
+    await manager.updateAgentMetadata(child.id, {
+      labels: { [PARENT_AGENT_ID_LABEL]: newLead.id },
+    });
+    expect(manager.getAgent(child.id)?.workspaceId).toBe("ws-old");
+    expect(moves).toEqual([]);
+  });
+
+  test("labels other than the parent never move the agent", async () => {
+    const { workdir, manager, moves } = createReparentManager();
+    const { child } = await createLeads(manager, workdir);
+
+    await manager.updateAgentMetadata(child.id, { labels: { role: "worker" } });
+
+    expect(manager.getAgent(child.id)?.workspaceId).toBe("ws-old");
+    expect(moves).toEqual([]);
+  });
+
+  test("a running agent keeps its turn, and archiving the old workspace leaves it alone", async () => {
+    const { workdir, storage, manager, client, finishRun } = createReparentManager();
+    const { oldLead, newLead, child } = await createLeads(manager, workdir);
+    const childSession = client.sessions[2];
+    const run = manager.streamAgent(child.id, "keep running");
+    const drain = (async () => {
+      for await (const _event of run) {
+        // Drain the foreground turn.
+      }
+    })();
+    await manager.waitForAgentRunStart(child.id);
+
+    await manager.updateAgentMetadata(child.id, {
+      labels: { [PARENT_AGENT_ID_LABEL]: newLead.id },
+    });
+    expect(manager.hasInFlightRun(child.id)).toBe(true);
+
+    const archived = await archiveWorkspaceContents(
+      { agentManager: manager, agentStorage: storage, killTerminalsForWorkspace: async () => {} },
+      "ws-old",
+    );
+
+    expect(archived.has(oldLead.id)).toBe(true);
+    expect(archived.has(child.id)).toBe(false);
+    expect(manager.hasInFlightRun(child.id)).toBe(true);
+    expect(childSession?.closeCalled).toBe(false);
+    expect(childSession?.interruptCalled).toBe(false);
+    expect((await storage.get(child.id))?.archivedAt).toBeFalsy();
+
+    finishRun.resolve();
+    await drain;
+    expect(manager.getAgent(child.id)?.lifecycle).toBe("idle");
+    expect(manager.getAgent(child.id)?.workspaceId).toBe("ws-new");
+  });
+
+  test("moves an unloaded agent and its subagents still in the old workspace", async () => {
+    const { workdir, storage, manager, moves } = createReparentManager();
+    const { newLead, child } = await createLeads(manager, workdir);
+    const grandchild = await manager.createAgent(
+      { provider: "codex", cwd: workdir, title: "Grandchild" },
+      undefined,
+      { workspaceId: "ws-old", labels: { [PARENT_AGENT_ID_LABEL]: child.id } },
+    );
+    const elsewhere = await manager.createAgent(
+      { provider: "codex", cwd: workdir, title: "Grandchild elsewhere" },
+      undefined,
+      { workspaceId: "ws-other", labels: { [PARENT_AGENT_ID_LABEL]: child.id } },
+    );
+    await manager.closeAgent(child.id);
+    await manager.closeAgent(grandchild.id);
+    expect(manager.getAgent(child.id)).toBeNull();
+
+    await manager.updateAgentMetadata(child.id, {
+      labels: { [PARENT_AGENT_ID_LABEL]: newLead.id },
+    });
+
+    expect((await storage.get(child.id))?.workspaceId).toBe("ws-new");
+    expect((await storage.get(child.id))?.labels[PARENT_AGENT_ID_LABEL]).toBe(newLead.id);
+    expect((await storage.get(grandchild.id))?.workspaceId).toBe("ws-new");
+    expect(manager.getAgent(elsewhere.id)?.workspaceId).toBe("ws-other");
+    expect(moves).toEqual([{ agentId: child.id, from: "ws-old", to: "ws-new" }]);
+  });
 });

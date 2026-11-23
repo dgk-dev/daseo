@@ -1157,6 +1157,19 @@ export async function createPaseoDaemon(
     }));
     if (updated) await emitWorkspaceUpdatesExternal([workspaceId]);
   });
+  // Local fork (DASEO.md delta 148): a re-parented agent moves into its new parent's workspace;
+  // both workspaces' descriptors (status, activity) are recomputed for every client.
+  agentManager.setAgentWorkspaceMoveHost({
+    isWorkspaceActive: async (workspaceId) => {
+      const record = await workspaceRegistry.get(workspaceId);
+      return Boolean(record && !record.archivedAt);
+    },
+    onAgentWorkspaceMoved: async ({ fromWorkspaceId, toWorkspaceId }) => {
+      await emitWorkspaceUpdatesExternal(
+        fromWorkspaceId ? [fromWorkspaceId, toWorkspaceId] : [toWorkspaceId],
+      );
+    },
+  });
   const emitWorkspaceUpdateForCwdExternal = async (cwd: string) => {
     const workspaceIds = workspaceIdsOnCheckout(await workspaceRegistry.list(), cwd);
     await emitWorkspaceUpdatesExternal(workspaceIds);

@@ -552,6 +552,23 @@ interface WriteLabelsResult {
 interface AgentMetadataPatch {
   title?: string;
   labels?: AgentLabelPatch;
+  /** Local fork (delta 148): only a re-parent move writes this. */
+  workspaceId?: string;
+}
+
+interface ReparentWorkspaceMove {
+  fromWorkspaceId: string | undefined;
+  toWorkspaceId: string;
+}
+
+/** Local fork (delta 148): the daemon's workspace side of a re-parent move. */
+export interface AgentWorkspaceMoveHost {
+  isWorkspaceActive(workspaceId: string): Promise<boolean>;
+  onAgentWorkspaceMoved(input: {
+    agentId: string;
+    fromWorkspaceId: string | undefined;
+    toWorkspaceId: string;
+  }): Promise<void>;
 }
 
 const SYSTEM_ERROR_PREFIX = "[System Error]";
@@ -768,6 +785,8 @@ export class AgentManager {
   /** Local fork (delta 109): renames a workspace as the user would, for `/name`. */
   private workspaceTitleSetter: ((workspaceId: string, title: string) => Promise<void>) | null =
     null;
+  /** Local fork (delta 148): checks and publishes a re-parent workspace move. */
+  private workspaceMoveHost: AgentWorkspaceMoveHost | null = null;
 
   constructor(options: AgentManagerOptions) {
     this.idFactory = options?.idFactory ?? (() => randomUUID());
@@ -2103,6 +2122,7 @@ export class AgentManager {
       ...record,
       ...(patch.title ? { title: patch.title } : {}),
       ...(patch.labels ? { labels: applyLabelPatch(record.labels, patch.labels) } : {}),
+      ...(patch.workspaceId ? { workspaceId: patch.workspaceId } : {}),
       updatedAt: this.nextStoredUpdatedAt(record),
     };
     await registry.upsert(nextRecord);
@@ -2312,12 +2332,162 @@ export class AgentManager {
         await this.setTitle(agentId, updates.title);
       }
       if (updates.labels) {
+        const move = await this.resolveReparentWorkspaceMove(liveAgent, updates.labels);
+        const managed = move ? this.agents.get(agentId) : undefined;
+        if (move && managed) {
+          // Only ownership changes: the session, its turn, and its background waits stay as
+          // they are. writeLabels persists and emits the new workspace with the new label.
+          managed.workspaceId = move.toWorkspaceId;
+        }
         await this.writeLabels(agentId, updates.labels);
+        if (move && managed) {
+          await this.finishReparentWorkspaceMove(agentId, move);
+        }
       }
       return;
     }
 
-    await this.writeStoredMetadata(agentId, updates);
+    const record = updates.labels ? await this.registry?.get(agentId) : null;
+    const move =
+      record && updates.labels
+        ? await this.resolveReparentWorkspaceMove(record, updates.labels)
+        : null;
+    const nextRecord = await this.writeStoredMetadata(agentId, {
+      ...updates,
+      ...(move ? { workspaceId: move.toWorkspaceId } : {}),
+    });
+    if (move) {
+      if (!nextRecord.internal) {
+        this.dispatchStoredAgentState(nextRecord);
+      }
+      await this.finishReparentWorkspaceMove(agentId, move);
+    }
+  }
+
+  setAgentWorkspaceMoveHost(host: AgentWorkspaceMoveHost | null): void {
+    this.workspaceMoveHost = host;
+  }
+
+  /**
+   * Local fork (delta 148): setting `paseo.parent-agent-id` on an existing agent also moves it
+   * into the new parent's workspace, the placement `create_agent` gives a new subagent of that
+   * parent. Returns null (label change only) when the parent is unknown, archived, internal, or
+   * has no workspace, when the parent's workspace is not active, or when nothing would move.
+   */
+  private async resolveReparentWorkspaceMove(
+    agent: {
+      id: string;
+      workspaceId?: string;
+      internal?: boolean;
+      archivedAt?: string | null;
+    },
+    labels: Record<string, string>,
+  ): Promise<ReparentWorkspaceMove | null> {
+    if (!Object.hasOwn(labels, PARENT_AGENT_ID_LABEL)) {
+      return null;
+    }
+    const parentAgentId = getParentAgentIdFromLabels(labels);
+    if (!parentAgentId || parentAgentId === agent.id || agent.internal || agent.archivedAt) {
+      return null;
+    }
+    const liveParent = this.agents.get(parentAgentId);
+    const storedParent = liveParent ? null : ((await this.registry?.get(parentAgentId)) ?? null);
+    const parent = liveParent ?? storedParent;
+    if (!parent || parent.internal || storedParent?.archivedAt) {
+      return null;
+    }
+    const toWorkspaceId = parent.workspaceId;
+    if (!toWorkspaceId || toWorkspaceId === agent.workspaceId) {
+      return null;
+    }
+    if (
+      this.workspaceMoveHost &&
+      !(await this.workspaceMoveHost.isWorkspaceActive(toWorkspaceId))
+    ) {
+      this.logger.warn(
+        { agentId: agent.id, parentAgentId, toWorkspaceId },
+        "Re-parented agent kept its workspace: the parent's workspace is not active",
+      );
+      return null;
+    }
+    return { fromWorkspaceId: agent.workspaceId, toWorkspaceId };
+  }
+
+  private async finishReparentWorkspaceMove(
+    agentId: string,
+    move: ReparentWorkspaceMove,
+  ): Promise<void> {
+    this.logger.info(
+      { agentId, fromWorkspaceId: move.fromWorkspaceId, toWorkspaceId: move.toWorkspaceId },
+      "Re-parented agent moved to its parent's workspace",
+    );
+    // Descendants that still sit in the old workspace follow, so archiving that workspace later
+    // does not archive a subagent of the moved agent.
+    if (move.fromWorkspaceId) {
+      await this.moveDescendantsWithParent(agentId, move);
+    }
+    if (!this.workspaceMoveHost) {
+      return;
+    }
+    try {
+      await this.workspaceMoveHost.onAgentWorkspaceMoved({
+        agentId,
+        fromWorkspaceId: move.fromWorkspaceId,
+        toWorkspaceId: move.toWorkspaceId,
+      });
+    } catch (error) {
+      this.logger.warn({ err: error, agentId }, "Failed to publish a re-parented agent's move");
+    }
+  }
+
+  private async moveDescendantsWithParent(
+    rootAgentId: string,
+    move: ReparentWorkspaceMove,
+  ): Promise<void> {
+    const registry = this.registry;
+    if (!registry || !move.fromWorkspaceId) {
+      return;
+    }
+    const records = await registry.list();
+    const visited = new Set<string>([rootAgentId]);
+    const queue = [rootAgentId];
+    while (queue.length > 0) {
+      const parentId = queue.shift() as string;
+      for (const record of records) {
+        if (
+          visited.has(record.id) ||
+          record.archivedAt ||
+          record.internal ||
+          record.workspaceId !== move.fromWorkspaceId ||
+          getParentAgentIdFromLabels(record.labels) !== parentId
+        ) {
+          continue;
+        }
+        visited.add(record.id);
+        queue.push(record.id);
+        await this.runLifecycleMutation(record.id, async () => {
+          const live = this.agents.get(record.id);
+          if (live) {
+            if (live.workspaceId !== move.fromWorkspaceId) {
+              return;
+            }
+            live.workspaceId = move.toWorkspaceId;
+            this.touchUpdatedAt(live);
+            await this.persistSnapshot(live);
+            this.emitState(live, { persist: false });
+            return;
+          }
+          const current = await registry.get(record.id);
+          if (!current || current.archivedAt || current.workspaceId !== move.fromWorkspaceId) {
+            return;
+          }
+          const next = await this.writeStoredMetadata(record.id, {
+            workspaceId: move.toWorkspaceId,
+          });
+          this.dispatchStoredAgentState(next);
+        });
+      }
+    }
   }
 
   private async runLifecycleMutation<T>(agentId: string, mutation: () => Promise<T>): Promise<T> {

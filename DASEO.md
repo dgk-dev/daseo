@@ -3627,6 +3627,42 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        (`shouldResetKeyboardOffsetOnResume`).
      - **Key files.** `packages/app/src/hooks/{use-keyboard-shift-style,keyboard-shift-policy,keyboard-shift-context}.ts`.
 
+148. **Re-parenting an agent moves it into the new parent's workspace** — on 2026-11-23 a lead
+     handed implementer 23a9581a to a scheduled session (53e0fe80) by setting
+     `paseo.parent-agent-id` with `update_agent`, as the global agent rules now require. The
+     implementer showed under the new lead but stayed in the old lead's workspace
+     (wks_ea2a207f0d602a71, archived), so opening it asked to unarchive every time, and archiving
+     the old workspace would have archived it.
+     - **Change.** `AgentManager.updateAgentMetadata` (the one path behind the MCP tool and the
+       update-agent RPC): when the label patch sets `paseo.parent-agent-id` to another agent, the
+       agent's `workspaceId` becomes the parent's, the placement `create_agent` gives a new
+       subagent of that parent. It also runs when the label already names that parent (agents
+       re-labelled before this delta move by re-applying it). Live agents change in memory and are
+       persisted and emitted with the label in one write; unloaded agents change in storage and
+       are dispatched. Descendants that still sit in the old workspace (same workspace, parent
+       chain through the moved agent, not archived) follow, each in its own lifecycle lane.
+       Bootstrap gives the manager a host that checks the target workspace is active and then
+       re-emits both workspaces' descriptors to every client.
+     - **Edge cases.** No move, label change kept (the behaviour before this delta), when the
+       parent is unknown, internal, archived, has no workspace, or its workspace is archived or
+       missing; also for an archived or internal agent and for a parent equal to the agent. A
+       running agent is not interrupted: only the ownership field changes, no reload, no
+       interrupt, background waits untouched; its `cwd` and the `PASEO_WORKSPACE_ID` in its
+       already-started process stay as they were (Paseo tools read the workspace from the manager,
+       so its next `create_agent` lands in the new workspace; the env value refreshes at its next
+       resume). The old workspace is left as it is, even when empty; nothing is auto-archived.
+     - **Checks.** `packages/server/src/server/agent/agent-manager.test.ts`, block "re-parenting
+       moves the agent into the new parent's workspace": live move persisted and emitted, re-apply
+       of the same parent, archived target workspace, unknown and archived parent, unrelated
+       labels, a running agent keeps its turn and `archiveWorkspaceContents` on the old workspace
+       leaves it alone, an unloaded agent moves with its subagent while one in a third workspace
+       stays.
+     - **Key files.** `packages/server/src/server/agent/agent-manager.ts`
+       (`resolveReparentWorkspaceMove`, `finishReparentWorkspaceMove`, `moveDescendantsWithParent`),
+       `packages/server/src/server/bootstrap.ts` (`setAgentWorkspaceMoveHost`),
+       `packages/server/src/server/agent/tools/paseo-tools.ts` (`update_agent` description),
+       `docs/agent-lifecycle.md`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including
