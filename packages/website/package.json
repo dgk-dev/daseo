@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/website",
-  "version": "0.5.155",
+  "version": "0.5.156",
   "private": true,
   "type": "module",
   "scripts": {
