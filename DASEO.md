@@ -1579,6 +1579,14 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       failed once in five 44 runs (zero in five on 41): the iframe receives the shortcut policy by an
       asynchronous request after its preload starts, and the check presses the key right after the
       frame loads.
+    - **44.11.5 (2026-11-23).** Patch bump for security fixes: Node 24.22.3 (44.11.4), and Web
+      Worker requests to non-network schemes now pass through `protocol.handle()` and `webRequest`
+      (44.11.5). Needed no source change: the `app://` handler serves path-checked files to any
+      requester, the app starts no Workers, and the profile's `onBeforeSendHeaders` listener only
+      matches http(s) and wss. Node ABI stays 149, so native modules need no rebuild. Verified:
+      desktop unit tests and typecheck; the six capture-harness groups above pass (`automation`
+      5 of 5, including the focused-iframe shortcut check); under `ELECTRON_RUN_AS_NODE` the
+      History model embeds, `node:sqlite` FTS5 trigram matches, and node-pty spawns.
     - **Key files:** `packages/desktop/package.json`, `electron-builder.yml`, `src/main.ts`
       (copy-element, clipboard image), `src/features/clipboard-image.ts`,
       `src/features/dialog-directory-memory.ts`, `src/features/dialogs.ts`,
