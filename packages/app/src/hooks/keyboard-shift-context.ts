@@ -4,6 +4,8 @@ import type { SharedValue } from "react-native-reanimated";
 export interface KeyboardShiftContextValue {
   shift: SharedValue<number>;
   bottomInset: SharedValue<number>;
+  /** Daseo delta 147: a tiny offset set right after a resume so the shifted styles are sent again. */
+  resumeNudge: SharedValue<number>;
 }
 
 export const KeyboardShiftContext = createContext<KeyboardShiftContextValue | null>(null);

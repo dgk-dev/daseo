@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveKeyboardShift } from "./keyboard-shift-policy";
+import { resolveKeyboardShift, shouldResetKeyboardOffsetOnResume } from "./keyboard-shift-policy";
 
 describe("resolveKeyboardShift", () => {
   it("keeps the existing open-keyboard offset behavior", () => {
@@ -36,5 +36,37 @@ describe("resolveKeyboardShift", () => {
         iosMinHeight: 120,
       }),
     ).toBe(0);
+  });
+});
+
+describe("shouldResetKeyboardOffsetOnResume", () => {
+  it("zeroes an offset the system no longer backs with a keyboard", () => {
+    expect(
+      shouldResetKeyboardOffsetOnResume({
+        systemKeyboardVisible: false,
+        rawKeyboardHeight: 357,
+        keyboardProgress: 1,
+      }),
+    ).toBe(true);
+  });
+
+  it("leaves an open keyboard alone", () => {
+    expect(
+      shouldResetKeyboardOffsetOnResume({
+        systemKeyboardVisible: true,
+        rawKeyboardHeight: 357,
+        keyboardProgress: 1,
+      }),
+    ).toBe(false);
+  });
+
+  it("does nothing when the offset is already closed", () => {
+    expect(
+      shouldResetKeyboardOffsetOnResume({
+        systemKeyboardVisible: false,
+        rawKeyboardHeight: 0,
+        keyboardProgress: 0,
+      }),
+    ).toBe(false);
   });
 });

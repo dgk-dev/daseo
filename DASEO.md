@@ -3605,6 +3605,28 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        `packages/server/src/server/history-search/timeline-message-reader.ts`,
        `packages/server/src/server/{config,bootstrap}.ts`, `docs/data-model.md` section 8.
 
+147. **The Composer comes back to the bottom after the app returns with the keyboard open (phone)**
+     — the owner's report on 2026-11-23: now and then, after leaving Daseo with the keyboard open
+     and coming back, the Composer floated in the middle of the chat and overlapped it. The
+     Composer is translated up by the keyboard offset (`KeyboardShiftProvider`); the report fits an
+     offset left at the open-keyboard value with no keyboard on screen. Two known causes match:
+     Reanimated 4.3 can restore stale animated props after an Android pause
+     (software-mansion/react-native-reanimated#9574, a keyboard-sticky chat composer stranded about
+     1 in 3 cycles; fixed by #9527, first released in 4.6.0, we ship 4.3.1), and the keyboard
+     library can miss the hide while the app is in the background.
+     - **Change.** On every Android resume the provider checks twice (400 ms and 1200 ms after
+       `active`): when React Native's own keyboard state (read from the root window's IME insets on
+       each global layout) says closed but the offset still holds a height or progress, it writes
+       0 to both. Each check also sets a 0.01 dp nudge (on, then off) inside the shifted styles so
+       Reanimated sends the live value to the native views again. One `[keyboard-resume]` console
+       line per check shows what it found in `phone_logs`.
+     - **Not changed:** iOS, the keyboard-open path, the Reanimated and keyboard-controller
+       versions, the `FORCE_REACT_RENDER_FOR_SETTLED_ANIMATIONS` flag (turning it off would leave
+       settled styles out of the shadow tree that Pressability measures; see delta 87).
+     - **Checks.** `packages/app/src/hooks/use-keyboard-shift-style.test.ts`
+       (`shouldResetKeyboardOffsetOnResume`).
+     - **Key files.** `packages/app/src/hooks/{use-keyboard-shift-style,keyboard-shift-policy,keyboard-shift-context}.ts`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including
