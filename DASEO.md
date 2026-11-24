@@ -3071,7 +3071,7 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
 116. **Nano key hints, header words, bracket buttons, checkbox tasks, no rules over the composer** — the owner approved items 2-4 of `~/paseo-builds/preview/daseo-more-terminal.html` on 2026-11-15 ("2번도 굿 3번도 굿, 4번도 굿") and asked for fewer rules ("가로선도 더 없애서 … 입력창 바로 위랑 서브에이전트 떠도 그 바로위 가로선. 경계를 없애야 더 터미널 같잖아").
      - **Hint line keycaps.** In the composer hint line only, a key is reverse video, the way nano and htop print their bottom line: bold dark text (`surface0`) on a light muted block (`foregroundMuted`), with no border, then the word (`⇧⏎ newline`, `⌘L focus`, `/ commands`, `@ files`). On macOS every modifier is its glyph, Shift included; other platforms keep their spelling. Only bound shortcuts show, and phones show none, as before. Tooltips and menus keep the bordered keycap. Contrast: 7.2:1 (Daseo), 8.5:1 (Tokyo Night), 4.8:1 (light).
      - **Header words.** The workspace header's boxed controls become words in the sidebar footer's style (mono, small, muted, brightening on hover or while open), English in every locale, with translated accessibility labels: `···` → `menu`; the scripts `▷ ▾` → `run ▾` (`run` in the accent while a script runs); the git `Commit ▾` box → the primary action's word plus `▾`. The git words are commit, pull, push, `sync`, `pr`, `merge`, `auto-merge`, `auto-merge off`, `update` and `archive`; a finished action shows `commit ✓`, pending shows the spinner. The narrow-header icon-only mode (`hideLabels`) is gone. The phone header gets `menu` too. The `PanelRight` toggle (delta 111) stays an icon.
-     - **Bracket buttons.** The app `Button` prints a labelled default, secondary, outline or destructive button as `[ Label ]`, with no fill or border: default in the accent, secondary and outline muted, destructive in the destructive colour, the light hover fill on hover and press, disabled at half opacity. Size, hit area, the loading spinner and the icon beside the label are unchanged. Ghost buttons and label-less (icon-only) buttons keep their look. The sidebar callout's actions and the draft's "Import session" use `Button`. Icons that were coloured for a filled button take the variant colour.
+     - **Bracket buttons.** The app `Button` prints a labelled default, secondary, outline or destructive button as `[ Label ]`, with no fill or border: default in the accent, secondary and outline muted, destructive in the destructive colour, the light hover fill on hover and press, disabled at half opacity. Size, hit area, the loading spinner and the icon beside the label are unchanged. Ghost buttons and label-less (icon-only) buttons keep their look. The sidebar callout's actions use `Button` (the draft's "Import session" button was removed in delta 149). Icons that were coloured for a filled button take the variant colour.
      - **Task markers.** Task rows in the right task panel, on the focus-mode board and in the transcript's todo row use checkbox text instead of circle icons: `[>]` in progress (running colour), `[?]` needs a decision (warning colour), `[ ]` to do and `[=]` on hold (muted), `[x]` done and `[-]` dropped (faint), in the mono face at the row's text size.
      - **No rules.** No rule above the subagents track and none on the focus-mode task board. The prompt line's own top rule went in delta 115. The rule between the subagents track's header and its list stays.
      - **Key files:** `composer/hint-line.tsx` (`HintKeycap`), `screens/workspace/header-word.tsx`, `screens/workspace/workspace-scripts-button.tsx`, `git/actions-split-button.tsx` (`GIT_ACTION_WORDS`), `components/ui/button.tsx` (`resolveBracketTone`), `components/sidebar-callout.tsx`, `components/task-list-row.tsx` (`TASK_STATE_MARKERS`), `subagents/track.tsx`, `composer/task-list/index.tsx`.
@@ -3662,6 +3662,17 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
        `packages/server/src/server/bootstrap.ts` (`setAgentWorkspaceMoveHost`),
        `packages/server/src/server/agent/tools/paseo-tools.ts` (`update_agent` description),
        `docs/agent-lifecycle.md`.
+
+149. **A new session's Composer no longer covers the welcome area (phone)** — the owner's report on
+     2026-11-24: on the phone, once the draft text grew, the Composer and the `[ Import session ]`
+     button above it overlapped the login banner at the top of a new session. The owner has never
+     used that button.
+     - **Change.** The draft tab drops the import button (import stays in the workspace's new-tab
+       menu and on the open-project screen). The Composer is translated up by the keyboard offset
+       without changing layout, so the welcome scroll area now takes the same offset as bottom
+       padding and shrinks or scrolls instead of sitting under the Composer.
+     - **Key files.** `packages/app/src/composer/draft/workspace-tab.tsx`,
+       `packages/app/src/panels/agent-panel.tsx`; `composer/draft/import-pill.tsx` deleted.
 
 ## Local reliability contracts
 

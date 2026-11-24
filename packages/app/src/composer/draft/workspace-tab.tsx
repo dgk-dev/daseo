@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { Keyboard, ScrollView, StyleSheet as RNStyleSheet, Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
-import ReanimatedAnimated from "react-native-reanimated";
+import ReanimatedAnimated, { useAnimatedStyle } from "react-native-reanimated";
 import { StyleSheet } from "react-native-unistyles";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useKeyboardShiftStyle } from "@/hooks/use-keyboard-shift-style";
+import { useKeyboardShift } from "@/hooks/keyboard-shift-context";
 import { useContainerWidthBelow } from "@/hooks/use-container-width";
 import invariant from "tiny-invariant";
 import { Composer } from "@/composer";
 import { FileDropZone } from "@/components/file-drop/file-drop-zone";
 import { LoginBanner } from "@/motd/login-banner";
-import { ComposerImportPill } from "@/composer/draft/import-pill";
 import { AgentStreamView } from "@/agent-stream/view";
 import { composerWorkspaceAttachment } from "@/composer/attachments/workspace";
 import { useAgentInputDraft } from "@/composer/draft/input-draft";
@@ -308,17 +308,6 @@ interface WorkspaceDraftAgentTabProps {
   isPaneFocused: boolean;
   onCreated: (snapshot: AgentSnapshotPayload) => void;
   onOpenWorkspaceFile: (request: WorkspaceFileOpenRequest) => void;
-  onOpenImportSheet?: () => void;
-}
-
-function resolveImportPillPress(
-  onOpenImportSheet: (() => void) | undefined,
-  isSubmitting: boolean,
-): (() => void) | null {
-  if (isSubmitting) {
-    return null;
-  }
-  return onOpenImportSheet ?? null;
 }
 
 export function WorkspaceDraftAgentTab({
@@ -330,7 +319,6 @@ export function WorkspaceDraftAgentTab({
   isPaneFocused,
   onCreated,
   onOpenWorkspaceFile,
-  onOpenImportSheet,
 }: WorkspaceDraftAgentTabProps) {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
@@ -640,10 +628,14 @@ export function WorkspaceDraftAgentTab({
     [insets.bottom, composerKeyboardStyle],
   );
 
+  // Daseo delta 149: the Composer is translated up over the keyboard without changing layout, so
+  // the welcome area above it gives up the same height; otherwise the Composer covers it.
+  const { shift: keyboardShift } = useKeyboardShift();
+  const configKeyboardStyle = useAnimatedStyle(() => ({ paddingBottom: keyboardShift.value }));
+
   const handleDropdownCloseFocus = useCallback(() => {
     focusInputRef.current?.();
   }, []);
-  const importPillPress = resolveImportPillPress(onOpenImportSheet, isSubmitting);
   const composerAgentControls = useMemo(
     () => ({
       ...composerState.agentControls,
@@ -669,29 +661,27 @@ export function WorkspaceDraftAgentTab({
             />
           </View>
         ) : (
-          <ScrollView style={styles.scrollView} contentContainerStyle={styles.configScrollContent}>
-            <View style={styles.configSection}>
-              <View style={styles.bannerInset}>
-                <LoginBanner serverId={serverId} />
-              </View>
-              {formErrorMessage ? (
-                <View style={styles.errorContainer}>
-                  <Text style={styles.errorText}>{formErrorMessage}</Text>
+          <ReanimatedAnimated.View style={[styles.scrollView, configKeyboardStyle]}>
+            <ScrollView
+              style={styles.scrollView}
+              contentContainerStyle={styles.configScrollContent}
+            >
+              <View style={styles.configSection}>
+                <View style={styles.bannerInset}>
+                  <LoginBanner serverId={serverId} />
                 </View>
-              ) : null}
-            </View>
-          </ScrollView>
+                {formErrorMessage ? (
+                  <View style={styles.errorContainer}>
+                    <Text style={styles.errorText}>{formErrorMessage}</Text>
+                  </View>
+                ) : null}
+              </View>
+            </ScrollView>
+          </ReanimatedAnimated.View>
         )}
       </View>
 
       <ReanimatedAnimated.View style={inputAreaWrapperStyle} onLayout={onInputAreaLayout}>
-        {importPillPress ? (
-          <View style={styles.importPillRow}>
-            <View style={styles.importPillContent}>
-              <ComposerImportPill onPress={importPillPress} />
-            </View>
-          </View>
-        ) : null}
         <Composer
           agentId={tabId}
           serverId={serverId}
@@ -757,17 +747,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   configSection: {
     gap: theme.spacing[3],
-  },
-  importPillRow: {
-    width: "100%",
-    paddingHorizontal: theme.spacing[4],
-    paddingTop: theme.spacing[3],
-    paddingBottom: theme.spacing[3],
-    alignItems: "center",
-  },
-  importPillContent: {
-    width: "100%",
-    flexDirection: "row",
   },
   errorContainer: {
     marginTop: theme.spacing[2],
