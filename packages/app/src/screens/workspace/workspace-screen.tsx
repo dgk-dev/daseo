@@ -4,7 +4,6 @@ import {
   memo,
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -90,6 +89,7 @@ import {
   workspaceTabTargetsEqual,
 } from "@/workspace-tabs/identity";
 import { useVisibleAgentIds } from "./visible-agent-ids";
+import { usePublishVisibleAgentIds } from "@/timeline/use-publish-visible-agent-ids";
 import {
   getHostRuntimeStore,
   useHostRuntimeClient,
@@ -2146,18 +2146,7 @@ function WorkspaceScreenContent({
     routeFocused: isRouteFocused,
     focusedPaneOnly: syncFocusedPaneOnly,
   });
-  useLayoutEffect(() => {
-    if (!persistenceKey || !viewedTimelineSync) {
-      return;
-    }
-    viewedTimelineSync.replaceVisibleAgentIds(persistenceKey, visibleAgentIds);
-  }, [persistenceKey, viewedTimelineSync, visibleAgentIds]);
-  useEffect(() => {
-    if (!persistenceKey || !viewedTimelineSync) {
-      return;
-    }
-    return () => viewedTimelineSync.replaceVisibleAgentIds(persistenceKey, []);
-  }, [persistenceKey, viewedTimelineSync]);
+  usePublishVisibleAgentIds(viewedTimelineSync, persistenceKey, visibleAgentIds);
   const setFocusedAgentId = useSessionStore((state) => state.setFocusedAgentId);
   const setFocusedTerminalId = useSessionStore((state) => state.setFocusedTerminalId);
   const focusedPaneAgentId = useMemo(() => {
@@ -2175,10 +2164,20 @@ function WorkspaceScreenContent({
     return target.terminalId;
   }, [focusedPaneTabState.activeTab]);
 
+  // What this screen instance last wrote to the server-keyed focus. Another instance (a remount
+  // in the same commit) may own the store value by the time this one cleans up.
+  const publishedFocusRef = useRef<{ agentId: string | null; terminalId: string | null }>({
+    agentId: null,
+    terminalId: null,
+  });
   useEffect(() => {
     if (!isRouteFocused) {
       return;
     }
+    publishedFocusRef.current = {
+      agentId: focusedPaneAgentId,
+      terminalId: focusedPaneTerminalId,
+    };
     setFocusedAgentId(normalizedServerId, focusedPaneAgentId);
     setFocusedTerminalId(normalizedServerId, focusedPaneTerminalId);
   }, [
@@ -2195,8 +2194,14 @@ function WorkspaceScreenContent({
       return;
     }
     return () => {
-      setFocusedAgentId(normalizedServerId, null);
-      setFocusedTerminalId(normalizedServerId, null);
+      const published = publishedFocusRef.current;
+      const session = useSessionStore.getState().sessions[normalizedServerId];
+      if (session?.focusedAgentId === published.agentId) {
+        setFocusedAgentId(normalizedServerId, null);
+      }
+      if (session?.focusedTerminalId === published.terminalId) {
+        setFocusedTerminalId(normalizedServerId, null);
+      }
     };
   }, [isRouteFocused, normalizedServerId, setFocusedAgentId, setFocusedTerminalId]);
 

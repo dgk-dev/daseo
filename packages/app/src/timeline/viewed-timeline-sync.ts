@@ -71,7 +71,7 @@ export interface ViewedTimelineSync extends ViewedTimelineUiBridge {
 
 const RETRY_DELAY_MS = 1_000;
 const MAX_RETRY_DELAY_MS = 30_000;
-const VIEWED_TIMELINE_HOT_AGENT_LIMIT = 5;
+export const VIEWED_TIMELINE_HOT_AGENT_LIMIT = 10;
 
 type CatchUpStatus = "running" | "complete" | "error";
 

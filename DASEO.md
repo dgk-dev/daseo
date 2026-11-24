@@ -3674,6 +3674,38 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
      - **Key files.** `packages/app/src/composer/draft/workspace-tab.tsx`,
        `packages/app/src/panels/agent-panel.tsx`; `composer/draft/import-pill.tsx` deleted.
 
+150. **An opened chat is always live after folding, unfolding, or resizing (phone and desktop)** —
+     the owner's report on 2026-11-24: opening a session sometimes showed an old screen that only
+     refreshed after switching to another session and back. Phone logs matched it to returns after
+     a window-size change: 6 of 10 such returns took more than 2 s (shown to acknowledged median
+     8.5 s, p90 11.3 s) against a 1.25 s median for returns without one. - **Root cause.** The app surface used different wrapper elements in the compact and the wide
+     layout (the agent-list gesture wrapper and the compact explorer host only when compact), so
+     crossing the compact width (fold 480 <-> 874 dp; desktop 720 px) remounted every routed
+     screen. The workspace screen published its visible agents under the workspace key, shared
+     by the old and the new instance: the new instance's layout effect published, then the old
+     instance's passive cleanup cleared the same key. The sync then had no visible source, and
+     the next disconnect reset the hot set to that empty set, so after reconnect the shown chat
+     was neither subscribed nor caught up until the visible set changed. - **Change.** Each workspace screen instance publishes under its own source id (workspace key
+     plus an instance token) and clears only that id on unmount, key change, or sync replacement;
+     ordinary re-renders publish the new ids without an empty step. The server-keyed focused
+     agent and terminal are cleared on cleanup only while the store still holds the value this
+     instance set. The surface (`AppSurfaceFrame`) renders the same element chain in both
+     layouts, with both compact gestures disabled when wide, so a layout flip no longer remounts
+     the routed screens. The hot set grows from 5 to 10 agents. A `[return-sync]
+visible-sources agents=<short ids> sources=<n>` line is logged on native when the published
+     sources change while the app is active. - **Edge cases.** The pinned sidebar still moves between the row (wide) and the surface
+     (compact) and remounts on a flip; it holds no routed content. On web a disabled gesture
+     detector restores the view's own `user-select` and `touch-action` and removes its pointer
+     listeners, so desktop text selection and scrolling are unchanged. Content corners are as
+     before: `both` when compact with chrome, the layout's content corners otherwise. - **Checks.** `packages/app/src/timeline/use-publish-visible-agent-ids.test.tsx` (remount
+     under another parent in one commit, two instances on one key, no empty step on re-render,
+     sync replacement), `packages/app/src/components/app-surface-frame.test.tsx` (routed content
+     keeps one mount across compact flips, gesture flags), `viewed-timeline-sync.test.ts` written
+     against `VIEWED_TIMELINE_HOT_AGENT_LIMIT`. - **Key files.** `packages/app/src/timeline/use-publish-visible-agent-ids.ts`,
+     `packages/app/src/components/app-surface-frame.tsx`, `packages/app/src/app/_layout.tsx`,
+     `packages/app/src/screens/workspace/workspace-screen.tsx`,
+     `packages/app/src/timeline/viewed-timeline-sync.ts`, `docs/timeline-sync.md`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

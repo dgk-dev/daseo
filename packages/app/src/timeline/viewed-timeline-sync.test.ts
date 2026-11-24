@@ -2,6 +2,7 @@ import { expect, test, vi } from "vitest";
 import type { ProjectedTimelineForwardFetchPlan } from "./timeline-sync-plan";
 import {
   createViewedTimelineSync,
+  VIEWED_TIMELINE_HOT_AGENT_LIMIT,
   type ViewedTimelineSync,
   type ViewedTimelineSyncTraceEvent,
 } from "./viewed-timeline-sync";
@@ -334,29 +335,24 @@ test("all acknowledged agents begin catch-up independently", async () => {
 
 test("an eviction during acknowledgement never catches up the stale hot set", async () => {
   const world = new TimelineWorld();
+  const agents = hotSetAgentIds(VIEWED_TIMELINE_HOT_AGENT_LIMIT + 1);
+  const staleVisible = agents.slice(0, VIEWED_TIMELINE_HOT_AGENT_LIMIT);
+  const newcomer = agents[VIEWED_TIMELINE_HOT_AGENT_LIMIT];
+  // The newcomer takes the slot of the hidden agent listed last.
+  const current = [...staleVisible.slice(0, -1), newcomer];
   world.sync.setConnected(true);
-  world.sync.replaceVisibleAgentIds("workspace", [
-    "agent-a",
-    "agent-b",
-    "agent-c",
-    "agent-d",
-    "agent-e",
-  ]);
+  world.sync.replaceVisibleAgentIds("workspace", staleVisible);
   const staleMembership = await world.nextMembership();
-  world.sync.replaceVisibleAgentIds("workspace", ["agent-f"]);
+  world.sync.replaceVisibleAgentIds("workspace", [newcomer]);
   staleMembership.succeed();
   const currentMembership = await world.nextMembership();
   currentMembership.succeed();
-  const currentCatchUps = await Promise.all(
-    ["agent-a", "agent-b", "agent-c", "agent-d", "agent-f"].map((agentId) =>
-      world.nextFetch(agentId),
-    ),
-  );
+  const currentCatchUps = await Promise.all(current.map((agentId) => world.nextFetch(agentId)));
   for (const catchUp of currentCatchUps) catchUp.respond({ hasNewer: false });
 
   expect({ stale: staleMembership.agentIds, current: currentMembership.agentIds }).toEqual({
-    stale: ["agent-a", "agent-b", "agent-c", "agent-d", "agent-e"],
-    current: ["agent-a", "agent-b", "agent-c", "agent-d", "agent-f"],
+    stale: staleVisible,
+    current,
   });
   world.expectNoPendingFetch();
 });
@@ -742,10 +738,18 @@ test("returning to a hot hidden agent stays live after inactivity", async () => 
   world.expectNoPendingFetch();
 });
 
+function hotSetAgentIds(count: number): string[] {
+  return Array.from({ length: count }, (_, index) => `agent-${String(index).padStart(2, "0")}`);
+}
+
 test("the hot set evicts the least-recent hidden agent and promotes revisited agents", async () => {
   const world = new TimelineWorld();
+  const agents = hotSetAgentIds(VIEWED_TIMELINE_HOT_AGENT_LIMIT + 1);
+  const filling = agents.slice(0, VIEWED_TIMELINE_HOT_AGENT_LIMIT);
+  const [oldest, revisited, secondOldest] = filling;
+  const newcomer = agents[VIEWED_TIMELINE_HOT_AGENT_LIMIT];
   world.sync.setConnected(true);
-  for (const agentId of ["agent-a", "agent-b", "agent-c", "agent-d", "agent-e"]) {
+  for (const agentId of filling) {
     world.sync.replaceVisibleAgentIds("workspace", [agentId]);
     const membership = await world.nextMembership();
     membership.succeed();
@@ -754,32 +758,32 @@ test("the hot set evicts the least-recent hidden agent and promotes revisited ag
     await vi.waitFor(() => expect(world.sync.getAgentTimelineStatus(agentId)).toBe("ready"));
   }
 
-  world.sync.replaceVisibleAgentIds("workspace", ["agent-b"]);
+  world.sync.replaceVisibleAgentIds("workspace", [revisited]);
   world.expectNoPendingMembership();
   world.expectNoPendingFetch();
 
-  world.sync.replaceVisibleAgentIds("workspace", ["agent-f"]);
+  world.sync.replaceVisibleAgentIds("workspace", [newcomer]);
   const eviction = await world.nextMembership();
   eviction.succeed();
-  const agentFCatchUp = await world.nextFetch("agent-f");
-  agentFCatchUp.respond({ hasNewer: false });
-  expect(eviction.agentIds).toEqual(["agent-b", "agent-c", "agent-d", "agent-e", "agent-f"]);
+  const newcomerCatchUp = await world.nextFetch(newcomer);
+  newcomerCatchUp.respond({ hasNewer: false });
+  expect(eviction.agentIds).toEqual(agents.filter((agentId) => agentId !== oldest));
 
-  world.sync.replaceVisibleAgentIds("workspace", ["agent-b"]);
+  world.sync.replaceVisibleAgentIds("workspace", [revisited]);
   world.expectNoPendingMembership();
   world.expectNoPendingFetch();
 
-  world.sync.replaceVisibleAgentIds("workspace", ["agent-a"]);
+  world.sync.replaceVisibleAgentIds("workspace", [oldest]);
   const restoreEvicted = await world.nextMembership();
   restoreEvicted.succeed();
-  const agentACatchUp = await world.nextFetch("agent-a");
-  agentACatchUp.respond({ hasNewer: false });
-  expect(restoreEvicted.agentIds).toEqual(["agent-a", "agent-b", "agent-d", "agent-e", "agent-f"]);
+  const oldestCatchUp = await world.nextFetch(oldest);
+  oldestCatchUp.respond({ hasNewer: false });
+  expect(restoreEvicted.agentIds).toEqual(agents.filter((agentId) => agentId !== secondOldest));
 });
 
 test("visible agents are never evicted when they exceed the hot-set limit", async () => {
   const world = new TimelineWorld();
-  const visible = ["agent-a", "agent-b", "agent-c", "agent-d", "agent-e", "agent-f"];
+  const visible = hotSetAgentIds(VIEWED_TIMELINE_HOT_AGENT_LIMIT + 1);
   world.sync.setConnected(true);
   world.sync.replaceVisibleAgentIds("workspace", visible);
   const membership = await world.nextMembership();
@@ -789,10 +793,11 @@ test("visible agents are never evicted when they exceed the hot-set limit", asyn
 
   expect(membership.agentIds).toEqual(visible);
 
-  world.sync.replaceVisibleAgentIds("workspace", visible.slice(0, 5));
+  const kept = visible.slice(0, VIEWED_TIMELINE_HOT_AGENT_LIMIT);
+  world.sync.replaceVisibleAgentIds("workspace", kept);
   const hiddenEviction = await world.nextMembership();
   hiddenEviction.succeed();
-  expect(hiddenEviction.agentIds).toEqual(visible.slice(0, 5));
+  expect(hiddenEviction.agentIds).toEqual(kept);
 });
 
 test("disconnect clears hidden hot agents before reconnecting the visible set", async () => {

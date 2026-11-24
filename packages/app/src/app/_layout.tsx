@@ -17,7 +17,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { AppState, useWindowDimensions, View } from "react-native";
-import { GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { StyleSheet, UnistylesRuntime, useUnistyles } from "react-native-unistyles";
@@ -37,7 +37,7 @@ import { LeftSidebar } from "@/components/left-sidebar";
 import { WindowSidebarMenuToggle } from "@/components/headers/menu-header";
 import { SidebarModelProvider } from "@/components/sidebar/sidebar-model";
 import { WorkspacePinShortcutHandler } from "@/components/workspace-pin-shortcut-handler";
-import { CompactExplorerSidebarHost } from "@/components/compact-explorer-sidebar-host";
+import { AppSurfaceFrame } from "@/components/app-surface-frame";
 import { ProviderSettingsHost } from "@/components/provider-settings-host";
 import { RootErrorBoundary } from "@/components/root-error-boundary";
 import { installClientDiagnostics } from "@/diagnostics/client-diagnostics";
@@ -98,7 +98,6 @@ import { useCompactWebViewportZoomLock } from "@/hooks/use-compact-web-viewport-
 import { useOpenProject } from "@/hooks/use-open-project";
 import { CHAT_TEXT_SCALE_STEP, normalizeChatTextScale, useAppSettings } from "@/hooks/use-settings";
 import { useStableEvent } from "@/hooks/use-stable-event";
-import { useOpenAgentListGesture } from "@/mobile-panels/gestures";
 import { MobilePanelsProvider } from "@/mobile-panels/provider";
 import { I18nProvider } from "@/i18n/provider";
 import { keyboardActionDispatcher } from "@/keyboard/keyboard-action-dispatcher";
@@ -481,9 +480,7 @@ function QueryProvider({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
 }
 
-const rowStyle = { flex: 1, flexDirection: "row" } as const;
 const flexStyle = { flex: 1 } as const;
-const MOBILE_WEB_GESTURE_TOUCH_ACTION = isWeb ? "auto" : "pan-y";
 
 interface AppContainerProps {
   children: ReactNode;
@@ -597,77 +594,66 @@ function AppContainer({ children, chromeEnabled: chromeEnabledOverride }: AppCon
     hasTopLeftWindowControls,
     sidebarControlsEnabled: chromeEnabled && !isWorkspaceFocusModeEnabled,
   });
-  const sidebarChrome = (
-    <SidebarChrome
-      mounted={isCompactLayout ? chromeEnabled : desktopSidebarMounted}
-      visible={isCompactLayout ? chromeEnabled : desktopSidebarVisible}
-      keyboardShortcutsEnabled={keyboardShortcutsEnabled}
-    />
+  const sidebarMounted = isCompactLayout ? chromeEnabled : desktopSidebarMounted;
+  const sidebarVisible = isCompactLayout ? chromeEnabled : desktopSidebarVisible;
+  const sidebarChrome = useMemo(
+    () => (
+      <SidebarChrome
+        mounted={sidebarMounted}
+        visible={sidebarVisible}
+        keyboardShortcutsEnabled={keyboardShortcutsEnabled}
+      />
+    ),
+    [keyboardShortcutsEnabled, sidebarMounted, sidebarVisible],
   );
-  const workspaceChrome = (
-    <View style={rowStyle}>
-      {!isCompactLayout ? (
-        <WindowChromeRegion corners={appChromeLayout.sidebarCorners}>
-          {sidebarChrome}
-        </WindowChromeRegion>
-      ) : null}
-      {isCompactLayout ? (
-        <CompactExplorerSidebarHost enabled={chromeEnabled}>
-          <WindowChromeRegion corners={chromeEnabled ? "both" : appChromeLayout.contentCorners}>
-            <View style={flexStyle}>{children}</View>
-          </WindowChromeRegion>
-        </CompactExplorerSidebarHost>
-      ) : (
-        <WindowChromeRegion corners={appChromeLayout.contentCorners}>
-          <View style={flexStyle}>{children}</View>
-        </WindowChromeRegion>
-      )}
-    </View>
+  return (
+    <CommandCenterProvider>
+      <AppSurfaceFrame
+        isCompactLayout={isCompactLayout}
+        chromeEnabled={chromeEnabled}
+        sidebar={sidebarChrome}
+        sidebarCorners={appChromeLayout.sidebarCorners}
+        contentCorners={appChromeLayout.contentCorners}
+        surfaceStyle={layoutStyles.surfaceFill}
+        overlays={
+          <>
+            {!isCompactLayout && appChromeLayout.sidebarToggleOwner === "window" ? (
+              <WindowChromeRegion corners="top-left">
+                <WindowChromeSafeArea
+                  placement="inline"
+                  horizontalPadding={WINDOW_SIDEBAR_TOGGLE_HORIZONTAL_PADDING}
+                  pointerEvents="box-none"
+                  style={layoutStyles.windowSidebarToggle}
+                >
+                  <WindowSidebarMenuToggle />
+                </WindowChromeSafeArea>
+              </WindowChromeRegion>
+            ) : null}
+            <FloatingPanelPortalHost />
+            {isCompactLayout ? sidebarChrome : null}
+            <DownloadToast />
+            <RosettaCalloutSource />
+            <UpdateCalloutSource />
+            <WorktreeSetupCalloutSource />
+            <CommandCenterRootActions />
+            <CommandCenterWorkspaceActions />
+            <DiscardEmptyWorkspacesOnLeave />
+            <WorkspacePinShortcutHandler />
+            <CommandCenter />
+            <AddProjectFlowHost />
+            <HostChooserModal />
+            <ProviderSettingsHost />
+            <WorkspaceSetupDialog />
+            <KeyboardShortcutsDialog />
+            <AppDiagnosticHost />
+            <QuittingOverlay />
+          </>
+        }
+      >
+        {children}
+      </AppSurfaceFrame>
+    </CommandCenterProvider>
   );
-
-  const surface = (
-    <View style={layoutStyles.surfaceFill}>
-      {workspaceChrome}
-      {!isCompactLayout && appChromeLayout.sidebarToggleOwner === "window" ? (
-        <WindowChromeRegion corners="top-left">
-          <WindowChromeSafeArea
-            placement="inline"
-            horizontalPadding={WINDOW_SIDEBAR_TOGGLE_HORIZONTAL_PADDING}
-            pointerEvents="box-none"
-            style={layoutStyles.windowSidebarToggle}
-          >
-            <WindowSidebarMenuToggle />
-          </WindowChromeSafeArea>
-        </WindowChromeRegion>
-      ) : null}
-      <FloatingPanelPortalHost />
-      {isCompactLayout ? sidebarChrome : null}
-      <DownloadToast />
-      <RosettaCalloutSource />
-      <UpdateCalloutSource />
-      <WorktreeSetupCalloutSource />
-      <CommandCenterRootActions />
-      <CommandCenterWorkspaceActions />
-      <DiscardEmptyWorkspacesOnLeave />
-      <WorkspacePinShortcutHandler />
-      <CommandCenter />
-      <AddProjectFlowHost />
-      <HostChooserModal />
-      <ProviderSettingsHost />
-      <WorkspaceSetupDialog />
-      <KeyboardShortcutsDialog />
-      <AppDiagnosticHost />
-      <QuittingOverlay />
-    </View>
-  );
-
-  const content = isCompactLayout ? (
-    <MobileGestureWrapper chromeEnabled={chromeEnabled}>{surface}</MobileGestureWrapper>
-  ) : (
-    surface
-  );
-
-  return <CommandCenterProvider>{content}</CommandCenterProvider>;
 }
 
 function SidebarChrome({
@@ -691,24 +677,6 @@ function SidebarChrome({
       <SidebarOrderSyncSubscriber />
       <ComposerDraftSyncSubscriber />
     </SidebarModelProvider>
-  );
-}
-
-function MobileGestureWrapper({
-  children,
-  chromeEnabled,
-}: {
-  children: ReactNode;
-  chromeEnabled: boolean;
-}) {
-  const openGesture = useOpenAgentListGesture(chromeEnabled);
-
-  return (
-    <GestureDetector gesture={openGesture} touchAction={MOBILE_WEB_GESTURE_TOUCH_ACTION}>
-      <View collapsable={false} style={layoutStyles.surfaceFill}>
-        {children}
-      </View>
-    </GestureDetector>
   );
 }
 

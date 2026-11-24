@@ -96,7 +96,7 @@ Removing the host from the registry is the destructive boundary: it stops the ru
 session and host-scoped setup state together.
 
 The durable replica cache keeps up to 20 recently focused agent timelines per host, separate from
-the five-agent hot subscription limit. Each chat has its own storage value; a timeline-only update
+the ten-agent hot subscription limit. Each chat has its own storage value; a timeline-only update
 must not rewrite the other cached chats or the directory index. Restore applies the focused chat
 first and hydrates the others in the background without replacing newer network or live state.
 Version 8 migrates by writing chat values before publishing the new index; evicted values and
@@ -130,8 +130,11 @@ replica cache.
 The app chooses one delivery policy from `server_info.features.selectiveAgentTimeline`:
 
 - Selective daemons receive every agent visible in any pane plus the most recently viewed hidden
-  agents, up to five subscribed agents. Visible agents always win: if more than five are visible,
-  they all remain subscribed and no hidden agent does. Switching and app backgrounding preserve
+  agents, up to ten subscribed agents. Visible agents always win: if more than ten are visible,
+  they all remain subscribed and no hidden agent does. The limit stays bounded because a catch-up
+  resumes the agent's process on the host. Each mounted screen publishes its visible agents under
+  its own source id and clears only that id: a screen remounting in one commit runs the new
+  instance's publish before the old instance's cleanup, so a shared id would empty the visible set. Switching and app backgrounding preserve
   this connection-scoped hot set, so returning to an agent still covered by it needs no catch-up.
   Losing window keyboard focus does not make a selected pane invisible. Disconnecting clears hidden
   hot agents; reconnect restores the currently visible set before authoritative catch-up.
