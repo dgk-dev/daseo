@@ -10,8 +10,11 @@ import type { WorkspaceTabDescriptor } from "@/screens/workspace/workspace-tabs-
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
 import { getStatusDotColor } from "@/utils/status-dot-color";
-import { StatusRing } from "@/components/status-ring";
-import { STATUS_RING_FRAME_SIZE, getStatusRingOffset } from "@/components/status-ring/geometry";
+import {
+  getRunningSpinnerOffset,
+  RUNNING_SPINNER_FRAME_SIZE,
+  RunningSpinner,
+} from "@/components/braille-spinner/running";
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
 import {
   STATUS_INDICATOR_ALERT_SIZE,
@@ -117,7 +120,7 @@ interface WorkspaceTabIconProps {
   size?: number;
   statusDotBorderColor?: string;
   /**
-   * The surface this icon is sitting on, so the running ring can knock out of it. This icon is
+   * The surface this icon is sitting on, so the running spinner can knock out of it. This icon is
    * shared by the desktop tab strip, the tab switcher trigger, the split drag chip and the
    * subagents track, which are on different surfaces and some of which change surface on hover —
    * it cannot work the colour out for itself.
@@ -168,11 +171,11 @@ export function WorkspaceTabIcon({
       <Icon size={size} color={iconColor} />
       {isRunning ? (
         <View
-          style={styles.statusRing}
+          style={styles.runningSpinner}
           accessibilityRole="progressbar"
           accessibilityLabel="Agent running"
         >
-          <StatusRing backdrop={backdrop} />
+          <RunningSpinner backdrop={backdrop} />
         </View>
       ) : null}
       {statusDotColor ? <View style={statusDotStyle} /> : null}
@@ -220,14 +223,14 @@ interface WorkspaceTabStatusMarkProps {
   /**
    * The surface the mark knocks out of. Null where it sits on its own flat background (an idle
    * tab, a switcher row). A tab drawn in reverse video passes the bar's surface so the mark stays
-   * a dark hole in the accent fill: the running ring is the accent colour in the Daseo theme and
+   * a dark hole in the accent fill: the running spinner is the accent colour in the Daseo theme and
    * would vanish on the accent otherwise.
    */
   backdrop: SurfaceBackdrop | null;
 }
 
 /**
- * The agent's state in front of a tab title (Daseo delta 112): the running ring, the failed or
+ * The agent's state in front of a tab title (Daseo delta 112): the running spinner, the failed or
  * attention dot, or the needs-input alert. Renders nothing for an idle or finished tab, so the
  * title starts right after the index. Tabs carry no per-kind icon any more; the subagents track
  * still draws `WorkspaceTabIcon`.
@@ -254,7 +257,7 @@ export function WorkspaceTabStatusMark({
         accessibilityLabel="Agent running"
         testID="workspace-tab-status-running"
       >
-        <StatusRing backdrop={backdrop} />
+        <RunningSpinner backdrop={backdrop} />
       </View>
     );
   }
@@ -355,10 +358,10 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.full,
     borderWidth: 1,
   },
-  statusRing: {
+  runningSpinner: {
     position: "absolute",
-    right: getStatusRingOffset(DEFAULT_STATUS_DOT_OFFSET, STATUS_INDICATOR_DOT_SIZE),
-    bottom: getStatusRingOffset(DEFAULT_STATUS_DOT_OFFSET, STATUS_INDICATOR_DOT_SIZE),
+    right: getRunningSpinnerOffset(DEFAULT_STATUS_DOT_OFFSET, STATUS_INDICATOR_DOT_SIZE),
+    bottom: getRunningSpinnerOffset(DEFAULT_STATUS_DOT_OFFSET, STATUS_INDICATOR_DOT_SIZE),
   },
   statusDotBorderDefault: {
     borderColor: theme.colors.surface0,
@@ -413,8 +416,8 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundExtraMuted,
   },
   statusMark: {
-    width: STATUS_RING_FRAME_SIZE,
-    height: STATUS_RING_FRAME_SIZE,
+    width: RUNNING_SPINNER_FRAME_SIZE,
+    height: RUNNING_SPINNER_FRAME_SIZE,
     flexShrink: 0,
     alignItems: "center",
     justifyContent: "center",

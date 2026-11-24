@@ -3706,6 +3706,54 @@ visible-sources agents=<short ids> sources=<n>` line is logged on native when th
      `packages/app/src/screens/workspace/workspace-screen.tsx`,
      `packages/app/src/timeline/viewed-timeline-sync.ts`, `docs/timeline-sync.md`.
 
+151. **One braille spinner for every loading and running motion** — the owner's request on
+     2026-11-21 ("not terminal-like") and his scope on 2026-11-25 ("이쁜것보다는 리소스 최적화가 더
+     중요함 점자 로딩도 ssot화하고 daseo 전체에서"): the rotating status ring, the six-dot synced
+     loader and the platform activity indicator are replaced by the subagents track's braille
+     spinner (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`, 100 ms a frame, static `⠿` under reduce motion or while hidden).
+     Resource cost comes before looks. This amends delta 142's "The sidebar status loader and ring
+     are untouched" and supersedes the ring of deltas 87 and 88.
+     - **Where.** Sidebar workspace rows (running and loading), the project row's flat status
+       glyph and its corner badge, the tab status mark and the tab agent icon badge (the spinner
+       in the same knockout frame, now square like the rest of the theme), subagents track rows,
+       the track header (`[⠹] Running 1/3  2min 13s`, spinner in the accent between `promptPath`
+       brackets; the done line stays `[+] 3 subagents · done`; the header's accessible name drops
+       the moving glyph: `Running 1/3`), the turn footer, and every `LoadingSpinner` (47 files;
+       the box keeps the activity indicator's 20/36/n footprint and `progressbar` role). Left as
+       they are: the block cursor (delta 73), the context-window meter (a real percentage), the
+       volume meter (an audio level) and the startup shimmer (a skeleton). No lucide loader icon
+       was in use.
+     - **One source.** `components/braille-spinner/`: one frame table and period
+       (`frames.ts`), one component with platform files, `RunningSpinner` for "an agent is
+       running" in the running colour, and `LoadingSpinner` on top of it. Web and iOS share one JS
+       timer (`clock.ts`, generalised from the track clock): 100 ms while a spinner is subscribed,
+       1 s when only elapsed times are, none without subscribers or while the document is hidden.
+       On web the timer writes the frame straight into each spinner's text node (no React render
+       per tick). Android draws the 2 x 3 dots natively (`modules/daseo-braille-spinner`, replacing
+       `daseo-status-ring`): D2Coding has no braille block. One process-wide ticker on the main
+       looper wakes on 100 ms boundaries of `uptimeMillis` only while a spinner is spinning and
+       visible (JS `spinning` = retained panel active and no reduce motion, plus view, ancestor
+       and window visibility and attachment) and invalidates just those views; with none it posts
+       nothing. No Android spinner runs on the JS clock. `native-contract.test.ts` pins the Kotlin
+       frame masks and period to `frames.ts`. Every spinner on a platform shows the same frame.
+     - **Removed:** `components/status-ring/` (ring, Reanimated and WAAPI clocks, the
+       AnimatedVectorDrawable), `synced-loader*`, `utils/status-loader.ts`, the
+       `data-daseo-round` exemption in `terminal-chrome.web.ts`.
+     - **Measured 2026-11-25, web** (Playwright Chromium at 1440 x 1000, 6 running sidebar rows,
+       an expanded track with one running row, 30 s of `Performance.getMetrics`; ring build →
+       spinner build, two runs): task time 1.03 s → 0.86 / 1.09 s, script time 0.40 s →
+       0.19 / 0.26 s, layouts 302 → 301 / 301, style recalculations 1,232 → 1,085 / 1,051. The
+       spinner writes 249 text nodes in 3 s (8 spinners at 10 Hz) and 0 in 10 s with the document
+       hidden (script 0.04 s).
+     - **Measured 2026-11-25, phone (before only).** On the installed 0.5.160, cover screen,
+       sidebar open with one running ring: process 30.4 CPU-s/min, RenderThread 27.1, main 1.9,
+       7,642 frames with 0 janky. The after run on the profileable build of this change did not
+       happen: the phone was in use and then in a pocket (cover display off during minute 2).
+     - **Key files:** `packages/app/src/components/braille-spinner/`,
+       `packages/app/modules/daseo-braille-spinner/`, `packages/app/src/components/ui/loading-spinner.tsx`,
+       tests `clock.test.ts`, `frames.test.ts`, `native-contract.test.ts`,
+       `subagents/track-presentation.test.ts`, `agent-stream/turn-footer.test.tsx`.
+
 ## Local reliability contracts
 
 - The generated WS outbound validator must accept every `AgentAttachmentSchema` branch, including

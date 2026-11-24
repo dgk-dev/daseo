@@ -83,7 +83,6 @@ vi.mock("react-native", () => ({
       },
       typeof children === "function" ? children({ pressed: false, hovered: false }) : children,
     ),
-  ActivityIndicator: () => React.createElement("span", { "data-testid": "activity-indicator" }),
 }));
 
 vi.mock("react-native-unistyles", () => ({

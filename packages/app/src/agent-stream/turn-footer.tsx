@@ -18,12 +18,12 @@ import {
 } from "@/components/message";
 import type { TurnFooterHost } from "./layout";
 import { AssistantForkMenu } from "@/components/assistant-fork-menu";
-import { SyncedLoader } from "@/components/synced-loader";
+import { BrailleSpinner } from "@/components/braille-spinner";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { useCollapsedWork } from "./collapsed-work-context";
 import type { ActiveCompaction } from "./compaction-presentation";
 
-const ThemedSyncedLoader = withUnistyles(SyncedLoader);
+const ThemedBrailleSpinner = withUnistyles(BrailleSpinner);
 const workingIndicatorColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 
 export type TurnContentStrategy = StreamStrategy;
@@ -169,7 +169,11 @@ const WorkingIndicator = memo(function WorkingIndicator({
   return (
     <View style={stylesheet.turnFooterContent}>
       <View style={stylesheet.workingLoader}>
-        <ThemedSyncedLoader size={14} uniProps={workingIndicatorColorMapping} />
+        <ThemedBrailleSpinner
+          size={14}
+          uniProps={workingIndicatorColorMapping}
+          testID="turn-working-spinner"
+        />
       </View>
       {activeCompaction ? (
         <Text style={stylesheet.compactingLabel} testID="turn-compacting-label">

@@ -2,7 +2,6 @@ import { useCallback, useMemo, useState, type ReactElement } from "react";
 import { Pressable, ScrollView, Text, View, type PressableStateCallbackType } from "react-native";
 import { useTranslation } from "react-i18next";
 import { Archive, Unlink } from "lucide-react-native";
-import { useReducedMotion } from "react-native-reanimated";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { formatTerminalDuration } from "@/agent-stream/terminal-duration";
 import { useRetainedPanelActive } from "@/components/retained-panel";
@@ -12,7 +11,8 @@ import { isNative } from "@/constants/platform";
 import type { Theme } from "@/styles/theme";
 import type { SubagentRow } from "./select";
 import type { ArchiveFinishedStatus } from "./use-archive-finished";
-import { useTrackNow, useTrackSpinnerFrame } from "./track-clock";
+import { BrailleSpinner } from "@/components/braille-spinner";
+import { useClockNow } from "@/components/braille-spinner/clock";
 import {
   buildSubagentRowPresentationData,
   buildTrackHeader,
@@ -20,7 +20,6 @@ import {
   formatTrackHeaderText,
   resolveSubagentRowDurationMs,
   resolveSubagentRowState,
-  SUBAGENT_SPINNER_FRAMES,
   SUBAGENT_STATE_GLYPH,
   SUBAGENT_STATE_WORD,
   summarizeSubagentTrack,
@@ -31,6 +30,16 @@ import {
 
 const ThemedArchive = withUnistyles(Archive);
 const ThemedUnlink = withUnistyles(Unlink);
+
+// The running spinners: the row's in the row glyph's size, the header's in the header's size.
+const RowSpinner = withUnistyles(BrailleSpinner, (theme) => ({
+  color: theme.colors.accent,
+  size: theme.fontSize.sm,
+}));
+const HeaderSpinner = withUnistyles(BrailleSpinner, (theme) => ({
+  color: theme.colors.accent,
+  size: theme.fontSize.xs,
+}));
 
 const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const foregroundMutedColorMapping = (theme: Theme) => ({
@@ -57,6 +66,7 @@ function headerToggleStyle({
 }
 
 const HEADER_TONE_STYLE = {
+  spinner: "headerPrompt",
   prompt: "headerPrompt",
   strong: "headerStrong",
   muted: "headerMuted",
@@ -72,56 +82,54 @@ const STATE_STYLE = {
   canceled: "stateMuted",
 } as const satisfies Record<SubagentRowState, string>;
 
+// The running row's cell is the spinner, so only the still states have a glyph style.
 const GLYPH_STYLE = {
-  running: "glyphRunning",
   waiting: "glyphWaiting",
   done: "glyphDone",
   error: "glyphError",
   canceled: "glyphMuted",
-} as const satisfies Record<SubagentRowState, string>;
+} as const satisfies Record<Exclude<SubagentRowState, "running">, string>;
 
 /**
- * `[+] Running 1/3  2min 13s` while anything runs, a muted `[+] 3 subagents · done` otherwise.
- * Only this text re-renders on the shared clock's second; the track around it does not.
+ * `[⠹] Running 1/3  2min 13s` while anything runs, a muted `[+] 3 subagents · done` otherwise.
+ * Only this label re-renders on the shared clock's second; the track around it does not, and the
+ * spinner moves on its own (components/braille-spinner).
  */
 function TrackHeaderLabel({ summary }: { summary: SubagentTrackSummary }): ReactElement {
   const panelActive = useRetainedPanelActive();
   const startedAt = summary.oldestRunningStartedAt;
-  const now = useTrackNow(panelActive && startedAt !== null);
+  const now = useClockNow(panelActive && startedAt !== null);
   const elapsedLabel =
     startedAt === null ? null : formatTerminalDuration(Math.max(0, now - startedAt));
   const segments = buildTrackHeader(summary, elapsedLabel);
+  const [first, ...rest] = segments;
+  const spinnerFirst = first?.tone === "spinner";
+  const textSegments = spinnerFirst ? rest : segments;
   return (
-    <Text style={styles.headerLabel} numberOfLines={1} testID="subagents-track-header-label">
-      {segments.map((segment) => (
-        <Text key={segment.tone + segment.text} style={styles[HEADER_TONE_STYLE[segment.tone]]}>
-          {segment.text}
-        </Text>
-      ))}
-    </Text>
+    <View style={styles.headerLabelRow} testID="subagents-track-header-label">
+      {spinnerFirst ? (
+        <>
+          <Text style={styles.headerPrompt} selectable={false}>
+            [
+          </Text>
+          <HeaderSpinner />
+        </>
+      ) : null}
+      <Text style={styles.headerLabel} numberOfLines={1}>
+        {/* The closing bracket shares the text run, so the space after it does not collapse. */}
+        {spinnerFirst ? <Text style={styles.headerPrompt}>]</Text> : null}
+        {textSegments.map((segment) => (
+          <Text key={segment.tone + segment.text} style={styles[HEADER_TONE_STYLE[segment.tone]]}>
+            {segment.text}
+          </Text>
+        ))}
+      </Text>
+    </View>
   );
 }
 
-/** The leading cell: a braille spinner while the row runs, the state's glyph otherwise. */
+/** The leading cell: the braille spinner while the row runs, the state's glyph otherwise. */
 function SubagentStateGlyph({ state }: { state: SubagentRowState }): ReactElement {
-  const reduceMotion = useReducedMotion();
-  const panelActive = useRetainedPanelActive();
-  const animate = state === "running" && !reduceMotion && panelActive;
-  const frame = useTrackSpinnerFrame(animate);
-  const glyph = animate
-    ? SUBAGENT_SPINNER_FRAMES[frame % SUBAGENT_SPINNER_FRAMES.length]
-    : SUBAGENT_STATE_GLYPH[state];
-  const text = (
-    <Text
-      style={styles[GLYPH_STYLE[state]]}
-      selectable={false}
-      // The cell (running) or the state word next to it carries the meaning.
-      aria-hidden
-      testID={`subagents-track-glyph-${state}`}
-    >
-      {glyph}
-    </Text>
-  );
   if (state === "running") {
     // The same role and name the row's loader had before the glyph replaced it.
     return (
@@ -130,11 +138,23 @@ function SubagentStateGlyph({ state }: { state: SubagentRowState }): ReactElemen
         accessibilityRole="progressbar"
         accessibilityLabel="Agent running"
       >
-        {text}
+        <RowSpinner testID="subagents-track-glyph-running" />
       </View>
     );
   }
-  return <View style={styles.glyphCell}>{text}</View>;
+  return (
+    <View style={styles.glyphCell}>
+      <Text
+        style={styles[GLYPH_STYLE[state]]}
+        selectable={false}
+        // The state word next to it carries the meaning.
+        aria-hidden
+        testID={`subagents-track-glyph-${state}`}
+      >
+        {SUBAGENT_STATE_GLYPH[state]}
+      </Text>
+    </View>
+  );
 }
 
 /** Live elapsed time while the row works, its total once it ended; nothing without real times. */
@@ -147,7 +167,7 @@ function SubagentRowTime({
 }): ReactElement | null {
   const panelActive = useRetainedPanelActive();
   const live = state === "running" || state === "waiting";
-  const now = useTrackNow(live && panelActive);
+  const now = useClockNow(live && panelActive);
   const durationMs = resolveSubagentRowDurationMs(row, now);
   if (durationMs === null) return null;
   return (
@@ -502,7 +522,13 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomWidth: theme.borderWidth[1],
     borderBottomColor: theme.colors.border,
   },
-  // Sketch option C (docker compose): `[+] Running 1/3  2min 13s`, machine text in the mono font.
+  headerLabelRow: {
+    flexShrink: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  // Sketch option C (docker compose): `[⠹] Running 1/3  2min 13s`, machine text in the mono font.
   headerLabel: {
     flexShrink: 1,
     minWidth: 0,
@@ -511,6 +537,8 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
   },
   headerPrompt: {
+    fontSize: theme.fontSize.xs,
+    fontFamily: theme.fontFamily.mono,
     color: theme.colors.promptPath,
   },
   headerStrong: {
@@ -567,11 +595,6 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
     flexShrink: 0,
-  },
-  glyphRunning: {
-    fontFamily: theme.fontFamily.mono,
-    fontSize: theme.fontSize.sm,
-    color: theme.colors.accent,
   },
   glyphDone: {
     fontFamily: theme.fontFamily.mono,

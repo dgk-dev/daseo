@@ -21,8 +21,7 @@ import {
   STATUS_INDICATOR_DOT_SIZE,
   STATUS_INDICATOR_FILLED_DOT_SIZE,
 } from "@/utils/status-indicator-geometry";
-import { shouldRenderSyncedStatusLoader } from "@/utils/status-loader";
-import { StatusRing } from "@/components/status-ring";
+import { RunningSpinner } from "@/components/braille-spinner/running";
 import { resolveSidebarWorkspacePrimaryLabel } from "@/components/sidebar/sidebar-workspace-title";
 import {
   SidebarSelectionPointer,
@@ -227,22 +226,19 @@ function WorkspaceStatusIndicator({
   loading?: boolean;
   reserveIdleSpace?: boolean;
 }) {
-  // Busy is the only status that moves, and it is the ring rather than a dot for the same
-  // reason it is a dot elsewhere: every status in the sidebar sits in this one slot, so busy
-  // has to fill it without displacing anything. A row starting up and a row working are both
-  // busy, so they share the ring and differ only in testID.
-  if (loading) {
+  // Busy is the only status that moves: the braille spinner, the one running motion in the app.
+  // Every status in the sidebar sits in this one slot, so busy fills it without displacing
+  // anything. A row starting up and a row working are both busy, so they share the spinner and
+  // differ only in testID.
+  if (loading || bucket === "running") {
     return (
-      <View style={styles.workspaceStatusDot} testID="workspace-status-indicator-loading">
-        <StatusRing />
-      </View>
-    );
-  }
-
-  if (shouldRenderSyncedStatusLoader({ bucket })) {
-    return (
-      <View style={styles.workspaceStatusDot} testID="workspace-status-indicator-running">
-        <StatusRing />
+      <View
+        style={styles.workspaceStatusDot}
+        testID={
+          loading ? "workspace-status-indicator-loading" : "workspace-status-indicator-running"
+        }
+      >
+        <RunningSpinner />
       </View>
     );
   }

@@ -1,4 +1,5 @@
 import { isAgentWaitingInBackground } from "@getpaseo/protocol/agent-state-bucket";
+import { BRAILLE_SPINNER_STATIC } from "@/components/braille-spinner/frames";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { deriveSidebarStateBucket } from "@/utils/sidebar-agent-state";
 import type { SubagentRow } from "./select";
@@ -76,16 +77,14 @@ export const SUBAGENT_STATE_WORD: Record<SubagentRowState, string> = {
   canceled: "Canceled",
 };
 
-/** The static glyph of a state; a running row animates `SUBAGENT_SPINNER_FRAMES` instead. */
+/** The static glyph of a state; a running row shows the braille spinner instead. */
 export const SUBAGENT_STATE_GLYPH: Record<SubagentRowState, string> = {
-  running: "⠿",
+  running: BRAILLE_SPINNER_STATIC,
   waiting: "?",
   done: "✔",
   error: "✘",
   canceled: "-",
 };
-
-export const SUBAGENT_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 
 /** A row's time: live since it was created while it works, then the total up to its end. */
 export function resolveSubagentRowDurationMs(row: SubagentRow, nowMs: number): number | null {
@@ -138,7 +137,8 @@ export function summarizeSubagentTrack(rows: readonly SubagentRow[]): SubagentTr
   return summary;
 }
 
-export type TrackHeaderTone = "prompt" | "strong" | "muted" | "warning" | "destructive";
+/** `spinner` is the bracketed braille spinner (`[⠹]`); its text is the static form. */
+export type TrackHeaderTone = "spinner" | "prompt" | "strong" | "muted" | "warning" | "destructive";
 
 export interface TrackHeaderSegment {
   text: string;
@@ -146,8 +146,9 @@ export interface TrackHeaderSegment {
 }
 
 /**
- * The header as coloured pieces. While anything runs: `[+] Running 1/3  2min 13s`. Otherwise a
- * muted `[+] 3 subagents · done`, with rows that wait on the user or failed counted after it.
+ * The header as coloured pieces. While anything runs: `[⠹] Running 1/3  2min 13s`, the spinner
+ * between the brackets. Otherwise a muted `[+] 3 subagents · done`, with rows that wait on the
+ * user or failed counted after it.
  */
 export function buildTrackHeader(
   summary: SubagentTrackSummary,
@@ -155,7 +156,7 @@ export function buildTrackHeader(
 ): TrackHeaderSegment[] {
   if (summary.running > 0) {
     const segments: TrackHeaderSegment[] = [
-      { text: "[+]", tone: "prompt" },
+      { text: `[${BRAILLE_SPINNER_STATIC}]`, tone: "spinner" },
       { text: ` Running ${summary.running}/${summary.total}`, tone: "strong" },
     ];
     if (elapsedLabel) {
@@ -176,8 +177,13 @@ export function buildTrackHeader(
   return segments;
 }
 
+/** The header as plain text for its accessible name; the moving spinner is left out. */
 export function formatTrackHeaderText(segments: readonly TrackHeaderSegment[]): string {
-  return segments.map((segment) => segment.text).join("");
+  return segments
+    .filter((segment) => segment.tone !== "spinner")
+    .map((segment) => segment.text)
+    .join("")
+    .trimStart();
 }
 
 function isSubagentWaitingInBackground(row: SubagentRow): boolean {

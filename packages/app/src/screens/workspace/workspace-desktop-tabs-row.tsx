@@ -69,7 +69,7 @@ import {
 } from "@/screens/workspace/workspace-tab-presentation";
 import { HINT_LINE_CARET, HintWord } from "@/composer/hint-line";
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
-import { STATUS_RING_FRAME_SIZE } from "@/components/status-ring/geometry";
+import { RUNNING_SPINNER_FRAME_SIZE } from "@/components/braille-spinner/running";
 import { buildDeterministicWorkspaceTabId } from "@/workspace-tabs/identity";
 import {
   buildWorkspaceDesktopTabActions,
@@ -109,7 +109,7 @@ const DEFAULT_INLINE_ADD_BUTTON_RESERVED_WIDTH = 28;
 const TAB_HORIZONTAL_PADDING = 8;
 const TAB_HANDLE_GAP = 4;
 const TAB_INDEX_WIDTH = 22;
-const TAB_LEADING_WIDTH = TAB_INDEX_WIDTH + STATUS_RING_FRAME_SIZE + TAB_HANDLE_GAP;
+const TAB_LEADING_WIDTH = TAB_INDEX_WIDTH + RUNNING_SPINNER_FRAME_SIZE + TAB_HANDLE_GAP;
 const TAB_CLOSE_SLOT_SIZE = 14;
 const TAB_CLOSE_SLOT_GAP = 6;
 

@@ -51,8 +51,8 @@ vi.mock("@/components/assistant-fork-menu", () => ({
   AssistantForkMenu: () => <button data-testid="running-turn-fork" type="button" />,
 }));
 
-vi.mock("@/components/synced-loader", () => ({
-  SyncedLoader: () => <span data-testid="running-turn-loader" />,
+vi.mock("@/components/braille-spinner", () => ({
+  BrailleSpinner: () => <span data-testid="running-turn-loader" />,
 }));
 
 vi.mock("@/components/retained-panel", () => ({

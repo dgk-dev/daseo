@@ -95,10 +95,10 @@ test.describe("Running rail: chat column", () => {
       await expect(header).toBeVisible({ timeout: 60_000 });
       // The parent has no message yet: the banner stands where the centred line used to.
       await expect(page.getByTestId("login-banner")).toContainText("Welcome to Daseo");
-      await expect(header).toHaveAccessibleName("[+] Running 1/3");
-      // The elapsed time is on screen from the start and ticks.
+      await expect(header).toHaveAccessibleName("Running 1/3");
+      // The braille spinner between the brackets; the elapsed time is on screen from the start.
       await expect(page.getByTestId("subagents-track-header-label")).toHaveText(
-        /^\[\+\] Running 1\/3 {2}(\d+s|\d+min \d\ds)$/,
+        /^\[[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\] Running 1\/3 {2}(\d+s|\d+min \d\ds)$/,
       );
       await shot(page, `A-track-collapsed-${label}.png`);
 

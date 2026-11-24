@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ActivityIndicator, Text, View, type ViewStyle } from "react-native";
+import { Text, View, type ViewStyle } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { CircleAlert } from "lucide-react-native";
 import { ProjectIconView } from "@/components/project-icon-view";
@@ -17,8 +17,8 @@ import {
   STATUS_INDICATOR_ALERT_SIZE,
   STATUS_INDICATOR_FILLED_DOT_SIZE,
 } from "@/utils/status-indicator-geometry";
-import { StatusRing } from "@/components/status-ring";
-import { getStatusRingOffset } from "@/components/status-ring/geometry";
+import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { getRunningSpinnerOffset, RunningSpinner } from "@/components/braille-spinner/running";
 import type { SidebarSurfaceBackdrop } from "@/styles/surface-backdrop";
 
 // Every surfaced status shares one badge shell, so the badge never changes size or position
@@ -39,7 +39,7 @@ const STATUS_BADGE_OFFSET = -4;
 // workspaceBranchText) so the icon centers on the title rather than floating above it.
 const LEADING_SLOT_HEIGHT = 20;
 
-const ThemedActivityIndicator = withUnistyles(ActivityIndicator);
+const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 const ThemedCircleAlert = withUnistyles(CircleAlert);
 
 const foregroundMutedColorMapping = (theme: Theme) => ({
@@ -64,7 +64,7 @@ export function ProjectLeadingVisual({
 }: {
   /** Aggregate status of the project's workspaces; null when it shouldn't be surfaced. */
   statusBucket: SidebarStateBucket | null;
-  /** The row's current background, so the status ring can knock out of it. */
+  /** The row's current background, so the status badge can knock out of it. */
   backdrop: SidebarSurfaceBackdrop;
   chevron?: "expand" | "collapse" | null;
   showChevron?: boolean;
@@ -81,7 +81,7 @@ export function ProjectLeadingVisual({
   if (isArchiving) {
     return (
       <View style={styles.projectLeadingVisualSlot} testID="project-status-indicator-archiving">
-        <ThemedActivityIndicator size={8} uniProps={foregroundMutedColorMapping} />
+        <ThemedLoadingSpinner size={10} uniProps={foregroundMutedColorMapping} />
       </View>
     );
   }
@@ -90,8 +90,8 @@ export function ProjectLeadingVisual({
 }
 
 // Daseo delta 89: the project row's status without the project box around it. The glyph fills the
-// leading slot: the running ring (still round, delta 55), the needs-input alert, or a coloured
-// dot; nothing for done. It keeps the status role and label the corner badge had.
+// leading slot: the braille spinner while running, the needs-input alert, or a coloured dot;
+// nothing for done. It keeps the status role and label the corner badge had.
 function ProjectRowStatusGlyph({
   statusBucket,
   backdrop,
@@ -109,7 +109,7 @@ function ProjectRowStatusGlyph({
       <ThemedCircleAlert size={STATUS_INDICATOR_ALERT_SIZE} uniProps={needsInputColorMapping} />
     );
   } else if (content.bucket === "running") {
-    glyph = <StatusRing backdrop={backdrop} />;
+    glyph = <RunningSpinner backdrop={backdrop} />;
   } else {
     glyph = <ProjectStatusDot bucket={content.bucket} />;
   }
@@ -194,18 +194,18 @@ function ProjectStatusBadge({
   statusBucket: SidebarStateBucket;
   backdrop: SidebarSurfaceBackdrop;
 }) {
-  // Running skips the shell. The ring is wider than the 12pt shell and carries its own knockout,
-  // so nesting it inside would clip it against the very thing that was meant to separate it from
-  // the icon. It anchors to the same corner instead, growing around the centre the dot had.
+  // Running skips the shell. The spinner's frame is wider than the 12pt shell and carries its own
+  // knockout, so nesting it inside would clip it against the very thing that was meant to separate
+  // it from the icon. It anchors to the same corner instead, growing around the centre the dot had.
   if (content.kind === "dot" && content.bucket === "running") {
     return (
       <View
         role="status"
         accessibilityLabel={STATUS_BUCKET_LABELS[statusBucket]}
-        style={styles.statusRingAnchor}
+        style={styles.runningSpinnerAnchor}
         testID="project-status-badge"
       >
-        <StatusRing backdrop={backdrop} />
+        <RunningSpinner backdrop={backdrop} />
       </View>
     );
   }
@@ -332,11 +332,11 @@ const styles = StyleSheet.create((theme) => {
       justifyContent: "center",
       overflow: "hidden",
     },
-    // Same corner as the shell, re-centred for the wider ring.
-    statusRingAnchor: {
+    // Same corner as the shell, re-centred for the wider spinner frame.
+    runningSpinnerAnchor: {
       position: "absolute",
-      right: getStatusRingOffset(STATUS_BADGE_OFFSET, STATUS_BADGE_SIZE),
-      bottom: getStatusRingOffset(STATUS_BADGE_OFFSET, STATUS_BADGE_SIZE),
+      right: getRunningSpinnerOffset(STATUS_BADGE_OFFSET, STATUS_BADGE_SIZE),
+      bottom: getRunningSpinnerOffset(STATUS_BADGE_OFFSET, STATUS_BADGE_SIZE),
     },
     statusBadgeOnSidebar: { backgroundColor: theme.colors.surfaceSidebar },
     statusBadgeOnSidebarHover: { backgroundColor: theme.colors.surfaceSidebarHover },

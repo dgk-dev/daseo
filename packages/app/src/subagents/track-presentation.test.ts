@@ -58,7 +58,7 @@ describe("track header", () => {
   it("shows Running N/M and the elapsed time while a subagent runs", () => {
     const rows = [row({ id: "a", status: "running" }), row({ id: "b" }), row({ id: "c" })];
     expect(buildTrackHeader(summarizeSubagentTrack(rows), "2min 13s")).toEqual([
-      { text: "[+]", tone: "prompt" },
+      { text: "[⠿]", tone: "spinner" },
       { text: " Running 1/3", tone: "strong" },
       { text: "  2min 13s", tone: "muted" },
     ]);
@@ -73,7 +73,7 @@ describe("track header", () => {
         nativeRow({ id: "d", status: "running" }),
         row({ id: "e", requiresAttention: true }),
       ]),
-    ).toBe("[+] Running 4/5");
+    ).toBe("Running 4/5");
   });
 
   it("is a muted done line when nothing runs", () => {

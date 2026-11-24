@@ -183,6 +183,8 @@ Terminology:
 
 Loading is inline by default. `<LoadingSpinner size={14} color={foregroundMuted} />` sits next to the thing it relates to (`packages/app/src/screens/settings/providers-section.tsx:227-231`). Page-level loading is a centered `<LoadingSpinner size="large">` (`packages/app/src/screens/sessions-screen.tsx:69-72`). Card-level loading is a single short line, not a spinner. In-row dropdown items use `<DropdownMenuItem status="pending" pendingLabel="Removing...">`; the menu item handles its own pending state.
 
+Every loading or running motion is the one braille spinner (`packages/app/src/components/braille-spinner/`): `<LoadingSpinner>` draws it for loading, `<RunningSpinner>` for an agent that is running (sidebar status slot, tab mark, project badge), and the subagents track and turn footer use it directly. One frame table, one 100 ms period, one clock per platform, all spinners in phase. Do not add another spinner, frame table, or animation timer.
+
 Empty states are short noun phrases. Centered, muted, one or two lines. Sessions screen pairs the empty noun with a single ghost button to navigate back (`packages/app/src/screens/sessions-screen.tsx:74-81`); that pairing is the maximum elaboration. Illustrations and CTAs disguised as empty states are wrong.
 
 Inline errors are a single sentence in `palette.red[300]` `xs`, sitting under the field or inside the card it relates to (`packages/app/src/screens/settings/providers-section.tsx:115-119`).
@@ -253,7 +255,7 @@ The bespoke pills in `packages/app/src/screens/settings/host-page.tsx:97-116`, `
 - Destructive actions without `confirmDialog`. Restart, remove, and future destructive actions are confirmed. Archive workspace is confirmed only when its worktree backing reports uncommitted changes or unpushed commits; otherwise it archives immediately.
 - Bespoke status pills. `<StatusBadge>` is the pill primitive.
 - Raw `Modal` for a focused task. `<AdaptiveModalSheet>` is the modal primitive.
-- Importing `ActivityIndicator` directly. `<LoadingSpinner>` is the loading primitive.
+- Importing `ActivityIndicator`, or animating a loader of your own. `<LoadingSpinner>` is the loading primitive; `<RunningSpinner>` marks a running agent.
 
 ---
 
