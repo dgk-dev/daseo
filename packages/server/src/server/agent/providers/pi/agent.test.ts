@@ -835,6 +835,54 @@ describe("PiRpcAgentSession", () => {
     ]);
   });
 
+  test("a wait wake delivered before a pending steer does not take the steer's identity", async () => {
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    const { turnId } = await session.startTurn("initial task", {
+      clientMessageId: "client-initial",
+    });
+    fakeSession.emit({ type: "turn_start" });
+    fakeSession.finishSubmittedUserMessage({
+      id: "entry-initial",
+      parentId: null,
+      text: "initial task",
+    });
+
+    await expect(
+      session.steerTurn?.("ㅇㅇ", turnId, { clientMessageId: "client-steer" }),
+    ).resolves.toEqual({ turnId });
+
+    const wake = "<paseo-system>\nwait_for: command w_1 exited pending=0\n</paseo-system>";
+    fakeSession.finishSubmittedUserMessage({
+      id: "entry-wake",
+      parentId: "entry-initial",
+      text: wake,
+    });
+    fakeSession.finishSubmittedUserMessage({
+      id: "entry-steer",
+      parentId: "entry-wake",
+      text: "ㅇㅇ",
+    });
+
+    expect(events.timelineItems().filter((item) => item.type === "user_message")).toEqual([
+      {
+        type: "user_message",
+        text: "initial task",
+        messageId: "entry-initial",
+        clientMessageId: "client-initial",
+      },
+      { type: "user_message", text: wake, messageId: "entry-wake", steering: true },
+      {
+        type: "user_message",
+        text: "ㅇㅇ",
+        messageId: "entry-steer",
+        clientMessageId: "client-steer",
+        steering: true,
+      },
+    ]);
+  });
+
   test("emits Pi assistant phase metadata when it arrives at message end", async () => {
     const { pi, session, events } = await createSession();
     const fakeSession = pi.latestSession();

@@ -3798,7 +3798,11 @@ visible-sources agents=<short ids> sources=<n>` line is logged on native when th
 - One prompt is one row even when a provider forgets it. A respawned Pi process re-delivers the
   running prompt as a fresh user message with only its own entry id; the daemon absorbs that echo
   into the unacknowledged submitted row it duplicates instead of appending a second row after the
-  response, which is what made a sent message appear to slide down the transcript. Submitted rows
+  response, which is what made a sent message appear to slide down the transcript. Pi pairs a
+  delivered mid-turn entry with its steer by text, never by queue position alone: a wait_for wake
+  delivered between a steer and its entry used to take the steer's identity, so the user's row
+  jumped up to the wake, the wake boundary vanished, and the steer was recorded again below
+  (delta 152, 2026-11-27). Submitted rows
   awaiting delivery are marked in the transcript rather than looking already delivered. Key files:
   `packages/server/src/server/agent/{agent-manager,agent-timeline-store}.ts` and
   `packages/app/src/components/message.tsx`.

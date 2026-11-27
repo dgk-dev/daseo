@@ -1755,7 +1755,10 @@ export class PiRpcAgentSession implements AgentSession {
   private activeTurnId: string | null = null;
   private activeClientMessageId: string | null = null;
   private awaitingInitialUserMessage = false;
-  private readonly pendingSteeringCorrelations: Array<{ clientMessageId: string | null }> = [];
+  private readonly pendingSteeringCorrelations: Array<{
+    clientMessageId: string | null;
+    text: string;
+  }> = [];
   private activeSteeringRequests = 0;
   private pendingAgentEnd: PiPendingAgentEnd | null = null;
   private settlementFallbackTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2079,7 +2082,7 @@ export class PiRpcAgentSession implements AgentSession {
       throw new Error("Pi turn ended before steering was accepted");
     }
     const payload = convertPromptInput(prompt, { model: this.state.model });
-    const correlation = { clientMessageId: options?.clientMessageId ?? null };
+    const correlation = { clientMessageId: options?.clientMessageId ?? null, text: payload.text };
     this.pendingSteeringCorrelations.push(correlation);
     this.activeSteeringRequests += 1;
     try {
@@ -2923,6 +2926,25 @@ export class PiRpcAgentSession implements AgentSession {
     }
   }
 
+  /**
+   * Pair a delivered mid-turn entry with the steer that sent it. Pi also delivers
+   * entries no client steered (a wait_for wake, an extension's follow-up), so a
+   * plain FIFO shift gave such an entry the user's clientMessageId: the user's row
+   * was acknowledged under the wake, the wake boundary vanished, and the user's own
+   * entry arrived unidentified and was recorded again below the response.
+   */
+  private takeSteeringCorrelation(text: string): string | null {
+    const queue = this.pendingSteeringCorrelations;
+    const exact = queue.findIndex((correlation) => correlation.text === text);
+    if (exact >= 0) {
+      return queue.splice(exact, 1)[0]?.clientMessageId ?? null;
+    }
+    if (PI_WAIT_ENVELOPE_PATTERN.test(text)) {
+      return null;
+    }
+    return queue.shift()?.clientMessageId ?? null;
+  }
+
   private handleSubmittedUserEntryMarker(message: string): boolean {
     const payload = parseExtensionMarkerPayload(message, PASEO_PI_SUBMITTED_USER_ENTRY_MARKER);
     if (!payload) {
@@ -2946,7 +2968,7 @@ export class PiRpcAgentSession implements AgentSession {
       this.activeClientMessageId = null;
       this.awaitingInitialUserMessage = false;
     } else {
-      clientMessageId = this.pendingSteeringCorrelations.shift()?.clientMessageId ?? null;
+      clientMessageId = this.takeSteeringCorrelation(entry.text);
       steering = true;
     }
     this.emit({
