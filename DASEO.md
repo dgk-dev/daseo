@@ -1587,6 +1587,16 @@ false`; that default is now `false` in the daemon (`schedule/service.ts`
       desktop unit tests and typecheck; the six capture-harness groups above pass (`automation`
       5 of 5, including the focused-iframe shortcut check); under `ELECTRON_RUN_AS_NODE` the
       History model embeds, `node:sqlite` FTS5 trigram matches, and node-pty spawns.
+    - **44.11.6 (2026-11-28).** Patch bump, Chromium 152.0.7977.169 and Node 24.22.3 unchanged
+      (ABI 149). Upstream fixes: `webFrame.setSpellCheckProvider` renderer crash, `AudioParam`
+      `setValueCurveAtTime`/`cancelAndHoldAtTime` crashes, `dialog.showMessageBox()` missing
+      `response` with an aborted `signal`, `prefers-contrast` ignoring the system setting, and
+      `webContents.centerSelection()` on Windows and Linux. Needed no source change: Daseo calls
+      `showMessageBox` without a `signal` and uses none of the others. Verified: typecheck,
+      desktop unit tests (with `DASEO_DISTRIBUTION` unset; a session inherits `=1` from the
+      daemon, which fails the distribution and updater tests), the release contract test, the
+      GUI render smoke, and under `ELECTRON_RUN_AS_NODE` ONNX Runtime loads, `node:sqlite` FTS5
+      trigram matches, and node-pty spawns.
     - **Key files:** `packages/desktop/package.json`, `electron-builder.yml`, `src/main.ts`
       (copy-element, clipboard image), `src/features/clipboard-image.ts`,
       `src/features/dialog-directory-memory.ts`, `src/features/dialogs.ts`,
